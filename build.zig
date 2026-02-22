@@ -115,6 +115,44 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // -----------------------------------------------------------------------
+    // UI app (macOS Metal renderer — spike)
+    // -----------------------------------------------------------------------
+    const app = b.addExecutable(.{
+        .name = "attyx-ui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/app/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "attyx", .module = mod },
+            },
+        }),
+    });
+
+    app.addCSourceFile(.{
+        .file = b.path("src/app/platform_macos.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    app.root_module.addIncludePath(b.path("src/app"));
+    app.root_module.linkFramework("Cocoa", .{});
+    app.root_module.linkFramework("Metal", .{});
+    app.root_module.linkFramework("MetalKit", .{});
+    app.root_module.linkFramework("QuartzCore", .{});
+    app.root_module.linkFramework("CoreText", .{});
+    app.root_module.linkFramework("CoreGraphics", .{});
+    app.root_module.linkFramework("CoreFoundation", .{});
+
+    b.installArtifact(app);
+
+    const run_ui_step = b.step("run-ui", "Run the UI app (Metal renderer spike)");
+    const run_ui_cmd = b.addRunArtifact(app);
+    run_ui_step.dependOn(&run_ui_cmd.step);
+    run_ui_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_ui_cmd.addArgs(args);
+    }
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
