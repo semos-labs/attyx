@@ -33,11 +33,17 @@ src/
     snapshot.zig       Serialize grid to plain text for testing
     engine.zig         Glue layer: Parser + TerminalState
     input.zig          Input encoder: paste wrapping + mouse SGR encoding
+    hash.zig           FNV-1a state hash for change detection
   headless/          Deterministic runner + tests
     runner.zig         Convenience functions for test harness
     tests.zig          Golden snapshot tests + attribute tests
+  app/               PTY + OS integration
+    pty.zig            POSIX PTY bridge (spawn, read, write, resize)
+    ui1.zig            UI-1 event loop (poll PTY + stdin, snapshot output)
+  render/            GPU + font rendering (planned)
+    color.zig          ANSI/palette/truecolor → RGB resolution
   root.zig           Library root — re-exports public API
-  main.zig           Executable entry point (placeholder)
+  main.zig           CLI entry point — subcommand dispatch
 ```
 
 ## Layer Rules
@@ -166,3 +172,45 @@ Pure, allocation-free functions for producing bytes to send to the PTY:
   Move events only reported in `any_event` mode.
 
 All write into caller-provided buffers. No allocations.
+
+### State Hash (`term/hash.zig`)
+
+Pure FNV-1a hash over the visible terminal state: `alt_active` flag, cursor
+position, and every cell's character + style attributes. Returns a `u64`.
+Used by the UI-1 event loop to detect when the screen has actually changed,
+avoiding redundant snapshot output.
+
+No allocations, no side effects — just reads `TerminalState` fields.
+
+### PTY Bridge (`app/pty.zig`)
+
+POSIX PTY module for macOS and Linux:
+
+- `Pty.spawn(opts)` — opens a pseudoterminal via `openpty()`, forks, sets
+  up the slave as the child's stdin/stdout/stderr with `setsid` + `TIOCSCTTY`,
+  sets `TERM=xterm-256color`, and execs the shell (default: `/bin/bash --noprofile --norc`).
+  Master fd is set to non-blocking.
+- `read(buf)` — non-blocking read from master. Returns 0 on `WouldBlock`.
+- `writeToPty(bytes)` — write to master.
+- `resize(rows, cols)` — `TIOCSWINSZ` ioctl.
+- `childExited()` — non-blocking waitpid check.
+- `deinit()` — close master fd, reap child.
+
+The PTY module has zero dependencies on `term/`.
+
+### UI-1 Event Loop (`app/ui1.zig`)
+
+The headless app loop that connects a PTY to the terminal engine:
+
+```
+PTY master ──read──▸ Engine.feed() ──▸ state hash check ──▸ snapshot to stdout
+stdin ──read──▸ write to PTY master
+```
+
+1. Create `Engine` at configured size (default 80x24).
+2. Spawn PTY with the configured command.
+3. Put stdin in raw mode (disable echo/canonical/signals).
+4. `poll()` loop on PTY master fd + stdin fd (16ms timeout).
+5. PTY data → feed engine → if state hash changed and 33ms elapsed, print snapshot.
+6. stdin data → forward to PTY.
+7. On child exit or PTY HUP → flush final snapshot → restore termios → exit.

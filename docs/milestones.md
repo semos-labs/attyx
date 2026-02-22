@@ -12,6 +12,7 @@
 | 6 | SGR extended colors (256-color + truecolor) | ✅ Done |
 | 7 | OSC support — hyperlinks + title | ✅ Done |
 | 8 | Mouse reporting + bracketed paste + input encoder | ✅ Done |
+| UI-1 | PTY bridge (headless app loop) | ✅ Done |
 
 ---
 
@@ -486,3 +487,85 @@ mouse tracking modes (enable/disable/precedence/override), SGR mouse toggle,
 compound mode sequences, mode persistence across alt screen, paste wrapper
 output, SGR mouse encoding (press/release/scroll/ctrl+click), and
 incremental parsing for DEC private modes split across chunks.
+
+---
+
+## Milestone UI-1 — PTY bridge (headless app loop)
+
+**Status:** ✅ Complete
+
+**Goal:** Spawn a real shell attached to a PTY, feed its output through the
+terminal engine, and print snapshots to stdout on state changes. No windowing
+or GPU rendering — purely headless.
+
+### What was built
+
+**State hash (`src/term/hash.zig`):**
+
+- Pure FNV-1a 64-bit hash over `alt_active`, cursor position, and all cell
+  characters + style attributes.
+- Used to detect whether the visible screen changed between poll iterations.
+- 3 unit tests (identical state, different content, cursor move).
+
+**PTY module (`src/app/pty.zig`):**
+
+- `Pty.spawn(opts)` — opens pseudoterminal via `openpty()`, forks, sets up
+  slave as controlling terminal (`setsid` + `TIOCSCTTY`), sets
+  `TERM=xterm-256color`, execs command via `execvp`.
+- Default command: `/bin/bash --noprofile --norc`.
+- `--cmd` override via CLI args.
+- Master fd set to `O_NONBLOCK` for non-blocking reads.
+- `read(buf)` — returns 0 on `WouldBlock`.
+- `writeToPty(bytes)` — write to master.
+- `resize(rows, cols)` — `TIOCSWINSZ` ioctl.
+- `childExited()` — non-blocking `waitpid` check.
+- `deinit()` — close fd, reap child.
+- Platform support: macOS + Linux (compile-time ioctl constants).
+
+**UI-1 runner (`src/app/ui1.zig`):**
+
+- Creates `Engine` at configured size (default 24×80).
+- Spawns PTY with configured command.
+- Puts stdin in raw mode (disables echo, canonical, signals, iexten).
+- Event loop using `poll()` with 16ms timeout:
+  - PTY output → `engine.feed(bytes)`.
+  - stdin input → forward to PTY master.
+  - State hash comparison → print snapshot if changed (throttled to ~30 fps).
+- Final snapshot flush on exit to catch last-frame changes.
+- Restores original termios on exit.
+- Graceful handling of stdin EOF (piped input) and PTY write errors.
+
+**CLI interface (`src/main.zig`):**
+
+- Subcommand dispatch: `attyx ui1 [options]`.
+- Options: `--rows N`, `--cols N`, `--cmd <command...>`, `--no-snapshot`,
+  `--separator`, `--help`.
+
+### Run commands
+
+```bash
+zig build run -- ui1                         # default bash, 24×80
+zig build run -- ui1 --rows 40 --cols 120    # custom size
+zig build run -- ui1 --cmd /bin/zsh          # custom shell
+zig build run -- ui1 --separator             # --- between frames
+```
+
+### Files added/changed
+
+| File | Change |
+|------|--------|
+| `src/term/hash.zig` | **New** — state hashing |
+| `src/app/pty.zig` | **New** — POSIX PTY module |
+| `src/app/ui1.zig` | **New** — UI-1 event loop |
+| `src/main.zig` | **Rewritten** — subcommand dispatch + arg parsing |
+| `src/root.zig` | Re-exports hash module |
+| `build.zig` | Main exe links libc (+ libutil on Linux) |
+
+### Constraints preserved
+
+- `term/` remains pure and deterministic — zero dependencies on app/.
+- Hash module is in `term/` (pure function over state, no side effects).
+- PTY module is in `app/` (platform-specific, uses libc).
+- All 191 existing tests still pass.
+
+**Tests added:** 3 new (194 total).

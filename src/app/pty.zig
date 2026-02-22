@@ -1,0 +1,136 @@
+const std = @import("std");
+const posix = std.posix;
+const builtin = @import("builtin");
+
+const Winsize = extern struct {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+};
+
+const TIOCSWINSZ: c_ulong = switch (builtin.os.tag) {
+    .macos => 0x80087467,
+    .linux => 0x5414,
+    else => @compileError("unsupported OS for PTY"),
+};
+
+const TIOCSCTTY: c_ulong = switch (builtin.os.tag) {
+    .macos => 0x20007461,
+    .linux => 0x540E,
+    else => @compileError("unsupported OS for PTY"),
+};
+
+extern "c" fn openpty(
+    amaster: *c_int,
+    aslave: *c_int,
+    name: ?[*:0]u8,
+    termp: ?*anyopaque,
+    winp: ?*Winsize,
+) c_int;
+
+extern "c" fn setsid() c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+
+pub const Pty = struct {
+    master: posix.fd_t,
+    pid: posix.pid_t,
+
+    pub const SpawnOpts = struct {
+        rows: u16 = 24,
+        cols: u16 = 80,
+        argv: ?[]const [:0]const u8 = null,
+    };
+
+    pub fn spawn(opts: SpawnOpts) !Pty {
+        var win = Winsize{
+            .ws_row = opts.rows,
+            .ws_col = opts.cols,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
+        };
+
+        var master: c_int = undefined;
+        var slave: c_int = undefined;
+
+        if (openpty(&master, &slave, null, null, &win) != 0)
+            return error.OpenPtyFailed;
+        errdefer posix.close(master);
+
+        const pid = try posix.fork();
+
+        if (pid == 0) {
+            // ── child ──
+            posix.close(master);
+            _ = setsid();
+            _ = ioctl(slave, TIOCSCTTY, @as(c_int, 0));
+
+            posix.dup2(slave, 0) catch posix.abort();
+            posix.dup2(slave, 1) catch posix.abort();
+            posix.dup2(slave, 2) catch posix.abort();
+            if (slave > 2) posix.close(slave);
+
+            _ = setenv("TERM", "xterm-256color", 1);
+
+            const default_argv: []const [:0]const u8 = &.{
+                "/bin/bash", "--noprofile", "--norc",
+            };
+            const argv = opts.argv orelse default_argv;
+
+            var argv_ptrs: [33]?[*:0]const u8 = .{null} ** 33;
+            for (argv, 0..) |arg, i| {
+                if (i >= 32) break;
+                argv_ptrs[i] = arg.ptr;
+            }
+
+            _ = execvp(argv_ptrs[0] orelse posix.abort(), @ptrCast(&argv_ptrs));
+            posix.abort();
+        }
+
+        // ── parent ──
+        posix.close(slave);
+
+        // Non-blocking reads on master fd
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        const O_NONBLOCK: usize = if (builtin.os.tag == .macos) 0x0004 else 0x0800;
+        const current = std.posix.fcntl(master, F_GETFL, 0) catch 0;
+        _ = std.posix.fcntl(master, F_SETFL, current | O_NONBLOCK) catch {};
+
+        return .{ .master = master, .pid = pid };
+    }
+
+    pub fn deinit(self: *Pty) void {
+        posix.close(self.master);
+        _ = posix.waitpid(self.pid, std.posix.W.NOHANG);
+    }
+
+    pub fn read(self: *Pty, buf: []u8) !usize {
+        return posix.read(self.master, buf) catch |err| switch (err) {
+            error.WouldBlock => return 0,
+            else => return err,
+        };
+    }
+
+    pub fn writeToPty(self: *Pty, bytes: []const u8) !usize {
+        return posix.write(self.master, bytes);
+    }
+
+    pub fn resize(self: *Pty, rows: u16, cols: u16) !void {
+        var win = Winsize{
+            .ws_row = rows,
+            .ws_col = cols,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
+        };
+        if (ioctl(self.master, TIOCSWINSZ, &win) != 0)
+            return error.ResizeFailed;
+    }
+
+    pub fn childExited(self: *Pty) bool {
+        const result = posix.waitpid(self.pid, std.posix.W.NOHANG);
+        return result.pid != 0;
+    }
+};
