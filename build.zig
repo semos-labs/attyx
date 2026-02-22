@@ -107,41 +107,43 @@ pub fn build(b: *std.Build) void {
     }
 
     // -----------------------------------------------------------------------
-    // UI app (macOS Metal renderer — spike)
+    // UI app (macOS Metal renderer — spike, macOS-only)
     // -----------------------------------------------------------------------
-    const app = b.addExecutable(.{
-        .name = "attyx-ui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/app/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "attyx", .module = mod },
-            },
-        }),
-    });
+    if (target.result.os.tag == .macos) {
+        const app = b.addExecutable(.{
+            .name = "attyx-ui",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/app/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "attyx", .module = mod },
+                },
+            }),
+        });
 
-    app.addCSourceFile(.{
-        .file = b.path("src/app/platform_macos.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
-    app.root_module.addIncludePath(b.path("src/app"));
-    app.root_module.linkFramework("Cocoa", .{});
-    app.root_module.linkFramework("Metal", .{});
-    app.root_module.linkFramework("MetalKit", .{});
-    app.root_module.linkFramework("QuartzCore", .{});
-    app.root_module.linkFramework("CoreText", .{});
-    app.root_module.linkFramework("CoreGraphics", .{});
-    app.root_module.linkFramework("CoreFoundation", .{});
+        app.addCSourceFile(.{
+            .file = b.path("src/app/platform_macos.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
+        app.root_module.addIncludePath(b.path("src/app"));
+        app.root_module.linkFramework("Cocoa", .{});
+        app.root_module.linkFramework("Metal", .{});
+        app.root_module.linkFramework("MetalKit", .{});
+        app.root_module.linkFramework("QuartzCore", .{});
+        app.root_module.linkFramework("CoreText", .{});
+        app.root_module.linkFramework("CoreGraphics", .{});
+        app.root_module.linkFramework("CoreFoundation", .{});
 
-    b.installArtifact(app);
+        b.installArtifact(app);
 
-    const run_ui_step = b.step("run-ui", "Run the UI app (Metal renderer spike)");
-    const run_ui_cmd = b.addRunArtifact(app);
-    run_ui_step.dependOn(&run_ui_cmd.step);
-    run_ui_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_ui_cmd.addArgs(args);
+        const run_ui_step = b.step("run-ui", "Run the UI app (Metal renderer spike, macOS only)");
+        const run_ui_cmd = b.addRunArtifact(app);
+        run_ui_step.dependOn(&run_ui_cmd.step);
+        run_ui_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_ui_cmd.addArgs(args);
+        }
     }
 
     // Creates an executable that will run `test` blocks from the provided module.
