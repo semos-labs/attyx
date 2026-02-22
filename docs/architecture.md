@@ -40,6 +40,7 @@ src/
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig            UI-1 event loop (poll PTY + stdin, snapshot output)
+    session_log.zig    Session event log (bounded ring buffer)
   render/            GPU + font rendering (planned)
     color.zig          ANSI/palette/truecolor → RGB resolution
   root.zig           Library root — re-exports public API
@@ -214,3 +215,17 @@ stdin ──read──▸ write to PTY master
 5. PTY data → feed engine → if state hash changed and 33ms elapsed, print snapshot.
 6. stdin data → forward to PTY.
 7. On child exit or PTY HUP → flush final snapshot → restore termios → exit.
+
+### Session Event Log (`app/session_log.zig`)
+
+Bounded in-memory log of session events for future AI integration:
+
+- **Events:** `output_chunk` (PTY data), `input_chunk` (user keystrokes),
+  `frame` (grid hash + metadata on visible change).
+- **Limits:** max 4096 events / 4 MB of byte data. Oldest events dropped
+  when either limit is reached.
+- **Byte ownership:** each chunk is `dupe`'d on append, `free`'d on drop.
+- **Frame dedup:** `appendFrame` is a no-op if the grid hash hasn't changed.
+- **API:** `lastEvents(n)` returns a contiguous slice; `stats()` returns
+  event count + total bytes.
+- No persistence, no search, no stdout output. Pure sidecar data structure.

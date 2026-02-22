@@ -6,6 +6,7 @@ const Engine = attyx.Engine;
 const snapshot = attyx.snapshot;
 const state_hash = attyx.hash;
 const Pty = @import("pty.zig").Pty;
+const SessionLog = @import("session_log.zig").SessionLog;
 
 const Termios = std.posix.termios;
 
@@ -40,6 +41,9 @@ pub fn run(config: Config) !void {
         .argv = config.argv,
     });
     defer pty.deinit();
+
+    var session = try SessionLog.init(allocator);
+    defer session.deinit();
 
     // Put stdin in raw mode
     var orig_termios: Termios = undefined;
@@ -78,7 +82,13 @@ pub fn run(config: Config) !void {
 
         if (fds[0].revents & POLLIN != 0) {
             const n = pty.read(&pty_buf) catch break;
-            if (n > 0) engine.feed(pty_buf[0..n]);
+            if (n > 0) {
+                const chunk = pty_buf[0..n];
+                session.appendOutput(chunk);
+                engine.feed(chunk);
+                const h = state_hash.hash(&engine.state);
+                session.appendFrame(h, engine.state.alt_active);
+            }
         }
 
         if (stdin_open and fds[1].revents & POLLIN != 0) {
@@ -90,7 +100,9 @@ pub fn run(config: Config) !void {
                 stdin_open = false;
                 continue;
             }
-            _ = pty.writeToPty(stdin_buf[0..n]) catch {
+            const input_chunk = stdin_buf[0..n];
+            session.appendInput(input_chunk);
+            _ = pty.writeToPty(input_chunk) catch {
                 stdin_open = false;
                 continue;
             };

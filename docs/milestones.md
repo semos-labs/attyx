@@ -13,6 +13,7 @@
 | 7 | OSC support — hyperlinks + title | ✅ Done |
 | 8 | Mouse reporting + bracketed paste + input encoder | ✅ Done |
 | UI-1 | PTY bridge (headless app loop) | ✅ Done |
+| S-0 | Minimal session event log | ✅ Done |
 
 ---
 
@@ -569,3 +570,66 @@ zig build run -- ui1 --separator             # --- between frames
 - All 191 existing tests still pass.
 
 **Tests added:** 3 new (194 total).
+
+---
+
+## Milestone S-0 — Minimal Session Event Log
+
+**Status:** ✅ Complete
+
+**Goal:** Add a lightweight session event log that records PTY input/output and
+frame boundaries. Preparation for AI integration — no AI in this milestone.
+
+### What was built
+
+**Session log (`src/app/session_log.zig`, ~180 lines):**
+
+A bounded ring buffer of session events with three event types:
+
+| Event | Payload |
+|-------|---------|
+| `output_chunk` | timestamp + byte slice (PTY → engine) |
+| `input_chunk` | timestamp + byte slice (user → PTY) |
+| `frame` | timestamp + frame_id + grid_hash + alt_active |
+
+**Storage model:**
+
+- Events stored in a flat array (contiguous, no wrap — shift on drop).
+- Byte slices are individually allocated copies, freed when events are dropped.
+- Bounded by `max_events` (default 4096) and `max_bytes` (default 4 MB).
+- When either limit is reached, oldest events are dropped (batch shift).
+- Frame events are only appended when the grid hash has changed since the
+  last frame.
+
+**API:**
+
+```zig
+pub fn appendOutput(bytes: []const u8) void
+pub fn appendInput(bytes: []const u8) void
+pub fn appendFrame(grid_hash: u64, alt_active: bool) void
+pub fn lastEvents(n: usize) []const Event
+pub fn stats() Stats  // { event_count, total_bytes }
+```
+
+**Integration in UI-1 event loop:**
+
+```
+PTY read  → session.appendOutput(chunk) → engine.feed(chunk) → session.appendFrame(hash)
+stdin read → session.appendInput(chunk) → pty.writeToPty(chunk)
+```
+
+### Files added/changed
+
+| File | Change |
+|------|--------|
+| `src/app/session_log.zig` | **New** — event log with ring buffer + 7 tests |
+| `src/app/ui1.zig` | Wired session log into event loop |
+
+### Constraints preserved
+
+- `term/` unchanged — zero modifications.
+- No UI dependency, no stdout logging, no AI.
+- No persistence — log exists only in memory for the session lifetime.
+
+**Tests added:** 7 new (event limit, byte limit, ordering, frame_id increment,
+hash dedup, lastEvents clamping, stats tracking).

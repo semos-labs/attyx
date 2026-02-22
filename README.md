@@ -50,6 +50,7 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 - **`input`** — allocation-free input encoder: bracketed paste wrapping and SGR mouse event encoding.
 - **`hash`** — pure FNV-1a hash of visible terminal state (cursor + grid + attrs). Used to detect screen changes.
 - **`Pty`** — POSIX PTY bridge: spawn a child shell, non-blocking reads, write bytes, resize via ioctl.
+- **`SessionLog`** — bounded ring buffer of session events (PTY input/output chunks + frame snapshots). Preparation for AI integration.
 
 See [docs/architecture.md](docs/architecture.md) for the full breakdown.
 
@@ -121,6 +122,7 @@ Attyx is built milestone by milestone. Each milestone is stable and tested befor
 | 8 | Mouse reporting + bracketed paste + input encoder | ✅ Done |
 | UI-0 | Rendering spike (Metal window, demo grid) | ✅ Done |
 | UI-1 | PTY bridge (headless app loop — spawn shell, read/write PTY, snapshot) | ✅ Done |
+| S-0 | Minimal session event log (ring buffer, no AI yet) | ✅ Done |
 
 See [docs/milestones.md](docs/milestones.md) for detailed write-ups.
 
@@ -145,6 +147,7 @@ src/
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig          UI-1 runner (event loop, stdin forwarding, snapshots)
+    session_log.zig  Session event log (ring buffer, byte tracking)
   render/
     color.zig        Color resolution (ANSI → RGB lookup)
   root.zig           Library root
