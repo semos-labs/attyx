@@ -6,10 +6,14 @@
 pub const actions = @import("term/actions.zig");
 pub const grid = @import("term/grid.zig");
 pub const parser = @import("term/parser.zig");
+pub const csi = @import("term/csi.zig");
 pub const state = @import("term/state.zig");
+pub const sgr = @import("term/sgr.zig");
 pub const snapshot = @import("term/snapshot.zig");
 pub const engine = @import("term/engine.zig");
 pub const input = @import("term/input.zig");
+
+pub const render_color = @import("render/color.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -36,6 +40,8 @@ test {
     _ = @import("term/actions.zig");
     _ = @import("term/grid.zig");
     _ = @import("term/parser.zig");
+    _ = @import("term/csi.zig");
+    _ = @import("term/sgr.zig");
     _ = @import("term/state.zig");
     _ = @import("term/snapshot.zig");
     _ = @import("term/engine.zig");
