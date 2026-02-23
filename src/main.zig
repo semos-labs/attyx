@@ -68,3 +68,9 @@ fn fatal(msg: []const u8) noreturn {
 test {
     _ = ui2;
 }
+
+test "AttyxCell struct layout matches C" {
+    const c = @cImport(@cInclude("bridge.h"));
+    try @import("std").testing.expectEqual(@as(usize, 16), @sizeOf(c.AttyxCell));
+    try @import("std").testing.expectEqual(@as(usize, 12), @offsetOf(c.AttyxCell, "link_id"));
+}

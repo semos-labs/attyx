@@ -99,4 +99,32 @@ extern volatile int  g_ime_anchor_col;     // grid col where composition started
 extern char          g_ime_preedit[ATTYX_IME_MAX_BYTES]; // current preedit UTF-8 (not volatile — guarded by g_ime_composing)
 extern volatile int  g_ime_preedit_len;    // byte length of preedit text
 
+// ---------------------------------------------------------------------------
+// In-terminal search state
+// ---------------------------------------------------------------------------
+
+#define ATTYX_SEARCH_QUERY_MAX 256
+#define ATTYX_SEARCH_VIS_MAX   512
+
+typedef struct { int row; int col_start; int col_end; } AttyxSearchVis;
+
+// UI thread -> PTY thread
+extern char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
+extern volatile int  g_search_query_len;
+extern volatile int  g_search_active;       // 1 = search bar open
+extern volatile int  g_search_gen;          // bumped on each query change
+
+// Navigation: UI thread atomically adds +1 (next) or -1 (prev); PTY thread
+// atomically reads-and-resets to 0 after processing.
+extern volatile int  g_search_nav_delta;
+
+// PTY thread -> UI thread (results for rendering)
+extern volatile int  g_search_total;        // total match count
+extern volatile int  g_search_current;      // 0-based current match index
+extern AttyxSearchVis g_search_vis[ATTYX_SEARCH_VIS_MAX];
+extern volatile int  g_search_vis_count;    // matches visible in viewport
+extern volatile int  g_search_cur_vis_row;  // viewport-row of current match (-1 = off-screen)
+extern volatile int  g_search_cur_vis_cs;   // current match col_start (viewport)
+extern volatile int  g_search_cur_vis_ce;   // current match col_end (viewport)
+
 #endif

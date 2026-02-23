@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const attyx = @import("attyx");
 
 const Engine = attyx.Engine;
+const SearchState = attyx.SearchState;
 const state_hash = attyx.hash;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
@@ -142,11 +143,106 @@ fn publishState(ctx: *PtyThreadCtx) void {
     }
 }
 
+var g_search: ?SearchState = null;
+
+fn processSearch(state: *attyx.TerminalState) void {
+    const active: i32 = @bitCast(c.g_search_active);
+    if (active == 0) {
+        if (g_search) |*s| {
+            s.clear();
+            c.g_search_total = 0;
+            c.g_search_current = 0;
+            c.g_search_vis_count = 0;
+            c.g_search_cur_vis_row = -1;
+        }
+        return;
+    }
+
+    const s = &(g_search orelse return);
+
+    // Detect query changes
+    const gen: u32 = @bitCast(c.g_search_gen);
+    const S = struct {
+        var last_gen: u32 = 0;
+    };
+    if (gen != S.last_gen) {
+        S.last_gen = gen;
+        const qlen: usize = @intCast(@as(c_uint, @bitCast(c.g_search_query_len)));
+        const clamped = @min(qlen, c.ATTYX_SEARCH_QUERY_MAX);
+        var query_copy: [c.ATTYX_SEARCH_QUERY_MAX]u8 = undefined;
+        for (0..clamped) |i| {
+            query_copy[i] = c.g_search_query[i];
+        }
+        s.update(query_copy[0..clamped], &state.scrollback, &state.grid);
+    }
+
+    // Process navigation
+    const nav: i32 = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_search_nav_delta))), .Xchg, 0, .seq_cst);
+    if (nav > 0) {
+        var i: i32 = 0;
+        while (i < nav) : (i += 1) _ = s.next();
+    } else if (nav < 0) {
+        var i: i32 = 0;
+        while (i < -nav) : (i += 1) _ = s.prev();
+    }
+
+    // Scroll viewport to current match
+    if (nav != 0) {
+        if (s.viewportForCurrent(state.scrollback.count, state.grid.rows)) |vp| {
+            state.viewport_offset = vp;
+            c.g_viewport_offset = @intCast(vp);
+            c.attyx_mark_all_dirty();
+        }
+    }
+
+    // Publish results for renderer
+    c.g_search_total = @intCast(s.matchCount());
+    c.g_search_current = @intCast(s.current);
+
+    // Compute viewport window in absolute row coordinates
+    const sb_count = state.scrollback.count;
+    const grid_rows = state.grid.rows;
+    const vp_offset = state.viewport_offset;
+    const viewport_top = if (sb_count >= vp_offset) sb_count - vp_offset else 0;
+
+    var vis_buf: [c.ATTYX_SEARCH_VIS_MAX]attyx.SearchMatch = undefined;
+    const vis_count = s.visibleMatches(viewport_top, grid_rows, &vis_buf);
+    c.g_search_vis_count = @intCast(vis_count);
+    for (0..vis_count) |i| {
+        const m = vis_buf[i];
+        const viewport_row: i32 = @intCast(m.abs_row - viewport_top);
+        c.g_search_vis[i] = .{
+            .row = viewport_row,
+            .col_start = @intCast(m.col_start),
+            .col_end = @intCast(m.col_end),
+        };
+    }
+
+    // Current match position in viewport coordinates
+    if (s.currentMatch()) |cur| {
+        if (cur.abs_row >= viewport_top and cur.abs_row < viewport_top + grid_rows) {
+            c.g_search_cur_vis_row = @intCast(cur.abs_row - viewport_top);
+            c.g_search_cur_vis_cs = @intCast(cur.col_start);
+            c.g_search_cur_vis_ce = @intCast(cur.col_end);
+        } else {
+            c.g_search_cur_vis_row = -1;
+        }
+    } else {
+        c.g_search_cur_vis_row = -1;
+    }
+}
+
 fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLIN: i16 = 0x0001;
     const POLLHUP: i16 = 0x0010;
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
+
+    g_search = SearchState.init(ctx.engine.state.grid.allocator);
+    defer {
+        if (g_search) |*s| s.deinit();
+        g_search = null;
+    }
 
     while (c.attyx_should_quit() == 0) {
         {
@@ -214,7 +310,12 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const viewport_changed = (ctx.engine.state.viewport_offset != last_published_vp);
         const need_update = got_data or viewport_changed;
 
-        if (need_update) {
+        // Process search even when no PTY data arrived (navigation / query changes)
+        processSearch(&ctx.engine.state);
+        const search_vp_changed = (ctx.engine.state.viewport_offset != last_published_vp);
+        const need_update_final = need_update or search_vp_changed;
+
+        if (need_update_final) {
             c.attyx_begin_cell_update();
             const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
             fillCells(ctx.cells[0..total], ctx.engine, total);
