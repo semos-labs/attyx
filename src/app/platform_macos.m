@@ -31,6 +31,24 @@ static volatile int g_cursor_keys_app = 0;
 static volatile int g_mouse_tracking = 0;
 static volatile int g_mouse_sgr = 0;
 
+// Viewport / scrollback (read + written by both threads via volatile)
+volatile int g_viewport_offset = 0;
+volatile int g_scrollback_count = 0;
+volatile int g_alt_screen = 0;
+
+// Selection (viewport-relative, 0-indexed; -1 = no selection)
+volatile int g_sel_start_row = -1, g_sel_start_col = -1;
+volatile int g_sel_end_row = -1, g_sel_end_col = -1;
+volatile int g_sel_active = 0;
+
+// IME composition state
+volatile int  g_ime_composing    = 0;
+volatile int  g_ime_cursor_index = -1;
+volatile int  g_ime_anchor_row   = 0;
+volatile int  g_ime_anchor_col   = 0;
+char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
+volatile int  g_ime_preedit_len  = 0;
+
 // Row-level dirty bitset (256 rows). PTY thread atomic-ORs in dirty bits;
 // renderer atomically swaps each word to zero when snapshotting.
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
@@ -66,6 +84,21 @@ void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app) {
 void attyx_set_mouse_mode(int tracking, int sgr) {
     g_mouse_tracking = tracking;
     g_mouse_sgr = sgr;
+}
+
+void attyx_mark_all_dirty(void) {
+    for (int i = 0; i < 4; i++)
+        __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], ~(uint64_t)0);
+}
+
+void attyx_scroll_viewport(int delta) {
+    int cur = g_viewport_offset;
+    int sb = g_scrollback_count;
+    int nv = cur + delta;
+    if (nv < 0) nv = 0;
+    if (nv > sb) nv = sb;
+    g_viewport_offset = nv;
+    attyx_mark_all_dirty();
 }
 
 void attyx_set_dirty(const uint64_t dirty[4]) {
@@ -434,6 +467,25 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 @property (nonatomic, strong) id<MTLRenderPipelineState> textPipeline;
 @end
 
+/// Check if a cell at (row, col) is within the current selection.
+/// Selection is stored as start/end which may be in any order.
+static BOOL cellIsSelected(int row, int col) {
+    if (!g_sel_active) return NO;
+    int sr = g_sel_start_row, sc = g_sel_start_col;
+    int er = g_sel_end_row,   ec = g_sel_end_col;
+    // Normalize so (sr,sc) <= (er,ec)
+    if (sr > er || (sr == er && sc > ec)) {
+        int tr = sr, tc = sc;
+        sr = er; sc = ec;
+        er = tr; ec = tc;
+    }
+    if (row < sr || row > er) return NO;
+    if (row == sr && row == er) return col >= sc && col <= ec;
+    if (row == sr) return col >= sc;
+    if (row == er) return col <= ec;
+    return YES;
+}
+
 @implementation AttyxRenderer
 
 - (instancetype)initWithDevice:(id<MTLDevice>)device
@@ -615,9 +667,14 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
                 float y1 = y0 + gh;
                 const AttyxCell* cell = &cells[i];
 
-                float br = cell->bg_r / 255.0f;
-                float bg = cell->bg_g / 255.0f;
-                float bb = cell->bg_b / 255.0f;
+                float br, bg, bb;
+                if (cellIsSelected(row, col)) {
+                    br = 0.20f; bg = 0.40f; bb = 0.70f;
+                } else {
+                    br = cell->bg_r / 255.0f;
+                    bg = cell->bg_g / 255.0f;
+                    bb = cell->bg_b / 255.0f;
+                }
 
                 int bi = i * 6;
                 _bgVerts[bi+0] = (Vertex){ x0, y0, 0,0, br,bg,bb,1 };
@@ -742,6 +799,113 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
                     vertexCount:ti];
         }
 
+        // --- IME preedit overlay ---
+        if (g_ime_composing && g_ime_preedit_len > 0) {
+            int pRow = g_ime_anchor_row;
+            int pCol = g_ime_anchor_col;
+            if (pRow >= 0 && pRow < rows && pCol >= 0 && pCol < cols) {
+                char preeditCopy[ATTYX_IME_MAX_BYTES];
+                int pLen = g_ime_preedit_len;
+                if (pLen > ATTYX_IME_MAX_BYTES - 1) pLen = ATTYX_IME_MAX_BYTES - 1;
+                memcpy(preeditCopy, g_ime_preedit, pLen);
+                preeditCopy[pLen] = '\0';
+
+                int preCharCount = 0;
+                uint32_t preCPs[128];
+                const uint8_t* p = (const uint8_t*)preeditCopy;
+                const uint8_t* end = p + pLen;
+                while (p < end && preCharCount < 128) {
+                    uint32_t cp = 0;
+                    if ((*p & 0x80) == 0)          { cp = *p++; }
+                    else if ((*p & 0xE0) == 0xC0)  { cp = (*p & 0x1F); p++; if (p < end) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                    else if ((*p & 0xF0) == 0xE0)  { cp = (*p & 0x0F); p++; for (int j = 0; j < 2 && p < end; j++) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                    else if ((*p & 0xF8) == 0xF0)  { cp = (*p & 0x07); p++; for (int j = 0; j < 3 && p < end; j++) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                    else { p++; continue; }
+                    preCPs[preCharCount++] = cp;
+                }
+
+                int preCells = preCharCount;
+                if (pCol + preCells > cols) preCells = cols - pCol;
+
+                Vertex imeVerts[128 * 6 + 6];
+                int iv = 0;
+
+                for (int i = 0; i < preCells; i++) {
+                    float x0 = (pCol + i) * gw;
+                    float y0 = pRow * gh;
+                    float x1 = x0 + gw;
+                    float y1 = y0 + gh;
+                    float br = 0.20f, bg = 0.20f, bb = 0.30f;
+                    imeVerts[iv++] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
+                    imeVerts[iv++] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+                    imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+                    imeVerts[iv++] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+                    imeVerts[iv++] = (Vertex){ x1,y1, 0,0, br,bg,bb,1 };
+                    imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+                }
+
+                // Underline bar at bottom of preedit cells
+                float ulH = 2.0f;
+                float ulY0 = pRow * gh + gh - ulH;
+                float ulY1 = pRow * gh + gh;
+                float ulX0 = pCol * gw;
+                float ulX1 = (pCol + preCells) * gw;
+                imeVerts[iv++] = (Vertex){ ulX0,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+                imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+                imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+                imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+                imeVerts[iv++] = (Vertex){ ulX1,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+                imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+
+                [enc setRenderPipelineState:_bgPipeline];
+                [enc setVertexBytes:imeVerts length:sizeof(Vertex) * iv atIndex:0];
+                [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+                        vertexCount:iv];
+
+                // Preedit text glyphs
+                int imeGlyphs = 0;
+                Vertex imeTextVerts[128 * 6];
+                for (int i = 0; i < preCells; i++) {
+                    uint32_t cp = preCPs[i];
+                    if (cp <= 32) continue;
+                    float x0 = (pCol + i) * gw;
+                    float y0 = pRow * gh;
+                    float x1 = x0 + gw;
+                    float y1 = y0 + gh;
+
+                    int slot = glyphCacheLookup(&_glyphCache, cp);
+                    if (slot < 0) slot = glyphCacheRasterize(&_glyphCache, cp);
+
+                    int ac = slot % _glyphCache.atlas_cols;
+                    int ar = slot / _glyphCache.atlas_cols;
+                    float aW = (float)_glyphCache.atlas_w;
+                    float aH = (float)_glyphCache.atlas_h;
+                    float au0 = ac       * glyphW / aW;
+                    float av0 = ar       * glyphH / aH;
+                    float au1 = (ac + 1) * glyphW / aW;
+                    float av1 = (ar + 1) * glyphH / aH;
+
+                    float fr = 0.95f, fg = 0.95f, fb = 0.95f;
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
+                    imeTextVerts[imeGlyphs++] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                }
+
+                if (imeGlyphs > 0) {
+                    [enc setRenderPipelineState:_textPipeline];
+                    [enc setVertexBytes:imeTextVerts length:sizeof(Vertex) * imeGlyphs atIndex:0];
+                    [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
+                    [enc setFragmentTexture:_glyphCache.texture atIndex:0];
+                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+                            vertexCount:imeGlyphs];
+                }
+            }
+        }
+
         [enc endEncoding];
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
@@ -798,6 +962,15 @@ static void mouseCell(NSEvent *event, NSView *view, int *outCol, int *outRow) {
     *outRow = clampInt(row, 1, g_rows);
 }
 
+static void mouseCell0(NSEvent *event, NSView *view, int *outCol, int *outRow) {
+    NSPoint loc = [view convertPoint:event.locationInWindow fromView:nil];
+    loc.y = view.bounds.size.height - loc.y;
+    int col = (int)(loc.x / g_cell_pt_w);
+    int row = (int)(loc.y / g_cell_pt_h);
+    *outCol = clampInt(col, 0, g_cols - 1);
+    *outRow = clampInt(row, 0, g_rows - 1);
+}
+
 static int mouseModifiers(NSEventModifierFlags flags) {
     int m = 0;
     if (flags & NSEventModifierFlagShift)   m |= 4;
@@ -817,16 +990,32 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
 // AttyxView — keyboard + mouse input
 // ---------------------------------------------------------------------------
 
-@interface AttyxView : MTKView {
+@interface AttyxView : MTKView <NSTextInputClient> {
     int _lastMouseCol;
     int _lastMouseRow;
     BOOL _leftDown;
     BOOL _rightDown;
     BOOL _middleDown;
+    CGFloat _scrollAccum;
+    BOOL _selecting;
+    int _clickCount;
+    NSMutableString* _markedText;
+    NSRange _markedRange;
+    NSRange _selectedRange;
 }
 @end
 
 @implementation AttyxView
+
+- (instancetype)initWithFrame:(NSRect)frameRect device:(id<MTLDevice>)device {
+    self = [super initWithFrame:frameRect device:device];
+    if (self) {
+        _markedText = [[NSMutableString alloc] init];
+        _markedRange = NSMakeRange(NSNotFound, 0);
+        _selectedRange = NSMakeRange(0, 0);
+    }
+    return self;
+}
 
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder  { return YES; }
@@ -846,26 +1035,91 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
     [self addTrackingArea:ta];
 }
 
+// --- Word boundary helpers for double-click selection ---
+
+static BOOL isWordChar(uint32_t ch) {
+    if (ch == 0 || ch == ' ') return NO;
+    if (ch == '_' || ch == '-') return YES;
+    if (ch > 127) return YES;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return YES;
+    return NO;
+}
+
+static void findWordBounds(int row, int col, int cols, int *outStart, int *outEnd) {
+    if (!g_cells || cols <= 0) { *outStart = col; *outEnd = col; return; }
+    int base = row * cols;
+    uint32_t ch = g_cells[base + col].character;
+    BOOL target = isWordChar(ch);
+
+    int start = col;
+    while (start > 0 && isWordChar(g_cells[base + start - 1].character) == target)
+        start--;
+
+    int end = col;
+    while (end < cols - 1 && isWordChar(g_cells[base + end + 1].character) == target)
+        end++;
+
+    *outStart = start;
+    *outEnd = end;
+}
+
 // --- Mouse: clicks ---
 
 - (void)mouseDown:(NSEvent *)event {
-    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    if (g_mouse_tracking && g_mouse_sgr) {
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        int btn = 0 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        _leftDown = YES;
+        _lastMouseCol = col;
+        _lastMouseRow = row;
+        return;
+    }
     int col, row;
-    mouseCell(event, self, &col, &row);
-    int btn = 0 | mouseModifiers(event.modifierFlags);
-    sendSgrMouse(btn, col, row, YES);
-    _leftDown = YES;
-    _lastMouseCol = col;
-    _lastMouseRow = row;
+    mouseCell0(event, self, &col, &row);
+    _clickCount = (int)event.clickCount;
+
+    if (_clickCount >= 3) {
+        // Triple-click: select entire row
+        g_sel_start_row = row; g_sel_start_col = 0;
+        g_sel_end_row = row;   g_sel_end_col = g_cols - 1;
+        g_sel_active = 1;
+        _selecting = YES;
+    } else if (_clickCount == 2) {
+        // Double-click: select word
+        int wStart, wEnd;
+        findWordBounds(row, col, g_cols, &wStart, &wEnd);
+        g_sel_start_row = row; g_sel_start_col = wStart;
+        g_sel_end_row = row;   g_sel_end_col = wEnd;
+        g_sel_active = 1;
+        _selecting = YES;
+    } else {
+        // Single click: start new selection
+        g_sel_start_row = row; g_sel_start_col = col;
+        g_sel_end_row = row;   g_sel_end_col = col;
+        g_sel_active = 0;
+        _selecting = YES;
+    }
+    attyx_mark_all_dirty();
 }
 
 - (void)mouseUp:(NSEvent *)event {
     _leftDown = NO;
-    if (!g_mouse_tracking || !g_mouse_sgr) return;
-    int col, row;
-    mouseCell(event, self, &col, &row);
-    int btn = 0 | mouseModifiers(event.modifierFlags);
-    sendSgrMouse(btn, col, row, NO);
+    if (g_mouse_tracking && g_mouse_sgr) {
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        int btn = 0 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, NO);
+        return;
+    }
+    if (_selecting) {
+        _selecting = NO;
+        if (g_sel_start_row != g_sel_end_row || g_sel_start_col != g_sel_end_col)
+            g_sel_active = 1;
+        else
+            g_sel_active = 0;
+    }
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -911,16 +1165,47 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
 // --- Mouse: drag / motion ---
 
 - (void)mouseDragged:(NSEvent *)event {
-    int tracking = g_mouse_tracking;
-    if (!tracking || !g_mouse_sgr) return;
-    if (tracking < 2) return; // x10 has no motion
-    int col, row;
-    mouseCell(event, self, &col, &row);
-    if (col == _lastMouseCol && row == _lastMouseRow) return;
-    int btn = 32 | mouseModifiers(event.modifierFlags);
-    sendSgrMouse(btn, col, row, YES);
-    _lastMouseCol = col;
-    _lastMouseRow = row;
+    if (g_mouse_tracking && g_mouse_sgr) {
+        int tracking = g_mouse_tracking;
+        if (tracking < 2) return;
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        if (col == _lastMouseCol && row == _lastMouseRow) return;
+        int btn = 32 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        _lastMouseCol = col;
+        _lastMouseRow = row;
+        return;
+    }
+    if (_selecting) {
+        int col, row;
+        mouseCell0(event, self, &col, &row);
+        if (col == g_sel_end_col && row == g_sel_end_row) return;
+
+        if (_clickCount >= 3) {
+            // Triple-click drag: extend by whole rows
+            g_sel_end_row = row;
+            g_sel_end_col = (row >= g_sel_start_row) ? g_cols - 1 : 0;
+            if (row < g_sel_start_row) g_sel_start_col = g_cols - 1;
+            else g_sel_start_col = 0;
+        } else if (_clickCount == 2) {
+            // Double-click drag: extend by whole words
+            int wStart, wEnd;
+            findWordBounds(row, col, g_cols, &wStart, &wEnd);
+            if (row > g_sel_start_row || (row == g_sel_start_row && col >= g_sel_start_col)) {
+                g_sel_end_row = row;
+                g_sel_end_col = wEnd;
+            } else {
+                g_sel_end_row = row;
+                g_sel_end_col = wStart;
+            }
+        } else {
+            g_sel_end_row = row;
+            g_sel_end_col = col;
+        }
+        g_sel_active = 1;
+        attyx_mark_all_dirty();
+    }
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
@@ -964,37 +1249,78 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
 // --- Mouse: scroll wheel ---
 
 - (void)scrollWheel:(NSEvent *)event {
-    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    if (g_mouse_tracking && g_mouse_sgr) {
+        CGFloat dy = event.scrollingDeltaY;
+        if (event.hasPreciseScrollingDeltas) dy /= 3.0;
+        if (dy == 0) return;
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        int btn = (dy > 0 ? 64 : 65) | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        return;
+    }
+
+    if (g_alt_screen) return;
+
     CGFloat dy = event.scrollingDeltaY;
-    if (event.hasPreciseScrollingDeltas) dy /= 3.0;
-    if (dy == 0) return;
-    int col, row;
-    mouseCell(event, self, &col, &row);
-    int btn = (dy > 0 ? 64 : 65) | mouseModifiers(event.modifierFlags);
-    sendSgrMouse(btn, col, row, YES);
+    if (event.hasPreciseScrollingDeltas) {
+        _scrollAccum += dy;
+        CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
+        int lines = (int)(_scrollAccum / threshold);
+        if (lines == 0) return;
+        _scrollAccum -= lines * threshold;
+        attyx_scroll_viewport(lines);
+    } else {
+        int lines = (int)dy;
+        if (lines == 0) lines = (dy > 0) ? 1 : -1;
+        attyx_scroll_viewport(lines);
+    }
+    if (g_sel_active) {
+        g_sel_active = 0;
+        attyx_mark_all_dirty();
+    }
 }
 
 // Suppress system beep for unhandled keys
 - (void)keyUp:(NSEvent *)event {}
 
-- (void)keyDown:(NSEvent *)event {
+/// Helper: snap viewport to bottom + clear selection on typing.
+- (void)snapViewportAndClearSelection {
+    if (g_viewport_offset != 0) {
+        g_viewport_offset = 0;
+        attyx_mark_all_dirty();
+    }
+    if (g_sel_active) {
+        g_sel_active = 0;
+        attyx_mark_all_dirty();
+    }
+}
+
+/// Helper: send special/control keys directly to the PTY.
+/// Returns YES if the key was handled (caller should return).
+- (BOOL)handleSpecialKey:(NSEvent *)event {
     NSEventModifierFlags flags = event.modifierFlags;
-    BOOL ctrl = (flags & NSEventModifierFlagControl) != 0;
-    BOOL alt  = (flags & NSEventModifierFlagOption) != 0;
-    BOOL cmd  = (flags & NSEventModifierFlagCommand) != 0;
+    BOOL ctrl  = (flags & NSEventModifierFlagControl) != 0;
+    BOOL alt   = (flags & NSEventModifierFlagOption) != 0;
+    BOOL cmd   = (flags & NSEventModifierFlagCommand) != 0;
+    BOOL shift = (flags & NSEventModifierFlagShift) != 0;
 
     if (cmd) {
-        // Cmd+V → paste (handled by the responder chain via paste:)
-        // Cmd+Q → quit (handled by the menu)
         [super keyDown:event];
-        return;
+        return YES;
+    }
+
+    if (shift && !g_mouse_tracking && !g_alt_screen) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_PageUp)   { attyx_scroll_viewport(g_rows); return YES; }
+        if (kc == kVK_PageDown) { attyx_scroll_viewport(-g_rows); return YES; }
+        if (kc == kVK_Home)     { g_viewport_offset = g_scrollback_count; attyx_mark_all_dirty(); return YES; }
+        if (kc == kVK_End)      { g_viewport_offset = 0; attyx_mark_all_dirty(); return YES; }
     }
 
     unsigned short kc = event.keyCode;
 
-    // --- Special keys (by virtual keycode) ---
-
-    // Arrow keys: DECCKM switches between CSI and SS3
+    BOOL appMode = (g_cursor_keys_app != 0);
     const char* appUp    = "\x1bOA";
     const char* appDown  = "\x1bOB";
     const char* appRight = "\x1bOC";
@@ -1003,101 +1329,53 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
     const char* csiDown  = "\x1b[B";
     const char* csiRight = "\x1b[C";
     const char* csiLeft  = "\x1b[D";
-    BOOL appMode = (g_cursor_keys_app != 0);
 
     switch (kc) {
-        case kVK_UpArrow: {
-            const char* s = appMode ? appUp : csiUp;
-            attyx_send_input((const uint8_t*)s, 3);
-            return;
-        }
-        case kVK_DownArrow: {
-            const char* s = appMode ? appDown : csiDown;
-            attyx_send_input((const uint8_t*)s, 3);
-            return;
-        }
-        case kVK_RightArrow: {
-            const char* s = appMode ? appRight : csiRight;
-            attyx_send_input((const uint8_t*)s, 3);
-            return;
-        }
-        case kVK_LeftArrow: {
-            const char* s = appMode ? appLeft : csiLeft;
-            attyx_send_input((const uint8_t*)s, 3);
-            return;
-        }
-        case kVK_Return:
-            attyx_send_input((const uint8_t*)"\r", 1);
-            return;
-        case kVK_Delete:  // Backspace
-            attyx_send_input((const uint8_t*)"\x7f", 1);
-            return;
-        case kVK_Tab:
-            attyx_send_input((const uint8_t*)"\t", 1);
-            return;
-        case kVK_Escape:
-            attyx_send_input((const uint8_t*)"\x1b", 1);
-            return;
-        case kVK_Home:
-            attyx_send_input((const uint8_t*)"\x1b[H", 3);
-            return;
-        case kVK_End:
-            attyx_send_input((const uint8_t*)"\x1b[F", 3);
-            return;
-        case kVK_PageUp:
-            attyx_send_input((const uint8_t*)"\x1b[5~", 4);
-            return;
-        case kVK_PageDown:
-            attyx_send_input((const uint8_t*)"\x1b[6~", 4);
-            return;
-        case kVK_ForwardDelete:
-            attyx_send_input((const uint8_t*)"\x1b[3~", 4);
-            return;
-        case kVK_Help:  // Insert on extended keyboards
-            attyx_send_input((const uint8_t*)"\x1b[2~", 4);
-            return;
-        case kVK_F1:  attyx_send_input((const uint8_t*)"\x1bOP",   3); return;
-        case kVK_F2:  attyx_send_input((const uint8_t*)"\x1bOQ",   3); return;
-        case kVK_F3:  attyx_send_input((const uint8_t*)"\x1bOR",   3); return;
-        case kVK_F4:  attyx_send_input((const uint8_t*)"\x1bOS",   3); return;
-        case kVK_F5:  attyx_send_input((const uint8_t*)"\x1b[15~", 5); return;
-        case kVK_F6:  attyx_send_input((const uint8_t*)"\x1b[17~", 5); return;
-        case kVK_F7:  attyx_send_input((const uint8_t*)"\x1b[18~", 5); return;
-        case kVK_F8:  attyx_send_input((const uint8_t*)"\x1b[19~", 5); return;
-        case kVK_F9:  attyx_send_input((const uint8_t*)"\x1b[20~", 5); return;
-        case kVK_F10: attyx_send_input((const uint8_t*)"\x1b[21~", 5); return;
-        case kVK_F11: attyx_send_input((const uint8_t*)"\x1b[23~", 5); return;
-        case kVK_F12: attyx_send_input((const uint8_t*)"\x1b[24~", 5); return;
-        default:
-            break;
+        case kVK_UpArrow:    { const char* s = appMode ? appUp : csiUp;       attyx_send_input((const uint8_t*)s, 3); return YES; }
+        case kVK_DownArrow:  { const char* s = appMode ? appDown : csiDown;   attyx_send_input((const uint8_t*)s, 3); return YES; }
+        case kVK_RightArrow: { const char* s = appMode ? appRight : csiRight; attyx_send_input((const uint8_t*)s, 3); return YES; }
+        case kVK_LeftArrow:  { const char* s = appMode ? appLeft : csiLeft;   attyx_send_input((const uint8_t*)s, 3); return YES; }
+        case kVK_Return:        attyx_send_input((const uint8_t*)"\r", 1); return YES;
+        case kVK_Delete:        attyx_send_input((const uint8_t*)"\x7f", 1); return YES;
+        case kVK_Tab:           attyx_send_input((const uint8_t*)"\t", 1); return YES;
+        case kVK_Escape:        attyx_send_input((const uint8_t*)"\x1b", 1); return YES;
+        case kVK_Home:          attyx_send_input((const uint8_t*)"\x1b[H", 3); return YES;
+        case kVK_End:           attyx_send_input((const uint8_t*)"\x1b[F", 3); return YES;
+        case kVK_PageUp:        attyx_send_input((const uint8_t*)"\x1b[5~", 4); return YES;
+        case kVK_PageDown:      attyx_send_input((const uint8_t*)"\x1b[6~", 4); return YES;
+        case kVK_ForwardDelete: attyx_send_input((const uint8_t*)"\x1b[3~", 4); return YES;
+        case kVK_Help:          attyx_send_input((const uint8_t*)"\x1b[2~", 4); return YES;
+        case kVK_F1:  attyx_send_input((const uint8_t*)"\x1bOP",   3); return YES;
+        case kVK_F2:  attyx_send_input((const uint8_t*)"\x1bOQ",   3); return YES;
+        case kVK_F3:  attyx_send_input((const uint8_t*)"\x1bOR",   3); return YES;
+        case kVK_F4:  attyx_send_input((const uint8_t*)"\x1bOS",   3); return YES;
+        case kVK_F5:  attyx_send_input((const uint8_t*)"\x1b[15~", 5); return YES;
+        case kVK_F6:  attyx_send_input((const uint8_t*)"\x1b[17~", 5); return YES;
+        case kVK_F7:  attyx_send_input((const uint8_t*)"\x1b[18~", 5); return YES;
+        case kVK_F8:  attyx_send_input((const uint8_t*)"\x1b[19~", 5); return YES;
+        case kVK_F9:  attyx_send_input((const uint8_t*)"\x1b[20~", 5); return YES;
+        case kVK_F10: attyx_send_input((const uint8_t*)"\x1b[21~", 5); return YES;
+        case kVK_F11: attyx_send_input((const uint8_t*)"\x1b[23~", 5); return YES;
+        case kVK_F12: attyx_send_input((const uint8_t*)"\x1b[24~", 5); return YES;
+        default: break;
     }
 
-    // --- Ctrl+key → control codes 0x01..0x1A ---
     if (ctrl) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length == 1) {
             unichar ch = [chars characterAtIndex:0];
-            if (ch >= 'a' && ch <= 'z') {
-                uint8_t b = (uint8_t)(ch - 'a' + 1);
-                attyx_send_input(&b, 1);
-                return;
-            }
-            if (ch >= 'A' && ch <= 'Z') {
-                uint8_t b = (uint8_t)(ch - 'A' + 1);
-                attyx_send_input(&b, 1);
-                return;
-            }
-            // Ctrl+[ = ESC, Ctrl+] = GS, Ctrl+\ = FS, Ctrl+^ = RS, Ctrl+_ = US
-            if (ch == '[') { attyx_send_input((const uint8_t*)"\x1b", 1); return; }
-            if (ch == ']') { uint8_t b = 0x1d; attyx_send_input(&b, 1); return; }
-            if (ch == '\\') { uint8_t b = 0x1c; attyx_send_input(&b, 1); return; }
-            if (ch == '^' || ch == '6') { uint8_t b = 0x1e; attyx_send_input(&b, 1); return; }
-            if (ch == '_' || ch == '-') { uint8_t b = 0x1f; attyx_send_input(&b, 1); return; }
-            if (ch == '@' || ch == ' ' || ch == '2') { uint8_t b = 0x00; attyx_send_input(&b, 1); return; }
+            if (ch >= 'a' && ch <= 'z') { uint8_t b = (uint8_t)(ch - 'a' + 1); attyx_send_input(&b, 1); return YES; }
+            if (ch >= 'A' && ch <= 'Z') { uint8_t b = (uint8_t)(ch - 'A' + 1); attyx_send_input(&b, 1); return YES; }
+            if (ch == '[')  { attyx_send_input((const uint8_t*)"\x1b", 1); return YES; }
+            if (ch == ']')  { uint8_t b = 0x1d; attyx_send_input(&b, 1); return YES; }
+            if (ch == '\\') { uint8_t b = 0x1c; attyx_send_input(&b, 1); return YES; }
+            if (ch == '^' || ch == '6') { uint8_t b = 0x1e; attyx_send_input(&b, 1); return YES; }
+            if (ch == '_' || ch == '-') { uint8_t b = 0x1f; attyx_send_input(&b, 1); return YES; }
+            if (ch == '@' || ch == ' ' || ch == '2') { uint8_t b = 0x00; attyx_send_input(&b, 1); return YES; }
         }
+        return YES;
     }
 
-    // --- Alt/Option+key → ESC prefix ---
     if (alt) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
@@ -1106,18 +1384,139 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
                 uint8_t esc = 0x1b;
                 attyx_send_input(&esc, 1);
                 attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
-                return;
+                return YES;
             }
         }
     }
 
-    // --- Regular text input ---
-    NSString* chars = event.characters;
-    if (chars.length > 0) {
-        const char* utf8 = [chars UTF8String];
-        if (utf8 && strlen(utf8) > 0) {
-            attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+    return NO;
+}
+
+- (void)keyDown:(NSEvent *)event {
+    [self snapViewportAndClearSelection];
+
+    // While composing, let the IME handle everything except Cmd shortcuts.
+    if ([self hasMarkedText]) {
+        NSEventModifierFlags flags = event.modifierFlags;
+        if (flags & NSEventModifierFlagCommand) {
+            [super keyDown:event];
+            return;
         }
+        [self interpretKeyEvents:@[event]];
+        return;
+    }
+
+    if ([self handleSpecialKey:event]) return;
+
+    [self interpretKeyEvents:@[event]];
+}
+
+// ---------------------------------------------------------------------------
+// NSTextInputClient — routes through macOS IME
+// ---------------------------------------------------------------------------
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    NSString* text = ([string isKindOfClass:[NSAttributedString class]])
+        ? [(NSAttributedString*)string string]
+        : (NSString*)string;
+
+    g_ime_composing = 0;
+    g_ime_preedit_len = 0;
+    _markedText.string = @"";
+    _markedRange = NSMakeRange(NSNotFound, 0);
+    _selectedRange = NSMakeRange(0, 0);
+    attyx_mark_all_dirty();
+
+    const char* utf8 = [text UTF8String];
+    if (utf8 && strlen(utf8) > 0) {
+        attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+    }
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    NSString* text = ([string isKindOfClass:[NSAttributedString class]])
+        ? [(NSAttributedString*)string string]
+        : (NSString*)string;
+
+    if (text.length == 0) {
+        [self unmarkText];
+        return;
+    }
+
+    _markedText.string = text;
+    _markedRange = NSMakeRange(0, text.length);
+    _selectedRange = selectedRange;
+
+    const char* utf8 = [text UTF8String];
+    int len = utf8 ? (int)strlen(utf8) : 0;
+    if (len > ATTYX_IME_MAX_BYTES - 1) len = ATTYX_IME_MAX_BYTES - 1;
+
+    if (!g_ime_composing) {
+        g_ime_anchor_row = g_cursor_row;
+        g_ime_anchor_col = g_cursor_col;
+    }
+
+    memcpy(g_ime_preedit, utf8, len);
+    g_ime_preedit[len] = '\0';
+    g_ime_preedit_len = len;
+    g_ime_cursor_index = (selectedRange.location != NSNotFound) ? (int)selectedRange.location : -1;
+    g_ime_composing = 1;
+    attyx_mark_all_dirty();
+}
+
+- (void)unmarkText {
+    _markedText.string = @"";
+    _markedRange = NSMakeRange(NSNotFound, 0);
+    _selectedRange = NSMakeRange(0, 0);
+    g_ime_composing = 0;
+    g_ime_preedit_len = 0;
+    attyx_mark_all_dirty();
+}
+
+- (BOOL)hasMarkedText {
+    return (_markedRange.location != NSNotFound && _markedRange.length > 0);
+}
+
+- (NSRange)markedRange {
+    return _markedRange;
+}
+
+- (NSRange)selectedRange {
+    return _selectedRange;
+}
+
+- (NSAttributedString*)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    return nil;
+}
+
+- (NSArray<NSAttributedStringKey>*)validAttributesForMarkedText {
+    return @[];
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    int row = g_ime_composing ? g_ime_anchor_row : g_cursor_row;
+    int col = g_ime_composing ? g_ime_anchor_col : g_cursor_col;
+
+    NSRect cellRect = NSMakeRect(col * g_cell_pt_w, (row + 1) * g_cell_pt_h, g_cell_pt_w, g_cell_pt_h);
+    NSRect screenRect = [self.window convertRectToScreen:[self convertRect:cellRect toView:nil]];
+    return screenRect;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    return NSNotFound;
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    if (selector == @selector(insertNewline:)) {
+        attyx_send_input((const uint8_t*)"\r", 1);
+    } else if (selector == @selector(insertTab:)) {
+        attyx_send_input((const uint8_t*)"\t", 1);
+    } else if (selector == @selector(cancelOperation:)) {
+        attyx_send_input((const uint8_t*)"\x1b", 1);
+    } else if (selector == @selector(deleteBackward:)) {
+        attyx_send_input((const uint8_t*)"\x7f", 1);
+    } else {
+        [super doCommandBySelector:selector];
     }
 }
 
@@ -1137,6 +1536,73 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
         attyx_send_input((const uint8_t*)"\x1b[201~", 6);
     } else {
         attyx_send_input((const uint8_t*)utf8, len);
+    }
+}
+
+// --- Copy (Cmd+C) ---
+- (void)copy:(id)sender {
+    if (!g_sel_active) return;
+
+    int sr = g_sel_start_row, sc = g_sel_start_col;
+    int er = g_sel_end_row,   ec = g_sel_end_col;
+    if (sr > er || (sr == er && sc > ec)) {
+        int tr = sr, tc = sc;
+        sr = er; sc = ec;
+        er = tr; ec = tc;
+    }
+
+    int cols = g_cols;
+    int rows = g_rows;
+    if (cols <= 0 || rows <= 0) return;
+
+    NSMutableString* result = [NSMutableString string];
+
+    // Read from the cell snapshot that the renderer also uses.
+    // Take a stable copy of the generation counter to avoid torn reads.
+    uint64_t gen;
+    do { gen = g_cell_gen; } while (gen & 1);
+
+    for (int row = sr; row <= er && row < rows; row++) {
+        int cStart = (row == sr) ? sc : 0;
+        int cEnd   = (row == er) ? ec : cols - 1;
+        if (cStart >= cols) cStart = cols - 1;
+        if (cEnd >= cols) cEnd = cols - 1;
+
+        // Find last non-space to trim trailing whitespace
+        int lastNonSpace = cStart - 1;
+        for (int c = cEnd; c >= cStart; c--) {
+            int idx = row * cols + c;
+            uint32_t ch = g_cells[idx].character;
+            if (ch > 32) { lastNonSpace = c; break; }
+        }
+
+        for (int c = cStart; c <= lastNonSpace; c++) {
+            int idx = row * cols + c;
+            uint32_t ch = g_cells[idx].character;
+            if (ch == 0 || ch == ' ') {
+                [result appendString:@" "];
+            } else {
+                unichar u = (unichar)ch;
+                if (ch > 0xFFFF) {
+                    // Encode as surrogate pair
+                    uint32_t cp = ch - 0x10000;
+                    unichar hi = (unichar)(0xD800 + (cp >> 10));
+                    unichar lo = (unichar)(0xDC00 + (cp & 0x3FF));
+                    unichar pair[2] = {hi, lo};
+                    [result appendString:[NSString stringWithCharacters:pair length:2]];
+                } else {
+                    [result appendString:[NSString stringWithCharacters:&u length:1]];
+                }
+            }
+        }
+
+        if (row < er) [result appendString:@"\n"];
+    }
+
+    if (result.length > 0) {
+        NSPasteboard* pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        [pb setString:result forType:NSPasteboardTypeString];
     }
 }
 
@@ -1259,6 +1725,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:editMenuItem];
         NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+        [editMenu addItemWithTitle:@"Copy"
+                            action:@selector(copy:)
+                     keyEquivalent:@"c"];
         [editMenu addItemWithTitle:@"Paste"
                             action:@selector(paste:)
                      keyEquivalent:@"v"];

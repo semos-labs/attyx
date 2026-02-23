@@ -191,10 +191,21 @@ pub const Grid = struct {
         @memset(self.cells[start .. start + count], Cell{});
     }
 
+    /// Callback for saving rows that are dropped during reflow (scroll_off).
+    /// `ctx` is an opaque pointer supplied by the caller; `row_cells` contains
+    /// the reflowed row content at new_cols width (valid only for the duration
+    /// of the call — the callee must copy if it needs to keep the data).
+    pub const DropHandler = struct {
+        ctx: *anyopaque,
+        save: *const fn (ctx: *anyopaque, row_cells: []const Cell) void,
+    };
+
     /// Resize with reflow: re-wraps logical lines at the new column width.
     /// Soft-wrapped lines are joined and re-split; hard-wrapped lines stay
     /// separate. Cursor position is mapped through the reflow.
-    pub fn resize(self: *Grid, new_rows: usize, new_cols: usize, cursor_row: ?*usize, cursor_col: ?*usize) !void {
+    /// If `drop` is non-null, rows scrolled off the top are saved via the
+    /// callback instead of being silently discarded.
+    pub fn resize(self: *Grid, new_rows: usize, new_cols: usize, cursor_row: ?*usize, cursor_col: ?*usize, drop: ?DropHandler) !void {
         std.debug.assert(new_rows > 0 and new_cols > 0);
 
         const has_cursor = cursor_row != null and cursor_col != null;
@@ -257,17 +268,42 @@ pub const Grid = struct {
         @memset(new_cells, Cell{});
         var new_wrapped: [max_rows]bool = [_]bool{false} ** max_rows;
 
+        // Temp row buffer for saving dropped rows via the callback.
+        var save_row: ?[]Cell = null;
+        defer if (save_row) |sr| self.allocator.free(sr);
+        if (scroll_off > 0 and drop != null) {
+            save_row = try self.allocator.alloc(Cell, new_cols);
+        }
+
         var dst_row: usize = 0;
         for (ll_buf[0..ll_count]) |ll| {
             const rows_needed = if (ll.len == 0) 1 else (ll.len + new_cols - 1) / new_cols;
             for (0..rows_needed) |pr| {
                 const abs_row = dst_row + pr;
-                if (abs_row < scroll_off) continue;
-                const grid_row = abs_row - scroll_off;
-                if (grid_row >= new_rows) break;
 
                 const cells_start = pr * new_cols;
                 const cells_end = @min(cells_start + new_cols, ll.len);
+
+                if (abs_row < scroll_off) {
+                    if (drop) |handler| {
+                        if (save_row) |sr| {
+                            @memset(sr, Cell{});
+                            if (cells_end > cells_start) {
+                                for (0..cells_end - cells_start) |c| {
+                                    const src_idx = cells_start + c;
+                                    const old_r = ll.start + src_idx / self.cols;
+                                    const old_c = src_idx % self.cols;
+                                    sr[c] = self.cells[old_r * self.cols + old_c];
+                                }
+                            }
+                            handler.save(handler.ctx, sr);
+                        }
+                    }
+                    continue;
+                }
+
+                const grid_row = abs_row - scroll_off;
+                if (grid_row >= new_rows) break;
 
                 if (cells_end > cells_start) {
                     for (0..cells_end - cells_start) |c| {
@@ -437,7 +473,7 @@ test "resize: grow copies content and fills new cells" {
     g.setCell(0, 1, .{ .char = 'B' });
     g.setCell(1, 0, .{ .char = 'C' });
 
-    try g.resize(4, 5, null, null);
+    try g.resize(4, 5, null, null, null);
 
     try std.testing.expectEqual(@as(usize, 4), g.rows);
     try std.testing.expectEqual(@as(usize, 5), g.cols);
@@ -461,7 +497,7 @@ test "resize: shrink wraps long lines (reflow)" {
     g.setCell(0, 4, .{ .char = 'E' });
     g.setCell(0, 5, .{ .char = 'F' });
 
-    try g.resize(4, 3, null, null);
+    try g.resize(4, 3, null, null, null);
 
     try std.testing.expectEqual(@as(usize, 4), g.rows);
     try std.testing.expectEqual(@as(usize, 3), g.cols);
@@ -490,11 +526,11 @@ test "resize: reflow then grow restores original layout" {
     g.setCell(0, 5, .{ .char = 'F' });
 
     // Shrink to 3 cols — wraps into 2 rows
-    try g.resize(4, 3, null, null);
+    try g.resize(4, 3, null, null, null);
     try std.testing.expectEqual(@as(u21, 'D'), g.getCell(1, 0).char);
 
     // Grow back to 6 cols — should unwrap
-    try g.resize(4, 6, null, null);
+    try g.resize(4, 6, null, null, null);
     try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'F'), g.getCell(0, 5).char);
     try std.testing.expectEqual(@as(u21, ' '), g.getCell(1, 0).char);
@@ -531,7 +567,7 @@ test "resize: cursor mapped through reflow" {
     // Cursor at row 0, col 4 (on 'E')
     var cr: usize = 0;
     var cc: usize = 4;
-    try g.resize(4, 3, &cr, &cc);
+    try g.resize(4, 3, &cr, &cc, null);
 
     // 'E' is at position 4 in the logical line → row 1, col 1
     try std.testing.expectEqual(@as(usize, 1), cr);

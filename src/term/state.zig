@@ -3,6 +3,7 @@ const grid_mod = @import("grid.zig");
 const actions_mod = @import("actions.zig");
 const sgr_mod = @import("sgr.zig");
 const dirty_mod = @import("dirty.zig");
+const scrollback_mod = @import("scrollback.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const Cell = grid_mod.Cell;
@@ -61,6 +62,10 @@ pub const TerminalState = struct {
     response_buf: [128]u8 = undefined,
     response_len: usize = 0,
 
+    // -- Scrollback (main screen only, not alt) ------------------------------
+    scrollback: scrollback_mod.Scrollback,
+    viewport_offset: usize = 0,
+
     // -- Terminal modes (global, not per-buffer) ----------------------------
     auto_wrap: bool = true,
     bracketed_paste: bool = false,
@@ -71,12 +76,19 @@ pub const TerminalState = struct {
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
         errdefer main_grid.deinit();
-        const alt_grid = try Grid.init(allocator, rows, cols);
+        var alt_grid = try Grid.init(allocator, rows, cols);
+        errdefer alt_grid.deinit();
+        const sb = try scrollback_mod.Scrollback.init(
+            allocator,
+            scrollback_mod.Scrollback.default_max_lines,
+            cols,
+        );
         return .{
             .grid = main_grid,
             .scroll_bottom = rows - 1,
             .inactive_grid = alt_grid,
             .inactive_scroll_bottom = rows - 1,
+            .scrollback = sb,
         };
     }
 
@@ -85,6 +97,7 @@ pub const TerminalState = struct {
         for (self.link_uris.items) |uri| alloc.free(uri);
         self.link_uris.deinit(alloc);
         if (self.title) |t| alloc.free(t);
+        self.scrollback.deinit();
         self.grid.deinit();
         self.inactive_grid.deinit();
     }
@@ -145,8 +158,17 @@ pub const TerminalState = struct {
                 self.dirty.markRange(self.cursor.row, self.scroll_bottom);
             },
             .delete_lines => |n| {
-                self.grid.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
-                self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+                if (self.cursor.row == self.scroll_top) {
+                    const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.cursor.row + 1);
+                    for (0..count) |_| {
+                        self.saveToScrollback();
+                        self.grid.scrollUpRegion(self.cursor.row, self.scroll_bottom);
+                    }
+                    self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+                } else {
+                    self.grid.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                    self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+                }
             },
             .insert_chars => |n| {
                 self.grid.insertChars(self.cursor.row, self.cursor.col, @intCast(n));
@@ -161,7 +183,11 @@ pub const TerminalState = struct {
                 self.dirty.mark(self.cursor.row);
             },
             .scroll_up => |n| {
-                self.grid.scrollUpRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
+                const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.scroll_top + 1);
+                for (0..count) |_| {
+                    self.saveToScrollback();
+                    self.grid.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+                }
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .scroll_down => |n| {
@@ -239,8 +265,19 @@ pub const TerminalState = struct {
         self.cursor.col = @min(next_stop, self.grid.cols - 1);
     }
 
+    /// Save the top visible row to scrollback before it gets shifted out.
+    /// Only saves when on the main screen with scroll_top at row 0.
+    fn saveToScrollback(self: *TerminalState) void {
+        if (self.alt_active) return;
+        if (self.scroll_top != 0) return;
+        const row_cells = self.grid.cells[0..self.grid.cols];
+        self.scrollback.pushLine(row_cells);
+        if (self.viewport_offset > 0) self.viewport_offset += 1;
+    }
+
     fn cursorDown(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_bottom) {
+            self.saveToScrollback();
             self.grid.scrollUpRegion(self.scroll_top, self.scroll_bottom);
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row < self.grid.rows - 1) {
@@ -296,6 +333,36 @@ pub const TerminalState = struct {
                 self.dirty.markRange(0, self.cursor.row);
             },
             .all => {
+                if (!self.alt_active) {
+                    // If the screen has visible content, save it to
+                    // scrollback and pin the cursor to the bottom so
+                    // the shell's next prompt lands there (e.g. `clear`).
+                    // On an already-empty screen this is a no-op.
+                    var last_content_row: usize = 0;
+                    var has_content = false;
+                    {
+                        var r: usize = self.grid.rows;
+                        while (r > 0) {
+                            r -= 1;
+                            const base = r * cols;
+                            for (0..cols) |c| {
+                                if (!grid_mod.isDefaultCell(self.grid.cells[base + c])) {
+                                    last_content_row = r;
+                                    has_content = true;
+                                    break;
+                                }
+                            }
+                            if (has_content) break;
+                        }
+                    }
+                    if (has_content) {
+                        for (0..last_content_row + 1) |r| {
+                            const start = r * cols;
+                            self.scrollback.pushLine(self.grid.cells[start .. start + cols]);
+                        }
+                        self.cursor.row = self.grid.rows - 1;
+                    }
+                }
                 @memset(self.grid.cells, Cell{});
                 @memset(self.grid.row_wrapped[0..self.grid.rows], false);
                 self.dirty.markAll(self.grid.rows);
@@ -497,7 +564,13 @@ pub const TerminalState = struct {
         return self.response_buf[0..len];
     }
 
-    // -- Resize (NO-REFLOW) ------------------------------------------------
+    // -- Resize ---------------------------------------------------------------
+
+    /// Grid.DropHandler callback: pushes a dropped reflow row into scrollback.
+    fn onDropRow(ctx_raw: *anyopaque, row_cells: []const grid_mod.Cell) void {
+        const self: *TerminalState = @ptrCast(@alignCast(ctx_raw));
+        self.scrollback.pushLine(row_cells);
+    }
 
     /// Resize both grids to new dimensions. Preserves overlapping content,
     /// clamps cursors and scroll regions. Marks all rows dirty.
@@ -535,12 +608,80 @@ pub const TerminalState = struct {
             }
         }
 
-        try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col);
+        // Migrate scrollback to new column width BEFORE grid.resize, so
+        // the drop handler can push reflowed rows at the correct stride.
+        if (new_cols != self.scrollback.cols) {
+            var new_sb = try scrollback_mod.Scrollback.init(
+                self.grid.allocator,
+                scrollback_mod.Scrollback.default_max_lines,
+                new_cols,
+            );
+            for (0..self.scrollback.count) |i| {
+                const old_line = self.scrollback.getLine(i);
+                new_sb.pushLine(old_line);
+            }
+            self.scrollback.deinit();
+            self.scrollback = new_sb;
+        }
+
+        // Remember whether the cursor was at the bottom of the old grid.
+        // Only pin content to the bottom after resize if the viewport was
+        // fully utilised (cursor at last row), so partially-filled grids
+        // (e.g. early after launch with little output) stay top-aligned.
+        const was_at_bottom = !self.alt_active and self.cursor.row >= self.grid.rows - 1;
+
+        // Grid resize with drop handler: rows scrolled off the top during
+        // reflow are saved to scrollback instead of being silently lost.
+        const drop: ?grid_mod.Grid.DropHandler = if (!self.alt_active)
+            .{ .ctx = @ptrCast(self), .save = onDropRow }
+        else
+            null;
+        try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col, drop);
         try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
 
-        // Clear row_wrapped from the cursor to the bottom.  The shell
-        // will redraw this region after SIGWINCH, setting correct
-        // auto-wrap flags via its own output.
+        // Pin content to the bottom: if there's empty space below the
+        // last content row, shift everything down so the prompt stays
+        // at the bottom of the viewport.
+        if (was_at_bottom) {
+            var content_bottom: usize = self.cursor.row;
+            {
+                var r: usize = new_rows;
+                while (r > content_bottom + 1) {
+                    r -= 1;
+                    const base = r * self.grid.cols;
+                    for (0..self.grid.cols) |col| {
+                        if (!grid_mod.isDefaultCell(self.grid.cells[base + col])) {
+                            content_bottom = r;
+                            break;
+                        }
+                    }
+                    if (content_bottom == r) break;
+                }
+            }
+
+            const shift = new_rows - 1 - content_bottom;
+            if (shift > 0) {
+                const cols = self.grid.cols;
+                var r: usize = new_rows;
+                while (r > shift) {
+                    r -= 1;
+                    const src = r - shift;
+                    @memcpy(
+                        self.grid.cells[r * cols .. (r + 1) * cols],
+                        self.grid.cells[src * cols .. (src + 1) * cols],
+                    );
+                    self.grid.row_wrapped[r] = self.grid.row_wrapped[src];
+                }
+                for (0..shift) |row| {
+                    @memset(self.grid.cells[row * cols .. (row + 1) * cols], grid_mod.Cell{});
+                    self.grid.row_wrapped[row] = false;
+                }
+                self.cursor.row += shift;
+            }
+        }
+
+        self.viewport_offset = 0;
+
         for (self.cursor.row..new_rows) |r| {
             self.grid.row_wrapped[r] = false;
         }

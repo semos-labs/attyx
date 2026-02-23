@@ -9,4 +9,5 @@ test {
     _ = @import("tests/color.zig");
     _ = @import("tests/osc.zig");
     _ = @import("tests/modes.zig");
+    _ = @import("tests/scrollback.zig");
 }

@@ -54,4 +54,32 @@ int attyx_check_resize(int* out_rows, int* out_cols);
 void attyx_begin_cell_update(void);
 void attyx_end_cell_update(void);
 
+// Viewport scrollback: 0 = pinned to bottom (live screen), >0 = scrolled up.
+// Called from main thread (scroll wheel / keyboard); PTY thread reads and bumps.
+extern volatile int g_viewport_offset;
+extern volatile int g_scrollback_count;
+extern volatile int g_alt_screen;
+
+// Adjust viewport offset by delta lines. Clamps to [0, g_scrollback_count].
+// Marks all rows dirty so the renderer redraws.
+void attyx_scroll_viewport(int delta);
+
+// Mark all rows dirty (used after viewport changes).
+void attyx_mark_all_dirty(void);
+
+// Selection bounds (viewport-relative, 0-indexed). -1 = no selection.
+extern volatile int g_sel_start_row, g_sel_start_col;
+extern volatile int g_sel_end_row, g_sel_end_col;
+extern volatile int g_sel_active;
+
+// IME composition state (written by main/Cocoa thread, read by renderer).
+#define ATTYX_IME_MAX_BYTES 256
+
+extern volatile int  g_ime_composing;      // 1 while IME preedit is active
+extern volatile int  g_ime_cursor_index;   // byte offset of caret within preedit (-1 = end)
+extern volatile int  g_ime_anchor_row;     // grid row where composition started
+extern volatile int  g_ime_anchor_col;     // grid col where composition started
+extern char          g_ime_preedit[ATTYX_IME_MAX_BYTES]; // current preedit UTF-8 (not volatile — guarded by g_ime_composing)
+extern volatile int  g_ime_preedit_len;    // byte length of preedit text
+
 #endif

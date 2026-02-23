@@ -452,7 +452,7 @@ test "resize: fg-only styled trailing spaces are ignored for content_len" {
     g.setCell(0, 4, .{ .char = ' ', .style = magenta_fg });
     g.setCell(0, 5, .{ .char = ' ', .style = magenta_fg });
 
-    try g.resize(4, 3, null, null);
+    try g.resize(4, 3, null, null, null);
 
     // content_len = 2 (only "AB" counts; fg-only spaces are ignored).
     // At 3 cols: 2 chars → 1 row, no wrapping.
@@ -481,7 +481,7 @@ test "resize: bg-styled trailing spaces ARE counted for content_len" {
     g.setCell(0, 4, .{ .char = ' ', .style = red_bg });
     g.setCell(0, 5, .{ .char = ' ', .style = red_bg });
 
-    try g.resize(4, 3, null, null);
+    try g.resize(4, 3, null, null, null);
 
     // content_len = 6 (bg-styled spaces are visible content).
     // At 3 cols: ceil(6/3) = 2 rows.
@@ -513,7 +513,7 @@ test "resize: prompt-like styled gap inflates content_len" {
     g.setCell(0, 8, .{ .char = 'i', .style = magenta });
     g.setCell(0, 9, .{ .char = 't', .style = magenta });
 
-    try g.resize(4, 5, null, null);
+    try g.resize(4, 5, null, null, null);
 
     // content_len = 10 (last non-default at col 9).
     // At 5 cols: 10/5 = 2 rows

@@ -51,6 +51,8 @@ pub fn run(config: Config) !void {
     var engine = try Engine.init(allocator, config.rows, config.cols);
     defer engine.deinit();
 
+    engine.state.cursor.row = config.rows - 1;
+
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     defer allocator.free(render_cells);
 
@@ -86,10 +88,32 @@ pub fn run(config: Config) !void {
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
 }
 
+fn syncViewportFromC(state: *attyx.TerminalState) void {
+    const c_vp: i32 = @bitCast(c.g_viewport_offset);
+    if (c_vp >= 0) {
+        state.viewport_offset = @intCast(@as(c_uint, @bitCast(c_vp)));
+    }
+}
+
+fn publishState(ctx: *PtyThreadCtx) void {
+    c.attyx_set_mode_flags(
+        @intFromBool(ctx.engine.state.bracketed_paste),
+        @intFromBool(ctx.engine.state.cursor_keys_app),
+    );
+    c.attyx_set_mouse_mode(
+        @intFromEnum(ctx.engine.state.mouse_tracking),
+        @intFromBool(ctx.engine.state.mouse_sgr),
+    );
+    c.g_scrollback_count = @intCast(ctx.engine.state.scrollback.count);
+    c.g_alt_screen = @intFromBool(ctx.engine.state.alt_active);
+    c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+}
+
 fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLIN: i16 = 0x0001;
     const POLLHUP: i16 = 0x0010;
     var buf: [65536]u8 = undefined;
+    var last_published_vp: usize = 0;
 
     while (c.attyx_should_quit() == 0) {
         {
@@ -99,19 +123,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const nr: usize = @intCast(rr);
                 const nc: usize = @intCast(rc);
 
-                // Resize the grid FIRST so it matches the new
-                // dimensions before the shell's SIGWINCH response
-                // arrives.  The old ordering (notify shell → drain →
-                // resize) caused the shell's output to be processed
-                // on the wrong-size grid, producing cascading prompt
-                // duplication on shrink.
                 ctx.engine.state.resize(nr, nc) catch {};
-
-                // Now tell the shell about the new size.
                 ctx.pty.resize(@intCast(rr), @intCast(rc)) catch {};
 
-                // Brief pause so the shell can start its SIGWINCH
-                // redraw; drain whatever it has emitted so far.
                 posix.nanosleep(0, 1_000_000);
                 while (true) {
                     const n = ctx.pty.read(&buf) catch break;
@@ -134,6 +148,8 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
                 ctx.engine.state.dirty.clear();
                 c.attyx_end_cell_update();
+                publishState(ctx);
+                last_published_vp = ctx.engine.state.viewport_offset;
             }
         }
 
@@ -144,7 +160,6 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         _ = posix.poll(&fds, 16) catch break;
 
         // Drain all immediately available PTY data before doing expensive work.
-        // The PTY is non-blocking, so read() returns 0 on WouldBlock.
         var got_data = false;
         if (fds[0].revents & POLLIN != 0) {
             while (true) {
@@ -153,16 +168,20 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 got_data = true;
                 ctx.session.appendOutput(buf[0..n]);
                 ctx.engine.feed(buf[0..n]);
-
-                // DSR/DA responses must be written back to the PTY promptly.
                 if (ctx.engine.state.drainResponse()) |resp| {
                     _ = ctx.pty.writeToPty(resp) catch {};
                 }
             }
         }
 
-        // Expensive work runs once per drain cycle, not per read chunk.
-        if (got_data) {
+        // Sync viewport offset from ObjC (scroll wheel may have changed
+        // it) BEFORE deciding whether to re-fill cells.
+        syncViewportFromC(&ctx.engine.state);
+
+        const viewport_changed = (ctx.engine.state.viewport_offset != last_published_vp);
+        const need_update = got_data or viewport_changed;
+
+        if (need_update) {
             c.attyx_begin_cell_update();
             const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
             fillCells(ctx.cells[0..total], ctx.engine, total);
@@ -173,16 +192,13 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
             ctx.engine.state.dirty.clear();
             c.attyx_end_cell_update();
-            c.attyx_set_mode_flags(
-                @intFromBool(ctx.engine.state.bracketed_paste),
-                @intFromBool(ctx.engine.state.cursor_keys_app),
-            );
-            c.attyx_set_mouse_mode(
-                @intFromEnum(ctx.engine.state.mouse_tracking),
-                @intFromBool(ctx.engine.state.mouse_sgr),
-            );
-            const h = state_hash.hash(&ctx.engine.state);
-            ctx.session.appendFrame(h, ctx.engine.state.alt_active);
+            publishState(ctx);
+            last_published_vp = ctx.engine.state.viewport_offset;
+
+            if (got_data) {
+                const h = state_hash.hash(&ctx.engine.state);
+                ctx.session.appendFrame(h, ctx.engine.state.alt_active);
+            }
         }
 
         if (fds[0].revents & POLLHUP != 0 or ctx.pty.childExited()) {
@@ -192,21 +208,49 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     }
 }
 
-fn fillCells(cells: []c.AttyxCell, eng: *Engine, total: usize) void {
-    for (0..total) |i| {
-        const cell = eng.state.grid.cells[i];
-        const fg = color_mod.resolve(cell.style.fg, false);
-        const bg = color_mod.resolve(cell.style.bg, true);
-        cells[i] = .{
-            .character = cell.char,
-            .fg_r = fg.r,
-            .fg_g = fg.g,
-            .fg_b = fg.b,
-            .bg_r = bg.r,
-            .bg_g = bg.g,
-            .bg_b = bg.b,
-            .flags = @as(u8, if (cell.style.bold) 1 else 0) |
-                @as(u8, if (cell.style.underline) 2 else 0),
-        };
+fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {
+    const fg = color_mod.resolve(cell.style.fg, false);
+    const bg = color_mod.resolve(cell.style.bg, true);
+    return .{
+        .character = cell.char,
+        .fg_r = fg.r,
+        .fg_g = fg.g,
+        .fg_b = fg.b,
+        .bg_r = bg.r,
+        .bg_g = bg.g,
+        .bg_b = bg.b,
+        .flags = @as(u8, if (cell.style.bold) 1 else 0) |
+            @as(u8, if (cell.style.underline) 2 else 0),
+    };
+}
+
+fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize) void {
+    const vp = eng.state.viewport_offset;
+    const cols = eng.state.grid.cols;
+    const rows = eng.state.grid.rows;
+    const sb = &eng.state.scrollback;
+
+    if (vp == 0) {
+        const total = rows * cols;
+        for (0..total) |i| {
+            cells[i] = cellToAttyxCell(eng.state.grid.cells[i]);
+        }
+        return;
+    }
+
+    const effective_vp = @min(vp, sb.count);
+    for (0..rows) |row| {
+        if (row < effective_vp) {
+            const sb_line_idx = sb.count - effective_vp + row;
+            const sb_cells = sb.getLine(sb_line_idx);
+            for (0..cols) |col| {
+                cells[row * cols + col] = cellToAttyxCell(sb_cells[col]);
+            }
+        } else {
+            const grid_row = row - effective_vp;
+            for (0..cols) |col| {
+                cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col]);
+            }
+        }
     }
 }
