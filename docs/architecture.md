@@ -39,8 +39,7 @@ src/
     tests.zig          Golden snapshot tests + attribute tests
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
-    ui1.zig            UI-1 event loop (poll PTY + stdin, snapshot output)
-    ui2.zig            UI-2 orchestrator (PTY thread + GPU window, macOS/Linux)
+    ui2.zig            Terminal orchestrator (PTY thread + GPU window, macOS/Linux)
     session_log.zig    Session event log (bounded ring buffer)
     bridge.h           C bridge types (AttyxCell, cursor, quit signaling)
     platform_macos.m   Metal renderer + Cocoa window (macOS)
@@ -204,23 +203,6 @@ POSIX PTY module for macOS and Linux:
 - `deinit()` — close master fd, reap child.
 
 The PTY module has zero dependencies on `term/`.
-
-### UI-1 Event Loop (`app/ui1.zig`)
-
-The headless app loop that connects a PTY to the terminal engine:
-
-```
-PTY master ──read──▸ Engine.feed() ──▸ state hash check ──▸ snapshot to stdout
-stdin ──read──▸ write to PTY master
-```
-
-1. Create `Engine` at configured size (default 80x24).
-2. Spawn PTY with the configured command.
-3. Put stdin in raw mode (disable echo/canonical/signals).
-4. `poll()` loop on PTY master fd + stdin fd (16ms timeout).
-5. PTY data → feed engine → if state hash changed and 33ms elapsed, print snapshot.
-6. stdin data → forward to PTY.
-7. On child exit or PTY HUP → flush final snapshot → restore termios → exit.
 
 ### Session Event Log (`app/session_log.zig`)
 
