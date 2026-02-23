@@ -63,33 +63,19 @@ See [docs/architecture.md](docs/architecture.md) for the full breakdown.
 Requires **Zig 0.15.2+**.
 
 ```bash
-zig build              # build all executables
-zig build run          # build and run (shows usage)
-zig build run -- ui1   # run PTY bridge (interactive shell)
+zig build              # build
+zig build run          # launch terminal
 ```
 
-### PTY bridge (UI-1)
-
-Run a real shell inside the terminal engine. Output is snapshot-based (plain text grid printed to stdout).
-
-```bash
-zig build run -- ui1                         # default: bash 24x80
-zig build run -- ui1 --rows 40 --cols 120    # custom size
-zig build run -- ui1 --cmd /bin/zsh          # custom shell
-zig build run -- ui1 --separator             # print --- between frames
-```
-
-### Windowed terminal (UI-2, macOS + Linux)
-
-Live terminal rendered in a GPU-backed window. PTY output drives the engine; the renderer draws the grid at 60 fps.
+GPU-accelerated terminal rendered in a native window. PTY output drives the engine; the renderer draws the grid at 60 fps.
 
 - **macOS:** Metal + Cocoa + Core Text
 - **Linux:** OpenGL 3.3 + GLFW + FreeType + Fontconfig
 
 ```bash
-zig build run -- ui2                         # default: bash 24x80
-zig build run -- ui2 --rows 30 --cols 100    # custom size
-zig build run -- ui2 --cmd /bin/zsh          # custom shell
+zig build run                                # default: bash 24x80
+zig build run -- --rows 30 --cols 100        # custom size
+zig build run -- --cmd /bin/zsh              # custom shell
 ```
 
 #### Linux prerequisites
@@ -176,17 +162,16 @@ src/
     tests.zig        Golden snapshot + attribute tests
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
-    ui1.zig          UI-1 runner (event loop, stdin forwarding, snapshots)
-    ui2.zig          UI-2 runner (PTY thread + GPU window, macOS/Linux)
+    ui2.zig          Terminal runner (PTY thread + GPU window, macOS/Linux)
     session_log.zig  Session event log (ring buffer, byte tracking)
     bridge.h         C bridge types (AttyxCell, cursor, quit signaling)
     platform_macos.m Metal renderer + Cocoa window (macOS)
     platform_linux.c OpenGL renderer + GLFW window (Linux)
-    main.zig         UI-0 demo (standalone executable)
+    main.zig         UI-0 demo (standalone test executable)
   render/
     color.zig        Color resolution (ANSI → RGB lookup)
   root.zig           Library root
-  main.zig           CLI entry point (subcommand dispatch)
+  main.zig           CLI entry point
 docs/
   architecture.md    System design and data flow
   milestones.md      Milestone details and history

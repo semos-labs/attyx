@@ -55,7 +55,7 @@ export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
 
 pub fn run(config: Config) !void {
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
-        std.debug.print("ui2 requires macOS or Linux. Use ui1 on other platforms.\n", .{});
+        std.debug.print("Attyx requires macOS or Linux.\n", .{});
         return;
     }
 

@@ -545,7 +545,7 @@ or GPU rendering — purely headless.
 
 **CLI interface (`src/main.zig`):**
 
-- Subcommand dispatch: `attyx ui1 [options]`.
+- Subcommand dispatch: `attyx ui1 [options]` (later removed; `ui2` became default).
 - Options: `--rows N`, `--cols N`, `--cmd <command...>`, `--no-snapshot`,
   `--separator`, `--help`.
 
