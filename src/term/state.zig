@@ -114,7 +114,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes => {},
             else => {
                 self.wrap_next = false;
             },
@@ -209,6 +209,7 @@ pub const TerminalState = struct {
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
             .device_attributes => self.respondDeviceAttributes(),
+            .secondary_device_attributes => self.respondSecondaryDeviceAttributes(),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -552,7 +553,12 @@ pub const TerminalState = struct {
     }
 
     fn respondDeviceAttributes(self: *TerminalState) void {
-        self.appendResponse("\x1b[?62;c");
+        self.appendResponse("\x1b[?62c");
+    }
+
+    fn respondSecondaryDeviceAttributes(self: *TerminalState) void {
+        // VT220-like: type 0, version 10, ROM version 1
+        self.appendResponse("\x1b[>0;10;1c");
     }
 
     /// Drain the response buffer. Returns the pending response bytes and

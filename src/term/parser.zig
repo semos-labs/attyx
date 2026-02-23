@@ -251,6 +251,9 @@ pub const Parser = struct {
         if (buf.len > 0 and buf[0] == '?') {
             return csi.dispatchDecPrivate(final, buf[1..]);
         }
+        if (buf.len > 0 and buf[0] == '>') {
+            return csi.dispatchSecondaryDA(final, buf[1..]);
+        }
 
         const params = csi.parseCsiParams(buf);
         return switch (final) {

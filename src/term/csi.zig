@@ -152,6 +152,15 @@ pub fn makeDeviceAttributes(params: CsiParams) Action {
     return .nop;
 }
 
+/// CSI > c / CSI > 0 c — Secondary Device Attributes (DA2).
+pub fn dispatchSecondaryDA(final: u8, param_buf: []const u8) Action {
+    if (final != 'c') return .nop;
+    const params = parseCsiParams(param_buf);
+    const code: u16 = if (params.len > 0) params.params[0] else 0;
+    if (code == 0) return .secondary_device_attributes;
+    return .nop;
+}
+
 /// DEC private mode dispatch (ESC[?...h / ESC[?...l).
 /// Packs all mode params into a single compound action so multi-param
 /// sequences like ESC[?1000;1006h are applied atomically by the state.

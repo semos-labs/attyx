@@ -441,7 +441,7 @@ test "CSI c: primary device attributes" {
 
     const resp = engine.state.drainResponse();
     try std.testing.expect(resp != null);
-    try std.testing.expectEqualStrings("\x1b[?62;c", resp.?);
+    try std.testing.expectEqualStrings("\x1b[?62c", resp.?);
 }
 
 test "CSI 0 c: primary device attributes explicit param" {
@@ -453,7 +453,31 @@ test "CSI 0 c: primary device attributes explicit param" {
 
     const resp = engine.state.drainResponse();
     try std.testing.expect(resp != null);
-    try std.testing.expectEqualStrings("\x1b[?62;c", resp.?);
+    try std.testing.expectEqualStrings("\x1b[?62c", resp.?);
+}
+
+test "CSI > c: secondary device attributes" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[>c");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[>0;10;1c", resp.?);
+}
+
+test "CSI > 0 c: secondary device attributes explicit param" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[>0c");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[>0;10;1c", resp.?);
 }
 
 test "drainResponse clears buffer" {

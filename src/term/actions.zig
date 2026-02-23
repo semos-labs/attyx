@@ -136,6 +136,8 @@ pub const Action = union(enum) {
     device_status,
     /// CSI 6 n — Cursor Position Report.
     cursor_position_report,
-    /// CSI c / CSI 0 c — Primary Device Attributes.
+    /// CSI c / CSI 0 c — Primary Device Attributes (DA1).
     device_attributes,
+    /// CSI > c / CSI > 0 c — Secondary Device Attributes (DA2).
+    secondary_device_attributes,
 };
