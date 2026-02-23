@@ -11,6 +11,7 @@ typedef struct {
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
     uint8_t flags; // bit 0 = bold, bit 1 = underline
+    uint32_t link_id; // hyperlink ID (0 = none), maps to engine's link table
 } AttyxCell;
 
 // Blocks until the window is closed. Reads cells each frame (live).
@@ -83,6 +84,10 @@ extern volatile int g_cursor_visible;   // 1=visible, 0=hidden
 extern char          g_title_buf[ATTYX_TITLE_MAX];
 extern volatile int  g_title_len;
 extern volatile int  g_title_changed;   // set to 1 by PTY thread; renderer clears to 0
+
+// Hyperlink URI lookup (implemented in Zig, called from renderer thread).
+// Copies the URI for the given link_id into buf. Returns byte count, or 0 if not found.
+int attyx_get_link_uri(uint32_t link_id, char* buf, int buf_len);
 
 // IME composition state (written by main/Cocoa thread, read by renderer).
 #define ATTYX_IME_MAX_BYTES 256

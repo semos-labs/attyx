@@ -58,6 +58,9 @@ volatile int  g_ime_anchor_col   = 0;
 char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
 volatile int  g_ime_preedit_len  = 0;
 
+static volatile uint32_t g_hover_link_id = 0;
+static volatile int g_hover_row = -1;
+
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
 static volatile int g_pending_resize_rows = 0;
 static volatile int g_pending_resize_cols = 0;
@@ -559,6 +562,7 @@ static double       g_blink_last_toggle = 0.0;
 static int          g_full_redraw = 1;
 static int          g_alloc_rows = 0;
 static int          g_alloc_cols = 0;
+static int          g_bg_vert_cap = 0;
 
 static float        g_cell_px_w = 0;
 static float        g_cell_px_h = 0;
@@ -610,8 +614,8 @@ static void drawFrame(void) {
         free(g_text_verts);
         free(g_cell_snapshot);
 
-        int bgVertCap = (total + cols) * 6;
-        g_bg_verts      = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
+        g_bg_vert_cap = (total + cols + cols) * 6; // +cols cursor, +cols link underlines
+        g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
         g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
         g_cell_snapshot = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
         g_cell_snapshot_cap = total;
@@ -699,6 +703,28 @@ static void drawFrame(void) {
         g_bg_verts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
         g_bg_verts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
         bgVertCount += 6;
+    }
+
+    // Hyperlink hover underlines
+    uint32_t hoverLid = g_hover_link_id;
+    if (hoverLid != 0 && !g_sel_active && bgVertCount + cols * 6 <= g_bg_vert_cap) {
+        float lr = 0.4f, lg = 0.6f, lb = 1.0f;
+        float ulH = fmaxf(2.0f, 1.0f);
+        for (int i = 0; i < total; i++) {
+            if (cells[i].link_id != hoverLid) continue;
+            int lrow = i / cols, lcol = i % cols;
+            float lx0 = lcol * gw;
+            float lx1 = lx0 + gw;
+            float ly1 = (lrow + 1) * gh;
+            float ly0 = ly1 - ulH;
+            g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+            bgVertCount += 6;
+        }
     }
 
     // Text vertices
@@ -1096,6 +1122,25 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             int col, row;
             mouseToCell(mx, my, &col, &row);
 
+            // Ctrl+click opens hyperlink
+            if (mods & GLFW_MOD_CONTROL) {
+                int cols = g_cols, nrows = g_rows;
+                if (g_cells && col >= 0 && col < cols && row >= 0 && row < nrows) {
+                    uint32_t lid = g_cells[row * cols + col].link_id;
+                    if (lid != 0) {
+                        char uri_buf[2048];
+                        int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
+                        if (uri_len > 0) {
+                            char cmd[2200];
+                            snprintf(cmd, sizeof(cmd), "xdg-open '%s' &", uri_buf);
+                            (void)system(cmd);
+                        }
+                        g_left_down = 1;
+                        return;
+                    }
+                }
+            }
+
             double now = glfwGetTime();
             if (now - g_last_click_time < 0.35 && col == g_last_click_col && row == g_last_click_row)
                 g_click_count++;
@@ -1199,6 +1244,31 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         }
         g_sel_active = 1;
         attyx_mark_all_dirty();
+        return;
+    }
+
+    // Hyperlink hover detection (when mouse mode is off)
+    if (!g_mouse_tracking && !g_left_down) {
+        int col, row;
+        mouseToCell(mx, my, &col, &row);
+        uint32_t lid = 0;
+        int cols = g_cols, nrows = g_rows;
+        if (g_cells && col >= 0 && col < cols && row >= 0 && row < nrows)
+            lid = g_cells[row * cols + col].link_id;
+        uint32_t prev = g_hover_link_id;
+        if (lid != prev) {
+            int prevRow = g_hover_row;
+            g_hover_link_id = lid;
+            g_hover_row = (lid != 0) ? row : -1;
+            if (lid != 0)
+                glfwSetCursor(w, glfwCreateStandardCursor(GLFW_HAND_CURSOR));
+            else
+                glfwSetCursor(w, glfwCreateStandardCursor(GLFW_IBEAM_CURSOR));
+            if (prevRow >= 0 && prevRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevRow >> 6], (uint64_t)1 << (prevRow & 63));
+            if (row >= 0 && row < 256 && lid != 0)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
+        }
     }
 }
 

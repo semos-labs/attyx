@@ -169,6 +169,39 @@ test "endHyperlink clears pen_link_id" {
     try std.testing.expectEqual(@as(u32, 0), t.pen_link_id);
 }
 
+test "getLinkUri returns null for id 0 and unknown ids" {
+    const alloc = std.testing.allocator;
+    var t = try TerminalState.init(alloc, 2, 4);
+    defer t.deinit();
+
+    try std.testing.expect(t.getLinkUri(0) == null);
+    try std.testing.expect(t.getLinkUri(9999) == null);
+}
+
+test "OSC 8 link spans multiple cells with same link_id" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 20);
+    defer engine.deinit();
+
+    engine.feed("\x1b]8;;https://foo.bar\x1b\\");
+    engine.feed("LINK");
+    engine.feed("\x1b]8;;\x1b\\");
+    engine.feed("X");
+
+    const id_L = engine.state.grid.getCell(0, 0).link_id;
+    const id_I = engine.state.grid.getCell(0, 1).link_id;
+    const id_N = engine.state.grid.getCell(0, 2).link_id;
+    const id_K = engine.state.grid.getCell(0, 3).link_id;
+    const id_X = engine.state.grid.getCell(0, 4).link_id;
+
+    try std.testing.expect(id_L != 0);
+    try std.testing.expectEqual(id_L, id_I);
+    try std.testing.expectEqual(id_L, id_N);
+    try std.testing.expectEqual(id_L, id_K);
+    try std.testing.expectEqual(@as(u32, 0), id_X);
+    try std.testing.expectEqualStrings("https://foo.bar", engine.state.getLinkUri(id_L).?);
+}
+
 test "setTitle stores and replaces title" {
     const alloc = std.testing.allocator;
     var t = try TerminalState.init(alloc, 2, 4);

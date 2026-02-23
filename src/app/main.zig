@@ -13,6 +13,7 @@ const c = @cImport({
 
 // Stubs: ui2.zig normally provides these. UI-0 demo has no PTY.
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
+export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -42,6 +43,7 @@ pub fn main() !void {
             .bg_b = bg.b,
             .flags = @as(u8, if (cell.style.bold) 1 else 0) |
                 @as(u8, if (cell.style.underline) 2 else 0),
+            .link_id = cell.link_id,
         };
     }
 

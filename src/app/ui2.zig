@@ -31,6 +31,9 @@ const PtyThreadCtx = struct {
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
 var g_pty_master: posix.fd_t = -1;
 
+// Global engine pointer for attyx_get_link_uri (set before attyx_run, read by renderer thread)
+var g_engine: ?*Engine = null;
+
 // Track last-published title pointer to avoid redundant g_title_changed updates.
 var g_last_title_ptr: ?[*]const u8 = null;
 
@@ -39,7 +42,16 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     _ = posix.write(g_pty_master, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]) catch {};
 }
 
-
+export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
+    const eng = g_engine orelse return 0;
+    const uri = eng.state.getLinkUri(link_id) orelse return 0;
+    const max: usize = @intCast(@as(c_uint, @bitCast(buf_len)));
+    if (max == 0) return 0;
+    const copy_len = @min(uri.len, max - 1);
+    @memcpy(buf[0..copy_len], uri[0..copy_len]);
+    buf[copy_len] = 0;
+    return @intCast(copy_len);
+}
 
 pub fn run(config: Config) !void {
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
@@ -71,8 +83,10 @@ pub fn run(config: Config) !void {
     defer pty.deinit();
 
     g_pty_master = pty.master;
+    g_engine = &engine;
     defer {
         g_pty_master = -1;
+        g_engine = null;
     }
 
     var session = try SessionLog.init(allocator);
@@ -240,6 +254,7 @@ fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {
         .bg_b = bg.b,
         .flags = @as(u8, if (cell.style.bold) 1 else 0) |
             @as(u8, if (cell.style.underline) 2 else 0),
+        .link_id = cell.link_id,
     };
 }
 

@@ -59,6 +59,10 @@ volatile int  g_ime_anchor_col   = 0;
 char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
 volatile int  g_ime_preedit_len  = 0;
 
+// Hyperlink hover state (written by mouse-move handler, read by renderer).
+static volatile uint32_t g_hover_link_id = 0;
+static volatile int g_hover_row = -1;
+
 // Row-level dirty bitset (256 rows). PTY thread atomic-ORs in dirty bits;
 // renderer atomically swaps each word to zero when snapshotting.
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
@@ -641,7 +645,7 @@ static BOOL cellIsSelected(int row, int col) {
             free(_textVerts);
             free(_cellSnapshot);
 
-            int bgVertCap = (total + cols) * 6; // +cols for cursor row
+            int bgVertCap = (total + cols + cols) * 6; // +cols cursor, +cols link underlines
             _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
             _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
             _cellSnapshot  = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
@@ -761,6 +765,28 @@ static BOOL cellIsSelected(int row, int col) {
             _bgVerts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
             _bgVerts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
             bgVertCount += 6;
+        }
+
+        // --- Hyperlink hover underlines ---
+        uint32_t hoverLid = g_hover_link_id;
+        if (hoverLid != 0 && !g_sel_active && bgVertCount + cols * 6 <= _metalBufCapBg) {
+            float lr = 0.4f, lg = 0.6f, lb = 1.0f;
+            float ulH = fmaxf(2.0f, 1.0f);
+            for (int i = 0; i < total; i++) {
+                if (cells[i].link_id != hoverLid) continue;
+                int lrow = i / cols, lcol = i % cols;
+                float lx0 = lcol * gw;
+                float lx1 = lx0 + gw;
+                float ly1 = (lrow + 1) * gh;
+                float ly0 = ly1 - ulH;
+                _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+                _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                _bgVerts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                _bgVerts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+                _bgVerts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                bgVertCount += 6;
+            }
         }
 
         // --- Rebuild text vertices on any dirty frame ---
@@ -1151,6 +1177,28 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     }
     int col, row;
     mouseCell0(event, self, &col, &row);
+
+    // Cmd+click opens hyperlink
+    if (event.modifierFlags & NSEventModifierFlagCommand) {
+        int cols = g_cols, rows_n = g_rows;
+        if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
+            uint32_t lid = g_cells[row * cols + col].link_id;
+            if (lid != 0) {
+                char uri_buf[2048];
+                int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
+                if (uri_len > 0) {
+                    NSString* urlStr = [[NSString alloc] initWithBytes:uri_buf
+                                                               length:uri_len
+                                                             encoding:NSUTF8StringEncoding];
+                    if (urlStr) {
+                        NSURL* url = [NSURL URLWithString:urlStr];
+                        if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+                    }
+                }
+                return;
+            }
+        }
+    }
     _clickCount = (int)event.clickCount;
 
     if (_clickCount >= 3) {
@@ -1309,14 +1357,43 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
 - (void)mouseMoved:(NSEvent *)event {
     int tracking = g_mouse_tracking;
-    if (tracking != 3 || !g_mouse_sgr) return; // any_event only
-    int col, row;
-    mouseCell(event, self, &col, &row);
-    if (col == _lastMouseCol && row == _lastMouseRow) return;
-    int btn = 35 | mouseModifiers(event.modifierFlags); // 32 + 3 (no button)
-    sendSgrMouse(btn, col, row, YES);
-    _lastMouseCol = col;
-    _lastMouseRow = row;
+    if (tracking == 3 && g_mouse_sgr) {
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        if (col == _lastMouseCol && row == _lastMouseRow) return;
+        int btn = 35 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        _lastMouseCol = col;
+        _lastMouseRow = row;
+        return;
+    }
+
+    // Hyperlink hover detection (when mouse mode is off)
+    if (!tracking) {
+        int col, row;
+        mouseCell0(event, self, &col, &row);
+        uint32_t lid = 0;
+        int cols = g_cols, rows = g_rows;
+        if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows) {
+            lid = g_cells[row * cols + col].link_id;
+        }
+        uint32_t prev = g_hover_link_id;
+        if (lid != prev) {
+            int prevRow = g_hover_row;
+            g_hover_link_id = lid;
+            g_hover_row = (lid != 0) ? row : -1;
+            if (lid != 0) {
+                [[NSCursor pointingHandCursor] set];
+            } else {
+                [[NSCursor IBeamCursor] set];
+            }
+            // Mark affected rows dirty for underline repaint
+            if (prevRow >= 0 && prevRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevRow >> 6], (uint64_t)1 << (prevRow & 63));
+            if (row >= 0 && row < 256 && lid != 0)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
+        }
+    }
 }
 
 // --- Mouse: scroll wheel ---
