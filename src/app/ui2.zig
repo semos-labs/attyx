@@ -36,6 +36,8 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     _ = posix.write(g_pty_master, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]) catch {};
 }
 
+
+
 pub fn run(config: Config) !void {
     if (builtin.os.tag != .macos) {
         std.debug.print("ui2 requires macOS (Metal renderer). Use ui1 on other platforms.\n", .{});
@@ -174,6 +176,10 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_set_mode_flags(
                 @intFromBool(ctx.engine.state.bracketed_paste),
                 @intFromBool(ctx.engine.state.cursor_keys_app),
+            );
+            c.attyx_set_mouse_mode(
+                @intFromEnum(ctx.engine.state.mouse_tracking),
+                @intFromBool(ctx.engine.state.mouse_sgr),
             );
             const h = state_hash.hash(&ctx.engine.state);
             ctx.session.appendFrame(h, ctx.engine.state.alt_active);
