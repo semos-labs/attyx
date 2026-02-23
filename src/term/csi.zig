@@ -152,6 +152,21 @@ pub fn makeDeviceAttributes(params: CsiParams) Action {
     return .nop;
 }
 
+/// CSI Ps SP q — DECSCUSR (set cursor shape).
+pub fn makeCursorShape(params: CsiParams) Action {
+    const ps: u16 = if (params.len > 0) params.params[0] else 0;
+    const shape: actions_mod.CursorShape = switch (ps) {
+        0, 1 => .blinking_block,
+        2 => .steady_block,
+        3 => .blinking_underline,
+        4 => .steady_underline,
+        5 => .blinking_bar,
+        6 => .steady_bar,
+        else => return .nop,
+    };
+    return .{ .set_cursor_shape = shape };
+}
+
 /// CSI > c / CSI > 0 c — Secondary Device Attributes (DA2).
 pub fn dispatchSecondaryDA(final: u8, param_buf: []const u8) Action {
     if (final != 'c') return .nop;

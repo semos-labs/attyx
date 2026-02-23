@@ -255,6 +255,11 @@ pub const Parser = struct {
             return csi.dispatchSecondaryDA(final, buf[1..]);
         }
 
+        // CSI Ps SP q — DECSCUSR (set cursor shape)
+        if (final == 'q' and buf.len > 0 and buf[buf.len - 1] == ' ') {
+            return csi.makeCursorShape(csi.parseCsiParams(buf[0 .. buf.len - 1]));
+        }
+
         const params = csi.parseCsiParams(buf);
         return switch (final) {
             'H', 'f' => csi.makeCursorAbs(params),

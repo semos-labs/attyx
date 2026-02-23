@@ -31,6 +31,9 @@ const PtyThreadCtx = struct {
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
 var g_pty_master: posix.fd_t = -1;
 
+// Track last-published title pointer to avoid redundant g_title_changed updates.
+var g_last_title_ptr: ?[*]const u8 = null;
+
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (g_pty_master < 0 or len <= 0) return;
     _ = posix.write(g_pty_master, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]) catch {};
@@ -107,6 +110,22 @@ fn publishState(ctx: *PtyThreadCtx) void {
     c.g_scrollback_count = @intCast(ctx.engine.state.scrollback.count);
     c.g_alt_screen = @intFromBool(ctx.engine.state.alt_active);
     c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+
+    c.g_cursor_shape = @intFromEnum(ctx.engine.state.cursor_shape);
+    c.g_cursor_visible = @intFromBool(ctx.engine.state.cursor_visible);
+
+    if (ctx.engine.state.title) |title| {
+        if (g_last_title_ptr != title.ptr) {
+            const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
+            @memcpy(c.g_title_buf[0..len], title[0..len]);
+            c.g_title_buf[len] = 0;
+            c.g_title_len = @intCast(len);
+            c.g_title_changed = 1;
+            g_last_title_ptr = title.ptr;
+        }
+    } else if (g_last_title_ptr != null) {
+        g_last_title_ptr = null;
+    }
 }
 
 fn ptyReaderThread(ctx: *PtyThreadCtx) void {

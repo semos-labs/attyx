@@ -3,6 +3,7 @@ const helpers = @import("helpers.zig");
 const runner = @import("../runner.zig");
 const Engine = @import("../../term/engine.zig").Engine;
 const Color = @import("../../term/grid.zig").Color;
+const CursorShape = @import("../../term/actions.zig").CursorShape;
 const expectSnapshot = helpers.expectSnapshot;
 const expectChunkedSnapshot = helpers.expectChunkedSnapshot;
 
@@ -547,4 +548,125 @@ test "APC Kitty graphics payload is silently consumed" {
     try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
     try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 2).char);
+}
+
+// ===========================================================================
+// DECSCUSR — cursor shape
+// ===========================================================================
+
+test "DECSCUSR: CSI 2 SP q sets steady block" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    try std.testing.expectEqual(CursorShape.blinking_block, engine.state.cursor_shape);
+    engine.feed("\x1b[2 q");
+    try std.testing.expectEqual(CursorShape.steady_block, engine.state.cursor_shape);
+}
+
+test "DECSCUSR: CSI 5 SP q sets blinking bar" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[5 q");
+    try std.testing.expectEqual(CursorShape.blinking_bar, engine.state.cursor_shape);
+}
+
+test "DECSCUSR: CSI 0 SP q resets to blinking block" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[6 q");
+    try std.testing.expectEqual(CursorShape.steady_bar, engine.state.cursor_shape);
+    engine.feed("\x1b[0 q");
+    try std.testing.expectEqual(CursorShape.blinking_block, engine.state.cursor_shape);
+}
+
+test "DECSCUSR: CSI 3 SP q sets blinking underline" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[3 q");
+    try std.testing.expectEqual(CursorShape.blinking_underline, engine.state.cursor_shape);
+}
+
+test "DECSCUSR: CSI 4 SP q sets steady underline" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[4 q");
+    try std.testing.expectEqual(CursorShape.steady_underline, engine.state.cursor_shape);
+}
+
+// ===========================================================================
+// DEC mode 25 — cursor visibility
+// ===========================================================================
+
+test "DEC mode 25: CSI ?25l hides cursor" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    try std.testing.expect(engine.state.cursor_visible);
+    engine.feed("\x1b[?25l");
+    try std.testing.expect(!engine.state.cursor_visible);
+}
+
+test "DEC mode 25: CSI ?25h shows cursor" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[?25l");
+    try std.testing.expect(!engine.state.cursor_visible);
+    engine.feed("\x1b[?25h");
+    try std.testing.expect(engine.state.cursor_visible);
+}
+
+// ===========================================================================
+// Combined: DECSCUSR + mode 25
+// ===========================================================================
+
+test "cursor shape + visibility combined" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[5 q");
+    try std.testing.expectEqual(CursorShape.blinking_bar, engine.state.cursor_shape);
+    try std.testing.expect(engine.state.cursor_visible);
+
+    engine.feed("\x1b[?25l");
+    try std.testing.expect(!engine.state.cursor_visible);
+    try std.testing.expectEqual(CursorShape.blinking_bar, engine.state.cursor_shape);
+
+    engine.feed("\x1b[2 q");
+    try std.testing.expectEqual(CursorShape.steady_block, engine.state.cursor_shape);
+    try std.testing.expect(!engine.state.cursor_visible);
+
+    engine.feed("\x1b[?25h");
+    try std.testing.expect(engine.state.cursor_visible);
+    try std.testing.expectEqual(CursorShape.steady_block, engine.state.cursor_shape);
+}
+
+test "cursor shape persists across alt screen switch" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b[4 q");
+    try std.testing.expectEqual(CursorShape.steady_underline, engine.state.cursor_shape);
+
+    engine.feed("\x1b[?1049h");
+    try std.testing.expectEqual(CursorShape.steady_underline, engine.state.cursor_shape);
+
+    engine.feed("\x1b[6 q");
+    try std.testing.expectEqual(CursorShape.steady_bar, engine.state.cursor_shape);
+
+    engine.feed("\x1b[?1049l");
+    try std.testing.expectEqual(CursorShape.steady_bar, engine.state.cursor_shape);
 }

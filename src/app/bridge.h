@@ -72,6 +72,18 @@ extern volatile int g_sel_start_row, g_sel_start_col;
 extern volatile int g_sel_end_row, g_sel_end_col;
 extern volatile int g_sel_active;
 
+// Cursor shape and visibility (written by PTY thread, read by renderer).
+// shape: 0=blinking_block, 1=steady_block, 2=blinking_underline,
+//        3=steady_underline, 4=blinking_bar, 5=steady_bar
+extern volatile int g_cursor_shape;
+extern volatile int g_cursor_visible;   // 1=visible, 0=hidden
+
+// Window title (written by PTY thread, read by renderer).
+#define ATTYX_TITLE_MAX 256
+extern char          g_title_buf[ATTYX_TITLE_MAX];
+extern volatile int  g_title_len;
+extern volatile int  g_title_changed;   // set to 1 by PTY thread; renderer clears to 0
+
 // IME composition state (written by main/Cocoa thread, read by renderer).
 #define ATTYX_IME_MAX_BYTES 256
 
