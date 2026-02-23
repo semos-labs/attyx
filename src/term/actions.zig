@@ -70,8 +70,8 @@ pub const DecPrivateModes = struct {
 /// The parser converts raw bytes into Actions; TerminalState
 /// consumes Actions and mutates the grid.
 pub const Action = union(enum) {
-    /// Write a printable ASCII byte at the cursor position.
-    print: u8,
+    /// Write a printable character (Unicode codepoint) at the cursor position.
+    print: u21,
     /// Execute a C0 control code (LF, CR, BS, TAB).
     control: ControlCode,
     /// No-op: ignored byte or unsupported escape sequence.
@@ -106,6 +106,28 @@ pub const Action = union(enum) {
     hyperlink_end,
     /// OSC 0/2 — set terminal title. Payload borrowed from parser buffer.
     set_title: []const u8,
+    /// CSI E — move cursor down n rows, set column to 0.
+    cursor_next_line: u16,
+    /// CSI F — move cursor up n rows, set column to 0.
+    cursor_prev_line: u16,
+    /// CSI L — insert n blank lines at cursor, pushing content down.
+    insert_lines: u16,
+    /// CSI M — delete n lines at cursor, pulling content up.
+    delete_lines: u16,
+    /// CSI @ — insert n blank characters at cursor, shifting right.
+    insert_chars: u16,
+    /// CSI P — delete n characters at cursor, shifting left.
+    delete_chars: u16,
+    /// CSI X — erase n characters at cursor (no shift, just blank).
+    erase_chars: u16,
+    /// CSI G — move cursor to absolute column (0-based).
+    cursor_col_abs: u16,
+    /// CSI d — move cursor to absolute row (0-based).
+    cursor_row_abs: u16,
+    /// CSI S — scroll up n lines within scroll region.
+    scroll_up: u16,
+    /// CSI T — scroll down n lines within scroll region.
+    scroll_down: u16,
     /// DEC private mode set/reset (ESC[?...h / ESC[?...l).
     /// Carries all mode params; state iterates and applies each.
     dec_private_mode: DecPrivateModes,

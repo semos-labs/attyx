@@ -13,7 +13,7 @@ test "attr: 256-color foreground (38;5;n)" {
 
     engine.feed("\x1b[38;5;196mA");
     const cell = engine.state.grid.getCell(0, 0);
-    try std.testing.expectEqual(@as(u8, 'A'), cell.char);
+    try std.testing.expectEqual(@as(u21, 'A'), cell.char);
     try std.testing.expectEqual(Color{ .palette = 196 }, cell.style.fg);
 }
 
@@ -24,7 +24,7 @@ test "attr: 256-color background (48;5;n)" {
 
     engine.feed("\x1b[48;5;25mB");
     const cell = engine.state.grid.getCell(0, 0);
-    try std.testing.expectEqual(@as(u8, 'B'), cell.char);
+    try std.testing.expectEqual(@as(u21, 'B'), cell.char);
     try std.testing.expectEqual(Color{ .palette = 25 }, cell.style.bg);
 }
 
@@ -35,7 +35,7 @@ test "attr: truecolor foreground (38;2;r;g;b)" {
 
     engine.feed("\x1b[38;2;1;2;3mC");
     const cell = engine.state.grid.getCell(0, 0);
-    try std.testing.expectEqual(@as(u8, 'C'), cell.char);
+    try std.testing.expectEqual(@as(u21, 'C'), cell.char);
     try std.testing.expectEqual(Color{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, cell.style.fg);
 }
 
@@ -46,7 +46,7 @@ test "attr: truecolor background (48;2;r;g;b)" {
 
     engine.feed("\x1b[48;2;9;8;7mD");
     const cell = engine.state.grid.getCell(0, 0);
-    try std.testing.expectEqual(@as(u8, 'D'), cell.char);
+    try std.testing.expectEqual(@as(u21, 'D'), cell.char);
     try std.testing.expectEqual(Color{ .rgb = .{ .r = 9, .g = 8, .b = 7 } }, cell.style.bg);
 }
 
@@ -136,7 +136,7 @@ test "attr: truecolor fg survives chunked input" {
     engine.feed("\x1b[38;2;1;");
     engine.feed("2;3mZ");
     const cell = engine.state.grid.getCell(0, 0);
-    try std.testing.expectEqual(@as(u8, 'Z'), cell.char);
+    try std.testing.expectEqual(@as(u21, 'Z'), cell.char);
     try std.testing.expectEqual(Color{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, cell.style.fg);
 }
 

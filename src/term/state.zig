@@ -2,6 +2,7 @@ const std = @import("std");
 const grid_mod = @import("grid.zig");
 const actions_mod = @import("actions.zig");
 const sgr_mod = @import("sgr.zig");
+const dirty_mod = @import("dirty.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const Cell = grid_mod.Cell;
@@ -50,10 +51,18 @@ pub const TerminalState = struct {
     next_link_id: u32 = 1,
     title: ?[]const u8 = null,
 
+    // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
+    wrap_next: bool = false,
+
+    // -- Damage tracking (row-level dirty bitset) --------------------------
+    dirty: dirty_mod.DirtyRows = .{},
+
     // -- Terminal modes (global, not per-buffer) ----------------------------
+    auto_wrap: bool = true,
     bracketed_paste: bool = false,
     mouse_tracking: actions_mod.MouseTrackingMode = .off,
     mouse_sgr: bool = false,
+    cursor_keys_app: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
@@ -86,8 +95,19 @@ pub const TerminalState = struct {
 
     /// Apply a single Action to the terminal state.
     pub fn apply(self: *TerminalState, action: Action) void {
+        // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print => |byte| self.printChar(byte),
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode => {},
+            else => {
+                self.wrap_next = false;
+            },
+        }
+
+        // Mark old cursor row dirty for cursor overlay (before action moves it).
+        const old_cursor_row = self.cursor.row;
+
+        switch (action) {
+            .print => |cp| self.printChar(cp),
             .control => |code| switch (code) {
                 .lf => self.lineFeed(),
                 .cr => self.carriageReturn(),
@@ -97,8 +117,53 @@ pub const TerminalState = struct {
             .nop => {},
             .cursor_abs => |abs| self.cursorAbsolute(abs),
             .cursor_rel => |rel| self.cursorRelative(rel),
+            .cursor_col_abs => |col| {
+                self.cursor.col = @min(@as(usize, col), self.grid.cols - 1);
+            },
+            .cursor_row_abs => |row| {
+                self.cursor.row = @min(@as(usize, row), self.grid.rows - 1);
+            },
+            .cursor_next_line => |n| {
+                self.cursorRelative(.{ .dir = .down, .n = n });
+                self.cursor.col = 0;
+            },
+            .cursor_prev_line => |n| {
+                self.cursorRelative(.{ .dir = .up, .n = n });
+                self.cursor.col = 0;
+            },
             .erase_display => |mode| self.eraseInDisplay(mode),
-            .erase_line => |mode| self.eraseInLine(mode),
+            .erase_line => |mode| {
+                self.eraseInLine(mode);
+                self.dirty.mark(self.cursor.row);
+            },
+            .insert_lines => |n| {
+                self.grid.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+            },
+            .delete_lines => |n| {
+                self.grid.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+            },
+            .insert_chars => |n| {
+                self.grid.insertChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.dirty.mark(self.cursor.row);
+            },
+            .delete_chars => |n| {
+                self.grid.deleteChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.dirty.mark(self.cursor.row);
+            },
+            .erase_chars => |n| {
+                self.grid.eraseChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.dirty.mark(self.cursor.row);
+            },
+            .scroll_up => |n| {
+                self.grid.scrollUpRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
+                self.dirty.markRange(self.scroll_top, self.scroll_bottom);
+            },
+            .scroll_down => |n| {
+                self.grid.scrollDownRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
+                self.dirty.markRange(self.scroll_top, self.scroll_bottom);
+            },
             .sgr => |sgr| sgr_mod.applySgr(&self.pen, sgr),
             .set_scroll_region => |region| self.setScrollRegion(region),
             .index => self.cursorDown(),
@@ -112,20 +177,36 @@ pub const TerminalState = struct {
             .set_title => |t| self.setTitle(t),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
         }
+
+        // Mark old + new cursor rows dirty for cursor overlay movement.
+        if (self.cursor.row != old_cursor_row) {
+            self.dirty.mark(old_cursor_row);
+            self.dirty.mark(self.cursor.row);
+        }
     }
 
     // -- Text output -------------------------------------------------------
 
-    fn printChar(self: *TerminalState, char: u8) void {
+    fn printChar(self: *TerminalState, char: u21) void {
+        if (self.wrap_next) {
+            if (self.auto_wrap) {
+                self.cursor.col = 0;
+                self.cursorDown();
+            }
+            self.wrap_next = false;
+        }
+
         self.grid.setCell(self.cursor.row, self.cursor.col, .{
             .char = char,
             .style = self.pen,
             .link_id = self.pen_link_id,
         });
-        self.cursor.col += 1;
-        if (self.cursor.col >= self.grid.cols) {
-            self.cursor.col = 0;
-            self.cursorDown();
+        self.dirty.mark(self.cursor.row);
+
+        if (self.cursor.col >= self.grid.cols - 1) {
+            self.wrap_next = self.auto_wrap;
+        } else {
+            self.cursor.col += 1;
         }
     }
 
@@ -153,6 +234,7 @@ pub const TerminalState = struct {
     fn cursorDown(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_bottom) {
             self.grid.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+            self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row < self.grid.rows - 1) {
             self.cursor.row += 1;
         }
@@ -161,6 +243,7 @@ pub const TerminalState = struct {
     fn reverseIndex(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_top) {
             self.grid.scrollDownRegion(self.scroll_top, self.scroll_bottom);
+            self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row > 0) {
             self.cursor.row -= 1;
         }
@@ -191,13 +274,16 @@ pub const TerminalState = struct {
             .to_end => {
                 const start = self.cursor.row * cols + self.cursor.col;
                 @memset(self.grid.cells[start..], Cell{});
+                self.dirty.markRange(self.cursor.row, self.grid.rows - 1);
             },
             .to_start => {
                 const end = self.cursor.row * cols + self.cursor.col + 1;
                 @memset(self.grid.cells[0..end], Cell{});
+                self.dirty.markRange(0, self.cursor.row);
             },
             .all => {
                 @memset(self.grid.cells, Cell{});
+                self.dirty.markAll(self.grid.rows);
             },
         }
     }
@@ -240,6 +326,8 @@ pub const TerminalState = struct {
         for (modes.params[0..modes.len]) |param| {
             if (modes.set) {
                 switch (param) {
+                    1 => self.cursor_keys_app = true,
+                    7 => self.auto_wrap = true,
                     47, 1047, 1049 => self.enterAltScreen(),
                     1000 => self.mouse_tracking = .x10,
                     1002 => self.mouse_tracking = .button_event,
@@ -250,6 +338,11 @@ pub const TerminalState = struct {
                 }
             } else {
                 switch (param) {
+                    1 => self.cursor_keys_app = false,
+                    7 => {
+                        self.auto_wrap = false;
+                        self.wrap_next = false;
+                    },
                     47, 1047, 1049 => self.leaveAltScreen(),
                     1000 => {
                         if (self.mouse_tracking == .x10) self.mouse_tracking = .off;
@@ -290,13 +383,16 @@ pub const TerminalState = struct {
         self.scroll_top = 0;
         self.scroll_bottom = self.grid.rows - 1;
         self.saved_cursor = null;
+        self.wrap_next = false;
         self.alt_active = true;
+        self.dirty.markAll(self.grid.rows);
     }
 
     fn leaveAltScreen(self: *TerminalState) void {
         if (!self.alt_active) return;
         self.swapBuffers();
         self.alt_active = false;
+        self.dirty.markAll(self.grid.rows);
     }
 
     // -- Cursor save / restore ---------------------------------------------

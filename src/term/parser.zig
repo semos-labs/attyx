@@ -8,9 +8,12 @@ pub const ControlCode = actions_mod.ControlCode;
 const State = enum {
     ground,
     escape,
+    escape_charset,
     csi_state,
     osc,
     osc_escape,
+    str_ignore,
+    str_ignore_escape,
 };
 
 /// Incremental VT parser.
@@ -24,6 +27,11 @@ pub const Parser = struct {
     pub const osc_buf_size = 4096;
 
     state: State = .ground,
+
+    /// UTF-8 multi-byte accumulator (no allocations).
+    utf8_buf: [4]u8 = undefined,
+    utf8_len: u3 = 0,
+    utf8_needed: u3 = 0,
 
     /// Buffer for CSI parameter/intermediate bytes (retained for debug tracing).
     csi_buf: [64]u8 = undefined,
@@ -48,15 +56,23 @@ pub const Parser = struct {
         return switch (self.state) {
             .ground => self.onGround(byte),
             .escape => self.onEscape(byte),
+            .escape_charset => self.onEscapeCharset(byte),
             .csi_state => self.onCsi(byte),
             .osc => self.onOsc(byte),
             .osc_escape => self.onOscEscape(byte),
+            .str_ignore => self.onStrIgnore(byte),
+            .str_ignore_escape => self.onStrIgnoreEscape(byte),
         };
     }
 
     // -- State handlers ----------------------------------------------------
 
     fn onGround(self: *Parser, byte: u8) ?Action {
+        // If we're accumulating a UTF-8 multi-byte sequence, handle continuation.
+        if (self.utf8_needed > 0) {
+            return self.onUtf8Cont(byte);
+        }
+
         switch (byte) {
             0x1B => {
                 self.state = .escape;
@@ -67,8 +83,40 @@ pub const Parser = struct {
             '\r' => return .{ .control = .cr },
             0x08 => return .{ .control = .bs },
             '\t' => return .{ .control = .tab },
+            0xC2...0xDF => return self.utf8Start(byte, 2),
+            0xE0...0xEF => return self.utf8Start(byte, 3),
+            0xF0...0xF4 => return self.utf8Start(byte, 4),
             else => return .nop,
         }
+    }
+
+    fn utf8Start(self: *Parser, byte: u8, total: u3) ?Action {
+        self.utf8_buf[0] = byte;
+        self.utf8_len = 1;
+        self.utf8_needed = total;
+        return null;
+    }
+
+    fn onUtf8Cont(self: *Parser, byte: u8) ?Action {
+        if (byte & 0xC0 != 0x80) {
+            // Not a continuation byte — discard partial sequence and re-process.
+            self.utf8_needed = 0;
+            self.utf8_len = 0;
+            return self.onGround(byte);
+        }
+
+        self.utf8_buf[self.utf8_len] = byte;
+        self.utf8_len += 1;
+
+        if (self.utf8_len < self.utf8_needed) return null;
+
+        // Sequence complete — decode codepoint.
+        const len = self.utf8_needed;
+        self.utf8_needed = 0;
+        self.utf8_len = 0;
+
+        const cp = std.unicode.utf8Decode(self.utf8_buf[0..len]) catch return .nop;
+        return .{ .print = cp };
     }
 
     fn onEscape(self: *Parser, byte: u8) ?Action {
@@ -100,6 +148,22 @@ pub const Parser = struct {
                 self.osc_overflow = false;
                 return null;
             },
+            // Charset designation: ESC ( X, ESC ) X, ESC * X, ESC + X, ESC - X, ESC . X
+            // Also ESC # X (DEC line attributes). Consume the next byte silently.
+            '(', ')', '*', '+', '-', '.', '#' => {
+                self.state = .escape_charset;
+                return null;
+            },
+            // DCS (ESC P), APC (ESC _), PM (ESC ^) — consume payload until ST.
+            'P', '_', '^' => {
+                self.state = .str_ignore;
+                return null;
+            },
+            // DECKPAM / DECKPNM — application/normal keypad mode, ignored for now.
+            '=', '>' => {
+                self.state = .ground;
+                return .nop;
+            },
             0x1B => {
                 return .nop;
             },
@@ -109,6 +173,38 @@ pub const Parser = struct {
                 return .nop;
             },
         }
+    }
+
+    fn onEscapeCharset(self: *Parser, byte: u8) ?Action {
+        _ = byte;
+        self.state = .ground;
+        return .nop;
+    }
+
+    // -- DCS / APC / PM string ignore ----------------------------------------
+
+    fn onStrIgnore(self: *Parser, byte: u8) ?Action {
+        switch (byte) {
+            0x1B => {
+                self.state = .str_ignore_escape;
+                return null;
+            },
+            0x07, 0x9C => {
+                self.state = .ground;
+                return .nop;
+            },
+            else => return null,
+        }
+    }
+
+    fn onStrIgnoreEscape(self: *Parser, byte: u8) ?Action {
+        if (byte == '\\') {
+            self.state = .ground;
+            return .nop;
+        }
+        // Not a proper ST — treat as new escape sequence.
+        self.state = .escape;
+        return self.onEscape(byte);
     }
 
     fn onCsi(self: *Parser, byte: u8) ?Action {
@@ -148,8 +244,19 @@ pub const Parser = struct {
             'B' => csi.makeCursorRel(params, .down),
             'C' => csi.makeCursorRel(params, .right),
             'D' => csi.makeCursorRel(params, .left),
+            'E' => csi.makeCursorNextLine(params),
+            'F' => csi.makeCursorPrevLine(params),
+            'G' => csi.makeCursorColAbs(params),
             'J' => csi.makeEraseDisplay(params),
             'K' => csi.makeEraseLine(params),
+            'L' => csi.makeCountAction(params, .insert_lines),
+            'M' => csi.makeCountAction(params, .delete_lines),
+            'P' => csi.makeCountAction(params, .delete_chars),
+            'S' => csi.makeCountAction(params, .scroll_up),
+            'T' => csi.makeCountAction(params, .scroll_down),
+            'X' => csi.makeCountAction(params, .erase_chars),
+            '@' => csi.makeCountAction(params, .insert_chars),
+            'd' => csi.makeCursorRowAbs(params),
             'm' => csi.makeSgr(params),
             'r' => csi.makeSetScrollRegion(params),
             's' => .save_cursor,

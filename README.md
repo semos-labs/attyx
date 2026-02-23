@@ -39,7 +39,7 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 | **Terminal engine** | `src/term/` | Pure, deterministic core — parser, state, grid, hash |
 | **Headless runner** | `src/headless/` | Test harness and golden snapshot tests |
 | **App** | `src/app/` | PTY bridge + OS integration |
-| **Renderer** | `src/render/` | GPU + font rendering *(planned)* |
+| **Renderer** | `src/render/` | GPU + font rendering (Metal on macOS) |
 
 ### Key types
 
@@ -51,6 +51,7 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 - **`hash`** — pure FNV-1a hash of visible terminal state (cursor + grid + attrs). Used to detect screen changes.
 - **`Pty`** — POSIX PTY bridge: spawn a child shell, non-blocking reads, write bytes, resize via ioctl.
 - **`SessionLog`** — bounded ring buffer of session events (PTY input/output chunks + frame snapshots). Preparation for AI integration.
+- **`AttyxView`** — MTKView subclass handling keyboard input: special keys, Ctrl+key, Alt+ESC prefix, paste, DECCKM-aware arrow keys.
 
 See [docs/architecture.md](docs/architecture.md) for the full breakdown.
 
@@ -77,6 +78,16 @@ zig build run -- ui1 --cmd /bin/zsh          # custom shell
 zig build run -- ui1 --separator             # print --- between frames
 ```
 
+### Windowed terminal (UI-2, macOS)
+
+Live terminal rendered in a Metal-backed window. PTY output drives the engine; the renderer draws the grid at 60 fps.
+
+```bash
+zig build run -- ui2                         # default: bash 24x80
+zig build run -- ui2 --rows 30 --cols 100    # custom size
+zig build run -- ui2 --cmd /bin/zsh          # custom shell
+```
+
 ---
 
 ## Testing
@@ -99,8 +110,8 @@ The test suite uses **golden snapshot testing**: feed known bytes into a termina
 | Input encoder (paste wrapper, SGR mouse encoding) | 15 |
 | Engine + runner integration | 3 |
 | State hashing (identity, content, cursor) | 3 |
-| Golden + attribute tests (text, cursor, erase, SGR, 256/truecolor, alt, OSC, modes) | 109 |
-| **Total** | **194** |
+| Golden + attribute tests (text, cursor, erase, SGR, 256/truecolor, alt, OSC, modes, DECCKM) | 112 |
+| **Total** | **197** |
 
 See [docs/testing.md](docs/testing.md) for the full testing strategy.
 
@@ -123,6 +134,8 @@ Attyx is built milestone by milestone. Each milestone is stable and tested befor
 | UI-0 | Rendering spike (Metal window, demo grid) | ✅ Done |
 | UI-1 | PTY bridge (headless app loop — spawn shell, read/write PTY, snapshot) | ✅ Done |
 | S-0 | Minimal session event log (ring buffer, no AI yet) | ✅ Done |
+| UI-2 | Window + GPU renderer (live grid rendering, Metal on macOS) | ✅ Done |
+| UI-3 | Keyboard input + interactive shell (PTY write + key encoding) | ✅ Done |
 
 See [docs/milestones.md](docs/milestones.md) for detailed write-ups.
 
@@ -147,7 +160,11 @@ src/
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig          UI-1 runner (event loop, stdin forwarding, snapshots)
+    ui2.zig          UI-2 runner (PTY thread + Metal window, macOS)
     session_log.zig  Session event log (ring buffer, byte tracking)
+    bridge.h         C bridge types (AttyxCell, cursor, quit signaling)
+    platform_macos.m Metal renderer + Cocoa window (macOS)
+    main.zig         UI-0 demo (standalone executable)
   render/
     color.zig        Color resolution (ANSI → RGB lookup)
   root.zig           Library root

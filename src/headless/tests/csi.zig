@@ -223,6 +223,151 @@ test "attr: bold and underline flags" {
 }
 
 // ===========================================================================
+// CSI G — Cursor Character Absolute (CHA)
+// ===========================================================================
+
+test "golden: CHA moves cursor to column" {
+    try expectSnapshot(1, 8, "ABCDEFGH\x1b[4GX",
+        "ABCXEFGH\n");
+}
+
+test "golden: CHA default is column 1" {
+    try expectSnapshot(1, 5, "ABC\x1b[GX",
+        "XBC  \n");
+}
+
+// ===========================================================================
+// CSI d — Line Position Absolute (VPA)
+// ===========================================================================
+
+test "golden: VPA moves cursor to row" {
+    try expectSnapshot(4, 5, "\x1b[3dX",
+        "     \n" ++
+        "     \n" ++
+        "X    \n" ++
+        "     \n");
+}
+
+// ===========================================================================
+// CSI E — Cursor Next Line (CNL)
+// ===========================================================================
+
+test "golden: CNL moves down and to column 0" {
+    try expectSnapshot(3, 6, "ABC\x1b[EX",
+        "ABC   \n" ++
+        "X     \n" ++
+        "      \n");
+}
+
+test "golden: CNL n=2 moves down 2 rows" {
+    try expectSnapshot(4, 5, "ABC\x1b[2EX",
+        "ABC  \n" ++
+        "     \n" ++
+        "X    \n" ++
+        "     \n");
+}
+
+// ===========================================================================
+// CSI F — Cursor Previous Line (CPL)
+// ===========================================================================
+
+test "golden: CPL moves up and to column 0" {
+    try expectSnapshot(3, 6, "\x1b[3;4HA\x1b[FX",
+        "      \n" ++
+        "X     \n" ++
+        "   A  \n");
+}
+
+// ===========================================================================
+// CSI L — Insert Lines (IL)
+// ===========================================================================
+
+test "golden: IL inserts blank line pushing content down" {
+    try expectSnapshot(4, 5, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD\x1b[2;1H\x1b[L",
+        "AAAA \n" ++
+        "     \n" ++
+        "BBBB \n" ++
+        "CCCC \n");
+}
+
+test "golden: IL inserts 2 blank lines" {
+    try expectSnapshot(4, 5, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD\x1b[2;1H\x1b[2L",
+        "AAAA \n" ++
+        "     \n" ++
+        "     \n" ++
+        "BBBB \n");
+}
+
+// ===========================================================================
+// CSI M — Delete Lines (DL)
+// ===========================================================================
+
+test "golden: DL deletes line pulling content up" {
+    try expectSnapshot(4, 5, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD\x1b[2;1H\x1b[M",
+        "AAAA \n" ++
+        "CCCC \n" ++
+        "DDDD \n" ++
+        "     \n");
+}
+
+test "golden: DL deletes 2 lines" {
+    try expectSnapshot(4, 5, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD\x1b[2;1H\x1b[2M",
+        "AAAA \n" ++
+        "DDDD \n" ++
+        "     \n" ++
+        "     \n");
+}
+
+// ===========================================================================
+// CSI @ — Insert Characters (ICH)
+// ===========================================================================
+
+test "golden: ICH inserts blank chars shifting right" {
+    try expectSnapshot(1, 8, "ABCDEFGH\x1b[1;3H\x1b[2@",
+        "AB  CDEF\n");
+}
+
+// ===========================================================================
+// CSI P — Delete Characters (DCH)
+// ===========================================================================
+
+test "golden: DCH deletes chars shifting left" {
+    try expectSnapshot(1, 8, "ABCDEFGH\x1b[1;3H\x1b[2P",
+        "ABEFGH  \n");
+}
+
+// ===========================================================================
+// CSI X — Erase Characters (ECH)
+// ===========================================================================
+
+test "golden: ECH erases chars without shifting" {
+    try expectSnapshot(1, 8, "ABCDEFGH\x1b[1;3H\x1b[3X",
+        "AB   FGH\n");
+}
+
+// ===========================================================================
+// CSI S — Scroll Up (SU)
+// ===========================================================================
+
+test "golden: SU scrolls screen up" {
+    try expectSnapshot(3, 5, "AAAA\r\nBBBB\r\nCCCC\x1b[S",
+        "BBBB \n" ++
+        "CCCC \n" ++
+        "     \n");
+}
+
+// ===========================================================================
+// CSI T — Scroll Down (SD)
+// ===========================================================================
+
+test "golden: SD scrolls screen down" {
+    try expectSnapshot(3, 5, "AAAA\r\nBBBB\r\nCCCC\x1b[T",
+        "     \n" ++
+        "AAAA \n" ++
+        "BBBB \n");
+}
+
+// ===========================================================================
 // Incremental CSI with semantics
 // ===========================================================================
 

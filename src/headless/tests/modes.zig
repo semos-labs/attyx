@@ -4,6 +4,37 @@ const input_mod = @import("../../term/input.zig");
 const MouseTrackingMode = @import("../../term/actions.zig").MouseTrackingMode;
 
 // ===========================================================================
+// DECCKM (cursor keys mode)
+// ===========================================================================
+
+test "attr: CSI ?1h enables application cursor keys" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    try std.testing.expect(!engine.state.cursor_keys_app);
+    engine.feed("\x1b[?1h");
+    try std.testing.expect(engine.state.cursor_keys_app);
+}
+
+test "attr: CSI ?1l disables application cursor keys" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("\x1b[?1h");
+    try std.testing.expect(engine.state.cursor_keys_app);
+    engine.feed("\x1b[?1l");
+    try std.testing.expect(!engine.state.cursor_keys_app);
+}
+
+test "attr: DECCKM persists across alt screen switch" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("\x1b[?1h");
+    engine.feed("\x1b[?1049h");
+    try std.testing.expect(engine.state.cursor_keys_app);
+    engine.feed("\x1b[?1049l");
+    try std.testing.expect(engine.state.cursor_keys_app);
+}
+
+// ===========================================================================
 // Bracketed paste toggling
 // ===========================================================================
 
@@ -135,6 +166,73 @@ test "attr: mouse modes persist across alt screen switch" {
     try std.testing.expectEqual(MouseTrackingMode.any_event, engine.state.mouse_tracking);
     try std.testing.expect(engine.state.mouse_sgr);
     try std.testing.expect(engine.state.bracketed_paste);
+}
+
+// ===========================================================================
+// DECAWM (auto-wrap mode)
+// ===========================================================================
+
+test "attr: auto_wrap defaults to true" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    try std.testing.expect(engine.state.auto_wrap);
+}
+
+test "attr: CSI ?7l disables auto-wrap" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("\x1b[?7l");
+    try std.testing.expect(!engine.state.auto_wrap);
+}
+
+test "attr: CSI ?7h re-enables auto-wrap" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("\x1b[?7l");
+    engine.feed("\x1b[?7h");
+    try std.testing.expect(engine.state.auto_wrap);
+}
+
+test "attr: auto-wrap off keeps cursor at last column" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("\x1b[?7l");
+    engine.feed("ABCDE");
+    // With auto-wrap off, D writes at col 3, E overwrites col 3.
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.grid.getCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.grid.getCell(0, 3).char);
+    // Cursor stayed on row 0.
+    try std.testing.expectEqual(@as(usize, 0), engine.state.cursor.row);
+}
+
+test "attr: deferred wrap sets wrap_next flag" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("ABCD");
+    try std.testing.expect(engine.state.wrap_next);
+    try std.testing.expectEqual(@as(usize, 0), engine.state.cursor.row);
+    try std.testing.expectEqual(@as(usize, 3), engine.state.cursor.col);
+}
+
+test "attr: cursor movement clears wrap_next" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("ABCD");
+    try std.testing.expect(engine.state.wrap_next);
+    engine.feed("\x1b[H");
+    try std.testing.expect(!engine.state.wrap_next);
+}
+
+test "attr: CR clears wrap_next" {
+    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    defer engine.deinit();
+    engine.feed("ABCD");
+    try std.testing.expect(engine.state.wrap_next);
+    engine.feed("\r");
+    try std.testing.expect(!engine.state.wrap_next);
+    try std.testing.expectEqual(@as(usize, 0), engine.state.cursor.col);
 }
 
 // ===========================================================================

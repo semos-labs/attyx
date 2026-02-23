@@ -45,7 +45,7 @@ test "engine feed produces same result as direct apply" {
     defer e.deinit();
 
     e.feed("Hi");
-    try std.testing.expectEqual(@as(u8, 'H'), e.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u8, 'i'), e.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'H'), e.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'i'), e.state.grid.getCell(0, 1).char);
     try std.testing.expectEqual(@as(usize, 2), e.state.cursor.col);
 }
