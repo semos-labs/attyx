@@ -48,6 +48,16 @@ pub const ScrollRegion = struct {
     bottom: u16 = 0,
 };
 
+/// Cursor shape set by DECSCUSR (CSI Ps SP q).
+pub const CursorShape = enum(u3) {
+    blinking_block = 0,
+    steady_block = 1,
+    blinking_underline = 2,
+    steady_underline = 3,
+    blinking_bar = 4,
+    steady_bar = 5,
+};
+
 /// Mouse tracking mode, controlled by DEC private modes 1000/1002/1003.
 pub const MouseTrackingMode = enum {
     off,
@@ -140,4 +150,6 @@ pub const Action = union(enum) {
     device_attributes,
     /// CSI > c / CSI > 0 c — Secondary Device Attributes (DA2).
     secondary_device_attributes,
+    /// CSI Ps SP q — DECSCUSR: set cursor shape.
+    set_cursor_shape: CursorShape,
 };

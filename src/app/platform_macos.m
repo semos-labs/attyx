@@ -6,6 +6,7 @@
 #import <MetalKit/MetalKit.h>
 #import <CoreText/CoreText.h>
 #import <Carbon/Carbon.h>  // kVK_* virtual key codes
+#import <QuartzCore/CABase.h>
 
 #include "bridge.h"
 
@@ -40,6 +41,15 @@ volatile int g_alt_screen = 0;
 volatile int g_sel_start_row = -1, g_sel_start_col = -1;
 volatile int g_sel_end_row = -1, g_sel_end_col = -1;
 volatile int g_sel_active = 0;
+
+// Cursor shape and visibility
+volatile int g_cursor_shape   = 0;
+volatile int g_cursor_visible = 1;
+
+// Window title
+char         g_title_buf[ATTYX_TITLE_MAX];
+volatile int g_title_len     = 0;
+volatile int g_title_changed = 0;
 
 // IME composition state
 volatile int  g_ime_composing    = 0;
@@ -454,6 +464,12 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
     int         _allocRows;
     int         _allocCols;
 
+    // Cursor blink state
+    BOOL        _blinkOn;
+    CFAbsoluteTime _blinkLastToggle;
+    int         _prevCursorShape;
+    int         _prevCursorVisible;
+
     // Debug stats
     BOOL        _debugStats;
     uint64_t    _statsFrames;
@@ -508,10 +524,14 @@ static BOOL cellIsSelected(int row, int col) {
     _metalBufCapText  = 0;
     _cellSnapshot     = NULL;
     _cellSnapshotCap  = 0;
-    _prevCursorRow    = -1;
-    _prevCursorCol    = -1;
-    _fullRedrawNeeded = YES;
-    _allocRows        = 0;
+    _prevCursorRow      = -1;
+    _prevCursorCol      = -1;
+    _prevCursorShape    = -1;
+    _prevCursorVisible  = -1;
+    _blinkOn            = YES;
+    _blinkLastToggle    = CACurrentMediaTime();
+    _fullRedrawNeeded   = YES;
+    _allocRows          = 0;
     _allocCols        = 0;
 
     _debugStats       = (getenv("ATTYX_DEBUG_STATS") != NULL);
@@ -594,7 +614,26 @@ static BOOL cellIsSelected(int row, int col) {
 
         int curRow = g_cursor_row;
         int curCol = g_cursor_col;
-        BOOL cursorMoved = (curRow != _prevCursorRow || curCol != _prevCursorCol);
+        int curShape = g_cursor_shape;
+        int curVisible = g_cursor_visible;
+
+        BOOL cursorChanged = (curRow != _prevCursorRow || curCol != _prevCursorCol
+                              || curShape != _prevCursorShape || curVisible != _prevCursorVisible);
+
+        // Blink logic: toggle every 500ms for blinking shapes (0, 2, 4).
+        BOOL isBlinking = curVisible && (curShape == 0 || curShape == 2 || curShape == 4);
+        CFAbsoluteTime now = CACurrentMediaTime();
+        if (cursorChanged) {
+            _blinkOn = YES;
+            _blinkLastToggle = now;
+        } else if (isBlinking) {
+            if (now - _blinkLastToggle >= 0.5) {
+                _blinkOn = !_blinkOn;
+                _blinkLastToggle = now;
+            }
+        } else {
+            _blinkOn = YES;
+        }
 
         // --- Reallocate persistent buffers if grid size changed ---
         if (rows != _allocRows || cols != _allocCols) {
@@ -621,8 +660,8 @@ static BOOL cellIsSelected(int row, int col) {
                                                  options:MTLResourceStorageModeShared];
         }
 
-        // --- Frame skip: nothing dirty, cursor didn't move ---
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorMoved) {
+        // --- Frame skip: nothing dirty, cursor didn't move, no blink toggle ---
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -686,24 +725,41 @@ static BOOL cellIsSelected(int row, int col) {
             }
         }
 
-        // --- Update cursor quad in bg vertices ---
+        // --- Update cursor quad in bg vertices (shape-aware) ---
         int cursorSlot = total * 6;
         memset(&_bgVerts[cursorSlot], 0, sizeof(Vertex) * 6);
 
         int bgVertCount = total * 6;
-        if (curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols) {
+        BOOL drawCursor = curVisible && _blinkOn
+                          && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
+        if (drawCursor) {
             float cx0 = curCol * gw;
             float cy0 = curRow * gh;
-            float cx1 = cx0 + gw;
-            float cy1 = cy0 + gh;
-            float cr = 0.86f, cg = 0.86f, cb = 0.86f;
+            float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
 
-            _bgVerts[cursorSlot+0] = (Vertex){ cx0,cy0, 0,0, cr,cg,cb,1 };
-            _bgVerts[cursorSlot+1] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-            _bgVerts[cursorSlot+2] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
-            _bgVerts[cursorSlot+3] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-            _bgVerts[cursorSlot+4] = (Vertex){ cx1,cy1, 0,0, cr,cg,cb,1 };
-            _bgVerts[cursorSlot+5] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
+            float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
+            switch (curShape) {
+                case 0: case 1: // block (blinking/steady)
+                    break;
+                case 2: case 3: { // underline (blinking/steady): 2px at bottom
+                    float thickness = fmaxf(2.0f, 1.0f);
+                    ry0 = ry1 - thickness;
+                    break;
+                }
+                case 4: case 5: { // bar (blinking/steady): 2px at left
+                    float thickness = fmaxf(2.0f, 1.0f);
+                    rx1 = rx0 + thickness;
+                    break;
+                }
+                default: break;
+            }
+
+            _bgVerts[cursorSlot+0] = (Vertex){ rx0,ry0, 0,0, cr,cg_c,cb,1 };
+            _bgVerts[cursorSlot+1] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+            _bgVerts[cursorSlot+2] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+            _bgVerts[cursorSlot+3] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+            _bgVerts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
+            _bgVerts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
             bgVertCount += 6;
         }
 
@@ -754,9 +810,26 @@ static BOOL cellIsSelected(int row, int col) {
             ti = _totalTextVerts;
         }
 
-        _prevCursorRow = curRow;
-        _prevCursorCol = curCol;
-        _fullRedrawNeeded = NO;
+        _prevCursorRow     = curRow;
+        _prevCursorCol     = curCol;
+        _prevCursorShape   = curShape;
+        _prevCursorVisible = curVisible;
+        _fullRedrawNeeded  = NO;
+
+        // --- Window title update ---
+        if (g_title_changed) {
+            int tlen = g_title_len;
+            if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+                NSString* title = [[NSString alloc] initWithBytes:g_title_buf
+                                                           length:tlen
+                                                         encoding:NSUTF8StringEncoding];
+                if (title) {
+                    NSWindow* win = [(MTKView*)view window];
+                    if (win) [win setTitle:title];
+                }
+            }
+            g_title_changed = 0;
+        }
 
         // --- Copy vertices into persistent Metal buffers (no alloc per frame) ---
         memcpy(_bgMetalBuf.contents, _bgVerts, sizeof(Vertex) * bgVertCount);

@@ -44,6 +44,13 @@ volatile int g_sel_start_row = -1, g_sel_start_col = -1;
 volatile int g_sel_end_row = -1, g_sel_end_col = -1;
 volatile int g_sel_active = 0;
 
+volatile int g_cursor_shape   = 0;
+volatile int g_cursor_visible = 1;
+
+char         g_title_buf[ATTYX_TITLE_MAX];
+volatile int g_title_len     = 0;
+volatile int g_title_changed = 0;
+
 volatile int  g_ime_composing    = 0;
 volatile int  g_ime_cursor_index = -1;
 volatile int  g_ime_anchor_row   = 0;
@@ -545,6 +552,10 @@ static int          g_cell_snapshot_cap = 0;
 
 static int          g_prev_cursor_row = -1;
 static int          g_prev_cursor_col = -1;
+static int          g_prev_cursor_shape = -1;
+static int          g_prev_cursor_vis = -1;
+static int          g_blink_on = 1;
+static double       g_blink_last_toggle = 0.0;
 static int          g_full_redraw = 1;
 static int          g_alloc_rows = 0;
 static int          g_alloc_cols = 0;
@@ -573,7 +584,25 @@ static void drawFrame(void) {
 
     int curRow = g_cursor_row;
     int curCol = g_cursor_col;
-    int cursorMoved = (curRow != g_prev_cursor_row || curCol != g_prev_cursor_col);
+    int curShape = g_cursor_shape;
+    int curVis = g_cursor_visible;
+
+    int cursorChanged = (curRow != g_prev_cursor_row || curCol != g_prev_cursor_col
+                         || curShape != g_prev_cursor_shape || curVis != g_prev_cursor_vis);
+
+    int isBlinking = curVis && (curShape == 0 || curShape == 2 || curShape == 4);
+    double now = glfwGetTime();
+    if (cursorChanged) {
+        g_blink_on = 1;
+        g_blink_last_toggle = now;
+    } else if (isBlinking) {
+        if (now - g_blink_last_toggle >= 0.5) {
+            g_blink_on = !g_blink_on;
+            g_blink_last_toggle = now;
+        }
+    } else {
+        g_blink_on = 1;
+    }
 
     // Reallocate persistent buffers if grid size changed
     if (rows != g_alloc_rows || cols != g_alloc_cols) {
@@ -592,7 +621,7 @@ static void drawFrame(void) {
         g_full_redraw = 1;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorMoved) return;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking) return;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -637,20 +666,38 @@ static void drawFrame(void) {
         }
     }
 
-    // Cursor quad
+    // Cursor quad (shape-aware)
     int cursorSlot = total * 6;
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
-    if (curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols) {
+    int drawCursor = curVis && g_blink_on
+                     && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
+    if (drawCursor) {
         float cx0 = curCol * gw, cy0 = curRow * gh;
-        float cx1 = cx0 + gw, cy1 = cy0 + gh;
-        float cr = 0.86f, cg = 0.86f, cb = 0.86f;
-        g_bg_verts[cursorSlot+0] = (Vertex){ cx0,cy0, 0,0, cr,cg,cb,1 };
-        g_bg_verts[cursorSlot+1] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-        g_bg_verts[cursorSlot+2] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
-        g_bg_verts[cursorSlot+3] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-        g_bg_verts[cursorSlot+4] = (Vertex){ cx1,cy1, 0,0, cr,cg,cb,1 };
-        g_bg_verts[cursorSlot+5] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
+        float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
+        float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
+
+        switch (curShape) {
+            case 0: case 1: break; // block
+            case 2: case 3: { // underline
+                float th = fmaxf(2.0f, 1.0f);
+                ry0 = ry1 - th;
+                break;
+            }
+            case 4: case 5: { // bar
+                float th = fmaxf(2.0f, 1.0f);
+                rx1 = rx0 + th;
+                break;
+            }
+            default: break;
+        }
+
+        g_bg_verts[cursorSlot+0] = (Vertex){ rx0,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+1] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+2] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+3] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
         bgVertCount += 6;
     }
 
@@ -697,9 +744,23 @@ static void drawFrame(void) {
         ti = g_total_text_verts;
     }
 
-    g_prev_cursor_row = curRow;
-    g_prev_cursor_col = curCol;
+    g_prev_cursor_row   = curRow;
+    g_prev_cursor_col   = curCol;
+    g_prev_cursor_shape = curShape;
+    g_prev_cursor_vis   = curVis;
     g_full_redraw = 0;
+
+    // Window title update
+    if (g_title_changed && g_window) {
+        int tlen = g_title_len;
+        if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+            char tbuf[ATTYX_TITLE_MAX];
+            memcpy(tbuf, g_title_buf, tlen);
+            tbuf[tlen] = 0;
+            glfwSetWindowTitle(g_window, tbuf);
+        }
+        g_title_changed = 0;
+    }
 
     // --- GL draw ---
     int fb_w, fb_h;

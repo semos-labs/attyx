@@ -72,6 +72,8 @@ pub const TerminalState = struct {
     mouse_tracking: actions_mod.MouseTrackingMode = .off,
     mouse_sgr: bool = false,
     cursor_keys_app: bool = false,
+    cursor_visible: bool = true,
+    cursor_shape: actions_mod.CursorShape = .blinking_block,
 
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
@@ -114,7 +116,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape => {},
             else => {
                 self.wrap_next = false;
             },
@@ -210,6 +212,9 @@ pub const TerminalState = struct {
             .cursor_position_report => self.respondCursorPosition(),
             .device_attributes => self.respondDeviceAttributes(),
             .secondary_device_attributes => self.respondSecondaryDeviceAttributes(),
+            .set_cursor_shape => |shape| {
+                self.cursor_shape = shape;
+            },
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -412,6 +417,7 @@ pub const TerminalState = struct {
                 switch (param) {
                     1 => self.cursor_keys_app = true,
                     7 => self.auto_wrap = true,
+                    25 => self.cursor_visible = true,
                     47, 1047, 1049 => self.enterAltScreen(),
                     1000 => self.mouse_tracking = .x10,
                     1002 => self.mouse_tracking = .button_event,
@@ -427,6 +433,7 @@ pub const TerminalState = struct {
                         self.auto_wrap = false;
                         self.wrap_next = false;
                     },
+                    25 => self.cursor_visible = false,
                     47, 1047, 1049 => self.leaveAltScreen(),
                     1000 => {
                         if (self.mouse_tracking == .x10) self.mouse_tracking = .off;
