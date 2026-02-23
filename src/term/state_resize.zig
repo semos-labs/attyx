@@ -1,0 +1,173 @@
+const std = @import("std");
+const grid_mod = @import("grid.zig");
+const scrollback_mod = @import("scrollback.zig");
+
+const TerminalState = @import("state.zig").TerminalState;
+
+/// Grid.DropHandler callback: pushes a dropped reflow row into scrollback.
+fn onDropRow(ctx_raw: *anyopaque, row_cells: []const grid_mod.Cell) void {
+    const self: *TerminalState = @ptrCast(@alignCast(ctx_raw));
+    self.scrollback.pushLine(row_cells);
+}
+
+fn clampState(self: *TerminalState, rows: usize, cols: usize) void {
+    self.cursor.row = @min(self.cursor.row, rows - 1);
+    self.cursor.col = @min(self.cursor.col, cols - 1);
+
+    self.scroll_top = @min(self.scroll_top, rows - 1);
+    self.scroll_bottom = rows - 1;
+
+    if (self.scroll_top >= self.scroll_bottom) {
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
+    }
+
+    if (self.saved_cursor) |*saved| {
+        saved.cursor.row = @min(saved.cursor.row, rows - 1);
+        saved.cursor.col = @min(saved.cursor.col, cols - 1);
+        saved.scroll_top = @min(saved.scroll_top, rows - 1);
+        saved.scroll_bottom = rows - 1;
+        if (saved.scroll_top >= saved.scroll_bottom) {
+            saved.scroll_top = 0;
+            saved.scroll_bottom = rows - 1;
+        }
+    }
+}
+
+fn clampInactiveState(self: *TerminalState, rows: usize, cols: usize) void {
+    self.inactive_cursor.row = @min(self.inactive_cursor.row, rows - 1);
+    self.inactive_cursor.col = @min(self.inactive_cursor.col, cols - 1);
+
+    self.inactive_scroll_top = @min(self.inactive_scroll_top, rows - 1);
+    self.inactive_scroll_bottom = rows - 1;
+
+    if (self.inactive_scroll_top >= self.inactive_scroll_bottom) {
+        self.inactive_scroll_top = 0;
+        self.inactive_scroll_bottom = rows - 1;
+    }
+
+    if (self.inactive_saved_cursor) |*saved| {
+        saved.cursor.row = @min(saved.cursor.row, rows - 1);
+        saved.cursor.col = @min(saved.cursor.col, cols - 1);
+        saved.scroll_top = @min(saved.scroll_top, rows - 1);
+        saved.scroll_bottom = rows - 1;
+        if (saved.scroll_top >= saved.scroll_bottom) {
+            saved.scroll_top = 0;
+            saved.scroll_bottom = rows - 1;
+        }
+    }
+}
+
+/// Resize both grids to new dimensions. Preserves overlapping content,
+/// clamps cursors and scroll regions. Marks all rows dirty.
+pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
+    if (new_rows == self.grid.rows and new_cols == self.grid.cols) return;
+
+    // Pre-process: strip right-aligned content (e.g. Starship RPROMPT)
+    // placed via cursor-jump that spans the full old width. Without
+    // this the wide logical line wraps on shrink, creating garbled
+    // fragment rows the shell's SIGWINCH handler can't reach.
+    if (new_cols < self.grid.cols) {
+        const gap_threshold = @max(8, self.grid.cols / 4);
+        for (0..self.grid.rows) |r| {
+            if (self.grid.row_wrapped[r]) continue;
+            const base = r * self.grid.cols;
+            var last: usize = 0;
+            for (0..self.grid.cols) |c| {
+                if (!grid_mod.isDefaultCell(self.grid.cells[base + c])) last = c + 1;
+            }
+            if (last <= new_cols) continue;
+            var gap_start: usize = 0;
+            var gap_len: usize = 0;
+            for (0..last) |c| {
+                if (grid_mod.isDefaultCell(self.grid.cells[base + c])) {
+                    if (gap_len == 0) gap_start = c;
+                    gap_len += 1;
+                } else {
+                    if (gap_len >= gap_threshold and gap_start > 0) {
+                        @memset(self.grid.cells[base + gap_start .. base + self.grid.cols], grid_mod.Cell{});
+                        break;
+                    }
+                    gap_len = 0;
+                }
+            }
+        }
+    }
+
+    // Migrate scrollback to new column width BEFORE grid.resize, so
+    // the drop handler can push reflowed rows at the correct stride.
+    if (new_cols != self.scrollback.cols) {
+        var new_sb = try scrollback_mod.Scrollback.init(
+            self.grid.allocator,
+            scrollback_mod.Scrollback.default_max_lines,
+            new_cols,
+        );
+        for (0..self.scrollback.count) |i| {
+            const old_line = self.scrollback.getLine(i);
+            new_sb.pushLine(old_line);
+        }
+        self.scrollback.deinit();
+        self.scrollback = new_sb;
+    }
+
+    // Remember whether the cursor was at the bottom of the old grid.
+    const was_at_bottom = !self.alt_active and self.cursor.row >= self.grid.rows - 1;
+
+    const drop: ?grid_mod.Grid.DropHandler = if (!self.alt_active)
+        .{ .ctx = @ptrCast(self), .save = onDropRow }
+    else
+        null;
+    try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col, drop);
+    try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
+
+    // Pin content to the bottom.
+    if (was_at_bottom) {
+        var content_bottom: usize = self.cursor.row;
+        {
+            var r: usize = new_rows;
+            while (r > content_bottom + 1) {
+                r -= 1;
+                const base = r * self.grid.cols;
+                for (0..self.grid.cols) |col| {
+                    if (!grid_mod.isDefaultCell(self.grid.cells[base + col])) {
+                        content_bottom = r;
+                        break;
+                    }
+                }
+                if (content_bottom == r) break;
+            }
+        }
+
+        const shift = new_rows - 1 - content_bottom;
+        if (shift > 0) {
+            const cols = self.grid.cols;
+            var r: usize = new_rows;
+            while (r > shift) {
+                r -= 1;
+                const src = r - shift;
+                @memcpy(
+                    self.grid.cells[r * cols .. (r + 1) * cols],
+                    self.grid.cells[src * cols .. (src + 1) * cols],
+                );
+                self.grid.row_wrapped[r] = self.grid.row_wrapped[src];
+            }
+            for (0..shift) |row| {
+                @memset(self.grid.cells[row * cols .. (row + 1) * cols], grid_mod.Cell{});
+                self.grid.row_wrapped[row] = false;
+            }
+            self.cursor.row += shift;
+        }
+    }
+
+    self.viewport_offset = 0;
+
+    for (self.cursor.row..new_rows) |r| {
+        self.grid.row_wrapped[r] = false;
+    }
+
+    clampState(self, new_rows, new_cols);
+    clampInactiveState(self, new_rows, new_cols);
+
+    self.wrap_next = false;
+    self.dirty.markAll(new_rows);
+}

@@ -1,0 +1,674 @@
+// Attyx — Linux renderer (OpenGL 3.3 core): state, init/cleanup, drawFrame.
+// GL/emit/selection/URL helpers live in linux_render_util.c
+
+#include "linux_internal.h"
+
+// ---------------------------------------------------------------------------
+// Renderer state
+// ---------------------------------------------------------------------------
+
+GlyphCache   g_gc;
+GLuint       g_solid_prog, g_text_prog;
+GLint        g_vp_loc_solid, g_vp_loc_text, g_tex_loc;
+GLuint       g_vao, g_vbo;
+static Vertex*      g_bg_verts = NULL;
+static Vertex*      g_text_verts = NULL;
+static int          g_total_text_verts = 0;
+static AttyxCell*   g_cell_snapshot = NULL;
+static int          g_cell_snapshot_cap = 0;
+
+static int          g_prev_cursor_row = -1;
+static int          g_prev_cursor_col = -1;
+static int          g_prev_cursor_shape = -1;
+static int          g_prev_cursor_vis = -1;
+static int          g_blink_on = 1;
+static double       g_blink_last_toggle = 0.0;
+int                 g_full_redraw = 1;
+static int          g_alloc_rows = 0;
+static int          g_alloc_cols = 0;
+static int          g_bg_vert_cap = 0;
+
+float        g_cell_px_w = 0;
+float        g_cell_px_h = 0;
+float        g_content_scale = 1.0f;
+
+// ---------------------------------------------------------------------------
+// Renderer init / cleanup
+// ---------------------------------------------------------------------------
+
+void linux_renderer_init(void) {
+    g_solid_prog = createProgram(kVertSrc, kFragSolidSrc);
+    g_text_prog  = createProgram(kVertSrc, kFragTextSrc);
+    g_vp_loc_solid = glGetUniformLocation(g_solid_prog, "viewport");
+    g_vp_loc_text  = glGetUniformLocation(g_text_prog, "viewport");
+    g_tex_loc      = glGetUniformLocation(g_text_prog, "tex");
+
+    glGenVertexArrays(1, &g_vao);
+    glGenBuffers(1, &g_vbo);
+}
+
+void linux_renderer_cleanup(void) {
+    free(g_bg_verts);   g_bg_verts = NULL;
+    free(g_text_verts); g_text_verts = NULL;
+    free(g_cell_snapshot); g_cell_snapshot = NULL;
+    glDeleteBuffers(1, &g_vbo);
+    glDeleteVertexArrays(1, &g_vao);
+    glDeleteProgram(g_solid_prog);
+    glDeleteProgram(g_text_prog);
+    glDeleteTextures(1, &g_gc.texture);
+}
+
+// ---------------------------------------------------------------------------
+// Font rebuild (called from main loop when g_needs_font_rebuild is set)
+// ---------------------------------------------------------------------------
+void linux_rebuild_font(void) {
+    // Capture ft_lib before overwriting g_gc.
+    FT_Library ft_lib = g_gc.ft_lib;
+    glDeleteTextures(1, &g_gc.texture);
+    FT_Done_Face(g_gc.ft_face);
+
+    g_gc = createGlyphCache(ft_lib, g_content_scale);
+    g_cell_px_w = g_gc.glyph_w;
+    g_cell_px_h = g_gc.glyph_h;
+
+    // Snap window to new cell dimensions (logical pixels, not framebuffer).
+    int newW = (int)(g_cols * g_cell_px_w / g_content_scale);
+    int newH = (int)(g_rows * g_cell_px_h / g_content_scale);
+    glfwSetWindowSize(g_window, newW, newH);
+
+    g_full_redraw = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Draw frame (main render loop body)
+// ---------------------------------------------------------------------------
+void drawFrame(void) {
+    if (!g_cells || g_cols <= 0 || g_rows <= 0) return;
+
+    uint64_t gen1 = g_cell_gen;
+    if (gen1 & 1) return;
+
+    int rows = g_rows;
+    int cols = g_cols;
+    int total = cols * rows;
+
+    uint64_t dirty[4];
+    for (int i = 0; i < 4; i++)
+        dirty[i] = __sync_lock_test_and_set((volatile uint64_t*)&g_dirty[i], 0);
+
+    int curRow = g_cursor_row;
+    int curCol = g_cursor_col;
+    int curShape = g_cursor_shape;
+    int curVis = g_cursor_visible;
+
+    int cursorChanged = (curRow != g_prev_cursor_row || curCol != g_prev_cursor_col
+                         || curShape != g_prev_cursor_shape || curVis != g_prev_cursor_vis);
+
+    int isBlinking = curVis && (curShape == 0 || curShape == 2 || curShape == 4);
+    double now = glfwGetTime();
+    if (cursorChanged) {
+        g_blink_on = 1;
+        g_blink_last_toggle = now;
+    } else if (isBlinking) {
+        if (now - g_blink_last_toggle >= 0.5) {
+            g_blink_on = !g_blink_on;
+            g_blink_last_toggle = now;
+        }
+    } else {
+        g_blink_on = 1;
+    }
+
+    // Reallocate persistent buffers if grid size changed
+    if (rows != g_alloc_rows || cols != g_alloc_cols) {
+        free(g_bg_verts);
+        free(g_text_verts);
+        free(g_cell_snapshot);
+
+        g_bg_vert_cap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
+        g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
+        g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
+        g_cell_snapshot = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
+        g_cell_snapshot_cap = total;
+        g_total_text_verts = 0;
+        g_alloc_rows = rows;
+        g_alloc_cols = cols;
+        g_full_redraw = 1;
+    }
+
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open) return;
+
+    if (g_cell_snapshot && g_cell_snapshot_cap >= total)
+        memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
+    else
+        return;
+
+    uint64_t gen2 = g_cell_gen;
+    if (gen1 != gen2) return;
+
+    AttyxCell* cells = g_cell_snapshot;
+    float gw = g_gc.glyph_w;
+    float gh = g_gc.glyph_h;
+    float viewport[2] = { cols * gw, rows * gh };
+    float atlasW = (float)g_gc.atlas_w;
+    float glyphW = g_gc.glyph_w;
+    float glyphH = g_gc.glyph_h;
+    int atlasCols = g_gc.atlas_cols;
+
+    // Update bg vertices for dirty rows
+    for (int row = 0; row < rows; row++) {
+        if (!g_full_redraw && !dirtyBitTest(dirty, row)) continue;
+        for (int col = 0; col < cols; col++) {
+            int i = row * cols + col;
+            float x0 = col * gw, y0 = row * gh;
+            float x1 = x0 + gw, y1 = y0 + gh;
+            const AttyxCell* cell = &cells[i];
+            float br, bg, bb;
+            if (cellIsSelected(row, col)) {
+                br = 0.20f; bg = 0.40f; bb = 0.70f;
+            } else {
+                br = cell->bg_r / 255.0f;
+                bg = cell->bg_g / 255.0f;
+                bb = cell->bg_b / 255.0f;
+            }
+            int bi = i * 6;
+            g_bg_verts[bi+0] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+1] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+2] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+3] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+4] = (Vertex){ x1,y1, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+5] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+        }
+    }
+
+    // Cursor quad (shape-aware)
+    int cursorSlot = total * 6;
+    memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
+    int bgVertCount = total * 6;
+    int drawCursor = curVis && g_blink_on
+                     && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
+    if (drawCursor) {
+        float cx0 = curCol * gw, cy0 = curRow * gh;
+        float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
+        float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
+
+        switch (curShape) {
+            case 0: case 1: break; // block
+            case 2: case 3: { // underline
+                float th = fmaxf(2.0f, 1.0f);
+                ry0 = ry1 - th;
+                break;
+            }
+            case 4: case 5: { // bar
+                float th = fmaxf(2.0f, 1.0f);
+                rx1 = rx0 + th;
+                break;
+            }
+            default: break;
+        }
+
+        g_bg_verts[cursorSlot+0] = (Vertex){ rx0,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+1] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+2] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+3] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
+        g_bg_verts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+        bgVertCount += 6;
+    }
+
+    // Hyperlink underlines: OSC 8 (always visible) + detected URLs (on hover)
+    if (!g_sel_active) {
+        uint32_t hoverLid = g_hover_link_id;
+        float ulH = fmaxf(2.0f, 1.0f);
+
+        // OSC 8 links: always show underline
+        for (int i = 0; i < total; i++) {
+            uint32_t lid = cells[i].link_id;
+            if (lid == 0) continue;
+            if (bgVertCount + 6 > g_bg_vert_cap) break;
+            float lr, lg, lb;
+            if (lid == hoverLid) {
+                lr = 0.4f; lg = 0.7f; lb = 1.0f;
+            } else {
+                lr = 0.25f; lg = 0.40f; lb = 0.65f;
+            }
+            int lrow = i / cols, lcol = i % cols;
+            float lx0 = lcol * gw;
+            float lx1 = lx0 + gw;
+            float ly1 = (lrow + 1) * gh;
+            float ly0 = ly1 - ulH;
+            g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+            g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+            bgVertCount += 6;
+        }
+
+        // Detected URLs: show underline only when hovered
+        int dRow = g_detected_url_row;
+        int dStart = g_detected_url_start_col;
+        int dEnd = g_detected_url_end_col;
+        if (g_detected_url_len > 0 && dRow >= 0 && dRow < rows) {
+            float lr = 0.4f, lg = 0.7f, lb = 1.0f;
+            for (int c = dStart; c <= dEnd && c < cols; c++) {
+                if (bgVertCount + 6 > g_bg_vert_cap) break;
+                float lx0 = c * gw;
+                float lx1 = lx0 + gw;
+                float ly1 = (dRow + 1) * gh;
+                float ly0 = ly1 - ulH;
+                g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                bgVertCount += 6;
+            }
+        }
+    }
+
+    // Search match highlights
+    if (g_search_active) {
+        int visCount = g_search_vis_count;
+        int srchRow = g_search_cur_vis_row;
+        int srchCs = g_search_cur_vis_cs;
+        int srchCe = g_search_cur_vis_ce;
+        for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
+            AttyxSearchVis m = g_search_vis[vi];
+            if (m.row < 0 || m.row >= rows) continue;
+            int isCurrent = (m.row == srchRow && m.col_start == srchCs && m.col_end == srchCe);
+            float hr, hg, hb, ha;
+            if (isCurrent) {
+                hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.75f;
+            } else {
+                hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.28f;
+            }
+            for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
+                if (bgVertCount + 6 > g_bg_vert_cap) break;
+                float lx0 = cc * gw, lx1 = lx0 + gw;
+                float ly0 = m.row * gh, ly1 = ly0 + gh;
+                g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                bgVertCount += 6;
+            }
+        }
+    }
+
+    // Text vertices
+    int ti = 0;
+    if (g_full_redraw || dirtyAny(dirty)) {
+        for (int i = 0; i < total; i++) {
+            const AttyxCell* cell = &cells[i];
+            uint32_t ch = cell->character;
+            if (ch <= 32) continue;
+
+            int row = i / cols, col = i % cols;
+            float x0 = col * gw, y0 = row * gh;
+            float x1 = x0 + gw, y1 = y0 + gh;
+
+            int slot = glyphCacheLookup(&g_gc, ch);
+            if (slot < 0) {
+                slot = glyphCacheRasterize(&g_gc, ch);
+                atlasW = (float)g_gc.atlas_w;
+            }
+
+            int ac = slot % atlasCols;
+            int ar = slot / atlasCols;
+            float atlasH = (float)g_gc.atlas_h;
+            float au0 = ac       * glyphW / atlasW;
+            float av0 = ar       * glyphH / atlasH;
+            float au1 = (ac + 1) * glyphW / atlasW;
+            float av1 = (ar + 1) * glyphH / atlasH;
+
+            float fr = cell->fg_r / 255.0f;
+            float fg = cell->fg_g / 255.0f;
+            float fb = cell->fg_b / 255.0f;
+
+            g_text_verts[ti+0] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
+            g_text_verts[ti+1] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+            g_text_verts[ti+2] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+            g_text_verts[ti+3] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+            g_text_verts[ti+4] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
+            g_text_verts[ti+5] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+            ti += 6;
+        }
+        g_total_text_verts = ti;
+    } else {
+        ti = g_total_text_verts;
+    }
+
+    g_prev_cursor_row   = curRow;
+    g_prev_cursor_col   = curCol;
+    g_prev_cursor_shape = curShape;
+    g_prev_cursor_vis   = curVis;
+    g_full_redraw = 0;
+
+    // Window title update
+    if (g_title_changed && g_window) {
+        int tlen = g_title_len;
+        if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+            char tbuf[ATTYX_TITLE_MAX];
+            memcpy(tbuf, g_title_buf, tlen);
+            tbuf[tlen] = 0;
+            glfwSetWindowTitle(g_window, tbuf);
+        }
+        g_title_changed = 0;
+    }
+
+    // --- GL draw ---
+    int fb_w, fb_h;
+    glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+
+    glClearColor(0.118f, 0.118f, 0.141f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    int grid_w = (int)viewport[0];
+    int grid_h = (int)viewport[1];
+    glViewport(0, fb_h - grid_h, grid_w, grid_h);
+
+    glBindVertexArray(g_vao);
+
+    // BG pass (blending on so search highlights respect alpha)
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(g_solid_prog);
+    glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * bgVertCount,
+                 g_bg_verts, GL_DYNAMIC_DRAW);
+    setupVertexAttribs();
+    glDrawArrays(GL_TRIANGLES, 0, bgVertCount);
+    glDisable(GL_BLEND);
+
+    // Text pass
+    if (ti > 0) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_text_prog);
+        glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_gc.texture);
+        glUniform1i(g_tex_loc, 0);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * ti,
+                     g_text_verts, GL_DYNAMIC_DRAW);
+        setupVertexAttribs();
+        glDrawArrays(GL_TRIANGLES, 0, ti);
+        glDisable(GL_BLEND);
+    }
+
+    // IME preedit overlay
+    if (g_ime_composing && g_ime_preedit_len > 0) {
+        int pRow = g_ime_anchor_row;
+        int pCol = g_ime_anchor_col;
+        if (pRow >= 0 && pRow < rows && pCol >= 0 && pCol < cols) {
+            char preeditCopy[ATTYX_IME_MAX_BYTES];
+            int pLen = g_ime_preedit_len;
+            if (pLen > ATTYX_IME_MAX_BYTES - 1) pLen = ATTYX_IME_MAX_BYTES - 1;
+            memcpy(preeditCopy, g_ime_preedit, pLen);
+            preeditCopy[pLen] = '\0';
+
+            int preCharCount = 0;
+            uint32_t preCPs[128];
+            const uint8_t* p = (const uint8_t*)preeditCopy;
+            const uint8_t* end = p + pLen;
+            while (p < end && preCharCount < 128) {
+                uint32_t cp = 0;
+                if ((*p & 0x80) == 0)         { cp = *p++; }
+                else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F); p++; if (p < end) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F); p++; for (int j = 0; j < 2 && p < end; j++) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                else if ((*p & 0xF8) == 0xF0) { cp = (*p & 0x07); p++; for (int j = 0; j < 3 && p < end; j++) { cp = (cp << 6) | (*p & 0x3F); p++; } }
+                else { p++; continue; }
+                preCPs[preCharCount++] = cp;
+            }
+
+            int preCells = preCharCount;
+            if (pCol + preCells > cols) preCells = cols - pCol;
+
+            Vertex imeVerts[128 * 6 + 6];
+            int iv = 0;
+            for (int i = 0; i < preCells; i++) {
+                float x0 = (pCol + i) * gw, y0 = pRow * gh;
+                float x1 = x0 + gw, y1 = y0 + gh;
+                float br = 0.20f, bg = 0.20f, bb = 0.30f;
+                imeVerts[iv++] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
+                imeVerts[iv++] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+                imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+                imeVerts[iv++] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
+                imeVerts[iv++] = (Vertex){ x1,y1, 0,0, br,bg,bb,1 };
+                imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+            }
+            float ulH = 2.0f;
+            float ulY0 = pRow * gh + gh - ulH, ulY1 = pRow * gh + gh;
+            float ulX0 = pCol * gw, ulX1 = (pCol + preCells) * gw;
+            imeVerts[iv++] = (Vertex){ ulX0,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+            imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+            imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+            imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
+            imeVerts[iv++] = (Vertex){ ulX1,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+            imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
+
+            glUseProgram(g_solid_prog);
+            glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * iv,
+                         imeVerts, GL_DYNAMIC_DRAW);
+            setupVertexAttribs();
+            glDrawArrays(GL_TRIANGLES, 0, iv);
+
+            // Preedit text glyphs
+            Vertex imeTextVerts[128 * 6];
+            int ig = 0;
+            for (int i = 0; i < preCells; i++) {
+                uint32_t cp = preCPs[i];
+                if (cp <= 32) continue;
+                float x0 = (pCol + i) * gw, y0 = pRow * gh;
+                float x1 = x0 + gw, y1 = y0 + gh;
+                int slot = glyphCacheLookup(&g_gc, cp);
+                if (slot < 0) slot = glyphCacheRasterize(&g_gc, cp);
+                int ac2 = slot % g_gc.atlas_cols;
+                int ar2 = slot / g_gc.atlas_cols;
+                float aW = (float)g_gc.atlas_w, aH = (float)g_gc.atlas_h;
+                float au0 = ac2 * glyphW / aW, av0 = ar2 * glyphH / aH;
+                float au1 = (ac2+1) * glyphW / aW, av1 = (ar2+1) * glyphH / aH;
+                float fr = 0.95f, fg = 0.95f, fb = 0.95f;
+                imeTextVerts[ig++] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
+                imeTextVerts[ig++] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                imeTextVerts[ig++] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                imeTextVerts[ig++] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                imeTextVerts[ig++] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
+                imeTextVerts[ig++] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+            }
+            if (ig > 0) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glUseProgram(g_text_prog);
+                glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
+                glBindTexture(GL_TEXTURE_2D, g_gc.texture);
+                glUniform1i(g_tex_loc, 0);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * ig,
+                             imeTextVerts, GL_DYNAMIC_DRAW);
+                setupVertexAttribs();
+                glDrawArrays(GL_TRIANGLES, 0, ig);
+                glDisable(GL_BLEND);
+            }
+        }
+    }
+
+    // Search bar overlay
+    if (g_search_active) {
+        char queryCopy[ATTYX_SEARCH_QUERY_MAX + 1];
+        int qLen = g_search_query_len;
+        if (qLen > ATTYX_SEARCH_QUERY_MAX) qLen = ATTYX_SEARCH_QUERY_MAX;
+        memcpy(queryCopy, g_search_query, qLen);
+        queryCopy[qLen] = '\0';
+
+        char countLabel[64];
+        int sTotal = g_search_total;
+        int sCurrent = g_search_current;
+        int countLen = 0;
+        if (sTotal > 0) {
+            countLen = snprintf(countLabel, sizeof(countLabel), "%d of %d", sCurrent + 1, sTotal);
+        } else if (qLen > 0) {
+            countLen = snprintf(countLabel, sizeof(countLabel), "no results");
+        }
+
+        float barH = gh + 12.0f;
+        float totalW = cols * gw;
+        float padX = gw * 0.5f;
+        float textY = (barH - gh) / 2.0f;
+
+        float labelChars = 5;
+        float inputX = padX + (labelChars + 1) * gw;
+        float inputPad = gw * 0.4f;
+        float inputInner = fmaxf(20 * gw, (qLen + 2) * gw);
+        float inputW = inputPad * 2 + inputInner;
+        if (inputX + inputW > totalW * 0.55f)
+            inputW = totalW * 0.55f - inputX;
+        float inputH = gh + 4.0f;
+        float inputY = (barH - inputH) / 2.0f;
+
+        float rx = totalW - padX;
+        float closeX = rx - gw;
+        float downCx = closeX - gw * 1.3f;
+        float upCx = downCx - gw * 1.3f;
+        float countX = upCx - gw * 0.5f - countLen * gw;
+
+        // --- Solid pass: bar bg + input field bg + arrows ---
+        Vertex sBg[6 + 6 + 3 + 3];
+        int si = 0;
+
+        si = emitRect(sBg, si, 0, 0, totalW, barH,
+                      0.10f, 0.10f, 0.13f, 0.95f);
+        si = emitRect(sBg, si, inputX, inputY, inputW, inputH,
+                      0.18f, 0.18f, 0.22f, 1.0f);
+
+        float aw2 = gw * 0.40f, ah2 = gh * 0.40f;
+        float acy = barH / 2.0f;
+        si = emitTri(sBg, si,
+                     upCx,          acy - ah2/2,
+                     upCx - aw2/2,  acy + ah2/2,
+                     upCx + aw2/2,  acy + ah2/2,
+                     0.50f, 0.55f, 0.65f, 1.0f);
+        si = emitTri(sBg, si,
+                     downCx,          acy + ah2/2,
+                     downCx - aw2/2,  acy - ah2/2,
+                     downCx + aw2/2,  acy - ah2/2,
+                     0.50f, 0.55f, 0.65f, 1.0f);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_solid_prog);
+        glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * si, sBg, GL_DYNAMIC_DRAW);
+        setupVertexAttribs();
+        glDrawArrays(GL_TRIANGLES, 0, si);
+        glDisable(GL_BLEND);
+
+        // --- Text pass: label + query + cursor + count + close ---
+        Vertex stv[512 * 6];
+        int sti = 0;
+
+        sti = emitString(stv, sti, &g_gc, "Find:", 5,
+                         padX, textY, gw, gh, 0.40f, 0.50f, 0.65f);
+
+        float qx = inputX + inputPad;
+        sti = emitString(stv, sti, &g_gc, queryCopy, qLen,
+                         qx, textY, gw, gh, 0.92f, 0.92f, 0.92f);
+
+        // Blinking cursor bar
+        {
+            double tnow = glfwGetTime();
+            int phase = ((int)(tnow / 0.5)) % 2;
+            if (phase == 0) {
+                float cx = qx + qLen * gw;
+                sti = emitRect(stv, sti, cx, textY, 2.0f, gh,
+                               0.45f, 0.65f, 1.0f, 1.0f);
+            }
+        }
+
+        if (countLen > 0) {
+            float cr = (sTotal > 0) ? 0.50f : 0.60f;
+            float cg = (sTotal > 0) ? 0.50f : 0.30f;
+            float cb = (sTotal > 0) ? 0.55f : 0.30f;
+            sti = emitString(stv, sti, &g_gc, countLabel, countLen,
+                             countX, textY, gw, gh, cr, cg, cb);
+        }
+
+        sti = emitGlyph(stv, sti, &g_gc, 'x',
+                        closeX, textY, gw, gh, 0.50f, 0.50f, 0.55f);
+
+        if (sti > 0) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(g_text_prog);
+            glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
+            glBindTexture(GL_TEXTURE_2D, g_gc.texture);
+            glUniform1i(g_tex_loc, 0);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * sti,
+                         stv, GL_DYNAMIC_DRAW);
+            setupVertexAttribs();
+            glDrawArrays(GL_TRIANGLES, 0, sti);
+            glDisable(GL_BLEND);
+        }
+    }
+
+    // Context menu overlay (right-click menu)
+    if (g_ctx_menu_open) {
+        float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
+        float padX = gw * 0.5f, padY = gh * 0.25f;
+        float itemH = gh + padY * 2.0f;
+        const char* label = "Reload Config";
+        int labelLen = 13;
+        float menuW = padX * 2.0f + (float)labelLen * gw;
+
+        // Clamp to viewport so the menu never clips out of view.
+        float vpW = cols * gw, vpH = rows * gh;
+        float menuX = g_ctx_menu_x, menuY = g_ctx_menu_y;
+        if (menuX + menuW > vpW) menuX = vpW - menuW;
+        if (menuY + itemH > vpH) menuY = vpH - itemH;
+        if (menuX < 0) menuX = 0;
+        if (menuY < 0) menuY = 0;
+
+        // Solid pass: background + optional hover highlight.
+        Vertex cmBg[12];
+        int ci = 0;
+        ci = emitRect(cmBg, ci, menuX, menuY, menuW, itemH,
+                      0.12f, 0.12f, 0.16f, 0.97f);
+        if (g_ctx_menu_hover == 0) {
+            ci = emitRect(cmBg, ci, menuX, menuY, menuW, itemH,
+                          0.20f, 0.35f, 0.60f, 1.0f);
+        }
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_solid_prog);
+        glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * ci, cmBg, GL_DYNAMIC_DRAW);
+        setupVertexAttribs();
+        glDrawArrays(GL_TRIANGLES, 0, ci);
+        glDisable(GL_BLEND);
+
+        // Text pass: menu item label.
+        Vertex cmTv[13 * 6];
+        int cti = emitString(cmTv, 0, &g_gc, label, labelLen,
+                             menuX + padX, menuY + padY,
+                             gw, gh, 0.90f, 0.90f, 0.95f);
+        if (cti > 0) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(g_text_prog);
+            glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
+            glBindTexture(GL_TEXTURE_2D, g_gc.texture);
+            glUniform1i(g_tex_loc, 0);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * cti, cmTv, GL_DYNAMIC_DRAW);
+            setupVertexAttribs();
+            glDrawArrays(GL_TRIANGLES, 0, cti);
+            glDisable(GL_BLEND);
+        }
+    }
+
+    glBindVertexArray(0);
+}

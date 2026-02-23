@@ -142,4 +142,27 @@ extern volatile int  g_search_cur_vis_row;  // viewport-row of current match (-1
 extern volatile int  g_search_cur_vis_cs;   // current match col_start (viewport)
 extern volatile int  g_search_cur_vis_ce;   // current match col_end (viewport)
 
+// ---------------------------------------------------------------------------
+// Config reload
+// ---------------------------------------------------------------------------
+
+// Set to 1 (atomically) to trigger a config reload on the next PTY thread tick.
+// Also written by SIGUSR1 handler. Read-and-reset by PTY thread.
+extern volatile int g_needs_reload_config;
+
+// Set g_needs_reload_config = 1. Safe to call from any thread (signal-safe).
+// Implemented in Zig (ui2.zig).
+void attyx_trigger_config_reload(void);
+
+// Set to 1 by PTY thread when font config changes (family, size, fallbacks, cell dims).
+// Main render thread reads, rebuilds the glyph cache + resizes window, then clears.
+extern volatile int g_needs_font_rebuild;
+
+// ---------------------------------------------------------------------------
+// App icon (PNG bytes embedded at build time via @embedFile)
+// ---------------------------------------------------------------------------
+
+extern const uint8_t* g_icon_png;
+extern int            g_icon_png_len;
+
 #endif

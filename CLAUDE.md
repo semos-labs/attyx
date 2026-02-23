@@ -28,6 +28,11 @@ src/
 - Parser must never modify state directly.
 - Renderer must never influence parsing or state.
 
+## File Size
+
+- **No file may exceed 600 lines.** This is a hard limit required for AI-assisted development.
+- If a file approaches this limit, split it into focused modules before adding more code.
+
 ## Code Style (Zig)
 
 - Use explicit types in public APIs.

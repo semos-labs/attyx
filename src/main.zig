@@ -34,7 +34,7 @@ pub fn main() !void {
     var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
     defer merged.deinit();
 
-    try ui2.run(merged);
+    try ui2.run(merged, result.no_config, result.config_path, args);
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.
@@ -60,74 +60,8 @@ fn loadMergedConfig(
             };
         }
     }
-    applyCliOverrides(args, &file_config);
+    cli.applyCliOverrides(args, &file_config);
     return file_config;
-}
-
-/// Re-scan args to apply only explicitly provided CLI flags on top of file config.
-fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConfig) void {
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--rows")) {
-            i += 1;
-            if (i < args.len)
-                config.rows = std.fmt.parseInt(u16, args[i], 10) catch continue;
-        } else if (std.mem.eql(u8, arg, "--cols")) {
-            i += 1;
-            if (i < args.len)
-                config.cols = std.fmt.parseInt(u16, args[i], 10) catch continue;
-        } else if (std.mem.eql(u8, arg, "--font-family")) {
-            i += 1;
-            if (i < args.len) config.font_family = args[i];
-        } else if (std.mem.eql(u8, arg, "--font-size")) {
-            i += 1;
-            if (i < args.len)
-                config.font_size = std.fmt.parseInt(u16, args[i], 10) catch continue;
-        } else if (std.mem.eql(u8, arg, "--cell-width")) {
-            i += 1;
-            if (i < args.len)
-                config.cell_width = config_mod.CellSize.fromString(args[i]) orelse continue;
-        } else if (std.mem.eql(u8, arg, "--cell-height")) {
-            i += 1;
-            if (i < args.len)
-                config.cell_height = config_mod.CellSize.fromString(args[i]) orelse continue;
-        } else if (std.mem.eql(u8, arg, "--theme")) {
-            i += 1;
-            if (i < args.len) config.theme_name = args[i];
-        } else if (std.mem.eql(u8, arg, "--scrollback-lines")) {
-            i += 1;
-            if (i < args.len)
-                config.scrollback_lines = std.fmt.parseInt(u32, args[i], 10) catch continue;
-        } else if (std.mem.eql(u8, arg, "--reflow")) {
-            config.reflow_enabled = true;
-        } else if (std.mem.eql(u8, arg, "--no-reflow")) {
-            config.reflow_enabled = false;
-        } else if (std.mem.eql(u8, arg, "--cursor-shape")) {
-            i += 1;
-            if (i < args.len) {
-                if (config_mod.CursorShapeConfig.fromString(args[i])) |shape|
-                    config.cursor_shape = shape;
-            }
-        } else if (std.mem.eql(u8, arg, "--cursor-blink")) {
-            config.cursor_blink = true;
-        } else if (std.mem.eql(u8, arg, "--no-cursor-blink")) {
-            config.cursor_blink = false;
-        } else if (std.mem.eql(u8, arg, "--shell")) {
-            i += 1;
-            if (i < args.len) config.program = args[i];
-        } else if (std.mem.eql(u8, arg, "--cmd")) {
-            config.argv = @ptrCast(args[i + 1 ..]);
-            break;
-        } else if (std.mem.eql(u8, arg, "--config") or
-            std.mem.eql(u8, arg, "--no-config") or
-            std.mem.eql(u8, arg, "--print-config") or
-            std.mem.eql(u8, arg, "--help") or
-            std.mem.eql(u8, arg, "-h"))
-        {
-            if (std.mem.eql(u8, arg, "--config")) i += 1;
-        }
-    }
 }
 
 fn fatal(msg: []const u8) noreturn {

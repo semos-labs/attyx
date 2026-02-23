@@ -63,6 +63,10 @@ pub fn build(b: *std.Build) void {
     });
     const toml_mod = toml_dep.module("toml");
 
+    const icon_mod = b.createModule(.{
+        .root_source_file = b.path("images/icon_data.zig"),
+    });
+
     const exe = b.addExecutable(.{
         .name = "attyx",
         .root_module = b.createModule(.{
@@ -72,6 +76,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "attyx", .module = mod },
                 .{ .name = "toml", .module = toml_mod },
+                .{ .name = "app_icon", .module = icon_mod },
             },
         }),
     });
@@ -83,10 +88,15 @@ pub fn build(b: *std.Build) void {
 
     // UI-2 (Metal renderer) — link Cocoa/Metal frameworks and ObjC source on macOS
     if (target.result.os.tag == .macos) {
-        exe.addCSourceFile(.{
-            .file = b.path("src/app/platform_macos.m"),
-            .flags = &.{"-fobjc-arc"},
-        });
+        const macos_flags = &.{"-fobjc-arc"};
+        exe.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkFramework("Cocoa", .{});
         exe.root_module.linkFramework("Metal", .{});
@@ -99,15 +109,17 @@ pub fn build(b: *std.Build) void {
 
     // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
     if (target.result.os.tag == .linux) {
-        exe.addCSourceFile(.{
-            .file = b.path("src/app/platform_linux.c"),
-            .flags = &.{},
-        });
+        exe.addCSourceFile(.{ .file = b.path("src/app/platform_linux.c"),    .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_glyph.c"),      .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_render_util.c"), .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_render.c"),     .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_input.c"),      .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkSystemLibrary("glfw3", .{});
         exe.root_module.linkSystemLibrary("gl", .{});
         exe.root_module.linkSystemLibrary("freetype2", .{});
         exe.root_module.linkSystemLibrary("fontconfig", .{});
+        exe.root_module.linkSystemLibrary("libpng", .{});
     }
 
     // This declares intent for the executable to be installed into the
@@ -154,14 +166,20 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "attyx", .module = mod },
+                    .{ .name = "app_icon", .module = icon_mod },
                 },
             }),
         });
 
-        app.addCSourceFile(.{
-            .file = b.path("src/app/platform_macos.m"),
-            .flags = &.{"-fobjc-arc"},
-        });
+        const app_macos_flags = &.{"-fobjc-arc"};
+        app.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
         app.root_module.addIncludePath(b.path("src/app"));
         app.root_module.linkFramework("Cocoa", .{});
         app.root_module.linkFramework("Metal", .{});

@@ -3,6 +3,7 @@ const posix = std.posix;
 const attyx = @import("attyx");
 const AppConfig = @import("../config/config.zig").AppConfig;
 const CursorShapeConfig = @import("../config/config.zig").CursorShapeConfig;
+const reload = @import("../config/reload.zig");
 
 const Engine = attyx.Engine;
 const SearchState = attyx.SearchState;
@@ -22,6 +23,15 @@ const PtyThreadCtx = struct {
     pty: *Pty,
     cells: [*]c.AttyxCell,
     session: *SessionLog,
+    // Reload context (lifetimes: process args alloc in main.zig)
+    allocator: std.mem.Allocator,
+    no_config: bool,
+    config_path: ?[]const u8,
+    args: []const [:0]const u8,
+    // Applied live settings (updated after each successful reload)
+    applied_cursor_shape: CursorShapeConfig,
+    applied_cursor_blink: bool,
+    applied_scrollback_lines: u32,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -32,6 +42,24 @@ var g_engine: ?*Engine = null;
 
 // Track last-published title pointer to avoid redundant g_title_changed updates.
 var g_last_title_ptr: ?[*]const u8 = null;
+
+// Atomic flag: set to 1 to request a config reload on the next PTY thread tick.
+// Written by SIGUSR1 handler or attyx_trigger_config_reload(); read-and-reset by PTY thread.
+export var g_needs_reload_config: i32 = 0;
+export var g_needs_font_rebuild: i32 = 0;
+
+// App icon embedded at build time (PNG bytes). Read-only from C.
+const _icon_bytes = @import("app_icon").data;
+export var g_icon_png: [*]const u8 = _icon_bytes.ptr;
+export var g_icon_png_len: c_int = @intCast(_icon_bytes.len);
+
+export fn attyx_trigger_config_reload() void {
+    @atomicStore(i32, &g_needs_reload_config, 1, .seq_cst);
+}
+
+fn sigusr1Handler(_: c_int) callconv(.c) void {
+    @atomicStore(i32, &g_needs_reload_config, 1, .seq_cst);
+}
 
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (g_pty_master < 0 or len <= 0) return;
@@ -49,7 +77,12 @@ export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
     return @intCast(copy_len);
 }
 
-pub fn run(config: AppConfig) !void {
+pub fn run(
+    config: AppConfig,
+    no_config: bool,
+    config_path: ?[]const u8,
+    args: []const [:0]const u8,
+) !void {
     // Platform support is enforced at compile time via src/platform/platform.zig.
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -70,6 +103,14 @@ pub fn run(config: AppConfig) !void {
 
     // Publish font config to C bridge
     publishFontConfig(&config);
+
+    // Install SIGUSR1 → config reload handler.
+    const sa = posix.Sigaction{
+        .handler = .{ .handler = sigusr1Handler },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.USR1, &sa, null);
 
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     defer allocator.free(render_cells);
@@ -112,6 +153,13 @@ pub fn run(config: AppConfig) !void {
         .pty = &pty,
         .cells = render_cells.ptr,
         .session = &session,
+        .allocator = allocator,
+        .no_config = no_config,
+        .config_path = config_path,
+        .args = args,
+        .applied_cursor_shape = config.cursor_shape,
+        .applied_cursor_blink = config.cursor_blink,
+        .applied_scrollback_lines = @intCast(engine.state.scrollback.max_lines),
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -308,6 +356,11 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     }
 
     while (c.attyx_should_quit() == 0) {
+        // Config reload check (atomic read-and-reset)
+        if (@atomicRmw(i32, &g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
+            doReloadConfig(ctx);
+        }
+
         {
             var rr: c_int = 0;
             var rc: c_int = 0;
@@ -403,6 +456,58 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             break;
         }
     }
+}
+
+fn doReloadConfig(ctx: *PtyThreadCtx) void {
+    var new_cfg = reload.loadReloadedConfig(
+        ctx.allocator,
+        ctx.no_config,
+        ctx.config_path,
+        ctx.args,
+    ) catch |err| {
+        std.debug.print("[attyx] config reload failed: {}\n", .{err});
+        return;
+    };
+    defer new_cfg.deinit();
+
+    // Cursor (hot)
+    if (new_cfg.cursor_shape != ctx.applied_cursor_shape or
+        new_cfg.cursor_blink != ctx.applied_cursor_blink)
+    {
+        ctx.engine.state.cursor_shape = cursorShapeFromConfig(new_cfg.cursor_shape, new_cfg.cursor_blink);
+        ctx.applied_cursor_shape = new_cfg.cursor_shape;
+        ctx.applied_cursor_blink = new_cfg.cursor_blink;
+    }
+
+    // Scrollback — fully hot-reloadable via reallocate()
+    if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
+        ctx.engine.state.scrollback.reallocate(new_cfg.scrollback_lines) catch |err| {
+            std.debug.print("[attyx] scrollback resize failed: {}\n", .{err});
+        };
+        ctx.applied_scrollback_lines = @intCast(ctx.engine.state.scrollback.max_lines);
+        // Clamp viewport offset if scrollback shrunk
+        if (ctx.engine.state.viewport_offset > ctx.engine.state.scrollback.count) {
+            ctx.engine.state.viewport_offset = ctx.engine.state.scrollback.count;
+            c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+        }
+        c.g_scrollback_count = @intCast(ctx.engine.state.scrollback.count);
+    }
+
+    // Font — write new params to bridge globals; main thread rebuilds
+    const current_font_size: u16 = @intCast(c.g_font_size);
+    const current_family_len: usize = @intCast(c.g_font_family_len);
+    const current_family = c.g_font_family[0..current_family_len];
+    const font_changed = new_cfg.font_size != current_font_size or
+        !std.mem.eql(u8, new_cfg.font_family, current_family) or
+        new_cfg.cell_width.encode() != c.g_cell_width or
+        new_cfg.cell_height.encode() != c.g_cell_height;
+    if (font_changed) {
+        publishFontConfig(&new_cfg);
+        c.g_needs_font_rebuild = 1;
+    }
+
+    c.attyx_mark_all_dirty();
+    std.debug.print("[attyx] config reloaded\n", .{});
 }
 
 fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {

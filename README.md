@@ -159,6 +159,21 @@ attyx --cell-width 120% --cell-height 18
 --print-config             Print merged config and exit
 ```
 
+### Reloading config at runtime
+
+Send `SIGUSR1` or press **Ctrl+Shift+R** inside the terminal to apply config changes without restarting:
+
+```bash
+kill -USR1 <pid>
+```
+
+| Setting | On reload |
+|---------|-----------|
+| `cursor.shape`, `cursor.blink` | Applied immediately |
+| `scrollback.lines` (decrease / no change) | Applied lazily |
+| `scrollback.lines` (increase beyond startup cap) | Logged, requires restart |
+| `font.family`, `font.size`, `cell_width`, `cell_height` | Logged, requires restart |
+
 ---
 
 ## Testing
