@@ -57,6 +57,10 @@ pub const TerminalState = struct {
     // -- Damage tracking (row-level dirty bitset) --------------------------
     dirty: dirty_mod.DirtyRows = .{},
 
+    // -- Response buffer (filled by DSR/DA, consumed by app layer) ----------
+    response_buf: [128]u8 = undefined,
+    response_len: usize = 0,
+
     // -- Terminal modes (global, not per-buffer) ----------------------------
     auto_wrap: bool = true,
     bracketed_paste: bool = false,
@@ -97,7 +101,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes => {},
             else => {
                 self.wrap_next = false;
             },
@@ -176,6 +180,9 @@ pub const TerminalState = struct {
             .hyperlink_end => self.endHyperlink(),
             .set_title => |t| self.setTitle(t),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
+            .device_status => self.respondDeviceStatus(),
+            .cursor_position_report => self.respondCursorPosition(),
+            .device_attributes => self.respondDeviceAttributes(),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -190,6 +197,7 @@ pub const TerminalState = struct {
     fn printChar(self: *TerminalState, char: u21) void {
         if (self.wrap_next) {
             if (self.auto_wrap) {
+                self.grid.row_wrapped[self.cursor.row] = true;
                 self.cursor.col = 0;
                 self.cursorDown();
             }
@@ -274,15 +282,22 @@ pub const TerminalState = struct {
             .to_end => {
                 const start = self.cursor.row * cols + self.cursor.col;
                 @memset(self.grid.cells[start..], Cell{});
+                for (self.cursor.row..self.grid.rows) |r| {
+                    self.grid.row_wrapped[r] = false;
+                }
                 self.dirty.markRange(self.cursor.row, self.grid.rows - 1);
             },
             .to_start => {
                 const end = self.cursor.row * cols + self.cursor.col + 1;
                 @memset(self.grid.cells[0..end], Cell{});
+                for (0..self.cursor.row + 1) |r| {
+                    self.grid.row_wrapped[r] = false;
+                }
                 self.dirty.markRange(0, self.cursor.row);
             },
             .all => {
                 @memset(self.grid.cells, Cell{});
+                @memset(self.grid.row_wrapped[0..self.grid.rows], false);
                 self.dirty.markAll(self.grid.rows);
             },
         }
@@ -294,6 +309,7 @@ pub const TerminalState = struct {
         switch (mode) {
             .to_end => {
                 @memset(self.grid.cells[row_start + self.cursor.col .. row_start + cols], Cell{});
+                self.grid.row_wrapped[self.cursor.row] = false;
             },
             .to_start => {
                 @memset(self.grid.cells[row_start .. row_start + self.cursor.col + 1], Cell{});
@@ -377,6 +393,7 @@ pub const TerminalState = struct {
         if (self.alt_active) return;
         self.swapBuffers();
         @memset(self.grid.cells, Cell{});
+        @memset(&self.grid.row_wrapped, false);
         self.cursor = .{};
         self.pen = .{};
         self.pen_link_id = 0;
@@ -444,5 +461,111 @@ pub const TerminalState = struct {
             return;
         }
         self.title = alloc.dupe(u8, title_slice) catch null;
+    }
+
+    // -- Device reports (DSR / DA) -------------------------------------------
+
+    fn appendResponse(self: *TerminalState, data: []const u8) void {
+        const avail = self.response_buf.len - self.response_len;
+        const n = @min(data.len, avail);
+        @memcpy(self.response_buf[self.response_len .. self.response_len + n], data[0..n]);
+        self.response_len += n;
+    }
+
+    fn respondDeviceStatus(self: *TerminalState) void {
+        self.appendResponse("\x1b[0n");
+    }
+
+    fn respondCursorPosition(self: *TerminalState) void {
+        var buf: [32]u8 = undefined;
+        const row = self.cursor.row + 1;
+        const col = self.cursor.col + 1;
+        const len = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ row, col }) catch return;
+        self.appendResponse(len);
+    }
+
+    fn respondDeviceAttributes(self: *TerminalState) void {
+        self.appendResponse("\x1b[?62;c");
+    }
+
+    /// Drain the response buffer. Returns the pending response bytes and
+    /// resets the buffer. Caller must write these to the PTY.
+    pub fn drainResponse(self: *TerminalState) ?[]const u8 {
+        if (self.response_len == 0) return null;
+        const len = self.response_len;
+        self.response_len = 0;
+        return self.response_buf[0..len];
+    }
+
+    // -- Resize (NO-REFLOW) ------------------------------------------------
+
+    /// Resize both grids to new dimensions. Preserves overlapping content,
+    /// clamps cursors and scroll regions. Marks all rows dirty.
+    pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
+        if (new_rows == self.grid.rows and new_cols == self.grid.cols) return;
+
+        try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col);
+        try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
+
+        // Clear row_wrapped from the cursor to the bottom.  The shell
+        // will redraw this region after SIGWINCH, setting correct
+        // auto-wrap flags via its own output.
+        for (self.cursor.row..new_rows) |r| {
+            self.grid.row_wrapped[r] = false;
+        }
+
+        self.clampState(new_rows, new_cols);
+        self.clampInactiveState(new_rows, new_cols);
+
+        self.wrap_next = false;
+        self.dirty.markAll(new_rows);
+    }
+
+    fn clampState(self: *TerminalState, rows: usize, cols: usize) void {
+        self.cursor.row = @min(self.cursor.row, rows - 1);
+        self.cursor.col = @min(self.cursor.col, cols - 1);
+
+        self.scroll_top = @min(self.scroll_top, rows - 1);
+        self.scroll_bottom = rows - 1;
+
+        if (self.scroll_top >= self.scroll_bottom) {
+            self.scroll_top = 0;
+            self.scroll_bottom = rows - 1;
+        }
+
+        if (self.saved_cursor) |*saved| {
+            saved.cursor.row = @min(saved.cursor.row, rows - 1);
+            saved.cursor.col = @min(saved.cursor.col, cols - 1);
+            saved.scroll_top = @min(saved.scroll_top, rows - 1);
+            saved.scroll_bottom = rows - 1;
+            if (saved.scroll_top >= saved.scroll_bottom) {
+                saved.scroll_top = 0;
+                saved.scroll_bottom = rows - 1;
+            }
+        }
+    }
+
+    fn clampInactiveState(self: *TerminalState, rows: usize, cols: usize) void {
+        self.inactive_cursor.row = @min(self.inactive_cursor.row, rows - 1);
+        self.inactive_cursor.col = @min(self.inactive_cursor.col, cols - 1);
+
+        self.inactive_scroll_top = @min(self.inactive_scroll_top, rows - 1);
+        self.inactive_scroll_bottom = rows - 1;
+
+        if (self.inactive_scroll_top >= self.inactive_scroll_bottom) {
+            self.inactive_scroll_top = 0;
+            self.inactive_scroll_bottom = rows - 1;
+        }
+
+        if (self.inactive_saved_cursor) |*saved| {
+            saved.cursor.row = @min(saved.cursor.row, rows - 1);
+            saved.cursor.col = @min(saved.cursor.col, cols - 1);
+            saved.scroll_top = @min(saved.scroll_top, rows - 1);
+            saved.scroll_bottom = rows - 1;
+            if (saved.scroll_top >= saved.scroll_bottom) {
+                saved.scroll_top = 0;
+                saved.scroll_bottom = rows - 1;
+            }
+        }
     }
 };

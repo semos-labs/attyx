@@ -16,6 +16,8 @@
 static AttyxCell* g_cells = NULL;
 static int g_cols = 0;
 static int g_rows = 0;
+// Seqlock generation: odd = PTY thread is mid-update, even = safe to read.
+static volatile uint64_t g_cell_gen = 0;
 static volatile int g_cursor_row = 0;
 static volatile int g_cursor_col = 0;
 static volatile int g_should_quit = 0;
@@ -27,6 +29,14 @@ static volatile int g_cursor_keys_app = 0;
 // Row-level dirty bitset (256 rows). PTY thread atomic-ORs in dirty bits;
 // renderer atomically swaps each word to zero when snapshotting.
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
+
+// Pending resize: set by renderer on drawableSizeWillChange, consumed by PTY thread.
+static volatile int g_pending_resize_rows = 0;
+static volatile int g_pending_resize_cols = 0;
+
+// Cell dimensions in points (set once at glyph cache creation, used for window snapping).
+static CGFloat g_cell_pt_w = 0;
+static CGFloat g_cell_pt_h = 0;
 
 void attyx_set_cursor(int row, int col) {
     g_cursor_row = row;
@@ -51,6 +61,31 @@ void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app) {
 void attyx_set_dirty(const uint64_t dirty[4]) {
     for (int i = 0; i < 4; i++)
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], dirty[i]);
+}
+
+void attyx_set_grid_size(int cols, int rows) {
+    g_cols = cols;
+    g_rows = rows;
+}
+
+void attyx_begin_cell_update(void) {
+    __sync_fetch_and_add(&g_cell_gen, 1); // gen becomes odd → "updating"
+}
+
+void attyx_end_cell_update(void) {
+    __sync_fetch_and_add(&g_cell_gen, 1); // gen becomes even → "ready"
+}
+
+int attyx_check_resize(int* out_rows, int* out_cols) {
+    int pr = g_pending_resize_rows;
+    int pc = g_pending_resize_cols;
+    if (pr <= 0 || pc <= 0) return 0;
+    if (pr == g_rows && pc == g_cols) return 0;
+    *out_rows = pr;
+    *out_cols = pc;
+    g_pending_resize_rows = 0;
+    g_pending_resize_cols = 0;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +343,7 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     free(zeroes);
 
     GlyphCache gc;
-    memset(&gc, 0, sizeof(gc));
+    memset((void*)&gc, 0, sizeof(gc));
     gc.texture   = tex;
     gc.font      = (CTFontRef)CFRetain(font);
     gc.glyph_w   = gw;
@@ -335,11 +370,53 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
 }
 
 // ---------------------------------------------------------------------------
-// Renderer (MTKViewDelegate)
+// Dirty-bitset helpers (mirrors DirtyRows from Zig)
+// ---------------------------------------------------------------------------
+
+static inline int dirtyBitTest(const uint64_t dirty[4], int row) {
+    if (row < 0 || row >= 256) return 0;
+    return (dirty[row >> 6] >> (row & 63)) & 1;
+}
+
+static inline int dirtyAny(const uint64_t dirty[4]) {
+    return (dirty[0] | dirty[1] | dirty[2] | dirty[3]) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Renderer (MTKViewDelegate) — damage-aware with persistent buffers
 // ---------------------------------------------------------------------------
 
 @interface AttyxRenderer : NSObject <MTKViewDelegate> {
     GlyphCache _glyphCache;
+
+    // Persistent CPU-side vertex arrays (survive across frames).
+    Vertex*     _bgVerts;
+    Vertex*     _textVerts;
+    int         _totalTextVerts;
+
+    // Persistent Metal buffers (reused each frame, recreated on resize).
+    id<MTLBuffer> _bgMetalBuf;
+    id<MTLBuffer> _textMetalBuf;
+    int           _metalBufCapBg;
+    int           _metalBufCapText;
+
+    // Persistent cell snapshot (avoids per-frame malloc).
+    AttyxCell*  _cellSnapshot;
+    int         _cellSnapshotCap;
+
+    // Previous frame state for change detection.
+    int         _prevCursorRow;
+    int         _prevCursorCol;
+    BOOL        _fullRedrawNeeded;
+    int         _allocRows;
+    int         _allocCols;
+
+    // Debug stats
+    BOOL        _debugStats;
+    uint64_t    _statsFrames;
+    uint64_t    _statsSkipped;
+    uint64_t    _statsDirtyRows;
+    CFAbsoluteTime _statsLastPrint;
 }
 @property (nonatomic, strong) id<MTLDevice>              device;
 @property (nonatomic, strong) id<MTLCommandQueue>        cmdQueue;
@@ -359,6 +436,27 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     _device     = device;
     _cmdQueue   = [device newCommandQueue];
     _glyphCache = glyphCache;
+
+    _bgVerts          = NULL;
+    _textVerts        = NULL;
+    _totalTextVerts   = 0;
+    _bgMetalBuf       = nil;
+    _textMetalBuf     = nil;
+    _metalBufCapBg    = 0;
+    _metalBufCapText  = 0;
+    _cellSnapshot     = NULL;
+    _cellSnapshotCap  = 0;
+    _prevCursorRow    = -1;
+    _prevCursorCol    = -1;
+    _fullRedrawNeeded = YES;
+    _allocRows        = 0;
+    _allocCols        = 0;
+
+    _debugStats       = (getenv("ATTYX_DEBUG_STATS") != NULL);
+    _statsFrames      = 0;
+    _statsSkipped     = 0;
+    _statsDirtyRows   = 0;
+    _statsLastPrint   = CFAbsoluteTimeGetCurrent();
 
     NSError* err = nil;
     id<MTLLibrary> lib = [device newLibraryWithSource:kShaderSource
@@ -396,72 +494,170 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     return self;
 }
 
-- (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size {}
+- (void)dealloc {
+    free(_bgVerts);
+    free(_textVerts);
+    free(_cellSnapshot);
+}
+
+- (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size {
+    // Small epsilon avoids float truncation giving 79 instead of 80 on startup.
+    int new_cols = (int)(size.width  / _glyphCache.glyph_w + 0.01f);
+    int new_rows = (int)(size.height / _glyphCache.glyph_h + 0.01f);
+    if (new_cols < 1) new_cols = 1;
+    if (new_rows < 1) new_rows = 1;
+    if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
+    if (new_rows > ATTYX_MAX_ROWS) new_rows = ATTYX_MAX_ROWS;
+    g_pending_resize_rows = new_rows;
+    g_pending_resize_cols = new_cols;
+    _fullRedrawNeeded = YES;
+}
 
 - (void)drawInMTKView:(MTKView*)view {
     if (!g_cells || g_cols <= 0 || g_rows <= 0) return;
 
-    @autoreleasepool {
-        int total = g_cols * g_rows;
+    // Seqlock read: skip frame if PTY thread is mid-update.
+    uint64_t gen1 = g_cell_gen;
+    if (gen1 & 1) return;
 
-        // Snapshot shared state so we work from a consistent copy.
-        // The PTY thread can modify g_cells concurrently; without this
-        // copy, the textCount measured in the first pass can disagree
-        // with the characters seen in the second pass, causing a heap
-        // buffer overflow in the vertex arrays.
-        AttyxCell* cells = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
-        if (!cells) return;
-        memcpy(cells, g_cells, sizeof(AttyxCell) * total);
+    @autoreleasepool {
+        int rows = g_rows;
+        int cols = g_cols;
+        int total = cols * rows;
+
+        // --- Snapshot dirty bits (atomic exchange to zero) ---
+        uint64_t dirty[4];
+        for (int i = 0; i < 4; i++)
+            dirty[i] = __sync_lock_test_and_set((volatile uint64_t*)&g_dirty[i], 0);
+
         int curRow = g_cursor_row;
         int curCol = g_cursor_col;
+        BOOL cursorMoved = (curRow != _prevCursorRow || curCol != _prevCursorCol);
 
-        CGSize drawableSize = view.drawableSize;
-        float scaleX = (float)drawableSize.width  / (g_cols * _glyphCache.glyph_w);
-        float scaleY = (float)drawableSize.height / (g_rows * _glyphCache.glyph_h);
-        float gw = _glyphCache.glyph_w * scaleX;
-        float gh = _glyphCache.glyph_h * scaleY;
-        float viewport[2] = { (float)drawableSize.width, (float)drawableSize.height };
+        // --- Reallocate persistent buffers if grid size changed ---
+        if (rows != _allocRows || cols != _allocCols) {
+            free(_bgVerts);
+            free(_textVerts);
+            free(_cellSnapshot);
 
-        // Allocate max possible text vertices (every cell could have a glyph).
-        size_t bgSize   = sizeof(Vertex) * (size_t)((total + 1) * 6);
-        size_t textSize = sizeof(Vertex) * (size_t)(total * 6);
+            int bgVertCap = (total + cols) * 6; // +cols for cursor row
+            _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
+            _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
+            _cellSnapshot  = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
+            _cellSnapshotCap = total;
+            _totalTextVerts = 0;
+            _allocRows = rows;
+            _allocCols = cols;
+            _fullRedrawNeeded = YES;
 
-        Vertex* bgVerts   = (Vertex*)malloc(bgSize);
-        Vertex* textVerts = (Vertex*)malloc(textSize);
-        int ti = 0;
+            // Recreate Metal buffers at new capacity.
+            _metalBufCapBg   = bgVertCap;
+            _metalBufCapText = total * 6;
+            _bgMetalBuf   = [_device newBufferWithLength:sizeof(Vertex) * _metalBufCapBg
+                                                 options:MTLResourceStorageModeShared];
+            _textMetalBuf = [_device newBufferWithLength:sizeof(Vertex) * _metalBufCapText
+                                                 options:MTLResourceStorageModeShared];
+        }
+
+        // --- Frame skip: nothing dirty, cursor didn't move ---
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorMoved) {
+            if (_debugStats) _statsSkipped++;
+            if (_debugStats) _statsFrames++;
+            [self printStatsIfNeeded];
+            return;
+        }
+
+        // --- Snapshot cells into persistent buffer (no malloc per frame) ---
+        if (_cellSnapshot && _cellSnapshotCap >= total) {
+            memcpy(_cellSnapshot, g_cells, sizeof(AttyxCell) * total);
+        } else {
+            return;
+        }
+
+        // Seqlock validation: if generation changed during our read,
+        // the snapshot is torn (mix of old + new data). Skip this frame.
+        uint64_t gen2 = g_cell_gen;
+        if (gen1 != gen2) return;
+
+        AttyxCell* cells = _cellSnapshot;
+
+        // --- Layout math (fixed glyph size — viewport locked to grid) ---
+        float gw = _glyphCache.glyph_w;
+        float gh = _glyphCache.glyph_h;
+        float viewport[2] = { cols * gw, rows * gh };
 
         float atlasW = (float)_glyphCache.atlas_w;
         float glyphW = _glyphCache.glyph_w;
         float glyphH = _glyphCache.glyph_h;
         int atlasCols = _glyphCache.atlas_cols;
 
-        for (int i = 0; i < total; i++) {
-            int row = i / g_cols;
-            int col = i % g_cols;
-            float x0 = col * gw;
-            float y0 = row * gh;
-            float x1 = x0 + gw;
-            float y1 = y0 + gh;
-            const AttyxCell* cell = &cells[i];
+        // --- Update bg vertices for dirty rows ---
+        int dirtyRowCount = 0;
+        for (int row = 0; row < rows; row++) {
+            if (!_fullRedrawNeeded && !dirtyBitTest(dirty, row)) continue;
+            dirtyRowCount++;
 
-            float br = cell->bg_r / 255.0f;
-            float bg = cell->bg_g / 255.0f;
-            float bb = cell->bg_b / 255.0f;
+            for (int col = 0; col < cols; col++) {
+                int i = row * cols + col;
+                float x0 = col * gw;
+                float y0 = row * gh;
+                float x1 = x0 + gw;
+                float y1 = y0 + gh;
+                const AttyxCell* cell = &cells[i];
 
-            int bi = i * 6;
-            bgVerts[bi+0] = (Vertex){ x0, y0, 0,0, br,bg,bb,1 };
-            bgVerts[bi+1] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
-            bgVerts[bi+2] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
-            bgVerts[bi+3] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
-            bgVerts[bi+4] = (Vertex){ x1, y1, 0,0, br,bg,bb,1 };
-            bgVerts[bi+5] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
+                float br = cell->bg_r / 255.0f;
+                float bg = cell->bg_g / 255.0f;
+                float bb = cell->bg_b / 255.0f;
 
-            uint32_t ch = cell->character;
-            if (ch > 32) {
+                int bi = i * 6;
+                _bgVerts[bi+0] = (Vertex){ x0, y0, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+1] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+2] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+3] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+4] = (Vertex){ x1, y1, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+5] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
+            }
+        }
+
+        // --- Update cursor quad in bg vertices ---
+        int cursorSlot = total * 6;
+        memset(&_bgVerts[cursorSlot], 0, sizeof(Vertex) * 6);
+
+        int bgVertCount = total * 6;
+        if (curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols) {
+            float cx0 = curCol * gw;
+            float cy0 = curRow * gh;
+            float cx1 = cx0 + gw;
+            float cy1 = cy0 + gh;
+            float cr = 0.86f, cg = 0.86f, cb = 0.86f;
+
+            _bgVerts[cursorSlot+0] = (Vertex){ cx0,cy0, 0,0, cr,cg,cb,1 };
+            _bgVerts[cursorSlot+1] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
+            _bgVerts[cursorSlot+2] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
+            _bgVerts[cursorSlot+3] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
+            _bgVerts[cursorSlot+4] = (Vertex){ cx1,cy1, 0,0, cr,cg,cb,1 };
+            _bgVerts[cursorSlot+5] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
+            bgVertCount += 6;
+        }
+
+        // --- Rebuild text vertices on any dirty frame ---
+        int ti = 0;
+        if (_fullRedrawNeeded || dirtyAny(dirty)) {
+            for (int i = 0; i < total; i++) {
+                const AttyxCell* cell = &cells[i];
+                uint32_t ch = cell->character;
+                if (ch <= 32) continue;
+
+                int row = i / cols;
+                int col = i % cols;
+                float x0 = col * gw;
+                float y0 = row * gh;
+                float x1 = x0 + gw;
+                float y1 = y0 + gh;
+
                 int slot = glyphCacheLookup(&_glyphCache, ch);
                 if (slot < 0) {
                     slot = glyphCacheRasterize(&_glyphCache, ch);
-                    // Atlas may have grown — re-read dimensions.
                     atlasW = (float)_glyphCache.atlas_w;
                 }
 
@@ -478,65 +674,58 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
                 float fg = cell->fg_g / 255.0f;
                 float fb = cell->fg_b / 255.0f;
 
-                textVerts[ti+0] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
-                textVerts[ti+1] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-                textVerts[ti+2] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
-                textVerts[ti+3] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-                textVerts[ti+4] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
-                textVerts[ti+5] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                _textVerts[ti+0] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
+                _textVerts[ti+1] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                _textVerts[ti+2] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                _textVerts[ti+3] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
+                _textVerts[ti+4] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
+                _textVerts[ti+5] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
                 ti += 6;
             }
-        }
-        int textCount = ti / 6;
-
-        int bgVertCount = total * 6;
-        if (curRow >= 0 && curRow < g_rows && curCol >= 0 && curCol < g_cols) {
-            float cx0 = curCol * gw;
-            float cy0 = curRow * gh;
-            float cx1 = cx0 + gw;
-            float cy1 = cy0 + gh;
-            float cr = 0.86f, cg = 0.86f, cb = 0.86f;
-
-            int ci = total * 6;
-            bgVerts[ci+0] = (Vertex){ cx0,cy0, 0,0, cr,cg,cb,1 };
-            bgVerts[ci+1] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-            bgVerts[ci+2] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
-            bgVerts[ci+3] = (Vertex){ cx1,cy0, 0,0, cr,cg,cb,1 };
-            bgVerts[ci+4] = (Vertex){ cx1,cy1, 0,0, cr,cg,cb,1 };
-            bgVerts[ci+5] = (Vertex){ cx0,cy1, 0,0, cr,cg,cb,1 };
-            bgVertCount += 6;
+            _totalTextVerts = ti;
+        } else {
+            ti = _totalTextVerts;
         }
 
-        id<MTLBuffer> bgBuf = [_device newBufferWithBytes:bgVerts
-                                                   length:sizeof(Vertex) * bgVertCount
-                                                  options:MTLResourceStorageModeShared];
-        id<MTLBuffer> textBuf = nil;
+        _prevCursorRow = curRow;
+        _prevCursorCol = curCol;
+        _fullRedrawNeeded = NO;
+
+        // --- Copy vertices into persistent Metal buffers (no alloc per frame) ---
+        memcpy(_bgMetalBuf.contents, _bgVerts, sizeof(Vertex) * bgVertCount);
+        [_bgMetalBuf didModifyRange:NSMakeRange(0, sizeof(Vertex) * bgVertCount)];
+
         if (ti > 0) {
-            textBuf = [_device newBufferWithBytes:textVerts
-                                          length:sizeof(Vertex) * ti
-                                         options:MTLResourceStorageModeShared];
+            memcpy(_textMetalBuf.contents, _textVerts, sizeof(Vertex) * ti);
+            [_textMetalBuf didModifyRange:NSMakeRange(0, sizeof(Vertex) * ti)];
         }
-        free(bgVerts);
-        free(textVerts);
 
+        // --- Draw ---
         id<MTLCommandBuffer> cmdBuf = [_cmdQueue commandBuffer];
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
-        if (!rpd) { free(cells); return; }
+        if (!rpd) return;
 
         rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
 
         id<MTLRenderCommandEncoder> enc =
             [cmdBuf renderCommandEncoderWithDescriptor:rpd];
 
+        MTLViewport gridViewport = {
+            .originX = 0, .originY = 0,
+            .width = cols * gw, .height = rows * gh,
+            .znear = 0, .zfar = 1
+        };
+        [enc setViewport:gridViewport];
+
         [enc setRenderPipelineState:_bgPipeline];
-        [enc setVertexBuffer:bgBuf  offset:0 atIndex:0];
+        [enc setVertexBuffer:_bgMetalBuf offset:0 atIndex:0];
         [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
                 vertexCount:bgVertCount];
 
-        if (textBuf) {
+        if (ti > 0) {
             [enc setRenderPipelineState:_textPipeline];
-            [enc setVertexBuffer:textBuf offset:0 atIndex:0];
+            [enc setVertexBuffer:_textMetalBuf offset:0 atIndex:0];
             [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
             [enc setFragmentTexture:_glyphCache.texture atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
@@ -544,9 +733,33 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
         }
 
         [enc endEncoding];
-        [cmdBuf presentDrawable:view.currentDrawable];
         [cmdBuf commit];
-        free(cells);
+        [cmdBuf waitUntilCompleted];
+        [view.currentDrawable present];
+
+        if (_debugStats) {
+            _statsFrames++;
+            _statsDirtyRows += dirtyRowCount;
+            [self printStatsIfNeeded];
+        }
+    }
+}
+
+- (void)printStatsIfNeeded {
+    if (!_debugStats) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - _statsLastPrint >= 2.0) {
+        double elapsed = now - _statsLastPrint;
+        double fps = _statsFrames / elapsed;
+        double skipPct = _statsFrames > 0 ? 100.0 * _statsSkipped / _statsFrames : 0;
+        double avgDirty = (_statsFrames - _statsSkipped) > 0
+            ? (double)_statsDirtyRows / (_statsFrames - _statsSkipped) : 0;
+        fprintf(stderr, "[attyx] fps=%.0f skip=%.0f%% avg_dirty=%.1f rows\n",
+                fps, skipPct, avgDirty);
+        _statsFrames = 0;
+        _statsSkipped = 0;
+        _statsDirtyRows = 0;
+        _statsLastPrint = now;
     }
 }
 
@@ -736,7 +949,7 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
 // App Delegate
 // ---------------------------------------------------------------------------
 
-@interface AttyxAppDelegate : NSObject <NSApplicationDelegate>
+@interface AttyxAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSWindow* window;
 @property (nonatomic, strong) AttyxRenderer* renderer;
 @end
@@ -754,23 +967,30 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
     GlyphCache gc = createGlyphCache(device, scaleFactor);
 
-    // Window frame is in points; glyph dims are in pixels (points * scale).
-    CGFloat winW = g_cols * gc.glyph_w / gc.scale;
-    CGFloat winH = g_rows * gc.glyph_h / gc.scale;
+    // Cell size in points (used for window snapping).
+    g_cell_pt_w = gc.glyph_w / gc.scale;
+    g_cell_pt_h = gc.glyph_h / gc.scale;
+
+    CGFloat winW = g_cols * g_cell_pt_w;
+    CGFloat winH = g_rows * g_cell_pt_h;
 
     NSRect frame = NSMakeRect(200, 200, winW, winH);
     NSUInteger mask = NSWindowStyleMaskTitled
                     | NSWindowStyleMaskClosable
-                    | NSWindowStyleMaskMiniaturizable;
+                    | NSWindowStyleMaskMiniaturizable
+                    | NSWindowStyleMaskResizable;
 
     _window = [[NSWindow alloc] initWithContentRect:frame
                                           styleMask:mask
                                             backing:NSBackingStoreBuffered
                                               defer:NO];
     [_window setTitle:@"Attyx"];
+    [_window setDelegate:self];
 
     AttyxView* termView = [[AttyxView alloc] initWithFrame:frame device:device];
     termView.layer.contentsScale = scaleFactor;
+    termView.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
+    ((CAMetalLayer*)termView.layer).presentsWithTransaction = YES;
     termView.clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
     termView.preferredFramesPerSecond = 60;
 
@@ -783,6 +1003,26 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:termView];
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
+    if (g_cell_pt_w <= 0 || g_cell_pt_h <= 0) return frameSize;
+
+    NSRect frameRect = NSMakeRect(0, 0, frameSize.width, frameSize.height);
+    NSRect contentRect = [sender contentRectForFrameRect:frameRect];
+
+    int snappedCols = (int)(contentRect.size.width  / g_cell_pt_w);
+    int snappedRows = (int)(contentRect.size.height / g_cell_pt_h);
+    if (snappedCols < 1) snappedCols = 1;
+    if (snappedRows < 1) snappedRows = 1;
+    if (snappedCols > ATTYX_MAX_COLS) snappedCols = ATTYX_MAX_COLS;
+    if (snappedRows > ATTYX_MAX_ROWS) snappedRows = ATTYX_MAX_ROWS;
+
+    contentRect.size.width  = snappedCols * g_cell_pt_w;
+    contentRect.size.height = snappedRows * g_cell_pt_h;
+
+    NSRect snappedFrame = [sender frameRectForContentRect:contentRect];
+    return snappedFrame.size;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {

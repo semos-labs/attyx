@@ -42,6 +42,19 @@ pub const Cell = struct {
     link_id: u32 = 0,
 };
 
+pub const max_rows: usize = 256;
+
+/// A cell is "default" for reflow content-length measurement when it
+/// contributes nothing visible: space character + default background.
+/// Foreground-only styling on a space is invisible (colored nothing on
+/// the default background), so we ignore fg/bold/underline here.
+/// Cells with a non-default background ARE visible (colored block).
+pub fn isDefaultCell(cell: Cell) bool {
+    return cell.char == ' ' and
+        cell.style.bg == .default and
+        cell.link_id == 0;
+}
+
 /// Fixed-size 2D grid of cells, stored as a flat row-major array.
 /// One allocation on init, freed on deinit. No per-character allocations.
 pub const Grid = struct {
@@ -49,6 +62,9 @@ pub const Grid = struct {
     cols: usize,
     cells: []Cell,
     allocator: std.mem.Allocator,
+    /// Per-row flag: true when a soft wrap (auto-wrap at right edge) caused
+    /// continuation onto the next row. Used by reflow on resize.
+    row_wrapped: [max_rows]bool = [_]bool{false} ** max_rows,
 
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !Grid {
         std.debug.assert(rows > 0 and cols > 0);
@@ -78,6 +94,7 @@ pub const Grid = struct {
     pub fn clearRow(self: *Grid, row: usize) void {
         const start = row * self.cols;
         @memset(self.cells[start .. start + self.cols], Cell{});
+        self.row_wrapped[row] = false;
     }
 
     /// Shift all rows up by one (full-screen scroll).
@@ -96,6 +113,9 @@ pub const Grid = struct {
             self.cells[top * stride .. bottom * stride],
             self.cells[(top + 1) * stride .. (bottom + 1) * stride],
         );
+        for (top..bottom) |r| {
+            self.row_wrapped[r] = self.row_wrapped[r + 1];
+        }
         self.clearRow(bottom);
     }
 
@@ -110,6 +130,12 @@ pub const Grid = struct {
             self.cells[(top + 1) * stride .. (bottom + 1) * stride],
             self.cells[top * stride .. bottom * stride],
         );
+        {
+            var r = bottom;
+            while (r > top) : (r -= 1) {
+                self.row_wrapped[r] = self.row_wrapped[r - 1];
+            }
+        }
         self.clearRow(top);
     }
 
@@ -163,6 +189,138 @@ pub const Grid = struct {
         const start = row * self.cols + col;
         const count = @min(n, self.cols - col);
         @memset(self.cells[start .. start + count], Cell{});
+    }
+
+    /// Resize with reflow: re-wraps logical lines at the new column width.
+    /// Soft-wrapped lines are joined and re-split; hard-wrapped lines stay
+    /// separate. Cursor position is mapped through the reflow.
+    pub fn resize(self: *Grid, new_rows: usize, new_cols: usize, cursor_row: ?*usize, cursor_col: ?*usize) !void {
+        std.debug.assert(new_rows > 0 and new_cols > 0);
+
+        const has_cursor = cursor_row != null and cursor_col != null;
+        const old_cr = if (cursor_row) |cr| cr.* else 0;
+        const old_cc = if (cursor_col) |cc| cc.* else 0;
+
+        // --- Phase 1: collect logical lines ---
+        const LL = struct { start: usize, count: usize, len: usize };
+        var ll_buf: [max_rows]LL = undefined;
+        var ll_count: usize = 0;
+        {
+            var r: usize = 0;
+            while (r < self.rows) {
+                const start = r;
+                var content_len: usize = 0;
+                while (r < self.rows) : (r += 1) {
+                    if (self.row_wrapped[r]) {
+                        content_len += self.cols;
+                    } else {
+                        var last: usize = 0;
+                        const base = r * self.cols;
+                        for (0..self.cols) |c| {
+                            if (!isDefaultCell(self.cells[base + c])) last = c + 1;
+                        }
+                        content_len += last;
+                        r += 1;
+                        break;
+                    }
+                }
+                ll_buf[ll_count] = .{ .start = start, .count = r - start, .len = content_len };
+                ll_count += 1;
+            }
+        }
+
+        // --- Phase 2: compute new row count and cursor mapping ---
+        var new_phys_total: usize = 0;
+        var mapped_cr: usize = 0;
+        var mapped_cc: usize = 0;
+
+        for (ll_buf[0..ll_count]) |ll| {
+            const rows_needed = if (ll.len == 0) 1 else (ll.len + new_cols - 1) / new_cols;
+            if (has_cursor and old_cr >= ll.start and old_cr < ll.start + ll.count) {
+                const offset = (old_cr - ll.start) * self.cols + old_cc;
+                mapped_cr = new_phys_total + offset / new_cols;
+                mapped_cc = offset % new_cols;
+            }
+            new_phys_total += rows_needed;
+        }
+
+        // Keep cursor visible: if reflowed content exceeds new_rows, scroll
+        var scroll_off: usize = 0;
+        if (has_cursor and new_phys_total > new_rows) {
+            if (mapped_cr >= new_rows) {
+                scroll_off = mapped_cr - new_rows + 1;
+            }
+        }
+
+        // --- Phase 3: allocate and fill ---
+        const new_cells = try self.allocator.alloc(Cell, new_rows * new_cols);
+        @memset(new_cells, Cell{});
+        var new_wrapped: [max_rows]bool = [_]bool{false} ** max_rows;
+
+        var dst_row: usize = 0;
+        for (ll_buf[0..ll_count]) |ll| {
+            const rows_needed = if (ll.len == 0) 1 else (ll.len + new_cols - 1) / new_cols;
+            for (0..rows_needed) |pr| {
+                const abs_row = dst_row + pr;
+                if (abs_row < scroll_off) continue;
+                const grid_row = abs_row - scroll_off;
+                if (grid_row >= new_rows) break;
+
+                const cells_start = pr * new_cols;
+                const cells_end = @min(cells_start + new_cols, ll.len);
+
+                if (cells_end > cells_start) {
+                    for (0..cells_end - cells_start) |c| {
+                        const src_idx = cells_start + c;
+                        const old_r = ll.start + src_idx / self.cols;
+                        const old_c = src_idx % self.cols;
+                        new_cells[grid_row * new_cols + c] = self.cells[old_r * self.cols + old_c];
+                    }
+                }
+
+                if (pr < rows_needed - 1) {
+                    new_wrapped[grid_row] = true;
+                }
+            }
+            dst_row += rows_needed;
+        }
+
+        // --- Phase 4: apply ---
+        self.allocator.free(self.cells);
+        self.cells = new_cells;
+        self.rows = new_rows;
+        self.cols = new_cols;
+        self.row_wrapped = new_wrapped;
+
+        if (cursor_row) |cr| cr.* = @min(mapped_cr -| scroll_off, new_rows - 1);
+        if (cursor_col) |cc| cc.* = @min(mapped_cc, new_cols - 1);
+    }
+
+    /// Simple resize without reflow. Preserves the overlapping rectangle
+    /// of content. Used for the alternate screen buffer where the app
+    /// will redraw on resize anyway.
+    pub fn resizeNoReflow(self: *Grid, new_rows: usize, new_cols: usize) !void {
+        std.debug.assert(new_rows > 0 and new_cols > 0);
+        const new_cells = try self.allocator.alloc(Cell, new_rows * new_cols);
+        @memset(new_cells, Cell{});
+
+        const copy_rows = @min(self.rows, new_rows);
+        const copy_cols = @min(self.cols, new_cols);
+
+        for (0..copy_rows) |row| {
+            const src_start = row * self.cols;
+            const dst_start = row * new_cols;
+            @memcpy(
+                new_cells[dst_start .. dst_start + copy_cols],
+                self.cells[src_start .. src_start + copy_cols],
+            );
+        }
+
+        self.allocator.free(self.cells);
+        self.cells = new_cells;
+        self.rows = new_rows;
+        self.cols = new_cols;
+        @memset(&self.row_wrapped, false);
     }
 };
 
@@ -268,4 +426,114 @@ test "new cells have default style" {
     try std.testing.expectEqual(Color.default, cell.style.bg);
     try std.testing.expect(!cell.style.bold);
     try std.testing.expect(!cell.style.underline);
+}
+
+test "resize: grow copies content and fills new cells" {
+    const alloc = std.testing.allocator;
+    var g = try Grid.init(alloc, 2, 3);
+    defer g.deinit();
+
+    g.setCell(0, 0, .{ .char = 'A' });
+    g.setCell(0, 1, .{ .char = 'B' });
+    g.setCell(1, 0, .{ .char = 'C' });
+
+    try g.resize(4, 5, null, null);
+
+    try std.testing.expectEqual(@as(usize, 4), g.rows);
+    try std.testing.expectEqual(@as(usize, 5), g.cols);
+    try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), g.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), g.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(2, 0).char);
+}
+
+test "resize: shrink wraps long lines (reflow)" {
+    const alloc = std.testing.allocator;
+    var g = try Grid.init(alloc, 2, 6);
+    defer g.deinit();
+
+    // Write "ABCDEF" on row 0 (fills all 6 cols)
+    g.setCell(0, 0, .{ .char = 'A' });
+    g.setCell(0, 1, .{ .char = 'B' });
+    g.setCell(0, 2, .{ .char = 'C' });
+    g.setCell(0, 3, .{ .char = 'D' });
+    g.setCell(0, 4, .{ .char = 'E' });
+    g.setCell(0, 5, .{ .char = 'F' });
+
+    try g.resize(4, 3, null, null);
+
+    try std.testing.expectEqual(@as(usize, 4), g.rows);
+    try std.testing.expectEqual(@as(usize, 3), g.cols);
+    // Row 0: ABC (wrapped)
+    try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), g.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), g.getCell(0, 2).char);
+    try std.testing.expect(g.row_wrapped[0]);
+    // Row 1: DEF (not wrapped — end of logical line)
+    try std.testing.expectEqual(@as(u21, 'D'), g.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), g.getCell(1, 1).char);
+    try std.testing.expectEqual(@as(u21, 'F'), g.getCell(1, 2).char);
+    try std.testing.expect(!g.row_wrapped[1]);
+}
+
+test "resize: reflow then grow restores original layout" {
+    const alloc = std.testing.allocator;
+    var g = try Grid.init(alloc, 2, 6);
+    defer g.deinit();
+
+    g.setCell(0, 0, .{ .char = 'A' });
+    g.setCell(0, 1, .{ .char = 'B' });
+    g.setCell(0, 2, .{ .char = 'C' });
+    g.setCell(0, 3, .{ .char = 'D' });
+    g.setCell(0, 4, .{ .char = 'E' });
+    g.setCell(0, 5, .{ .char = 'F' });
+
+    // Shrink to 3 cols — wraps into 2 rows
+    try g.resize(4, 3, null, null);
+    try std.testing.expectEqual(@as(u21, 'D'), g.getCell(1, 0).char);
+
+    // Grow back to 6 cols — should unwrap
+    try g.resize(4, 6, null, null);
+    try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'F'), g.getCell(0, 5).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(1, 0).char);
+    try std.testing.expect(!g.row_wrapped[0]);
+}
+
+test "resizeNoReflow: shrink truncates" {
+    const alloc = std.testing.allocator;
+    var g = try Grid.init(alloc, 4, 6);
+    defer g.deinit();
+
+    g.setCell(0, 0, .{ .char = 'X' });
+    g.setCell(3, 5, .{ .char = 'Y' });
+
+    try g.resizeNoReflow(2, 3);
+
+    try std.testing.expectEqual(@as(usize, 2), g.rows);
+    try std.testing.expectEqual(@as(usize, 3), g.cols);
+    try std.testing.expectEqual(@as(u21, 'X'), g.getCell(0, 0).char);
+}
+
+test "resize: cursor mapped through reflow" {
+    const alloc = std.testing.allocator;
+    var g = try Grid.init(alloc, 2, 6);
+    defer g.deinit();
+
+    g.setCell(0, 0, .{ .char = 'A' });
+    g.setCell(0, 1, .{ .char = 'B' });
+    g.setCell(0, 2, .{ .char = 'C' });
+    g.setCell(0, 3, .{ .char = 'D' });
+    g.setCell(0, 4, .{ .char = 'E' });
+    g.setCell(0, 5, .{ .char = 'F' });
+
+    // Cursor at row 0, col 4 (on 'E')
+    var cr: usize = 0;
+    var cc: usize = 4;
+    try g.resize(4, 3, &cr, &cc);
+
+    // 'E' is at position 4 in the logical line → row 1, col 1
+    try std.testing.expectEqual(@as(usize, 1), cr);
+    try std.testing.expectEqual(@as(usize, 1), cc);
 }

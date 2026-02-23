@@ -19,11 +19,12 @@ pub const Config = struct {
     argv: ?[]const [:0]const u8 = null,
 };
 
+const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
+
 const PtyThreadCtx = struct {
     engine: *Engine,
     pty: *Pty,
     cells: [*]c.AttyxCell,
-    total: usize,
     session: *SessionLog,
 };
 
@@ -48,11 +49,11 @@ pub fn run(config: Config) !void {
     var engine = try Engine.init(allocator, config.rows, config.cols);
     defer engine.deinit();
 
-    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
-    const render_cells = try allocator.alloc(c.AttyxCell, total);
+    const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     defer allocator.free(render_cells);
 
-    fillCells(render_cells, &engine, total);
+    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+    fillCells(render_cells[0..total], &engine, total);
     c.attyx_set_cursor(@intCast(engine.state.cursor.row), @intCast(engine.state.cursor.col));
 
     var pty = try Pty.spawn(.{
@@ -74,7 +75,6 @@ pub fn run(config: Config) !void {
         .engine = &engine,
         .pty = &pty,
         .cells = render_cells.ptr,
-        .total = total,
         .session = &session,
     };
 
@@ -90,30 +90,93 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     var buf: [65536]u8 = undefined;
 
     while (c.attyx_should_quit() == 0) {
+        {
+            var rr: c_int = 0;
+            var rc: c_int = 0;
+            if (c.attyx_check_resize(&rr, &rc) != 0) {
+                const nr: usize = @intCast(rr);
+                const nc: usize = @intCast(rc);
+
+                // Resize the grid FIRST so it matches the new
+                // dimensions before the shell's SIGWINCH response
+                // arrives.  The old ordering (notify shell → drain →
+                // resize) caused the shell's output to be processed
+                // on the wrong-size grid, producing cascading prompt
+                // duplication on shrink.
+                ctx.engine.state.resize(nr, nc) catch {};
+
+                // Now tell the shell about the new size.
+                ctx.pty.resize(@intCast(rr), @intCast(rc)) catch {};
+
+                // Brief pause so the shell can start its SIGWINCH
+                // redraw; drain whatever it has emitted so far.
+                posix.nanosleep(0, 1_000_000);
+                while (true) {
+                    const n = ctx.pty.read(&buf) catch break;
+                    if (n == 0) break;
+                    ctx.session.appendOutput(buf[0..n]);
+                    ctx.engine.feed(buf[0..n]);
+                    if (ctx.engine.state.drainResponse()) |resp| {
+                        _ = ctx.pty.writeToPty(resp) catch {};
+                    }
+                }
+
+                c.attyx_begin_cell_update();
+                const new_total = nr * nc;
+                fillCells(ctx.cells[0..new_total], ctx.engine, new_total);
+                c.attyx_set_cursor(
+                    @intCast(ctx.engine.state.cursor.row),
+                    @intCast(ctx.engine.state.cursor.col),
+                );
+                c.attyx_set_grid_size(rc, rr);
+                c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
+                ctx.engine.state.dirty.clear();
+                c.attyx_end_cell_update();
+            }
+        }
+
         var fds = [_]posix.pollfd{
             .{ .fd = ctx.pty.master, .events = POLLIN, .revents = 0 },
         };
 
         _ = posix.poll(&fds, 16) catch break;
 
+        // Drain all immediately available PTY data before doing expensive work.
+        // The PTY is non-blocking, so read() returns 0 on WouldBlock.
+        var got_data = false;
         if (fds[0].revents & POLLIN != 0) {
-            const n = ctx.pty.read(&buf) catch break;
-            if (n > 0) {
-                const chunk = buf[0..n];
-                ctx.session.appendOutput(chunk);
-                ctx.engine.feed(chunk);
-                fillCells(ctx.cells[0..ctx.total], ctx.engine, ctx.total);
-                c.attyx_set_cursor(
-                    @intCast(ctx.engine.state.cursor.row),
-                    @intCast(ctx.engine.state.cursor.col),
-                );
-                c.attyx_set_mode_flags(
-                    @intFromBool(ctx.engine.state.bracketed_paste),
-                    @intFromBool(ctx.engine.state.cursor_keys_app),
-                );
-                const h = state_hash.hash(&ctx.engine.state);
-                ctx.session.appendFrame(h, ctx.engine.state.alt_active);
+            while (true) {
+                const n = ctx.pty.read(&buf) catch break;
+                if (n == 0) break;
+                got_data = true;
+                ctx.session.appendOutput(buf[0..n]);
+                ctx.engine.feed(buf[0..n]);
+
+                // DSR/DA responses must be written back to the PTY promptly.
+                if (ctx.engine.state.drainResponse()) |resp| {
+                    _ = ctx.pty.writeToPty(resp) catch {};
+                }
             }
+        }
+
+        // Expensive work runs once per drain cycle, not per read chunk.
+        if (got_data) {
+            c.attyx_begin_cell_update();
+            const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
+            fillCells(ctx.cells[0..total], ctx.engine, total);
+            c.attyx_set_cursor(
+                @intCast(ctx.engine.state.cursor.row),
+                @intCast(ctx.engine.state.cursor.col),
+            );
+            c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
+            ctx.engine.state.dirty.clear();
+            c.attyx_end_cell_update();
+            c.attyx_set_mode_flags(
+                @intFromBool(ctx.engine.state.bracketed_paste),
+                @intFromBool(ctx.engine.state.cursor_keys_app),
+            );
+            const h = state_hash.hash(&ctx.engine.state);
+            ctx.session.appendFrame(h, ctx.engine.state.alt_active);
         }
 
         if (fds[0].revents & POLLHUP != 0 or ctx.pty.childExited()) {

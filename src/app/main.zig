@@ -11,7 +11,7 @@ const c = @cImport({
     @cInclude("bridge.h");
 });
 
-// Stub: ui2.zig normally provides this. UI-0 demo has no PTY.
+// Stubs: ui2.zig normally provides these. UI-0 demo has no PTY.
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
 
 pub fn main() !void {

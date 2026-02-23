@@ -131,4 +131,11 @@ pub const Action = union(enum) {
     /// DEC private mode set/reset (ESC[?...h / ESC[?...l).
     /// Carries all mode params; state iterates and applies each.
     dec_private_mode: DecPrivateModes,
+
+    /// CSI 5 n — Device Status Report: terminal OK.
+    device_status,
+    /// CSI 6 n — Cursor Position Report.
+    cursor_position_report,
+    /// CSI c / CSI 0 c — Primary Device Attributes.
+    device_attributes,
 };

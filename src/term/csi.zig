@@ -135,6 +135,23 @@ pub fn makeCountAction(params: CsiParams, comptime tag: std.meta.Tag(Action)) Ac
     return @unionInit(Action, @tagName(tag), if (raw == 0) 1 else raw);
 }
 
+/// CSI n — Device Status Report.
+pub fn makeDeviceStatusReport(params: CsiParams) Action {
+    const code: u16 = if (params.len > 0) params.params[0] else 0;
+    return switch (code) {
+        5 => .device_status,
+        6 => .cursor_position_report,
+        else => .nop,
+    };
+}
+
+/// CSI c / CSI 0 c — Primary Device Attributes (DA1).
+pub fn makeDeviceAttributes(params: CsiParams) Action {
+    const code: u16 = if (params.len > 0) params.params[0] else 0;
+    if (code == 0) return .device_attributes;
+    return .nop;
+}
+
 /// DEC private mode dispatch (ESC[?...h / ESC[?...l).
 /// Packs all mode params into a single compound action so multi-param
 /// sequences like ESC[?1000;1006h are applied atomically by the state.

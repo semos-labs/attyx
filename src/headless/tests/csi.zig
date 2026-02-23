@@ -390,3 +390,91 @@ test "golden: CSI SGR split across chunks preserves color" {
     engine.feed("1mAB");
     try std.testing.expectEqual(Color.red, engine.state.grid.getCell(0, 0).style.fg);
 }
+
+// ===========================================================================
+// Device Status Report (DSR) / Device Attributes (DA)
+// ===========================================================================
+
+test "CSI 6 n: cursor position report" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 10, 20);
+    defer engine.deinit();
+
+    engine.feed("\x1b[5;12H");
+    engine.feed("\x1b[6n");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[5;12R", resp.?);
+}
+
+test "CSI 6 n: cursor at origin" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[6n");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[1;1R", resp.?);
+}
+
+test "CSI 5 n: device status OK" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[5n");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[0n", resp.?);
+}
+
+test "CSI c: primary device attributes" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[c");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[?62;c", resp.?);
+}
+
+test "CSI 0 c: primary device attributes explicit param" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[0c");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[?62;c", resp.?);
+}
+
+test "drainResponse clears buffer" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[6n");
+    _ = engine.state.drainResponse();
+
+    try std.testing.expectEqual(@as(?[]const u8, null), engine.state.drainResponse());
+}
+
+test "multiple DSR responses accumulate" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[5n\x1b[6n");
+
+    const resp = engine.state.drainResponse();
+    try std.testing.expect(resp != null);
+    try std.testing.expectEqualStrings("\x1b[0n\x1b[1;1R", resp.?);
+}

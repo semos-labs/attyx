@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+#define ATTYX_MAX_ROWS 256
+#define ATTYX_MAX_COLS 512
+
 typedef struct {
     uint32_t character;
     uint8_t fg_r, fg_g, fg_b;
@@ -32,5 +35,18 @@ void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app);
 // Mark rows dirty (atomic OR). Called from PTY thread; renderer reads + clears.
 // dirty is a 4-element uint64_t array (256-row bitset).
 void attyx_set_dirty(const uint64_t dirty[4]);
+
+// Update the active grid dimensions (called from PTY thread after resize).
+void attyx_set_grid_size(int cols, int rows);
+
+// Check for a pending resize request from the renderer (window resize).
+// Returns 1 if a resize is pending (writing new dimensions into out_rows/out_cols),
+// 0 otherwise. Called from PTY thread.
+int attyx_check_resize(int* out_rows, int* out_cols);
+
+// Seqlock for cell buffer: PTY thread calls begin/end around cell updates.
+// Renderer checks the generation to detect torn reads.
+void attyx_begin_cell_update(void);
+void attyx_end_cell_update(void);
 
 #endif
