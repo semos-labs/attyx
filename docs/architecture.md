@@ -40,10 +40,11 @@ src/
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig            UI-1 event loop (poll PTY + stdin, snapshot output)
-    ui2.zig            UI-2 orchestrator (PTY thread + Metal window, macOS)
+    ui2.zig            UI-2 orchestrator (PTY thread + GPU window, macOS/Linux)
     session_log.zig    Session event log (bounded ring buffer)
     bridge.h           C bridge types (AttyxCell, cursor, quit signaling)
     platform_macos.m   Metal renderer + Cocoa window (macOS)
+    platform_linux.c   OpenGL renderer + GLFW window (Linux)
   render/            GPU + font rendering
     color.zig          ANSI/palette/truecolor → RGB resolution
   root.zig           Library root — re-exports public API
@@ -235,57 +236,85 @@ Bounded in-memory log of session events for future AI integration:
   event count + total bytes.
 - No persistence, no search, no stdout output. Pure sidecar data structure.
 
-### UI-2 Windowed Renderer (`app/ui2.zig` + `app/platform_macos.m`)
+### UI-2 Windowed Renderer (`app/ui2.zig` + platform layers)
 
-Live terminal rendering using Metal on macOS. Two-thread architecture:
+Live terminal rendering using GPU-backed windows. Two-thread architecture:
 
 ```
-Main thread (Cocoa):  [NSApp run] ──▸ MTKViewDelegate.drawInMTKView (60fps)
-                                          │
-                                          ▼
-                                     read shared AttyxCell buffer
-                                     draw bg quads → text quads → cursor block
+Main thread (platform):  event loop ──▸ draw callback (60fps, vsync)
+                                              │
+                                              ▼
+                                         read shared AttyxCell buffer
+                                         draw bg quads → text quads → cursor block
 
-PTY thread (Zig):     poll PTY fd (16ms) ──▸ read bytes ──▸ engine.feed()
-                          ──▸ fillCells() → shared buffer
-                          ──▸ attyx_set_cursor()
-                          ──▸ session.appendFrame()
+PTY thread (Zig):        poll PTY fd (16ms) ──▸ read bytes ──▸ engine.feed()
+                             ──▸ fillCells() → shared buffer
+                             ──▸ attyx_set_cursor()
+                             ──▸ session.appendFrame()
 ```
 
 **Shared state (no locks):**
 
 - `AttyxCell*` buffer — 8 bytes per cell, effectively atomic on 64-bit.
 - `g_cursor_row` / `g_cursor_col` — volatile int globals.
-- `g_should_quit` — set by Cocoa on window close, polled by PTY thread.
+- `g_should_quit` — set by platform on window close, polled by PTY thread.
+- `g_dirty[4]` — 256-bit dirty row bitset for damage-aware rendering.
+- `g_cell_gen` — seqlock counter to detect torn frames.
+- `g_ime_*` — IME composition state for preedit overlay.
+- `g_sel_*` — mouse selection state.
 
 **C bridge (`bridge.h`):** Defines `AttyxCell` struct (character + fg/bg RGB + flags)
-and six functions: `attyx_run`, `attyx_set_cursor`, `attyx_request_quit`,
-`attyx_should_quit`, `attyx_send_input`, `attyx_set_mode_flags`.
+and functions: `attyx_run`, `attyx_set_cursor`, `attyx_request_quit`,
+`attyx_should_quit`, `attyx_send_input`, `attyx_set_mode_flags`,
+`attyx_set_mouse_mode`, `attyx_begin/end_cell_update`, `attyx_set_dirty`,
+`attyx_check_resize`, `attyx_scroll_viewport`, `attyx_mark_all_dirty`.
 
-**Metal renderer:** Reuses the UI-0 pipeline (font atlas via Core Text, two-pass
-rendering with bg solid + text alpha-blended). Adds cursor rendering as a third
-pass — solid light-gray rectangle at the cursor position.
+#### macOS: `platform_macos.m`
+
+- Cocoa window with MTKView + Metal renderer.
+- Core Text font rasterization with dynamic glyph atlas.
+- NSTextInputClient protocol for IME composition (CJK).
+- NSPasteboard clipboard (Cmd+C/V).
+
+#### Linux: `platform_linux.c`
+
+- GLFW window with OpenGL 3.3 core renderer.
+- FreeType font rasterization with dynamic glyph atlas.
+- Fontconfig for font discovery (with fallback for missing glyphs).
+- GLFW clipboard API (Ctrl+Shift+C/V).
+- Same vertex format, same shader logic (GLSL port of Metal shaders).
+- Same damage-aware rendering, seqlock frame skipping, dirty bitset.
 
 **Color resolution:** `render/color.zig` maps `Color` enum variants (default, ansi,
 palette, rgb) to concrete RGB values using a hardcoded xterm-like palette.
 
-### Keyboard Input (`AttyxView` in `platform_macos.m`)
+### Keyboard Input
 
-`AttyxView` subclasses `MTKView` to handle keyboard events on the Cocoa main
-thread. Input flows:
+Both platform layers encode keyboard events identically and send them to the
+PTY via `attyx_send_input()`:
 
 ```
-keyDown: → encode key → attyx_send_input(bytes) → write(pty_master_fd)
+keyboard event → encode key → attyx_send_input(bytes) → write(pty_master_fd)
 ```
 
 Key encoding covers:
-- Regular text (via `event.characters`, UTF-8).
+- Regular text (UTF-8 via system input method).
 - Special keys: arrows (DECCKM-aware), function keys, Home/End, PgUp/PgDn, etc.
 - Ctrl+key: maps to control codes 0x01–0x1A.
 - Alt/Option+key: ESC prefix before the character.
-- Paste (Cmd+V): wraps with bracketed paste sequences when mode is active.
+- Paste: Cmd+V (macOS) / Ctrl+Shift+V (Linux), with bracketed paste wrapping.
+- Copy: Cmd+C (macOS) / Ctrl+Shift+C (Linux).
+- IME composition: NSTextInputClient (macOS) / GLFW char callback (Linux).
 
 Mode flags (`g_bracketed_paste`, `g_cursor_keys_app`) are volatile globals
 updated by the PTY thread via `attyx_set_mode_flags()` and read by the key
 handler. Eventual consistency is acceptable — a one-frame lag on mode changes
 is imperceptible.
+
+### Mouse Input
+
+Both platforms implement:
+- SGR mouse reporting (when tracking modes are enabled).
+- Text selection: single-click drag, double-click word selection, triple-click row selection.
+- Scroll wheel: viewport scrollback (when not in alt screen / mouse tracking mode).
+- Selection extends word-by-word or row-by-row based on initial click count.

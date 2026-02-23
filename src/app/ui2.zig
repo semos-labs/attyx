@@ -39,8 +39,8 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
 
 
 pub fn run(config: Config) !void {
-    if (builtin.os.tag != .macos) {
-        std.debug.print("ui2 requires macOS (Metal renderer). Use ui1 on other platforms.\n", .{});
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
+        std.debug.print("ui2 requires macOS or Linux. Use ui1 on other platforms.\n", .{});
         return;
     }
 

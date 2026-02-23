@@ -39,7 +39,7 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 | **Terminal engine** | `src/term/` | Pure, deterministic core — parser, state, grid, hash |
 | **Headless runner** | `src/headless/` | Test harness and golden snapshot tests |
 | **App** | `src/app/` | PTY bridge + OS integration |
-| **Renderer** | `src/render/` | GPU + font rendering (Metal on macOS) |
+| **Renderer** | `src/render/` | GPU + font rendering (Metal on macOS, OpenGL on Linux) |
 
 ### Key types
 
@@ -51,7 +51,8 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 - **`hash`** — pure FNV-1a hash of visible terminal state (cursor + grid + attrs). Used to detect screen changes.
 - **`Pty`** — POSIX PTY bridge: spawn a child shell, non-blocking reads, write bytes, resize via ioctl.
 - **`SessionLog`** — bounded ring buffer of session events (PTY input/output chunks + frame snapshots). Preparation for AI integration.
-- **`AttyxView`** — MTKView subclass handling keyboard input: special keys, Ctrl+key, Alt+ESC prefix, paste, DECCKM-aware arrow keys.
+- **`AttyxView`** — MTKView subclass handling keyboard input: special keys, Ctrl+key, Alt+ESC prefix, paste, DECCKM-aware arrow keys, IME composition (CJK), mouse selection (single/double/triple click).
+- **`platform_linux.c`** — Linux platform layer: GLFW window, OpenGL 3.3 renderer, FreeType glyph rasterization, Fontconfig font discovery, same bridge.h shared-state interface.
 
 See [docs/architecture.md](docs/architecture.md) for the full breakdown.
 
@@ -78,15 +79,26 @@ zig build run -- ui1 --cmd /bin/zsh          # custom shell
 zig build run -- ui1 --separator             # print --- between frames
 ```
 
-### Windowed terminal (UI-2, macOS)
+### Windowed terminal (UI-2, macOS + Linux)
 
-Live terminal rendered in a Metal-backed window. PTY output drives the engine; the renderer draws the grid at 60 fps.
+Live terminal rendered in a GPU-backed window. PTY output drives the engine; the renderer draws the grid at 60 fps.
+
+- **macOS:** Metal + Cocoa + Core Text
+- **Linux:** OpenGL 3.3 + GLFW + FreeType + Fontconfig
 
 ```bash
 zig build run -- ui2                         # default: bash 24x80
 zig build run -- ui2 --rows 30 --cols 100    # custom size
 zig build run -- ui2 --cmd /bin/zsh          # custom shell
 ```
+
+#### Linux prerequisites
+
+```bash
+sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
+```
+
+Set `ATTYX_FONT` to override the default monospace font (e.g., `ATTYX_FONT="JetBrains Mono"`).
 
 ---
 
@@ -136,6 +148,11 @@ Attyx is built milestone by milestone. Each milestone is stable and tested befor
 | S-0 | Minimal session event log (ring buffer, no AI yet) | ✅ Done |
 | UI-2 | Window + GPU renderer (live grid rendering, Metal on macOS) | ✅ Done |
 | UI-3 | Keyboard input + interactive shell (PTY write + key encoding) | ✅ Done |
+| UI-4 | Mouse selection + copy/paste (single/double/triple click) | ✅ Done |
+| UI-5 | Scrollback viewport (Shift+PgUp/PgDn, mouse wheel) | ✅ Done |
+| UI-6 | Window resize + grid snap | ✅ Done |
+| UI-7 | IME composition input (CJK, macOS) | ✅ Done |
+| UI-8 | Linux platform parity (GLFW + OpenGL + FreeType) | ✅ Done |
 
 See [docs/milestones.md](docs/milestones.md) for detailed write-ups.
 
@@ -160,10 +177,11 @@ src/
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig          UI-1 runner (event loop, stdin forwarding, snapshots)
-    ui2.zig          UI-2 runner (PTY thread + Metal window, macOS)
+    ui2.zig          UI-2 runner (PTY thread + GPU window, macOS/Linux)
     session_log.zig  Session event log (ring buffer, byte tracking)
     bridge.h         C bridge types (AttyxCell, cursor, quit signaling)
     platform_macos.m Metal renderer + Cocoa window (macOS)
+    platform_linux.c OpenGL renderer + GLFW window (Linux)
     main.zig         UI-0 demo (standalone executable)
   render/
     color.zig        Color resolution (ANSI → RGB lookup)

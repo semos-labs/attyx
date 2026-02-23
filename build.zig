@@ -90,6 +90,19 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkFramework("CoreFoundation", .{});
     }
 
+    // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
+    if (target.result.os.tag == .linux) {
+        exe.addCSourceFile(.{
+            .file = b.path("src/app/platform_linux.c"),
+            .flags = &.{},
+        });
+        exe.root_module.addIncludePath(b.path("src/app"));
+        exe.root_module.linkSystemLibrary("glfw3", .{});
+        exe.root_module.linkSystemLibrary("gl", .{});
+        exe.root_module.linkSystemLibrary("freetype2", .{});
+        exe.root_module.linkSystemLibrary("fontconfig", .{});
+    }
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden

@@ -84,7 +84,7 @@ fn printUsage() void {
         \\
         \\Usage:
         \\  attyx ui1 [options]       Run PTY bridge (headless snapshot loop)
-        \\  attyx ui2 [options]       Run windowed terminal (Metal renderer, macOS)
+        \\  attyx ui2 [options]       Run windowed terminal (GPU-accelerated)
         \\
         \\UI-1 options:
         \\  --rows N                  Terminal rows (default: 24)

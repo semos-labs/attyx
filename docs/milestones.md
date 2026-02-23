@@ -16,6 +16,11 @@
 | S-0 | Minimal session event log | ✅ Done |
 | UI-2 | Window + GPU renderer (live grid, Metal/macOS) | ✅ Done |
 | UI-3 | Keyboard input + interactive shell | ✅ Done |
+| UI-4 | Mouse selection + copy/paste | ✅ Done |
+| UI-5 | Scrollback viewport | ✅ Done |
+| UI-6 | Window resize + grid snap | ✅ Done |
+| UI-7 | IME composition input (CJK, macOS) | ✅ Done |
+| UI-8 | Linux platform parity (GLFW + OpenGL + FreeType) | ✅ Done |
 
 ---
 
@@ -817,3 +822,156 @@ Subclassed MTKView as `AttyxView` with:
 - Cmd+V paste (with and without bracketed paste)
 - Escape key, function keys
 - Alt+key prefix encoding
+
+---
+
+## Milestone UI-4 — Mouse Selection + Copy/Paste
+
+**Status:** ✅ Complete
+
+**Goal:** Enable text selection with the mouse and copy-to-clipboard support.
+
+### What was built
+
+- SGR mouse reporting: button press/release, motion tracking, scroll events sent
+  to the PTY when mouse tracking modes are enabled.
+- Text selection when mouse tracking is off: click-and-drag creates a selection
+  range with a distinct highlight background color.
+- Copy to clipboard (Cmd+C on macOS): reads selected cells, trims trailing
+  whitespace per row, encodes to UTF-8, places on system clipboard.
+- Paste (Cmd+V on macOS): reads clipboard, wraps with bracketed paste sequences
+  when the mode is active.
+
+---
+
+## Milestone UI-5 — Scrollback Viewport
+
+**Status:** ✅ Complete
+
+**Goal:** Allow scrolling back through terminal history using keyboard and mouse.
+
+### What was built
+
+- `g_viewport_offset` / `g_scrollback_count` shared state for viewport control.
+- Shift+PageUp/PageDown scroll by one screen height.
+- Shift+Home/End jump to top/bottom of scrollback.
+- Mouse wheel scrolls viewport (when not in alt screen or mouse tracking mode).
+- Any keyboard input snaps viewport back to live position and clears selection.
+- Scrollback data provided by the grid's scroll history in `term/grid.zig`.
+
+---
+
+## Milestone UI-6 — Window Resize + Grid Snap
+
+**Status:** ✅ Complete
+
+**Goal:** Handle window resize events and adapt the terminal grid accordingly.
+
+### What was built
+
+- Damage-aware rendering via 256-bit dirty row bitset (`g_dirty[4]`).
+- Seqlock (`g_cell_gen`) prevents reading torn frames.
+- `g_pending_resize_rows/cols` for cross-thread resize signaling.
+- PTY thread detects pending resize, reallocates grid, calls `pty.resize()`.
+- Renderer reallocates vertex buffers on grid size change.
+- macOS: `windowWillResize:toSize:` snaps window to cell boundaries.
+
+---
+
+## Milestone UI-7 — IME Composition Input (CJK)
+
+**Status:** ✅ Complete
+
+**Goal:** Support IME composition so users can input CJK and other composed text.
+
+### What was built (macOS)
+
+- `NSTextInputClient` protocol on `AttyxView` for system IME integration.
+- Preedit state: `g_ime_composing`, `g_ime_preedit` buffer, cursor index, anchor position.
+- Preedit overlay rendering: dark background, yellow underline, white glyphs.
+- `keyDown:` routes through `interpretKeyEvents:` during composition to avoid
+  double-sending keys.
+- `insertText:replacementRange:` commits final text to PTY.
+- `setMarkedText:selectedRange:replacementRange:` updates preedit display.
+
+### Interaction rules
+
+- Normal typed chars still work as before.
+- While composing, key events are handled by the IME.
+- Enter/ESC during composition are handled by the IME, not sent to PTY.
+- Preedit is rendered as an overlay — does not modify the terminal grid.
+
+---
+
+## Milestone UI-8 — Linux Platform Parity
+
+**Status:** ✅ Complete
+
+**Goal:** Create a Linux platform layer that provides full feature parity with the
+macOS Metal/Cocoa layer, using the same `bridge.h` shared-state interface.
+
+### Technology stack
+
+| Concern | macOS | Linux |
+|---------|-------|-------|
+| Windowing | Cocoa (NSWindow/MTKView) | GLFW 3.3+ |
+| GPU rendering | Metal | OpenGL 3.3 core |
+| Font rasterization | Core Text | FreeType 2 |
+| Font discovery | Core Text fallback | Fontconfig |
+| Clipboard | NSPasteboard (Cmd+C/V) | GLFW clipboard (Ctrl+Shift+C/V) |
+| IME | NSTextInputClient | GLFW char/preedit callbacks |
+
+### What was built
+
+**`src/app/platform_linux.c` (~850 lines):**
+
+- OpenGL 3.3 core renderer with GLSL 330 shaders (direct port of Metal shaders).
+- Dynamic glyph cache: FreeType rasterization + Fontconfig font fallback for
+  missing glyphs (CJK, emoji) + OpenGL R8 texture atlas.
+- Same vertex format (`{px,py, u,v, r,g,b,a}`, 32 bytes) as macOS.
+- Same two-pass rendering: bg solid pipeline, text alpha-blended pipeline.
+- Same damage-aware rendering: dirty bitset + seqlock frame skipping.
+- Cursor quad, IME preedit overlay, selection highlight — all ported.
+- GLFW keyboard callbacks: special keys, Ctrl+key control codes, Alt+ESC prefix,
+  DECCKM-aware arrows, F1–F12.
+- GLFW mouse callbacks: SGR mouse reporting, text selection with
+  single/double/triple click word/row selection.
+- GLFW scroll callback: viewport scrollback or SGR scroll events.
+- Clipboard: Ctrl+Shift+C (copy) / Ctrl+Shift+V (paste with bracketed paste).
+- VSync-driven main loop at monitor refresh rate.
+- HiDPI support via content scale detection.
+- `ATTYX_FONT` environment variable for font override.
+
+**`build.zig` changes:**
+
+- Linux target links GLFW, GL, FreeType, Fontconfig via system pkg-config.
+
+**`ui2.zig` / `main.zig` changes:**
+
+- Removed macOS-only guard — `ui2` now works on macOS and Linux.
+- Updated usage text to reflect cross-platform support.
+
+### Feature parity
+
+| Feature | macOS | Linux |
+|---------|-------|-------|
+| GPU-rendered grid | Metal | OpenGL 3.3 |
+| Font rendering + fallback | Core Text | FreeType + Fontconfig |
+| Dynamic glyph atlas | Yes | Yes (same approach) |
+| Damage-aware rendering | Dirty row bitset | Same |
+| Seqlock frame skipping | Yes | Same |
+| Keyboard (special keys) | Yes | Same encoding |
+| Keyboard (Ctrl/Alt) | Yes | Same encoding |
+| Mouse tracking (SGR) | Yes | Same encoding |
+| Mouse selection | Single/double/triple click | Same |
+| Copy/paste | Cmd+C/V | Ctrl+Shift+C/V |
+| Scrollback viewport | Yes | Same |
+| Window resize | Yes | Same |
+| IME composition | NSTextInputClient | GLFW char callback |
+| Bracketed paste | Yes | Same |
+
+### System dependencies (Linux)
+
+```bash
+sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
+```
