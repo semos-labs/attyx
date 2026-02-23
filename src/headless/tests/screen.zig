@@ -680,6 +680,61 @@ test "resize: right-aligned prompt with styled gap — shrink cycles" {
     try std.testing.expect(count <= initial_count);
 }
 
+test "resize: right-aligned content stripped before reflow on shrink" {
+    // Simulates Starship RPROMPT: left text at cols 0-5, gap of default
+    // cells, right text at cols 36-39.  On shrink to 20 cols the right
+    // content exceeds new_cols and must be stripped before the reflow so
+    // it doesn't wrap into garbled fragment rows.
+    const alloc = std.testing.allocator;
+    const Grid = @import("../../term/grid.zig");
+    const Style = Grid.Style;
+    var t = try TerminalState.init(alloc, 4, 40);
+    defer t.deinit();
+
+    const cyan = Style{ .fg = .{ .ansi = 6 } };
+    const magenta = Style{ .fg = .{ .ansi = 5 } };
+
+    // Left: "~/proj" in cyan
+    t.pen = cyan;
+    for ("~/proj") |ch| {
+        t.apply(.{ .print = ch });
+    }
+    t.pen = .{};
+
+    // Jump to column 36 (simulating cursor-absolute positioning)
+    t.cursor.col = 36;
+
+    // Right: "main" in magenta
+    t.pen = magenta;
+    for ("main") |ch| {
+        t.apply(.{ .print = ch });
+    }
+    t.pen = .{};
+
+    // Newline + input prompt
+    t.apply(.{ .control = .lf });
+    t.apply(.{ .control = .cr });
+    t.apply(.{ .print = '>' });
+    t.apply(.{ .print = ' ' });
+    try std.testing.expectEqual(@as(usize, 1), t.cursor.row);
+
+    // Shrink to 20 cols — right content (cols 36-39) exceeds 20.
+    // The pre-processing should strip it; the left text (6 chars) fits.
+    try t.resize(4, 20);
+
+    // Left text preserved
+    try std.testing.expectEqual(@as(u21, '~'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(cyan, t.grid.getCell(0, 0).style);
+    try std.testing.expectEqual(@as(u21, 'j'), t.grid.getCell(0, 5).char);
+
+    // No wrapping on the prompt row — line fits after stripping
+    try std.testing.expect(!t.grid.row_wrapped[0]);
+
+    // Right-aligned "main" text should be gone (cells cleared)
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 6).char);
+    try std.testing.expectEqual(Grid.Style{}, t.grid.getCell(0, 6).style);
+}
+
 test "resize: auto-wrapped line rejoins on grow and re-wraps on shrink" {
     const alloc = std.testing.allocator;
     var t = try TerminalState.init(alloc, 4, 4);

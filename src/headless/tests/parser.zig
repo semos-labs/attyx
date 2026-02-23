@@ -576,8 +576,16 @@ test "DCS payload is consumed silently" {
         "B    \n");
 }
 
-test "APC terminated by BEL" {
-    try expectSnapshot(1, 5, "\x1b_Gdata\x07C",
+test "APC terminated by ST" {
+    try expectSnapshot(1, 5, "\x1b_Gdata\x1b\\C",
+        "C    \n");
+}
+
+test "APC with inner BEL is not prematurely terminated" {
+    // BEL inside a DCS/APC payload (e.g. tmux passthrough wrapping
+    // an OSC that uses BEL as its terminator) must NOT end the outer
+    // sequence.  Only ST (ESC \ or 0x9C) terminates DCS/APC.
+    try expectSnapshot(1, 5, "\x1b_Gdata\x07LEAK\x1b\\C",
         "C    \n");
 }
 
