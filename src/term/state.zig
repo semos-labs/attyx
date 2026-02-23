@@ -504,6 +504,37 @@ pub const TerminalState = struct {
     pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
         if (new_rows == self.grid.rows and new_cols == self.grid.cols) return;
 
+        // Pre-process: strip right-aligned content (e.g. Starship RPROMPT)
+        // placed via cursor-jump that spans the full old width.  Without
+        // this the wide logical line wraps on shrink, creating garbled
+        // fragment rows the shell's SIGWINCH handler can't reach.
+        if (new_cols < self.grid.cols) {
+            const gap_threshold = @max(8, self.grid.cols / 4);
+            for (0..self.grid.rows) |r| {
+                if (self.grid.row_wrapped[r]) continue;
+                const base = r * self.grid.cols;
+                var last: usize = 0;
+                for (0..self.grid.cols) |c| {
+                    if (!grid_mod.isDefaultCell(self.grid.cells[base + c])) last = c + 1;
+                }
+                if (last <= new_cols) continue;
+                var gap_start: usize = 0;
+                var gap_len: usize = 0;
+                for (0..last) |c| {
+                    if (grid_mod.isDefaultCell(self.grid.cells[base + c])) {
+                        if (gap_len == 0) gap_start = c;
+                        gap_len += 1;
+                    } else {
+                        if (gap_len >= gap_threshold and gap_start > 0) {
+                            @memset(self.grid.cells[base + gap_start .. base + self.grid.cols], grid_mod.Cell{});
+                            break;
+                        }
+                        gap_len = 0;
+                    }
+                }
+            }
+        }
+
         try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col);
         try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
 

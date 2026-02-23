@@ -5,7 +5,7 @@ const csi = @import("csi.zig");
 pub const Action = actions_mod.Action;
 pub const ControlCode = actions_mod.ControlCode;
 
-const State = enum {
+pub const State = enum {
     ground,
     escape,
     escape_charset,
@@ -83,6 +83,14 @@ pub const Parser = struct {
             '\r' => return .{ .control = .cr },
             0x08 => return .{ .control = .bs },
             '\t' => return .{ .control = .tab },
+            // C1 string-type controls (8-bit forms): DCS, SOS, PM, APC.
+            // Transition to str_ignore so the payload is silently consumed
+            // until ST.  Without this, the payload bytes following the C1
+            // introducer would be parsed as ground-state printable text.
+            0x90, 0x98, 0x9E, 0x9F => {
+                self.state = .str_ignore;
+                return null;
+            },
             0xC2...0xDF => return self.utf8Start(byte, 2),
             0xE0...0xEF => return self.utf8Start(byte, 3),
             0xF0...0xF4 => return self.utf8Start(byte, 4),
@@ -189,7 +197,11 @@ pub const Parser = struct {
                 self.state = .str_ignore_escape;
                 return null;
             },
-            0x07, 0x9C => {
+            // C1 ST (8-bit String Terminator) ends the sequence.
+            // BEL (0x07) is intentionally NOT a terminator here —
+            // DCS/APC payloads (e.g. tmux passthrough) may embed
+            // inner OSC sequences that use BEL as *their* terminator.
+            0x9C => {
                 self.state = .ground;
                 return .nop;
             },
@@ -202,9 +214,12 @@ pub const Parser = struct {
             self.state = .ground;
             return .nop;
         }
-        // Not a proper ST — treat as new escape sequence.
-        self.state = .escape;
-        return self.onEscape(byte);
+        // Not ST — stay in the ignore state.  DCS/APC payloads may
+        // contain embedded ESC bytes (e.g. tmux passthrough doubles
+        // inner ESCs as ESC ESC).  Breaking out here would cause the
+        // inner content to be parsed as real escape sequences.
+        self.state = .str_ignore;
+        return null;
     }
 
     fn onCsi(self: *Parser, byte: u8) ?Action {

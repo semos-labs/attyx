@@ -478,3 +478,49 @@ test "multiple DSR responses accumulate" {
     try std.testing.expect(resp != null);
     try std.testing.expectEqualStrings("\x1b[0n\x1b[1;1R", resp.?);
 }
+
+test "tmux passthrough with inner OSC hyperlink is silently consumed" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 40);
+    defer engine.deinit();
+
+    // Simulate: "AB" then tmux passthrough wrapping OSC 8 hyperlink
+    // (inner ESCs doubled, inner OSC terminated by BEL), then "CD".
+    // Only "ABCD" should appear on screen — the passthrough must be
+    // fully consumed without leaking "Ptmux;", "]", URL bytes, etc.
+    engine.feed("AB" ++
+        "\x1bPtmux;\x1b\x1b]8;;https://example.com\x07\x1b\\" ++
+        "CD");
+
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.grid.getCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 4).char);
+}
+
+test "C1 DCS (0x90) payload is silently consumed" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 20);
+    defer engine.deinit();
+
+    // 8-bit DCS: \x90 payload \x9C (C1 ST).  Nothing should print.
+    engine.feed("X" ++ "\x90" ++ "qpayload" ++ "\x9C" ++ "Y");
+
+    try std.testing.expectEqual(@as(u21, 'X'), engine.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'Y'), engine.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 2).char);
+}
+
+test "APC Kitty graphics payload is silently consumed" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 40);
+    defer engine.deinit();
+
+    // ESC _ G ... ESC \  (Kitty graphics protocol)
+    engine.feed("A" ++ "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\" ++ "B");
+
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 2).char);
+}
