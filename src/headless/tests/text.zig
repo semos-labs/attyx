@@ -32,9 +32,18 @@ test "golden: text wraps at right edge" {
 }
 
 test "golden: wrap triggers scroll when grid is full" {
+    // With deferred wrap, printing 'F' at the last column sets wrap_next
+    // but doesn't scroll until a 7th character is printed.
     try expectSnapshot(2, 3, "ABCDEF",
+        "ABC\n" ++
+        "DEF\n");
+}
+
+test "golden: deferred wrap scrolls on next char" {
+    // 7th char triggers the deferred wrap → scroll.
+    try expectSnapshot(2, 3, "ABCDEFG",
         "DEF\n" ++
-        "   \n");
+        "G  \n");
 }
 
 // ===========================================================================
@@ -120,7 +129,7 @@ test "apply print writes to grid and advances cursor" {
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
-    try std.testing.expectEqual(@as(u8, 'A'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
     try std.testing.expectEqual(@as(usize, 0), t.cursor.row);
     try std.testing.expectEqual(@as(usize, 1), t.cursor.col);
 }
@@ -179,7 +188,7 @@ test "apply nop has no effect" {
     t.apply(.{ .nop = {} });
     try std.testing.expectEqual(row_before, t.cursor.row);
     try std.testing.expectEqual(col_before, t.cursor.col);
-    try std.testing.expectEqual(@as(u8, 'X'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.getCell(0, 0).char);
 }
 
 test "printed cells carry current pen style" {

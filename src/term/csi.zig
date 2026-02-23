@@ -1,3 +1,4 @@
+const std = @import("std");
 const actions_mod = @import("actions.zig");
 
 pub const Action = actions_mod.Action;
@@ -102,6 +103,36 @@ pub fn makeSetScrollRegion(params: CsiParams) Action {
     const top: u16 = if (params.len > 0) params.params[0] else 0;
     const bottom: u16 = if (params.len > 1) params.params[1] else 0;
     return .{ .set_scroll_region = .{ .top = top, .bottom = bottom } };
+}
+
+/// CSI G — Cursor Character Absolute. Default col=1, converted to 0-based.
+pub fn makeCursorColAbs(params: CsiParams) Action {
+    const raw: u16 = if (params.len > 0) params.params[0] else 0;
+    return .{ .cursor_col_abs = if (raw == 0) 0 else raw - 1 };
+}
+
+/// CSI d — Line Position Absolute. Default row=1, converted to 0-based.
+pub fn makeCursorRowAbs(params: CsiParams) Action {
+    const raw: u16 = if (params.len > 0) params.params[0] else 0;
+    return .{ .cursor_row_abs = if (raw == 0) 0 else raw - 1 };
+}
+
+/// CSI E — Cursor Next Line (move down n, set col=0).
+pub fn makeCursorNextLine(params: CsiParams) Action {
+    const raw: u16 = if (params.len > 0) params.params[0] else 0;
+    return .{ .cursor_next_line = if (raw == 0) 1 else raw };
+}
+
+/// CSI F — Cursor Previous Line (move up n, set col=0).
+pub fn makeCursorPrevLine(params: CsiParams) Action {
+    const raw: u16 = if (params.len > 0) params.params[0] else 0;
+    return .{ .cursor_prev_line = if (raw == 0) 1 else raw };
+}
+
+/// Generic constructor for actions that take a single count param (default 1).
+pub fn makeCountAction(params: CsiParams, comptime tag: std.meta.Tag(Action)) Action {
+    const raw: u16 = if (params.len > 0) params.params[0] else 0;
+    return @unionInit(Action, @tagName(tag), if (raw == 0) 1 else raw);
 }
 
 /// DEC private mode dispatch (ESC[?...h / ESC[?...l).

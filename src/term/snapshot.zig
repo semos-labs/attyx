@@ -1,27 +1,35 @@
 const std = @import("std");
 const grid_mod = @import("grid.zig");
 
-/// Serialize the grid to a plain-text string for golden-test comparison.
+/// Serialize the grid to a plain-text UTF-8 string for golden-test comparison.
 ///
-/// Format: exactly `rows` lines, each exactly `cols` characters wide
-/// (trailing spaces preserved, not trimmed), terminated by '\n'.
-/// Total length is always `rows * (cols + 1)` bytes.
+/// Each cell is encoded as its UTF-8 representation, one cell per column,
+/// with each row terminated by '\n'.
+///
+/// For pure-ASCII content the output is identical to the old format
+/// (one byte per cell). Non-ASCII codepoints produce multi-byte output.
 ///
 /// Caller owns the returned slice and must free it with `allocator`.
 pub fn dumpToString(allocator: std.mem.Allocator, grid: *const grid_mod.Grid) ![]u8 {
-    const len = grid.rows * (grid.cols + 1);
-    const buf = try allocator.alloc(u8, len);
+    // Worst case: every cell is a 4-byte codepoint + newlines.
+    const max_len = grid.rows * (grid.cols * 4 + 1);
+    const buf = try allocator.alloc(u8, max_len);
 
     var pos: usize = 0;
     for (0..grid.rows) |row| {
         for (0..grid.cols) |col| {
-            buf[pos] = grid.getCell(row, col).char;
-            pos += 1;
+            const cp = grid.getCell(row, col).char;
+            const n = std.unicode.utf8Encode(cp, buf[pos..]) catch 1;
+            pos += n;
         }
         buf[pos] = '\n';
         pos += 1;
     }
 
+    // Shrink to actual size.
+    if (pos < max_len) {
+        return allocator.realloc(buf, pos);
+    }
     return buf;
 }
 

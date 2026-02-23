@@ -154,7 +154,7 @@ test "enter alt screen clears grid and resets cursor" {
     try std.testing.expect(t.alt_active);
     try std.testing.expectEqual(@as(usize, 0), t.cursor.row);
     try std.testing.expectEqual(@as(usize, 0), t.cursor.col);
-    try std.testing.expectEqual(@as(u8, ' '), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
 }
 
 test "leave alt screen restores main buffer" {
@@ -169,7 +169,7 @@ test "leave alt screen restores main buffer" {
     t.apply(.leave_alt_screen);
 
     try std.testing.expect(!t.alt_active);
-    try std.testing.expectEqual(@as(u8, 'M'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'M'), t.grid.getCell(0, 0).char);
     try std.testing.expectEqual(saved_col, t.cursor.col);
 }
 

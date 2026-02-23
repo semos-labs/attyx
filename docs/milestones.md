@@ -14,6 +14,8 @@
 | 8 | Mouse reporting + bracketed paste + input encoder | ✅ Done |
 | UI-1 | PTY bridge (headless app loop) | ✅ Done |
 | S-0 | Minimal session event log | ✅ Done |
+| UI-2 | Window + GPU renderer (live grid, Metal/macOS) | ✅ Done |
+| UI-3 | Keyboard input + interactive shell | ✅ Done |
 
 ---
 
@@ -633,3 +635,185 @@ stdin read → session.appendInput(chunk) → pty.writeToPty(chunk)
 
 **Tests added:** 7 new (event limit, byte limit, ordering, frame_id increment,
 hash dedup, lastEvents clamping, stats tracking).
+
+---
+
+## Milestone UI-2 — Window + GPU Renderer (live grid rendering)
+
+**Status:** ✅ Complete
+
+**Goal:** Render the live `TerminalState` grid in a Metal-backed window on macOS.
+Connect it to the existing PTY bridge so the terminal engine drives real-time display.
+
+### Architecture
+
+Two threads cooperate through a shared `AttyxCell` buffer:
+
+- **Main thread (Cocoa):** Runs `[NSApp run]`, drives the `MTKView` delegate at
+  60 fps. Reads the shared cell buffer and cursor position each frame.
+- **PTY thread (Zig):** Polls the PTY fd with 16ms timeout. Reads bytes, feeds
+  the engine, converts state to `AttyxCell` values, updates cursor globals.
+
+No locking — `AttyxCell` is 8 bytes (effectively atomic on 64-bit), and
+single-frame tearing is acceptable at 60 fps.
+
+### What was built
+
+**Updated C bridge (`src/app/bridge.h`):**
+
+- `attyx_run(cells, cols, rows)` now takes a mutable `AttyxCell*` (dropped `const`).
+- `attyx_set_cursor(row, col)` — update cursor position from PTY thread.
+- `attyx_request_quit()` — signal the window to close (dispatches to main thread).
+- `attyx_should_quit()` — polled by PTY thread to detect window close.
+
+**Updated Metal renderer (`src/app/platform_macos.m`):**
+
+- Accepts mutable `g_cells` — the PTY thread writes cells, the renderer reads them.
+- Cursor rendering: solid light-gray block drawn as a third pass after background
+  and text quads. Reads `g_cursor_row` / `g_cursor_col` volatile globals.
+- Quit signaling: `applicationWillTerminate:` sets `g_should_quit = 1`.
+  `attyx_request_quit()` dispatches `[NSApp terminate:]` on the main thread.
+- Window title updated to "Attyx".
+
+**UI-2 runner (`src/app/ui2.zig`):**
+
+1. Creates `Engine` at configured size (default 24x80).
+2. Allocates `AttyxCell` buffer (`rows * cols`).
+3. Spawns PTY (shell).
+4. Performs initial state-to-cell conversion.
+5. Spawns PTY reader thread.
+6. Calls `attyx_run()` — blocks on Cocoa run loop.
+7. On return (window closed): thread joins, cleanup runs.
+
+PTY reader thread:
+- `poll()` loop with 16ms timeout.
+- Read → `engine.feed()` → `fillCells()` → `attyx_set_cursor()`.
+- Session log integration (`appendOutput`, `appendFrame`).
+- On child exit: `attyx_request_quit()`.
+- On `attyx_should_quit()`: break.
+
+`fillCells()` iterates the engine grid, resolves each cell's fg/bg color
+via `render/color.zig`, and writes to the shared `AttyxCell` buffer.
+
+**CLI (`src/main.zig`):**
+
+- Added `ui2` subcommand with `--rows`, `--cols`, `--cmd` options.
+- On non-macOS: prints an error message and returns.
+
+**Build system (`build.zig`):**
+
+- Main `attyx` executable conditionally links Cocoa/Metal frameworks and
+  compiles `platform_macos.m` on macOS.
+- Old `attyx-ui` (UI-0 spike) build target remains as-is.
+
+### Run commands
+
+```bash
+zig build run -- ui2                         # default bash, 24x80
+zig build run -- ui2 --rows 30 --cols 100    # custom size
+zig build run -- ui2 --cmd /bin/zsh          # custom shell
+```
+
+### Files added/changed
+
+| File | Change |
+|------|--------|
+| `src/app/bridge.h` | Mutable cells, cursor, quit signaling |
+| `src/app/platform_macos.m` | Cursor rendering, quit flag, mutable cells |
+| `src/app/ui2.zig` | **New** — UI-2 orchestrator (PTY thread + cell conversion) |
+| `src/main.zig` | Added `ui2` subcommand |
+| `build.zig` | Main exe links Metal frameworks on macOS |
+
+### Constraints preserved
+
+- `term/` completely unchanged.
+- Renderer only reads from state (via shared cell buffer).
+- `src/render/color.zig` reused as-is for color resolution.
+- Metal shaders, font atlas, vertex format — all reused from UI-0.
+- Session log integration follows same pattern as UI-1.
+- All 194 existing tests still pass.
+
+---
+
+## Milestone UI-3 — Keyboard Input + Interactive Shell
+
+**Status:** ✅ Complete
+
+**Goal:** Make Attyx usable as an interactive terminal: capture keyboard input in
+the Metal window and send correct byte sequences to the PTY so bash, vim, and
+tmux work.
+
+### What was built
+
+**DECCKM mode (`src/term/state.zig`):**
+
+- Added `cursor_keys_app: bool` flag to `TerminalState`.
+- Handle DEC private mode 1 (`?1h` / `?1l`) in `applyDecPrivateModes()`.
+- Global mode (not per-buffer), persists across alt screen switches.
+- 3 new headless tests.
+
+**Updated C bridge (`src/app/bridge.h`):**
+
+- `attyx_send_input(bytes, len)` — called from Cocoa main thread to write
+  keyboard bytes to the PTY. Implemented as a Zig `export fn` in `ui2.zig`.
+- `attyx_set_mode_flags(bracketed_paste, cursor_keys_app)` — called from PTY
+  thread after each `engine.feed()` to keep the key handler in sync.
+
+**Keyboard handling (`src/app/platform_macos.m`):**
+
+Subclassed MTKView as `AttyxView` with:
+
+- **Text input:** Regular characters via `event.characters` → UTF-8 → PTY.
+- **Special keys** (via `kVK_*` key codes):
+
+| Key | Sequence |
+|-----|----------|
+| Enter | `\r` |
+| Backspace | `\x7f` (DEL) |
+| Tab | `\t` |
+| Escape | `\x1b` |
+| Arrows (normal) | `\x1b[A/B/C/D` |
+| Arrows (DECCKM) | `\x1bOA/B/C/D` |
+| Home / End | `\x1b[H` / `\x1b[F` |
+| Page Up / Down | `\x1b[5~` / `\x1b[6~` |
+| Insert / Delete | `\x1b[2~` / `\x1b[3~` |
+| F1–F4 | `\x1bOP` / `OQ` / `OR` / `OS` |
+| F5–F12 | `\x1b[15~` ... `\x1b[24~` |
+
+- **Ctrl+key:** `Ctrl+A..Z` → 0x01..0x1A. Also handles `Ctrl+[`, `Ctrl+]`, etc.
+- **Alt/Option+key:** ESC prefix (`\x1b` + character).
+- **Paste (Cmd+V):** Wraps with `\x1b[200~`/`\x1b[201~` when bracketed paste is enabled.
+- **Cmd+Q:** Passes through to system quit handler.
+- Edit menu added for Cmd+V paste support.
+
+**PTY input path (`src/app/ui2.zig`):**
+
+- Global `g_pty_master` fd set before `attyx_run()`, used by `attyx_send_input`.
+- Mode flags updated after each `engine.feed()` via `attyx_set_mode_flags()`.
+- `write()` is thread-safe for the PTY fd — main thread writes, PTY thread reads.
+
+### Files added/changed
+
+| File | Change |
+|------|--------|
+| `src/term/state.zig` | Added `cursor_keys_app` flag + DECCKM handling |
+| `src/headless/tests/modes.zig` | 3 new DECCKM tests |
+| `src/app/bridge.h` | `attyx_send_input`, `attyx_set_mode_flags` |
+| `src/app/platform_macos.m` | `AttyxView` subclass with keyboard + paste |
+| `src/app/ui2.zig` | Export `attyx_send_input`, mode flag updates |
+| `src/app/main.zig` | Stub for UI-0 demo, test reference for ui2 |
+
+### Constraints preserved
+
+- `term/` changes limited to adding one mode flag — pure and deterministic.
+- Keyboard encoding lives entirely in the platform layer (ObjC).
+- PTY thread only reads from PTY; main thread writes via `attyx_send_input`.
+- All 197 tests pass (194 existing + 3 new DECCKM tests).
+
+### Verified keys
+
+- Typing in bash, arrow keys for history, backspace, tab completion
+- Ctrl+C (interrupt), Ctrl+D (EOF), Ctrl+Z (suspend)
+- Cmd+V paste (with and without bracketed paste)
+- Escape key, function keys
+- Alt+key prefix encoding

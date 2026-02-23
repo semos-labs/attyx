@@ -36,7 +36,7 @@ pub const Style = struct {
 
 /// A single cell in the terminal grid.
 pub const Cell = struct {
-    char: u8 = ' ',
+    char: u21 = ' ',
     style: Style = .{},
     /// Hyperlink association (0 = none). Maps to TerminalState's link table.
     link_id: u32 = 0,
@@ -112,6 +112,58 @@ pub const Grid = struct {
         );
         self.clearRow(top);
     }
+
+    /// Scroll a region up by n lines. Lines shifted out of the top are lost.
+    /// The bottom n rows of the region are cleared.
+    pub fn scrollUpRegionN(self: *Grid, top: usize, bottom: usize, n: usize) void {
+        if (top >= bottom or n == 0) return;
+        const count = @min(n, bottom - top + 1);
+        for (0..count) |_| self.scrollUpRegion(top, bottom);
+    }
+
+    /// Scroll a region down by n lines. Lines shifted out of the bottom are lost.
+    /// The top n rows of the region are cleared.
+    pub fn scrollDownRegionN(self: *Grid, top: usize, bottom: usize, n: usize) void {
+        if (top >= bottom or n == 0) return;
+        const count = @min(n, bottom - top + 1);
+        for (0..count) |_| self.scrollDownRegion(top, bottom);
+    }
+
+    /// Insert n blank characters at (row, col), shifting existing chars right.
+    /// Characters shifted past the right edge are lost.
+    pub fn insertChars(self: *Grid, row: usize, col: usize, n: usize) void {
+        if (n == 0 or col >= self.cols) return;
+        const start = row * self.cols + col;
+        const row_end = row * self.cols + self.cols;
+        const count = @min(n, self.cols - col);
+        const cells = self.cells[start..row_end];
+        if (count < cells.len) {
+            std.mem.copyBackwards(Cell, cells[count..], cells[0 .. cells.len - count]);
+        }
+        @memset(cells[0..count], Cell{});
+    }
+
+    /// Delete n characters at (row, col), shifting remaining chars left.
+    /// The rightmost n cells of the row become blank.
+    pub fn deleteChars(self: *Grid, row: usize, col: usize, n: usize) void {
+        if (n == 0 or col >= self.cols) return;
+        const start = row * self.cols + col;
+        const row_end = row * self.cols + self.cols;
+        const count = @min(n, self.cols - col);
+        const cells = self.cells[start..row_end];
+        if (count < cells.len) {
+            std.mem.copyForwards(Cell, cells[0 .. cells.len - count], cells[count..]);
+        }
+        @memset(cells[cells.len - count ..], Cell{});
+    }
+
+    /// Erase n characters at (row, col) without shifting.
+    pub fn eraseChars(self: *Grid, row: usize, col: usize, n: usize) void {
+        if (n == 0 or col >= self.cols) return;
+        const start = row * self.cols + col;
+        const count = @min(n, self.cols - col);
+        @memset(self.cells[start .. start + count], Cell{});
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -125,7 +177,7 @@ test "init creates grid filled with spaces" {
 
     for (0..3) |r| {
         for (0..4) |c| {
-            try std.testing.expectEqual(@as(u8, ' '), g.getCell(r, c).char);
+            try std.testing.expectEqual(@as(u21, ' '), g.getCell(r, c).char);
         }
     }
 }
@@ -136,8 +188,8 @@ test "setCell and getCell round-trip" {
     defer g.deinit();
 
     g.setCell(0, 1, .{ .char = 'X' });
-    try std.testing.expectEqual(@as(u8, 'X'), g.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'X'), g.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(0, 0).char);
 }
 
 test "clearRow resets row to spaces" {
@@ -149,8 +201,8 @@ test "clearRow resets row to spaces" {
     g.setCell(0, 1, .{ .char = 'B' });
     g.clearRow(0);
 
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(0, 1).char);
 }
 
 test "scrollUp shifts rows and clears bottom" {
@@ -163,9 +215,9 @@ test "scrollUp shifts rows and clears bottom" {
     g.setCell(2, 0, .{ .char = 'C' });
     g.scrollUp();
 
-    try std.testing.expectEqual(@as(u8, 'B'), g.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u8, 'C'), g.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), g.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(2, 0).char);
 }
 
 test "scrollUpRegion shifts only within region" {
@@ -180,11 +232,11 @@ test "scrollUpRegion shifts only within region" {
     g.setCell(4, 0, .{ .char = 'E' });
     g.scrollUpRegion(1, 3);
 
-    try std.testing.expectEqual(@as(u8, 'A'), g.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u8, 'C'), g.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u8, 'D'), g.getCell(2, 0).char);
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(3, 0).char);
-    try std.testing.expectEqual(@as(u8, 'E'), g.getCell(4, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), g.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), g.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), g.getCell(4, 0).char);
 }
 
 test "scrollDownRegion shifts only within region" {
@@ -199,11 +251,11 @@ test "scrollDownRegion shifts only within region" {
     g.setCell(4, 0, .{ .char = 'E' });
     g.scrollDownRegion(1, 3);
 
-    try std.testing.expectEqual(@as(u8, 'A'), g.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u8, ' '), g.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u8, 'B'), g.getCell(2, 0).char);
-    try std.testing.expectEqual(@as(u8, 'C'), g.getCell(3, 0).char);
-    try std.testing.expectEqual(@as(u8, 'E'), g.getCell(4, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), g.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), g.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), g.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), g.getCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), g.getCell(4, 0).char);
 }
 
 test "new cells have default style" {

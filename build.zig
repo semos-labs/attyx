@@ -69,10 +69,26 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // PTY bridge (ui1 subcommand) needs libc for openpty/ioctl/fork
+    // PTY bridge needs libc for openpty/ioctl/fork
     exe.root_module.linkSystemLibrary("c", .{});
     if (target.result.os.tag == .linux)
         exe.root_module.linkSystemLibrary("util", .{});
+
+    // UI-2 (Metal renderer) — link Cocoa/Metal frameworks and ObjC source on macOS
+    if (target.result.os.tag == .macos) {
+        exe.addCSourceFile(.{
+            .file = b.path("src/app/platform_macos.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
+        exe.root_module.addIncludePath(b.path("src/app"));
+        exe.root_module.linkFramework("Cocoa", .{});
+        exe.root_module.linkFramework("Metal", .{});
+        exe.root_module.linkFramework("MetalKit", .{});
+        exe.root_module.linkFramework("QuartzCore", .{});
+        exe.root_module.linkFramework("CoreText", .{});
+        exe.root_module.linkFramework("CoreGraphics", .{});
+        exe.root_module.linkFramework("CoreFoundation", .{});
+    }
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

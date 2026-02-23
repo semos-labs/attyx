@@ -13,6 +13,7 @@ pub const snapshot = @import("term/snapshot.zig");
 pub const engine = @import("term/engine.zig");
 pub const input = @import("term/input.zig");
 
+pub const dirty = @import("term/dirty.zig");
 pub const hash = @import("term/hash.zig");
 pub const render_color = @import("render/color.zig");
 
@@ -36,6 +37,7 @@ pub const Engine = engine.Engine;
 pub const MouseEvent = input.MouseEvent;
 pub const MouseButton = input.MouseButton;
 pub const MouseEventKind = input.MouseEventKind;
+pub const DirtyRows = dirty.DirtyRows;
 
 test {
     _ = @import("term/actions.zig");
@@ -47,6 +49,7 @@ test {
     _ = @import("term/snapshot.zig");
     _ = @import("term/engine.zig");
     _ = @import("term/input.zig");
+    _ = @import("term/dirty.zig");
     _ = @import("term/hash.zig");
     _ = @import("headless/runner.zig");
     _ = @import("headless/tests.zig");

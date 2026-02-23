@@ -67,15 +67,32 @@ test "golden: multiple LFs scroll within region repeatedly" {
 }
 
 test "golden: wrap at region bottom triggers region scroll" {
+    // With deferred wrap, 'Y' at the last column sets wrap_next but
+    // doesn't scroll the region until a third character is printed.
     try expectSnapshot(5, 6,
         "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE" ++
         "\x1b[2;4r" ++
         "\x1b[4;5H" ++
         "XY",
         "AAAAA \n" ++
+        "BBBBB \n" ++
         "CCCCC \n" ++
         "DDDDXY\n" ++
-        "      \n" ++
+        "EEEEE \n");
+}
+
+test "golden: deferred wrap triggers region scroll on next char" {
+    // Cursor at (row 3, col 5). X writes at col 5 → wrap_next.
+    // Y triggers wrap+scroll, then writes at (3,0). Z at (3,1).
+    try expectSnapshot(5, 6,
+        "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE" ++
+        "\x1b[2;4r" ++
+        "\x1b[4;6H" ++
+        "XYZ",
+        "AAAAA \n" ++
+        "CCCCC \n" ++
+        "DDDDDX\n" ++
+        "YZ    \n" ++
         "EEEEE \n");
 }
 
@@ -183,7 +200,7 @@ test "reverse index at top of region scrolls down" {
     t.apply(.reverse_index);
 
     try std.testing.expectEqual(@as(usize, 1), t.cursor.row);
-    try std.testing.expectEqual(@as(u8, ' '), t.grid.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u8, 'B'), t.grid.getCell(2, 0).char);
-    try std.testing.expectEqual(@as(u8, 'C'), t.grid.getCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), t.grid.getCell(3, 0).char);
 }

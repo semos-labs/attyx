@@ -11,6 +11,9 @@ const c = @cImport({
     @cInclude("bridge.h");
 });
 
+// Stub: ui2.zig normally provides this. UI-0 demo has no PTY.
+export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

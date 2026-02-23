@@ -93,7 +93,7 @@ test "attr: OSC overflow is safely ignored" {
     engine.feed("\x07");
     engine.feed("A");
 
-    try std.testing.expectEqual(@as(u8, 'A'), engine.state.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u32, 0), engine.state.grid.getCell(0, 0).link_id);
 }
 

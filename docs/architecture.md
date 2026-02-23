@@ -40,8 +40,11 @@ src/
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
     ui1.zig            UI-1 event loop (poll PTY + stdin, snapshot output)
+    ui2.zig            UI-2 orchestrator (PTY thread + Metal window, macOS)
     session_log.zig    Session event log (bounded ring buffer)
-  render/            GPU + font rendering (planned)
+    bridge.h           C bridge types (AttyxCell, cursor, quit signaling)
+    platform_macos.m   Metal renderer + Cocoa window (macOS)
+  render/            GPU + font rendering
     color.zig          ANSI/palette/truecolor → RGB resolution
   root.zig           Library root — re-exports public API
   main.zig           CLI entry point — subcommand dispatch
@@ -113,7 +116,8 @@ Ground ──ESC──▸ Escape ──[──▸ CSI
 - **Title:** `title: ?[]const u8` — latest OSC 0/2 title, globally shared.
 - **Terminal modes** (global, not per-buffer): `bracketed_paste: bool`,
   `mouse_tracking: MouseTrackingMode` (.off/.x10/.button_event/.any_event),
-  `mouse_sgr: bool`. These persist across alt screen switches.
+  `mouse_sgr: bool`, `cursor_keys_app: bool` (DECCKM, DEC private mode 1).
+  These persist across alt screen switches.
 - **Alternate screen:** `swapBuffers()` exchanges all 7 per-buffer field pairs
   using `std.mem.swap` (zero-copy for grids). Enter clears the alt grid;
   leave restores main as-is.
@@ -153,6 +157,7 @@ Supported modes:
 
 | Mode | Set (h) | Reset (l) |
 |------|---------|-----------|
+| 1 | DECCKM: application cursor keys | Normal cursor keys |
 | 47 / 1047 / 1049 | Enter alt screen | Leave alt screen |
 | 1000 | X10 mouse tracking | Off (if active) |
 | 1002 | Button-event tracking | Off (if active) |
@@ -229,3 +234,58 @@ Bounded in-memory log of session events for future AI integration:
 - **API:** `lastEvents(n)` returns a contiguous slice; `stats()` returns
   event count + total bytes.
 - No persistence, no search, no stdout output. Pure sidecar data structure.
+
+### UI-2 Windowed Renderer (`app/ui2.zig` + `app/platform_macos.m`)
+
+Live terminal rendering using Metal on macOS. Two-thread architecture:
+
+```
+Main thread (Cocoa):  [NSApp run] ──▸ MTKViewDelegate.drawInMTKView (60fps)
+                                          │
+                                          ▼
+                                     read shared AttyxCell buffer
+                                     draw bg quads → text quads → cursor block
+
+PTY thread (Zig):     poll PTY fd (16ms) ──▸ read bytes ──▸ engine.feed()
+                          ──▸ fillCells() → shared buffer
+                          ──▸ attyx_set_cursor()
+                          ──▸ session.appendFrame()
+```
+
+**Shared state (no locks):**
+
+- `AttyxCell*` buffer — 8 bytes per cell, effectively atomic on 64-bit.
+- `g_cursor_row` / `g_cursor_col` — volatile int globals.
+- `g_should_quit` — set by Cocoa on window close, polled by PTY thread.
+
+**C bridge (`bridge.h`):** Defines `AttyxCell` struct (character + fg/bg RGB + flags)
+and six functions: `attyx_run`, `attyx_set_cursor`, `attyx_request_quit`,
+`attyx_should_quit`, `attyx_send_input`, `attyx_set_mode_flags`.
+
+**Metal renderer:** Reuses the UI-0 pipeline (font atlas via Core Text, two-pass
+rendering with bg solid + text alpha-blended). Adds cursor rendering as a third
+pass — solid light-gray rectangle at the cursor position.
+
+**Color resolution:** `render/color.zig` maps `Color` enum variants (default, ansi,
+palette, rgb) to concrete RGB values using a hardcoded xterm-like palette.
+
+### Keyboard Input (`AttyxView` in `platform_macos.m`)
+
+`AttyxView` subclasses `MTKView` to handle keyboard events on the Cocoa main
+thread. Input flows:
+
+```
+keyDown: → encode key → attyx_send_input(bytes) → write(pty_master_fd)
+```
+
+Key encoding covers:
+- Regular text (via `event.characters`, UTF-8).
+- Special keys: arrows (DECCKM-aware), function keys, Home/End, PgUp/PgDn, etc.
+- Ctrl+key: maps to control codes 0x01–0x1A.
+- Alt/Option+key: ESC prefix before the character.
+- Paste (Cmd+V): wraps with bracketed paste sequences when mode is active.
+
+Mode flags (`g_bracketed_paste`, `g_cursor_keys_app`) are volatile globals
+updated by the PTY thread via `attyx_set_mode_flags()` and read by the key
+handler. Eventual consistency is acceptable — a one-frame lag on mode changes
+is imperceptible.
