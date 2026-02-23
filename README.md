@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/Attyx.png" alt="Epist" width="200">
+</p>
+
 <h1 align="center">Attyx</h1>
 
 <p align="center">
