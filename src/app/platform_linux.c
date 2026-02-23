@@ -58,6 +58,13 @@ volatile int  g_ime_anchor_col   = 0;
 char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
 volatile int  g_ime_preedit_len  = 0;
 
+// Font config (written by Zig at startup)
+char         g_font_family[ATTYX_FONT_FAMILY_MAX];
+volatile int g_font_family_len = 0;
+volatile int g_font_size       = 14;
+volatile int g_cell_width      = -100;
+volatile int g_cell_height     = -100;
+
 // Search state globals
 char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
 volatile int  g_search_query_len  = 0;

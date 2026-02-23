@@ -100,6 +100,17 @@ extern char          g_ime_preedit[ATTYX_IME_MAX_BYTES]; // current preedit UTF-
 extern volatile int  g_ime_preedit_len;    // byte length of preedit text
 
 // ---------------------------------------------------------------------------
+// Font config (written by Zig at startup, read by renderer)
+// ---------------------------------------------------------------------------
+
+#define ATTYX_FONT_FAMILY_MAX 128
+extern char          g_font_family[ATTYX_FONT_FAMILY_MAX];
+extern volatile int  g_font_family_len;
+extern volatile int  g_font_size;       // points
+extern volatile int  g_cell_width;      // >0 = pixels, <0 = -percent (e.g. -110 = 110%)
+extern volatile int  g_cell_height;     // >0 = pixels, <0 = -percent (e.g. -110 = 110%)
+
+// ---------------------------------------------------------------------------
 // In-terminal search state
 // ---------------------------------------------------------------------------
 

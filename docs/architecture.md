@@ -37,6 +37,9 @@ src/
   headless/          Deterministic runner + tests
     runner.zig         Convenience functions for test harness
     tests.zig          Golden snapshot tests + attribute tests
+  config/            Configuration loading + CLI parsing
+    config.zig         AppConfig struct, TOML file parsing, CellSize type
+    cli.zig            CLI argument parser + usage text
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
     ui2.zig            Terminal orchestrator (PTY thread + GPU window, macOS/Linux)
@@ -48,6 +51,8 @@ src/
     color.zig          ANSI/palette/truecolor → RGB resolution
   root.zig           Library root — re-exports public API
   main.zig           CLI entry point — subcommand dispatch
+config/
+  attyx.toml.example   Example config file with all defaults
 ```
 
 ## Layer Rules
@@ -56,6 +61,64 @@ src/
 - `term/` must be fully deterministic and pure.
 - Parser must never modify state directly.
 - Renderer must never influence parsing or state.
+
+## Configuration (`config/`)
+
+Configuration is loaded in three layers with increasing precedence:
+
+```
+Defaults (AppConfig struct) → TOML file → CLI flags
+```
+
+**Config file:** `$XDG_CONFIG_HOME/attyx/attyx.toml` (default `~/.config/attyx/attyx.toml`).
+Override with `--config <path>` or skip entirely with `--no-config`.
+
+### AppConfig (`config/config.zig`)
+
+Central struct holding all configuration values. Key fields:
+
+| Section | Field | Type | Default | Description |
+|---------|-------|------|---------|-------------|
+| `[font]` | `family` | string | `"JetBrains Mono"` | Font family name |
+| | `size` | u16 | `14` | Font size in points |
+| | `cell_width` | CellSize | `100%` | Grid cell width |
+| | `cell_height` | CellSize | `100%` | Grid cell height |
+| | `fallback` | string[] | none | Fallback font families |
+| `[theme]` | `name` | string | `"default"` | Theme name |
+| `[scrollback]` | `lines` | u32 | `20000` | Scrollback buffer lines |
+| `[reflow]` | `enabled` | bool | `true` | Reflow on resize |
+| `[cursor]` | `shape` | enum | `block` | Cursor shape |
+| | `blink` | bool | `true` | Cursor blinking |
+
+### CellSize
+
+Tagged union for cell dimensions — supports both absolute and relative sizing:
+
+```zig
+pub const CellSize = union(enum) {
+    pixels: u16,   // absolute pixel value (e.g. 10)
+    percent: u16,  // percentage of font-derived default (e.g. 110 = 110%)
+};
+```
+
+In TOML: `cell_width = 10` (pixels) or `cell_width = "110%"` (percent).
+In CLI: `--cell-width 10` or `--cell-width 110%`.
+
+Default is `"100%"` — use the font-derived cell size as-is.
+
+### Bridge encoding
+
+Config values are published to the C bridge at startup via `publishFontConfig()`.
+Cell size is encoded as a single `volatile int`:
+
+- Positive value → pixels (e.g. `10`)
+- Negative value → negated percentage (e.g. `-110` = 110%)
+
+### CLI parser (`config/cli.zig`)
+
+Parses `argv` into a `CliResult` containing the merged `AppConfig` and an action
+(`run`, `print_config`, `show_help`). `--print-config` outputs the fully merged
+config in TOML format.
 
 ## Key Types
 

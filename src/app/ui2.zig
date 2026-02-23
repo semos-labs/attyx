@@ -1,6 +1,8 @@
 const std = @import("std");
 const posix = std.posix;
 const attyx = @import("attyx");
+const AppConfig = @import("../config/config.zig").AppConfig;
+const CursorShapeConfig = @import("../config/config.zig").CursorShapeConfig;
 
 const Engine = attyx.Engine;
 const SearchState = attyx.SearchState;
@@ -12,12 +14,6 @@ const SessionLog = @import("session_log.zig").SessionLog;
 const c = @cImport({
     @cInclude("bridge.h");
 });
-
-pub const Config = struct {
-    rows: u16 = 24,
-    cols: u16 = 80,
-    argv: ?[]const [:0]const u8 = null,
-};
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
@@ -53,7 +49,7 @@ export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
     return @intCast(copy_len);
 }
 
-pub fn run(config: Config) !void {
+pub fn run(config: AppConfig) !void {
     // Platform support is enforced at compile time via src/platform/platform.zig.
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -63,6 +59,17 @@ pub fn run(config: Config) !void {
     defer engine.deinit();
 
     engine.state.cursor.row = config.rows - 1;
+
+    // Apply config: default cursor shape
+    engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
+
+    // Apply config: scrollback limit
+    if (config.scrollback_lines != 20_000) {
+        engine.state.scrollback.max_lines = config.scrollback_lines;
+    }
+
+    // Publish font config to C bridge
+    publishFontConfig(&config);
 
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     defer allocator.free(render_cells);
@@ -99,6 +106,25 @@ pub fn run(config: Config) !void {
     defer thread.join();
 
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
+}
+
+fn cursorShapeFromConfig(shape: CursorShapeConfig, blink: bool) attyx.actions.CursorShape {
+    return switch (shape) {
+        .block => if (blink) .blinking_block else .steady_block,
+        .underline => if (blink) .blinking_underline else .steady_underline,
+        .beam => if (blink) .blinking_bar else @enumFromInt(5),
+    };
+}
+
+fn publishFontConfig(config: *const AppConfig) void {
+    const family = config.font_family;
+    const len = @min(family.len, c.ATTYX_FONT_FAMILY_MAX - 1);
+    @memcpy(c.g_font_family[0..len], family[0..len]);
+    c.g_font_family[len] = 0;
+    c.g_font_family_len = @intCast(len);
+    c.g_font_size = @intCast(config.font_size);
+    c.g_cell_width = config.cell_width.toBridgeInt();
+    c.g_cell_height = config.cell_height.toBridgeInt();
 }
 
 fn syncViewportFromC(state: *attyx.TerminalState) void {

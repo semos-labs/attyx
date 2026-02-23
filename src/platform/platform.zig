@@ -9,3 +9,6 @@ const impl = switch (builtin.os.tag) {
 pub const TIOCSWINSZ = impl.TIOCSWINSZ;
 pub const TIOCSCTTY = impl.TIOCSCTTY;
 pub const O_NONBLOCK = impl.O_NONBLOCK;
+
+pub const ConfigPaths = impl.ConfigPaths;
+pub const getConfigPaths = impl.getConfigPaths;

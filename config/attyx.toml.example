@@ -1,0 +1,27 @@
+# Attyx configuration
+#
+# Place this file at:
+#   Linux:  $XDG_CONFIG_HOME/attyx/attyx.toml  (default: ~/.config/attyx/attyx.toml)
+#   macOS:  $XDG_CONFIG_HOME/attyx/attyx.toml  (default: ~/.config/attyx/attyx.toml)
+#
+# All values shown below are the defaults. Uncomment and change as needed.
+
+[font]
+# family = "JetBrains Mono"
+# size = 14
+# cell_width = "100%"        # pixels (e.g. 10) or percentage (e.g. "110%")
+# cell_height = "100%"       # pixels (e.g. 20) or percentage (e.g. "110%")
+# fallback = ["Symbols Nerd Font Mono", "Noto Color Emoji"]
+
+[theme]
+# name = "default"
+
+[scrollback]
+# lines = 20000        # 0 = disable scrollback
+
+[reflow]
+# enabled = true
+
+[cursor]
+# shape = "block"      # "block" | "beam" | "underline"
+# blink = true

@@ -57,6 +57,12 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+    const toml_dep = b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const toml_mod = toml_dep.module("toml");
+
     const exe = b.addExecutable(.{
         .name = "attyx",
         .root_module = b.createModule(.{
@@ -65,6 +71,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "attyx", .module = mod },
+                .{ .name = "toml", .module = toml_mod },
             },
         }),
     });

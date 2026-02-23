@@ -42,6 +42,7 @@ Raw bytes ─▸ Parser ─▸ Action ─▸ State.apply() ─▸ Grid
 |-------|-----------|---------|
 | **Terminal engine** | `src/term/` | Pure, deterministic core — parser, state, grid, hash |
 | **Headless runner** | `src/headless/` | Test harness and golden snapshot tests |
+| **Config** | `src/config/` | TOML config loading, CLI parsing, `AppConfig` struct |
 | **App** | `src/app/` | PTY bridge + OS integration |
 | **Renderer** | `src/render/` | GPU + font rendering (Metal on macOS, OpenGL on Linux) |
 
@@ -80,6 +81,8 @@ GPU-accelerated terminal rendered in a native window. PTY output drives the engi
 zig build run                                # default: bash 24x80
 zig build run -- --rows 30 --cols 100        # custom size
 zig build run -- --cmd /bin/zsh              # custom shell
+zig build run -- --cell-width 110%           # wider cells (percentage)
+zig build run -- --cell-height 18            # fixed cell height (pixels)
 ```
 
 #### Linux prerequisites
@@ -89,6 +92,72 @@ sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
 ```
 
 Set `ATTYX_FONT` to override the default monospace font (e.g., `ATTYX_FONT="JetBrains Mono"`).
+
+---
+
+## Configuration
+
+Attyx reads configuration from a TOML file and CLI flags. Precedence: **defaults < config file < CLI flags**.
+
+Config file location:
+- **Linux/macOS:** `$XDG_CONFIG_HOME/attyx/attyx.toml` (default: `~/.config/attyx/attyx.toml`)
+
+See [`config/attyx.toml.example`](config/attyx.toml.example) for a full example with defaults.
+
+```toml
+[font]
+family = "JetBrains Mono"
+size = 14
+cell_width = "100%"       # percentage of font-derived width (default)
+cell_height = 20           # absolute pixels
+fallback = ["Symbols Nerd Font Mono", "Noto Color Emoji"]
+
+[theme]
+name = "default"
+
+[scrollback]
+lines = 20000
+
+[reflow]
+enabled = true
+
+[cursor]
+shape = "block"           # "block" | "beam" | "underline"
+blink = true
+```
+
+### Cell size
+
+`cell_width` and `cell_height` control the grid cell dimensions. Each accepts either:
+
+- **Percentage** (string): `"110%"` — scale relative to the font-derived default. `"100%"` is the default.
+- **Pixels** (integer): `10` — absolute pixel value, overrides font metrics.
+
+```toml
+cell_width = "120%"    # 20% wider than default
+cell_height = 18       # exactly 18 pixels tall
+```
+
+```bash
+attyx --cell-width 120% --cell-height 18
+```
+
+### CLI flags
+
+```
+--font-family <string>     Font family (default: "JetBrains Mono")
+--font-size <int>          Font size in points (default: 14)
+--cell-width <value>       Cell width: pixels (e.g. 10) or percent (e.g. "110%")
+--cell-height <value>      Cell height: pixels (e.g. 20) or percent (e.g. "110%")
+--theme <string>           Theme name (default: "default")
+--scrollback-lines <int>   Scrollback buffer lines (default: 20000)
+--reflow / --no-reflow     Enable/disable reflow on resize
+--cursor-shape <shape>     Cursor shape: block, beam, underline
+--cursor-blink / --no-cursor-blink
+--config <path>            Load config from a specific file
+--no-config                Skip reading config from disk
+--print-config             Print merged config and exit
+```
 
 ---
 
@@ -164,6 +233,9 @@ src/
   headless/
     runner.zig       Test convenience functions
     tests.zig        Golden snapshot + attribute tests
+  config/
+    config.zig       AppConfig struct, TOML parsing, CellSize type
+    cli.zig          CLI argument parser + usage text
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
     ui2.zig          Terminal runner (PTY thread + GPU window, macOS/Linux)
@@ -176,6 +248,8 @@ src/
     color.zig        Color resolution (ANSI → RGB lookup)
   root.zig           Library root
   main.zig           CLI entry point
+config/
+  attyx.toml.example Example config with all defaults
 docs/
   architecture.md    System design and data flow
   milestones.md      Milestone details and history
