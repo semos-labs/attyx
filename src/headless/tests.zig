@@ -10,4 +10,5 @@ test {
     _ = @import("tests/osc.zig");
     _ = @import("tests/modes.zig");
     _ = @import("tests/scrollback.zig");
+    _ = @import("tests/search.zig");
 }

@@ -58,8 +58,29 @@ volatile int  g_ime_anchor_col   = 0;
 char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
 volatile int  g_ime_preedit_len  = 0;
 
+// Search state globals
+char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
+volatile int  g_search_query_len  = 0;
+volatile int  g_search_active     = 0;
+volatile int  g_search_gen        = 0;
+volatile int  g_search_nav_delta  = 0;
+volatile int  g_search_total      = 0;
+volatile int  g_search_current    = 0;
+AttyxSearchVis g_search_vis[ATTYX_SEARCH_VIS_MAX];
+volatile int  g_search_vis_count  = 0;
+volatile int  g_search_cur_vis_row = -1;
+volatile int  g_search_cur_vis_cs  = 0;
+volatile int  g_search_cur_vis_ce  = 0;
+
 static volatile uint32_t g_hover_link_id = 0;
 static volatile int g_hover_row = -1;
+
+#define DETECTED_URL_MAX 2048
+static char g_detected_url[DETECTED_URL_MAX];
+static volatile int g_detected_url_len = 0;
+static volatile int g_detected_url_row = -1;
+static volatile int g_detected_url_start_col = 0;
+static volatile int g_detected_url_end_col = 0;
 
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
 static volatile int g_pending_resize_rows = 0;
@@ -480,6 +501,60 @@ static GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
 }
 
 // ---------------------------------------------------------------------------
+// Search overlay rendering helpers
+// ---------------------------------------------------------------------------
+
+static int emitRect(Vertex* v, int i, float x, float y, float w, float h,
+                    float r, float g, float b, float a) {
+    v[i+0] = (Vertex){ x,   y,   0,0, r,g,b,a };
+    v[i+1] = (Vertex){ x+w, y,   0,0, r,g,b,a };
+    v[i+2] = (Vertex){ x,   y+h, 0,0, r,g,b,a };
+    v[i+3] = (Vertex){ x+w, y,   0,0, r,g,b,a };
+    v[i+4] = (Vertex){ x+w, y+h, 0,0, r,g,b,a };
+    v[i+5] = (Vertex){ x,   y+h, 0,0, r,g,b,a };
+    return i + 6;
+}
+
+static int emitTri(Vertex* v, int i,
+                   float x0, float y0, float x1, float y1, float x2, float y2,
+                   float r, float g, float b, float a) {
+    v[i+0] = (Vertex){ x0,y0, 0,0, r,g,b,a };
+    v[i+1] = (Vertex){ x1,y1, 0,0, r,g,b,a };
+    v[i+2] = (Vertex){ x2,y2, 0,0, r,g,b,a };
+    return i + 3;
+}
+
+static int emitGlyph(Vertex* v, int i, GlyphCache* gc, uint32_t cp,
+                     float x, float y, float gw, float gh,
+                     float r, float g, float b) {
+    int slot = glyphCacheLookup(gc, cp);
+    if (slot < 0) slot = glyphCacheRasterize(gc, cp);
+    float aW = (float)gc->atlas_w, aH = (float)gc->atlas_h;
+    float gW = gc->glyph_w, gH = gc->glyph_h;
+    int ac = slot % gc->atlas_cols, ar = slot / gc->atlas_cols;
+    float u0 = ac * gW / aW, u1 = (ac+1) * gW / aW;
+    float v0 = ar * gH / aH, v1 = (ar+1) * gH / aH;
+    v[i+0] = (Vertex){ x,    y,    u0,v0, r,g,b,1 };
+    v[i+1] = (Vertex){ x+gw, y,    u1,v0, r,g,b,1 };
+    v[i+2] = (Vertex){ x,    y+gh, u0,v1, r,g,b,1 };
+    v[i+3] = (Vertex){ x+gw, y,    u1,v0, r,g,b,1 };
+    v[i+4] = (Vertex){ x+gw, y+gh, u1,v1, r,g,b,1 };
+    v[i+5] = (Vertex){ x,    y+gh, u0,v1, r,g,b,1 };
+    return i + 6;
+}
+
+static int emitString(Vertex* v, int i, GlyphCache* gc,
+                      const char* str, int len, float x, float y,
+                      float gw, float gh, float r, float g, float b) {
+    for (int c = 0; c < len; c++) {
+        uint32_t cp = (uint8_t)str[c];
+        if (cp <= 32) continue;
+        i = emitGlyph(v, i, gc, cp, x + c * gw, y, gw, gh, r, g, b);
+    }
+    return i;
+}
+
+// ---------------------------------------------------------------------------
 // Dirty-bitset helpers
 // ---------------------------------------------------------------------------
 
@@ -509,6 +584,87 @@ static int cellIsSelected(int row, int col) {
     if (row == er) return col <= ec;
     return 1;
 }
+
+// --- URL detection in cell row ---
+
+static int isUrlChar(uint32_t ch) {
+    if (ch <= 32 || ch == 127) return 0;
+    if (ch == '<' || ch == '>' || ch == '"' || ch == '`') return 0;
+    if (ch == '{' || ch == '}') return 0;
+    return 1;
+}
+
+static int isTrailingPunct(uint32_t ch) {
+    return (ch == '.' || ch == ',' || ch == ';' || ch == ':' ||
+            ch == '!' || ch == '?' || ch == '\'' || ch == '"' ||
+            ch == ')' || ch == ']' || ch == '>');
+}
+
+static int detectUrlAtCell(int row, int col, int cols,
+                           int *outStart, int *outEnd,
+                           char *outUrl, int urlBufSize, int *outUrlLen) {
+    if (!g_cells || cols <= 0) return 0;
+    int base = row * cols;
+
+    char rowText[1024];
+    int len = cols < 1023 ? cols : 1023;
+    for (int i = 0; i < len; i++) {
+        uint32_t ch = g_cells[base + i].character;
+        rowText[i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+    }
+    rowText[len] = '\0';
+
+    const char *schemes[] = { "https://", "http://" };
+    const int schemeLens[] = { 8, 7 };
+
+    for (int s = 0; s < 2; s++) {
+        const char *haystack = rowText;
+        while (1) {
+            const char *found = strstr(haystack, schemes[s]);
+            if (!found) break;
+            int startCol = (int)(found - rowText);
+            int endCol = startCol + schemeLens[s];
+
+            while (endCol < len && isUrlChar(g_cells[base + endCol].character))
+                endCol++;
+            endCol--;
+
+            while (endCol > startCol + schemeLens[s] && isTrailingPunct(g_cells[base + endCol].character))
+                endCol--;
+
+            {
+                int opens = 0, closes = 0;
+                for (int i = startCol; i <= endCol; i++) {
+                    uint32_t ch = g_cells[base + i].character;
+                    if (ch == '(') opens++;
+                    if (ch == ')') closes++;
+                }
+                while (opens > closes && endCol + 1 < len && g_cells[base + endCol + 1].character == ')') {
+                    endCol++;
+                    closes++;
+                }
+            }
+
+            if (col >= startCol && col <= endCol) {
+                *outStart = startCol;
+                *outEnd = endCol;
+                int urlLen = endCol - startCol + 1;
+                if (urlLen >= urlBufSize) urlLen = urlBufSize - 1;
+                for (int i = 0; i < urlLen; i++) {
+                    uint32_t ch = g_cells[base + startCol + i].character;
+                    outUrl[i] = (ch >= 32 && ch < 127) ? (char)ch : '?';
+                }
+                outUrl[urlLen] = '\0';
+                *outUrlLen = urlLen;
+                return 1;
+            }
+            haystack = found + 1;
+        }
+    }
+    return 0;
+}
+
+// --- Word boundary helpers for double-click selection ---
 
 static int isWordChar(uint32_t ch) {
     if (ch == 0 || ch == ' ') return 0;
@@ -614,7 +770,7 @@ static void drawFrame(void) {
         free(g_text_verts);
         free(g_cell_snapshot);
 
-        g_bg_vert_cap = (total + cols + cols) * 6; // +cols cursor, +cols link underlines
+        g_bg_vert_cap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
         g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
         g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
         g_cell_snapshot = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
@@ -625,7 +781,7 @@ static void drawFrame(void) {
         g_full_redraw = 1;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking) return;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active) return;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -705,13 +861,22 @@ static void drawFrame(void) {
         bgVertCount += 6;
     }
 
-    // Hyperlink hover underlines
-    uint32_t hoverLid = g_hover_link_id;
-    if (hoverLid != 0 && !g_sel_active && bgVertCount + cols * 6 <= g_bg_vert_cap) {
-        float lr = 0.4f, lg = 0.6f, lb = 1.0f;
+    // Hyperlink underlines: OSC 8 (always visible) + detected URLs (on hover)
+    if (!g_sel_active) {
+        uint32_t hoverLid = g_hover_link_id;
         float ulH = fmaxf(2.0f, 1.0f);
+
+        // OSC 8 links: always show underline
         for (int i = 0; i < total; i++) {
-            if (cells[i].link_id != hoverLid) continue;
+            uint32_t lid = cells[i].link_id;
+            if (lid == 0) continue;
+            if (bgVertCount + 6 > g_bg_vert_cap) break;
+            float lr, lg, lb;
+            if (lid == hoverLid) {
+                lr = 0.4f; lg = 0.7f; lb = 1.0f;
+            } else {
+                lr = 0.25f; lg = 0.40f; lb = 0.65f;
+            }
             int lrow = i / cols, lcol = i % cols;
             float lx0 = lcol * gw;
             float lx1 = lx0 + gw;
@@ -724,6 +889,59 @@ static void drawFrame(void) {
             g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
             g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
             bgVertCount += 6;
+        }
+
+        // Detected URLs: show underline only when hovered
+        int dRow = g_detected_url_row;
+        int dStart = g_detected_url_start_col;
+        int dEnd = g_detected_url_end_col;
+        if (g_detected_url_len > 0 && dRow >= 0 && dRow < rows) {
+            float lr = 0.4f, lg = 0.7f, lb = 1.0f;
+            for (int c = dStart; c <= dEnd && c < cols; c++) {
+                if (bgVertCount + 6 > g_bg_vert_cap) break;
+                float lx0 = c * gw;
+                float lx1 = lx0 + gw;
+                float ly1 = (dRow + 1) * gh;
+                float ly0 = ly1 - ulH;
+                g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+                g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                bgVertCount += 6;
+            }
+        }
+    }
+
+    // Search match highlights
+    if (g_search_active) {
+        int visCount = g_search_vis_count;
+        int curRow = g_search_cur_vis_row;
+        int curCs = g_search_cur_vis_cs;
+        int curCe = g_search_cur_vis_ce;
+        for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
+            AttyxSearchVis m = g_search_vis[vi];
+            if (m.row < 0 || m.row >= rows) continue;
+            int isCurrent = (m.row == curRow && m.col_start == curCs && m.col_end == curCe);
+            float hr, hg, hb, ha;
+            if (isCurrent) {
+                hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.75f;
+            } else {
+                hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.28f;
+            }
+            for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
+                if (bgVertCount + 6 > g_bg_vert_cap) break;
+                float lx0 = cc * gw, lx1 = lx0 + gw;
+                float ly0 = m.row * gh, ly1 = ly0 + gh;
+                g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, hr,hg,hb,ha };
+                g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                bgVertCount += 6;
+            }
         }
     }
 
@@ -801,7 +1019,9 @@ static void drawFrame(void) {
 
     glBindVertexArray(g_vao);
 
-    // BG pass
+    // BG pass (blending on so search highlights respect alpha)
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(g_solid_prog);
     glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
@@ -809,6 +1029,7 @@ static void drawFrame(void) {
                  g_bg_verts, GL_DYNAMIC_DRAW);
     setupVertexAttribs();
     glDrawArrays(GL_TRIANGLES, 0, bgVertCount);
+    glDisable(GL_BLEND);
 
     // Text pass
     if (ti > 0) {
@@ -923,6 +1144,124 @@ static void drawFrame(void) {
         }
     }
 
+    // Search bar overlay
+    if (g_search_active) {
+        char queryCopy[ATTYX_SEARCH_QUERY_MAX + 1];
+        int qLen = g_search_query_len;
+        if (qLen > ATTYX_SEARCH_QUERY_MAX) qLen = ATTYX_SEARCH_QUERY_MAX;
+        memcpy(queryCopy, g_search_query, qLen);
+        queryCopy[qLen] = '\0';
+
+        char countLabel[64];
+        int sTotal = g_search_total;
+        int sCurrent = g_search_current;
+        int countLen = 0;
+        if (sTotal > 0) {
+            countLen = snprintf(countLabel, sizeof(countLabel), "%d of %d", sCurrent + 1, sTotal);
+        } else if (qLen > 0) {
+            countLen = snprintf(countLabel, sizeof(countLabel), "no results");
+        }
+
+        float barH = gh + 12.0f;
+        float totalW = cols * gw;
+        float padX = gw * 0.5f;
+        float textY = (barH - gh) / 2.0f;
+
+        float labelChars = 5;
+        float inputX = padX + (labelChars + 1) * gw;
+        float inputPad = gw * 0.4f;
+        float inputInner = fmaxf(20 * gw, (qLen + 2) * gw);
+        float inputW = inputPad * 2 + inputInner;
+        if (inputX + inputW > totalW * 0.55f)
+            inputW = totalW * 0.55f - inputX;
+        float inputH = gh + 4.0f;
+        float inputY = (barH - inputH) / 2.0f;
+
+        float rx = totalW - padX;
+        float closeX = rx - gw;
+        float downCx = closeX - gw * 1.3f;
+        float upCx = downCx - gw * 1.3f;
+        float countX = upCx - gw * 0.5f - countLen * gw;
+
+        // --- Solid pass: bar bg + input field bg + arrows ---
+        Vertex sBg[6 + 6 + 3 + 3];
+        int si = 0;
+
+        si = emitRect(sBg, si, 0, 0, totalW, barH,
+                      0.10f, 0.10f, 0.13f, 0.95f);
+        si = emitRect(sBg, si, inputX, inputY, inputW, inputH,
+                      0.18f, 0.18f, 0.22f, 1.0f);
+
+        float aw2 = gw * 0.40f, ah2 = gh * 0.40f;
+        float acy = barH / 2.0f;
+        si = emitTri(sBg, si,
+                     upCx,          acy - ah2/2,
+                     upCx - aw2/2,  acy + ah2/2,
+                     upCx + aw2/2,  acy + ah2/2,
+                     0.50f, 0.55f, 0.65f, 1.0f);
+        si = emitTri(sBg, si,
+                     downCx,          acy + ah2/2,
+                     downCx - aw2/2,  acy - ah2/2,
+                     downCx + aw2/2,  acy - ah2/2,
+                     0.50f, 0.55f, 0.65f, 1.0f);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_solid_prog);
+        glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * si, sBg, GL_DYNAMIC_DRAW);
+        setupVertexAttribs();
+        glDrawArrays(GL_TRIANGLES, 0, si);
+        glDisable(GL_BLEND);
+
+        // --- Text pass: label + query + cursor + count + close ---
+        Vertex stv[512 * 6];
+        int sti = 0;
+
+        sti = emitString(stv, sti, &g_gc, "Find:", 5,
+                         padX, textY, gw, gh, 0.40f, 0.50f, 0.65f);
+
+        float qx = inputX + inputPad;
+        sti = emitString(stv, sti, &g_gc, queryCopy, qLen,
+                         qx, textY, gw, gh, 0.92f, 0.92f, 0.92f);
+
+        // Blinking cursor bar
+        {
+            double now = glfwGetTime();
+            int phase = ((int)(now / 0.5)) % 2;
+            if (phase == 0) {
+                float cx = qx + qLen * gw;
+                sti = emitRect(stv, sti, cx, textY, 2.0f, gh,
+                               0.45f, 0.65f, 1.0f, 1.0f);
+            }
+        }
+
+        if (countLen > 0) {
+            float cr = (sTotal > 0) ? 0.50f : 0.60f;
+            float cg = (sTotal > 0) ? 0.50f : 0.30f;
+            float cb = (sTotal > 0) ? 0.55f : 0.30f;
+            sti = emitString(stv, sti, &g_gc, countLabel, countLen,
+                             countX, textY, gw, gh, cr, cg, cb);
+        }
+
+        sti = emitGlyph(stv, sti, &g_gc, 'x',
+                        closeX, textY, gw, gh, 0.50f, 0.50f, 0.55f);
+
+        if (sti > 0) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(g_text_prog);
+            glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
+            glBindTexture(GL_TEXTURE_2D, g_gc.texture);
+            glUniform1i(g_tex_loc, 0);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * sti,
+                         stv, GL_DYNAMIC_DRAW);
+            setupVertexAttribs();
+            glDrawArrays(GL_TRIANGLES, 0, sti);
+            glDisable(GL_BLEND);
+        }
+    }
+
     glBindVertexArray(0);
 }
 
@@ -951,6 +1290,69 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     int ctrl  = (mods & GLFW_MOD_CONTROL) != 0;
     int alt   = (mods & GLFW_MOD_ALT) != 0;
     int shift = (mods & GLFW_MOD_SHIFT) != 0;
+
+    // Ctrl+F toggles search
+    if (ctrl && key == GLFW_KEY_F) {
+        if (g_search_active) {
+            g_search_active = 0;
+            g_search_query_len = 0;
+            g_search_gen++;
+            attyx_mark_all_dirty();
+        } else {
+            g_search_active = 1;
+            g_search_query_len = 0;
+            g_search_gen++;
+            attyx_mark_all_dirty();
+        }
+        g_suppress_char = 1;
+        return;
+    }
+
+    // Ctrl+G / Shift+Ctrl+G — find next/prev (works whenever search is active)
+    if (ctrl && key == GLFW_KEY_G && g_search_active) {
+        if (shift) {
+            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+        } else {
+            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+        }
+        attyx_mark_all_dirty();
+        g_suppress_char = 1;
+        return;
+    }
+
+    // When search bar is open, route keys to search input
+    if (g_search_active) {
+        if (key == GLFW_KEY_ESCAPE) {
+            g_search_active = 0;
+            g_search_query_len = 0;
+            g_search_gen++;
+            attyx_mark_all_dirty();
+            g_suppress_char = 1;
+            return;
+        }
+        if (key == GLFW_KEY_ENTER) {
+            if (shift) {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+            } else {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+            }
+            attyx_mark_all_dirty();
+            g_suppress_char = 1;
+            return;
+        }
+        if (key == GLFW_KEY_BACKSPACE) {
+            if (g_search_query_len > 0) {
+                g_search_query_len--;
+                g_search_gen++;
+                attyx_mark_all_dirty();
+            }
+            g_suppress_char = 1;
+            return;
+        }
+        // Swallow other special keys in search mode
+        g_suppress_char = 0; // let charCallback handle printable chars
+        return;
+    }
 
     // Ctrl+Shift+C/V for copy/paste
     if (ctrl && shift && key == GLFW_KEY_V) {
@@ -1054,6 +1456,18 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     (void)w;
     if (g_suppress_char) { g_suppress_char = 0; return; }
 
+    // When search bar is open, route printable chars into search query
+    if (g_search_active) {
+        if (codepoint >= 32 && codepoint < 127) {
+            if (g_search_query_len < ATTYX_SEARCH_QUERY_MAX - 1) {
+                g_search_query[g_search_query_len++] = (char)codepoint;
+                g_search_gen++;
+                attyx_mark_all_dirty();
+            }
+        }
+        return;
+    }
+
     snapViewport();
 
     uint8_t buf[4];
@@ -1126,6 +1540,7 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             if (mods & GLFW_MOD_CONTROL) {
                 int cols = g_cols, nrows = g_rows;
                 if (g_cells && col >= 0 && col < cols && row >= 0 && row < nrows) {
+                    // OSC 8 link takes priority
                     uint32_t lid = g_cells[row * cols + col].link_id;
                     if (lid != 0) {
                         char uri_buf[2048];
@@ -1135,6 +1550,18 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                             snprintf(cmd, sizeof(cmd), "xdg-open '%s' &", uri_buf);
                             (void)system(cmd);
                         }
+                        g_left_down = 1;
+                        return;
+                    }
+
+                    // Fallback: regex-detected URL
+                    int dStart, dEnd;
+                    char dUrl[DETECTED_URL_MAX];
+                    int dLen = 0;
+                    if (detectUrlAtCell(row, col, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                        char cmd[2200];
+                        snprintf(cmd, sizeof(cmd), "xdg-open '%s' &", dUrl);
+                        (void)system(cmd);
                         g_left_down = 1;
                         return;
                     }
@@ -1251,22 +1678,62 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     if (!g_mouse_tracking && !g_left_down) {
         int col, row;
         mouseToCell(mx, my, &col, &row);
-        uint32_t lid = 0;
         int cols = g_cols, nrows = g_rows;
+
+        // OSC 8 link check
+        uint32_t lid = 0;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < nrows)
             lid = g_cells[row * cols + col].link_id;
-        uint32_t prev = g_hover_link_id;
-        if (lid != prev) {
-            int prevRow = g_hover_row;
+
+        // Regex URL detection fallback
+        int detStart = -1, detEnd = -1;
+        char detUrlBuf[DETECTED_URL_MAX];
+        int detUrlLen = 0;
+        int hasDetected = 0;
+        if (lid == 0 && g_cells && col >= 0 && col < cols && row >= 0 && row < nrows) {
+            hasDetected = detectUrlAtCell(row, col, cols,
+                                          &detStart, &detEnd,
+                                          detUrlBuf, DETECTED_URL_MAX, &detUrlLen);
+        }
+
+        int isLink = (lid != 0 || hasDetected);
+        int prevOscRow = g_hover_row;
+        int prevDetRow = g_detected_url_row;
+        uint32_t prevLid = g_hover_link_id;
+
+        int oscChanged = (lid != prevLid);
+        int detChanged = 0;
+        if (hasDetected) {
+            detChanged = (row != prevDetRow || detStart != g_detected_url_start_col || detEnd != g_detected_url_end_col);
+        } else if (g_detected_url_len > 0) {
+            detChanged = 1;
+        }
+
+        if (oscChanged || detChanged) {
             g_hover_link_id = lid;
             g_hover_row = (lid != 0) ? row : -1;
-            if (lid != 0)
+
+            if (hasDetected) {
+                memcpy(g_detected_url, detUrlBuf, detUrlLen + 1);
+                g_detected_url_len = detUrlLen;
+                g_detected_url_row = row;
+                g_detected_url_start_col = detStart;
+                g_detected_url_end_col = detEnd;
+            } else {
+                g_detected_url_len = 0;
+                g_detected_url_row = -1;
+            }
+
+            if (isLink)
                 glfwSetCursor(w, glfwCreateStandardCursor(GLFW_HAND_CURSOR));
             else
                 glfwSetCursor(w, glfwCreateStandardCursor(GLFW_IBEAM_CURSOR));
-            if (prevRow >= 0 && prevRow < 256)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevRow >> 6], (uint64_t)1 << (prevRow & 63));
-            if (row >= 0 && row < 256 && lid != 0)
+
+            if (prevOscRow >= 0 && prevOscRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevOscRow >> 6], (uint64_t)1 << (prevOscRow & 63));
+            if (prevDetRow >= 0 && prevDetRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevDetRow >> 6], (uint64_t)1 << (prevDetRow & 63));
+            if (row >= 0 && row < 256 && isLink)
                 __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
         }
     }

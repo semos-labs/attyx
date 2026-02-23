@@ -14,6 +14,7 @@ pub const engine = @import("term/engine.zig");
 pub const input = @import("term/input.zig");
 
 pub const scrollback = @import("term/scrollback.zig");
+pub const search = @import("term/search.zig");
 pub const dirty = @import("term/dirty.zig");
 pub const hash = @import("term/hash.zig");
 pub const render_color = @import("render/color.zig");
@@ -39,6 +40,8 @@ pub const MouseEvent = input.MouseEvent;
 pub const MouseButton = input.MouseButton;
 pub const MouseEventKind = input.MouseEventKind;
 pub const Scrollback = scrollback.Scrollback;
+pub const SearchState = search.SearchState;
+pub const SearchMatch = search.SearchMatch;
 pub const DirtyRows = dirty.DirtyRows;
 
 test {
@@ -52,6 +55,7 @@ test {
     _ = @import("term/engine.zig");
     _ = @import("term/input.zig");
     _ = @import("term/scrollback.zig");
+    _ = @import("term/search.zig");
     _ = @import("term/dirty.zig");
     _ = @import("term/hash.zig");
     _ = @import("headless/runner.zig");

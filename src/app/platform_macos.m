@@ -59,9 +59,31 @@ volatile int  g_ime_anchor_col   = 0;
 char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
 volatile int  g_ime_preedit_len  = 0;
 
+// Search state globals
+char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
+volatile int  g_search_query_len  = 0;
+volatile int  g_search_active     = 0;
+volatile int  g_search_gen        = 0;
+volatile int  g_search_nav_delta  = 0;
+volatile int  g_search_total      = 0;
+volatile int  g_search_current    = 0;
+AttyxSearchVis g_search_vis[ATTYX_SEARCH_VIS_MAX];
+volatile int  g_search_vis_count  = 0;
+volatile int  g_search_cur_vis_row = -1;
+volatile int  g_search_cur_vis_cs  = 0;
+volatile int  g_search_cur_vis_ce  = 0;
+
 // Hyperlink hover state (written by mouse-move handler, read by renderer).
 static volatile uint32_t g_hover_link_id = 0;
 static volatile int g_hover_row = -1;
+
+// Regex-detected URL hover state (for plain-text URLs without OSC 8).
+#define DETECTED_URL_MAX 2048
+static char g_detected_url[DETECTED_URL_MAX];
+static volatile int g_detected_url_len = 0;
+static volatile int g_detected_url_row = -1;
+static volatile int g_detected_url_start_col = 0;
+static volatile int g_detected_url_end_col = 0;
 
 // Row-level dirty bitset (256 rows). PTY thread atomic-ORs in dirty bits;
 // renderer atomically swaps each word to zero when snapshotting.
@@ -427,6 +449,60 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
 }
 
 // ---------------------------------------------------------------------------
+// Search overlay rendering helpers
+// ---------------------------------------------------------------------------
+
+static int emitRect(Vertex* v, int i, float x, float y, float w, float h,
+                    float r, float g, float b, float a) {
+    v[i+0] = (Vertex){ x,   y,   0,0, r,g,b,a };
+    v[i+1] = (Vertex){ x+w, y,   0,0, r,g,b,a };
+    v[i+2] = (Vertex){ x,   y+h, 0,0, r,g,b,a };
+    v[i+3] = (Vertex){ x+w, y,   0,0, r,g,b,a };
+    v[i+4] = (Vertex){ x+w, y+h, 0,0, r,g,b,a };
+    v[i+5] = (Vertex){ x,   y+h, 0,0, r,g,b,a };
+    return i + 6;
+}
+
+static int emitTri(Vertex* v, int i,
+                   float x0, float y0, float x1, float y1, float x2, float y2,
+                   float r, float g, float b, float a) {
+    v[i+0] = (Vertex){ x0,y0, 0,0, r,g,b,a };
+    v[i+1] = (Vertex){ x1,y1, 0,0, r,g,b,a };
+    v[i+2] = (Vertex){ x2,y2, 0,0, r,g,b,a };
+    return i + 3;
+}
+
+static int emitGlyph(Vertex* v, int i, GlyphCache* gc, uint32_t cp,
+                     float x, float y, float gw, float gh,
+                     float r, float g, float b) {
+    int slot = glyphCacheLookup(gc, cp);
+    if (slot < 0) slot = glyphCacheRasterize(gc, cp);
+    float aW = (float)gc->atlas_w, aH = (float)gc->atlas_h;
+    float gW = gc->glyph_w, gH = gc->glyph_h;
+    int ac = slot % gc->atlas_cols, ar = slot / gc->atlas_cols;
+    float u0 = ac * gW / aW, u1 = (ac+1) * gW / aW;
+    float v0 = ar * gH / aH, v1 = (ar+1) * gH / aH;
+    v[i+0] = (Vertex){ x,    y,    u0,v0, r,g,b,1 };
+    v[i+1] = (Vertex){ x+gw, y,    u1,v0, r,g,b,1 };
+    v[i+2] = (Vertex){ x,    y+gh, u0,v1, r,g,b,1 };
+    v[i+3] = (Vertex){ x+gw, y,    u1,v0, r,g,b,1 };
+    v[i+4] = (Vertex){ x+gw, y+gh, u1,v1, r,g,b,1 };
+    v[i+5] = (Vertex){ x,    y+gh, u0,v1, r,g,b,1 };
+    return i + 6;
+}
+
+static int emitString(Vertex* v, int i, GlyphCache* gc,
+                      const char* str, int len, float x, float y,
+                      float gw, float gh, float r, float g, float b) {
+    for (int c = 0; c < len; c++) {
+        uint32_t cp = (uint8_t)str[c];
+        if (cp <= 32) continue;
+        i = emitGlyph(v, i, gc, cp, x + c * gw, y, gw, gh, r, g, b);
+    }
+    return i;
+}
+
+// ---------------------------------------------------------------------------
 // Dirty-bitset helpers (mirrors DirtyRows from Zig)
 // ---------------------------------------------------------------------------
 
@@ -438,6 +514,11 @@ static inline int dirtyBitTest(const uint64_t dirty[4], int row) {
 static inline int dirtyAny(const uint64_t dirty[4]) {
     return (dirty[0] | dirty[1] | dirty[2] | dirty[3]) != 0;
 }
+
+// Forward-declare; the search bar is created after the renderer.
+@class AttyxSearchBar;
+static AttyxSearchBar* g_nativeSearchBar = nil;
+static void syncSearchBarCount(void); // defined after AttyxSearchBar @implementation
 
 // ---------------------------------------------------------------------------
 // Renderer (MTKViewDelegate) — damage-aware with persistent buffers
@@ -558,7 +639,12 @@ static BOOL cellIsSelected(int row, int col) {
         MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
         d.vertexFunction   = vertFn;
         d.fragmentFunction = fragSolid;
-        d.colorAttachments[0].pixelFormat = view.colorPixelFormat;
+        d.colorAttachments[0].pixelFormat     = view.colorPixelFormat;
+        d.colorAttachments[0].blendingEnabled = YES;
+        d.colorAttachments[0].sourceRGBBlendFactor        = MTLBlendFactorSourceAlpha;
+        d.colorAttachments[0].destinationRGBBlendFactor   = MTLBlendFactorOneMinusSourceAlpha;
+        d.colorAttachments[0].sourceAlphaBlendFactor      = MTLBlendFactorOne;
+        d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
         _bgPipeline = [device newRenderPipelineStateWithDescriptor:d error:&err];
         if (!_bgPipeline) { NSLog(@"BG pipeline: %@", err); return nil; }
     }
@@ -645,7 +731,7 @@ static BOOL cellIsSelected(int row, int col) {
             free(_textVerts);
             free(_cellSnapshot);
 
-            int bgVertCap = (total + cols + cols) * 6; // +cols cursor, +cols link underlines
+            int bgVertCap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
             _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
             _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
             _cellSnapshot  = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
@@ -665,7 +751,7 @@ static BOOL cellIsSelected(int row, int col) {
         }
 
         // --- Frame skip: nothing dirty, cursor didn't move, no blink toggle ---
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking) {
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -767,13 +853,22 @@ static BOOL cellIsSelected(int row, int col) {
             bgVertCount += 6;
         }
 
-        // --- Hyperlink hover underlines ---
-        uint32_t hoverLid = g_hover_link_id;
-        if (hoverLid != 0 && !g_sel_active && bgVertCount + cols * 6 <= _metalBufCapBg) {
-            float lr = 0.4f, lg = 0.6f, lb = 1.0f;
+        // --- Hyperlink underlines: OSC 8 (always visible) + detected URLs (on hover) ---
+        if (!g_sel_active) {
+            uint32_t hoverLid = g_hover_link_id;
             float ulH = fmaxf(2.0f, 1.0f);
+
+            // OSC 8 links: always show underline (brighter on hover)
             for (int i = 0; i < total; i++) {
-                if (cells[i].link_id != hoverLid) continue;
+                uint32_t lid = cells[i].link_id;
+                if (lid == 0) continue;
+                if (bgVertCount + 6 > _metalBufCapBg) break;
+                float lr, lg, lb;
+                if (lid == hoverLid) {
+                    lr = 0.4f; lg = 0.7f; lb = 1.0f;
+                } else {
+                    lr = 0.25f; lg = 0.40f; lb = 0.65f;
+                }
                 int lrow = i / cols, lcol = i % cols;
                 float lx0 = lcol * gw;
                 float lx1 = lx0 + gw;
@@ -786,6 +881,60 @@ static BOOL cellIsSelected(int row, int col) {
                 _bgVerts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
                 _bgVerts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
                 bgVertCount += 6;
+            }
+
+            // Detected URLs: show underline only when hovered
+            int dRow = g_detected_url_row;
+            int dStart = g_detected_url_start_col;
+            int dEnd = g_detected_url_end_col;
+            if (g_detected_url_len > 0 && dRow >= 0 && dRow < rows) {
+                float lr = 0.4f, lg = 0.7f, lb = 1.0f;
+                for (int c = dStart; c <= dEnd && c < cols; c++) {
+                    if (bgVertCount + 6 > _metalBufCapBg) break;
+                    float lx0 = c * gw;
+                    float lx1 = lx0 + gw;
+                    float ly1 = (dRow + 1) * gh;
+                    float ly0 = ly1 - ulH;
+                    _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+                    _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                    _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                    _bgVerts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                    _bgVerts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+                    _bgVerts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                    bgVertCount += 6;
+                }
+            }
+        }
+
+        // --- Search match highlights ---
+        if (g_search_active) {
+            int visCount = g_search_vis_count;
+            int curRow = g_search_cur_vis_row;
+            int curCs = g_search_cur_vis_cs;
+            int curCe = g_search_cur_vis_ce;
+            float ulH = gh; // full cell height for highlight
+            for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
+                AttyxSearchVis m = g_search_vis[vi];
+                if (m.row < 0 || m.row >= rows) continue;
+                BOOL isCurrent = (m.row == curRow && m.col_start == curCs && m.col_end == curCe);
+                float hr, hg, hb, ha;
+                if (isCurrent) {
+                    hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.75f;
+                } else {
+                    hr = 1.0f; hg = 0.6f; hb = 0.0f; ha = 0.28f;
+                }
+                for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
+                    if (bgVertCount + 6 > _metalBufCapBg) break;
+                    float lx0 = cc * gw, lx1 = lx0 + gw;
+                    float ly0 = m.row * gh, ly1 = ly0 + ulH;
+                    _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
+                    _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                    _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                    _bgVerts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
+                    _bgVerts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, hr,hg,hb,ha };
+                    _bgVerts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                    bgVertCount += 6;
+                }
             }
         }
 
@@ -1005,6 +1154,9 @@ static BOOL cellIsSelected(int row, int col) {
             }
         }
 
+        // Sync the native search bar's count label from bridge globals
+        syncSearchBarCount();
+
         [enc endEncoding];
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
@@ -1037,6 +1189,224 @@ static BOOL cellIsSelected(int row, int col) {
 }
 
 @end
+
+// ---------------------------------------------------------------------------
+// Native search bar (Cocoa)
+// ---------------------------------------------------------------------------
+
+@interface AttyxSearchBar : NSVisualEffectView <NSTextFieldDelegate>
+@property (strong) NSView     *inputBox;
+@property (strong) NSTextField *inputField;
+@property (strong) NSTextField *countLabel;
+@property (strong) NSButton *prevButton;
+@property (strong) NSButton *nextButton;
+@property (strong) NSButton *closeButton;
+@property (weak)   NSView   *termView;
+@end
+
+@implementation AttyxSearchBar
+
+- (instancetype)initForTermView:(NSView*)parent {
+    self = [super initWithFrame:NSZeroRect];
+    if (!self) return nil;
+
+    _termView = parent;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    self.material = NSVisualEffectMaterialMenu;
+    self.state = NSVisualEffectStateActive;
+    self.wantsLayer = YES;
+    self.layer.cornerRadius = 0;
+
+    // --- Input container (dark rounded box with real padding) ---
+    _inputBox = [[NSView alloc] initWithFrame:NSZeroRect];
+    _inputBox.translatesAutoresizingMaskIntoConstraints = NO;
+    _inputBox.wantsLayer = YES;
+    _inputBox.layer.cornerRadius = 6;
+    _inputBox.layer.backgroundColor = [[NSColor colorWithWhite:0.12 alpha:1.0] CGColor];
+    [self addSubview:_inputBox];
+
+    // --- Input field (plain, no background — container handles it) ---
+    _inputField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    _inputField.translatesAutoresizingMaskIntoConstraints = NO;
+    _inputField.placeholderString = @"Find";
+    _inputField.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
+    _inputField.bordered = NO;
+    _inputField.focusRingType = NSFocusRingTypeNone;
+    _inputField.drawsBackground = NO;
+    _inputField.textColor = [NSColor whiteColor];
+    _inputField.cell.scrollable = YES;
+    _inputField.cell.wraps = NO;
+    _inputField.delegate = self;
+    [_inputBox addSubview:_inputField];
+
+    // Pin input field inside container with padding
+    [NSLayoutConstraint activateConstraints:@[
+        [_inputField.leadingAnchor constraintEqualToAnchor:_inputBox.leadingAnchor constant:8],
+        [_inputField.trailingAnchor constraintEqualToAnchor:_inputBox.trailingAnchor constant:-8],
+        [_inputField.centerYAnchor constraintEqualToAnchor:_inputBox.centerYAnchor],
+    ]];
+
+    // --- Count label ---
+    _countLabel = [NSTextField labelWithString:@""];
+    _countLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _countLabel.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+    _countLabel.textColor = [NSColor secondaryLabelColor];
+    _countLabel.alignment = NSTextAlignmentRight;
+    [_countLabel setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self addSubview:_countLabel];
+
+    // --- Prev / Next / Close buttons (SF Symbols) ---
+    NSImageSymbolConfiguration* symCfg = [NSImageSymbolConfiguration
+        configurationWithPointSize:12 weight:NSFontWeightMedium];
+    NSImage* upImg   = [[NSImage imageWithSystemSymbolName:@"chevron.up"
+                          accessibilityDescription:@"Previous"]
+                         imageWithSymbolConfiguration:symCfg];
+    NSImage* downImg = [[NSImage imageWithSystemSymbolName:@"chevron.down"
+                          accessibilityDescription:@"Next"]
+                         imageWithSymbolConfiguration:symCfg];
+    NSImage* xImg    = [[NSImage imageWithSystemSymbolName:@"xmark"
+                          accessibilityDescription:@"Close"]
+                         imageWithSymbolConfiguration:symCfg];
+
+    _prevButton  = [NSButton buttonWithImage:upImg   target:self action:@selector(goPrev:)];
+    _nextButton  = [NSButton buttonWithImage:downImg target:self action:@selector(goNext:)];
+    _closeButton = [NSButton buttonWithImage:xImg    target:self action:@selector(dismiss)];
+    for (NSButton* b in @[_prevButton, _nextButton, _closeButton]) {
+        b.translatesAutoresizingMaskIntoConstraints = NO;
+        b.bordered = NO;
+        b.bezelStyle = NSBezelStyleInline;
+        b.contentTintColor = [NSColor secondaryLabelColor];
+        [b setContentHuggingPriority:NSLayoutPriorityRequired
+                      forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [self addSubview:b];
+    }
+    _prevButton.toolTip  = @"Previous Match (\u21e7\u2318G)";
+    _nextButton.toolTip  = @"Next Match (\u2318G)";
+    _closeButton.toolTip = @"Close (Esc)";
+
+    // --- Outer layout ---
+    NSDictionary *views = NSDictionaryOfVariableBindings(_inputBox, _countLabel, _prevButton, _nextButton, _closeButton);
+    [self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:
+        @"H:|-8-[_inputBox]-6-[_countLabel(>=44)]-4-[_prevButton(26)]-1-[_nextButton(26)]-6-[_closeButton(26)]-6-|"
+        options:0 metrics:nil views:views]];
+
+    // Vertically center every element in the bar
+    for (NSView* sub in @[_inputBox, _countLabel, _prevButton, _nextButton, _closeButton]) {
+        [NSLayoutConstraint activateConstraints:@[
+            [sub.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        ]];
+    }
+
+    // Input box height
+    [_inputBox.heightAnchor constraintEqualToConstant:26].active = YES;
+
+    return self;
+}
+
+- (void)show {
+    if (self.superview) {
+        [self.window makeFirstResponder:_inputField];
+        return;
+    }
+    NSView* parent = _termView;
+    if (!parent) return;
+
+    [parent addSubview:self];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.leadingAnchor constraintEqualToAnchor:parent.leadingAnchor],
+        [self.trailingAnchor constraintEqualToAnchor:parent.trailingAnchor],
+        [self.topAnchor constraintEqualToAnchor:parent.topAnchor],
+        [self.heightAnchor constraintEqualToConstant:36],
+    ]];
+
+    g_search_active = 1;
+    g_search_query_len = 0;
+    g_search_gen++;
+    [_inputField setStringValue:@""];
+    _countLabel.stringValue = @"";
+    [self.window makeFirstResponder:_inputField];
+    attyx_mark_all_dirty();
+}
+
+- (void)dismiss {
+    if (!self.superview) return;
+    g_search_active = 0;
+    g_search_query_len = 0;
+    g_search_gen++;
+    attyx_mark_all_dirty();
+
+    NSView* parent = _termView;
+    [self removeFromSuperview];
+    if (parent) [parent.window makeFirstResponder:parent];
+}
+
+- (void)toggle {
+    if (self.superview) [self dismiss];
+    else [self show];
+}
+
+- (void)goNext:(id)sender {
+    __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+    attyx_mark_all_dirty();
+}
+
+- (void)goPrev:(id)sender {
+    __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+    attyx_mark_all_dirty();
+}
+
+- (void)syncCountLabel {
+    if (!self.superview) return;
+    int total = g_search_total;
+    int cur   = g_search_current;
+    if (total > 0) {
+        _countLabel.stringValue = [NSString stringWithFormat:@"%d/%d", cur + 1, total];
+        _countLabel.textColor = [NSColor secondaryLabelColor];
+    } else if (g_search_query_len > 0) {
+        _countLabel.stringValue = @"-/0";
+        _countLabel.textColor = [NSColor systemRedColor];
+    } else {
+        _countLabel.stringValue = @"";
+    }
+}
+
+// NSTextFieldDelegate
+- (void)controlTextDidChange:(NSNotification *)n {
+    const char* utf8 = [_inputField.stringValue UTF8String];
+    int len = (int)strlen(utf8);
+    if (len > ATTYX_SEARCH_QUERY_MAX - 1) len = ATTYX_SEARCH_QUERY_MAX - 1;
+    memcpy(g_search_query, utf8, len);
+    g_search_query_len = len;
+    g_search_gen++;
+    attyx_mark_all_dirty();
+}
+
+- (BOOL)control:(NSControl*)ctl textView:(NSTextView*)tv doCommandBySelector:(SEL)sel {
+    if (sel == @selector(insertNewline:))    { [self goNext:nil]; return YES; }
+    if (sel == @selector(cancelOperation:))  { [self dismiss]; return YES; }
+    return NO;
+}
+
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    NSEventModifierFlags f = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    unsigned short kc = event.keyCode;
+    BOOL cmd   = (f & NSEventModifierFlagCommand) != 0;
+    BOOL shift = (f & NSEventModifierFlagShift) != 0;
+
+    if (cmd && kc == 3 /* F */) { [self dismiss]; return YES; }
+    if (cmd && kc == 5 /* G */) {
+        if (shift) [self goPrev:nil]; else [self goNext:nil];
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+
+@end
+
+static void syncSearchBarCount(void) {
+    if (g_nativeSearchBar) [g_nativeSearchBar syncCountLabel];
+}
 
 // ---------------------------------------------------------------------------
 // Terminal view — MTKView subclass that handles keyboard + paste
@@ -1134,6 +1504,97 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
     [self addTrackingArea:ta];
 }
 
+// --- URL detection in cell row ---
+
+static BOOL isUrlChar(uint32_t ch) {
+    if (ch <= 32 || ch == 127) return NO;
+    if (ch == '<' || ch == '>' || ch == '"' || ch == '`') return NO;
+    if (ch == '{' || ch == '}') return NO;
+    return YES;
+}
+
+static BOOL isTrailingPunct(uint32_t ch) {
+    return (ch == '.' || ch == ',' || ch == ';' || ch == ':' ||
+            ch == '!' || ch == '?' || ch == '\'' || ch == '"' ||
+            ch == ')' || ch == ']' || ch == '>');
+}
+
+/// Scan a row for a URL that contains column `col`.
+/// Returns YES if found, filling outStart/outEnd (inclusive column range)
+/// and outUrl/outUrlLen with the URL string.
+static BOOL detectUrlAtCell(int row, int col, int cols,
+                            int *outStart, int *outEnd,
+                            char *outUrl, int urlBufSize, int *outUrlLen) {
+    if (!g_cells || cols <= 0) return NO;
+    int base = row * cols;
+
+    // Extract row text into a local buffer (ASCII portion is enough for URL detection).
+    char rowText[1024];
+    int len = cols < 1023 ? cols : 1023;
+    for (int i = 0; i < len; i++) {
+        uint32_t ch = g_cells[base + i].character;
+        rowText[i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+    }
+    rowText[len] = '\0';
+
+    // Find all http:// or https:// occurrences in the row.
+    const char *schemes[] = { "https://", "http://" };
+    const int schemeLens[] = { 8, 7 };
+
+    for (int s = 0; s < 2; s++) {
+        const char *haystack = rowText;
+        while (1) {
+            const char *found = strstr(haystack, schemes[s]);
+            if (!found) break;
+            int startCol = (int)(found - rowText);
+            int endCol = startCol + schemeLens[s];
+
+            // Extend forward while URL-valid characters.
+            while (endCol < len && isUrlChar(g_cells[base + endCol].character))
+                endCol++;
+            endCol--; // endCol is now the last valid column (inclusive).
+
+            // Strip trailing punctuation that's unlikely part of the URL.
+            while (endCol > startCol + schemeLens[s] && isTrailingPunct(g_cells[base + endCol].character))
+                endCol--;
+
+            // Handle matched parentheses: if URL ends before a ')' we already stripped,
+            // but if there's a '(' inside the URL, allow the trailing ')'.
+            // (Simple heuristic: count parens)
+            {
+                int opens = 0, closes = 0;
+                for (int i = startCol; i <= endCol; i++) {
+                    uint32_t ch = g_cells[base + i].character;
+                    if (ch == '(') opens++;
+                    if (ch == ')') closes++;
+                }
+                // If unbalanced closes, check if the next char is ')' and we can include it.
+                while (opens > closes && endCol + 1 < len && g_cells[base + endCol + 1].character == ')') {
+                    endCol++;
+                    closes++;
+                }
+            }
+
+            if (col >= startCol && col <= endCol) {
+                *outStart = startCol;
+                *outEnd = endCol;
+                int urlLen = endCol - startCol + 1;
+                if (urlLen >= urlBufSize) urlLen = urlBufSize - 1;
+                for (int i = 0; i < urlLen; i++) {
+                    uint32_t ch = g_cells[base + startCol + i].character;
+                    outUrl[i] = (ch >= 32 && ch < 127) ? (char)ch : '?';
+                }
+                outUrl[urlLen] = '\0';
+                *outUrlLen = urlLen;
+                return YES;
+            }
+
+            haystack = found + 1;
+        }
+    }
+    return NO;
+}
+
 // --- Word boundary helpers for double-click selection ---
 
 static BOOL isWordChar(uint32_t ch) {
@@ -1182,6 +1643,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (event.modifierFlags & NSEventModifierFlagCommand) {
         int cols = g_cols, rows_n = g_rows;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
+            // OSC 8 link takes priority
             uint32_t lid = g_cells[row * cols + col].link_id;
             if (lid != 0) {
                 char uri_buf[2048];
@@ -1194,6 +1656,21 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
                         NSURL* url = [NSURL URLWithString:urlStr];
                         if (url) [[NSWorkspace sharedWorkspace] openURL:url];
                     }
+                }
+                return;
+            }
+
+            // Fallback: regex-detected URL
+            int dStart, dEnd;
+            char dUrl[DETECTED_URL_MAX];
+            int dLen = 0;
+            if (detectUrlAtCell(row, col, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                NSString* urlStr = [[NSString alloc] initWithBytes:dUrl
+                                                           length:dLen
+                                                         encoding:NSUTF8StringEncoding];
+                if (urlStr) {
+                    NSURL* url = [NSURL URLWithString:urlStr];
+                    if (url) [[NSWorkspace sharedWorkspace] openURL:url];
                 }
                 return;
             }
@@ -1372,25 +1849,70 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (!tracking) {
         int col, row;
         mouseCell0(event, self, &col, &row);
+        int cols = g_cols, rows_n = g_rows;
+
+        // 1) Check OSC 8 explicit link_id first
         uint32_t lid = 0;
-        int cols = g_cols, rows = g_rows;
-        if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows) {
+        if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
             lid = g_cells[row * cols + col].link_id;
         }
-        uint32_t prev = g_hover_link_id;
-        if (lid != prev) {
-            int prevRow = g_hover_row;
+
+        // 2) If no OSC 8 link, try regex URL detection
+        int detStart = -1, detEnd = -1;
+        char detUrlBuf[DETECTED_URL_MAX];
+        int detUrlLen = 0;
+        BOOL hasDetected = NO;
+        if (lid == 0 && g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
+            hasDetected = detectUrlAtCell(row, col, cols,
+                                          &detStart, &detEnd,
+                                          detUrlBuf, DETECTED_URL_MAX, &detUrlLen);
+        }
+
+        // Determine what changed
+        BOOL isLink = (lid != 0 || hasDetected);
+        int prevOscRow = g_hover_row;
+        int prevDetRow = g_detected_url_row;
+        int prevDetStart = g_detected_url_start_col;
+        int prevDetEnd = g_detected_url_end_col;
+        uint32_t prevLid = g_hover_link_id;
+
+        BOOL oscChanged = (lid != prevLid);
+        BOOL detChanged = NO;
+        if (hasDetected) {
+            detChanged = (row != prevDetRow || detStart != prevDetStart || detEnd != prevDetEnd);
+        } else if (g_detected_url_len > 0) {
+            detChanged = YES; // was detected, now isn't
+        }
+
+        if (oscChanged || detChanged) {
+            // Update OSC 8 state
             g_hover_link_id = lid;
             g_hover_row = (lid != 0) ? row : -1;
-            if (lid != 0) {
+
+            // Update detected URL state
+            if (hasDetected) {
+                memcpy(g_detected_url, detUrlBuf, detUrlLen + 1);
+                g_detected_url_len = detUrlLen;
+                g_detected_url_row = row;
+                g_detected_url_start_col = detStart;
+                g_detected_url_end_col = detEnd;
+            } else {
+                g_detected_url_len = 0;
+                g_detected_url_row = -1;
+            }
+
+            if (isLink) {
                 [[NSCursor pointingHandCursor] set];
             } else {
                 [[NSCursor IBeamCursor] set];
             }
+
             // Mark affected rows dirty for underline repaint
-            if (prevRow >= 0 && prevRow < 256)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevRow >> 6], (uint64_t)1 << (prevRow & 63));
-            if (row >= 0 && row < 256 && lid != 0)
+            if (prevOscRow >= 0 && prevOscRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevOscRow >> 6], (uint64_t)1 << (prevOscRow & 63));
+            if (prevDetRow >= 0 && prevDetRow < 256)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevDetRow >> 6], (uint64_t)1 << (prevDetRow & 63));
+            if (row >= 0 && row < 256 && isLink)
                 __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
         }
     }
@@ -1543,12 +2065,33 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)keyDown:(NSEvent *)event {
+    NSEventModifierFlags flags = event.modifierFlags;
+    BOOL cmd   = (flags & NSEventModifierFlagCommand) != 0;
+    BOOL shift = (flags & NSEventModifierFlagShift) != 0;
+    unsigned short kc = event.keyCode;
+
+    // Cmd+F toggles native search bar
+    if (cmd && kc == 3 /* kVK_F */) {
+        if (g_nativeSearchBar) [g_nativeSearchBar toggle];
+        return;
+    }
+
+    // Cmd+G / Shift+Cmd+G — find next/prev (terminal has focus but search is active)
+    if (cmd && kc == 5 /* kVK_G */ && g_search_active) {
+        if (shift) {
+            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+        } else {
+            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+        }
+        attyx_mark_all_dirty();
+        return;
+    }
+
     [self snapViewportAndClearSelection];
 
     // While composing, let the IME handle everything except Cmd shortcuts.
     if ([self hasMarkedText]) {
-        NSEventModifierFlags flags = event.modifierFlags;
-        if (flags & NSEventModifierFlagCommand) {
+        if (cmd) {
             [super keyDown:event];
             return;
         }
@@ -1817,6 +2360,8 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:termView];
     [NSApp activateIgnoringOtherApps:YES];
+
+    g_nativeSearchBar = [[AttyxSearchBar alloc] initForTermView:termView];
 }
 
 - (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
