@@ -2,8 +2,8 @@ const std = @import("std");
 const config_mod = @import("config.zig");
 
 pub const AppConfig = config_mod.AppConfig;
-pub const CellSize = config_mod.CellSize;
 pub const CursorShapeConfig = config_mod.CursorShapeConfig;
+pub const CellSize = config_mod.CellSize;
 
 pub const CliResult = struct {
     config: AppConfig,
@@ -68,11 +68,11 @@ pub fn parse(args: []const [:0]const u8) CliResult {
         } else if (std.mem.eql(u8, arg, "--cell-width")) {
             const val = requireArg(args, &i, "--cell-width");
             result.config.cell_width = CellSize.fromString(val) orelse
-                fatal("invalid --cell-width value (e.g. 10 or 110%)");
+                fatal("invalid --cell-width value (integer or \"N%\")");
         } else if (std.mem.eql(u8, arg, "--cell-height")) {
             const val = requireArg(args, &i, "--cell-height");
             result.config.cell_height = CellSize.fromString(val) orelse
-                fatal("invalid --cell-height value (e.g. 10 or 110%)");
+                fatal("invalid --cell-height value (integer or \"N%\")");
         } else if (std.mem.eql(u8, arg, "--theme")) {
             result.config.theme_name = requireArg(args, &i, "--theme");
         } else if (std.mem.eql(u8, arg, "--scrollback-lines")) {
@@ -93,6 +93,8 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.cursor_blink = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-blink")) {
             result.config.cursor_blink = false;
+        } else if (std.mem.eql(u8, arg, "--shell")) {
+            result.config.program = requireArg(args, &i, "--shell");
         } else if (std.mem.eql(u8, arg, "--cmd")) {
             result.config.argv = @ptrCast(args[i + 1 ..]);
             break;
@@ -119,14 +121,15 @@ pub fn printUsage() void {
         \\  --no-config                Skip reading config from disk
         \\  --font-family <string>     Font family (default: "JetBrains Mono")
         \\  --font-size <int>          Font size in points (default: 14)
-        \\  --cell-width <value>       Cell width: pixels (e.g. 10) or percent (e.g. "110%")
-        \\  --cell-height <value>      Cell height: pixels (e.g. 20) or percent (e.g. "110%")
+        \\  --cell-width <value>       Cell width: points (e.g. 10) or percent (e.g. "110%")
+        \\  --cell-height <value>      Cell height: points (e.g. 20) or percent (e.g. "115%")
         \\  --theme <string>           Theme name (default: "default")
         \\  --scrollback-lines <int>   Scrollback buffer lines (default: 20000)
         \\  --reflow / --no-reflow     Enable/disable reflow on resize
         \\  --cursor-shape <shape>     Cursor shape: block, beam, underline
         \\  --cursor-blink / --no-cursor-blink
         \\                             Enable/disable cursor blinking
+        \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
         \\  --print-config             Print merged config and exit
         \\  --help, -h                 Show this help
         \\

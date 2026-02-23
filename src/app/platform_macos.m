@@ -63,8 +63,10 @@ volatile int  g_ime_preedit_len  = 0;
 char         g_font_family[ATTYX_FONT_FAMILY_MAX];
 volatile int g_font_family_len = 0;
 volatile int g_font_size       = 14;
-volatile int g_cell_width      = -100;
-volatile int g_cell_height     = -100;
+volatile int g_cell_width      = 0;
+volatile int g_cell_height     = 0;
+char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
+volatile int g_font_fallback_count = 0;
 
 // Search state globals
 char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
@@ -245,10 +247,12 @@ typedef struct {
 typedef struct {
     id<MTLTexture> texture;
     CTFontRef      font;       // primary font (retained)
-    float          glyph_w;    // glyph cell width in atlas pixels (= points * scale)
-    float          glyph_h;    // glyph cell height in atlas pixels
+    float          glyph_w;    // cell width in atlas pixels
+    float          glyph_h;    // cell height in atlas pixels
     float          scale;      // backing scale factor
-    CGFloat        descent;    // font descent (for glyph positioning)
+    CGFloat        descent;    // font descent (for baseline calculation)
+    float          baseline_y; // baseline Y from bottom of cell (centered)
+    float          x_offset;   // horizontal centering offset within cell
     int            atlas_cols; // slots per row in the atlas
     int            atlas_w;    // texture width in pixels
     int            atlas_h;    // texture height in pixels
@@ -335,24 +339,45 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         utf16Len = 2;
     }
 
-    // Font fallback: try the primary font, fall back via Core Text if needed.
+    // Font fallback: try primary font, then user fallback list, then Core Text auto.
     CTFontRef drawFont = gc->font;
     CGGlyph glyph;
     if (!CTFontGetGlyphsForCharacters(gc->font, utf16, &glyph, utf16Len)) {
-        NSString* str = [[NSString alloc] initWithCharacters:utf16 length:utf16Len];
-        CTFontRef fallback = CTFontCreateForString(gc->font, (__bridge CFStringRef)str,
-                                                    CFRangeMake(0, str.length));
-        if (fallback) {
-            if (CTFontGetGlyphsForCharacters(fallback, utf16, &glyph, utf16Len)) {
-                drawFont = fallback;
-            } else {
-                CFRelease(fallback);
-                glyphCacheInsert(gc, cp, slot);
-                return slot;  // empty slot — renders as blank
+        // Try each user-configured fallback font.
+        CGFloat fontSize = CTFontGetSize(gc->font);
+        CTFontRef found = NULL;
+        for (int fi = 0; fi < g_font_fallback_count; fi++) {
+            CFStringRef name = CFStringCreateWithCString(NULL, g_font_fallback[fi],
+                                                         kCFStringEncodingUTF8);
+            CTFontRef candidate = CTFontCreateWithName(name, fontSize, NULL);
+            CFRelease(name);
+            if (candidate) {
+                if (CTFontGetGlyphsForCharacters(candidate, utf16, &glyph, utf16Len)) {
+                    found = candidate;
+                    break;
+                }
+                CFRelease(candidate);
             }
+        }
+        if (found) {
+            drawFont = found;
         } else {
-            glyphCacheInsert(gc, cp, slot);
-            return slot;
+            // System fallback via Core Text.
+            NSString* str = [[NSString alloc] initWithCharacters:utf16 length:utf16Len];
+            CTFontRef fallback = CTFontCreateForString(gc->font, (__bridge CFStringRef)str,
+                                                        CFRangeMake(0, str.length));
+            if (fallback) {
+                if (CTFontGetGlyphsForCharacters(fallback, utf16, &glyph, utf16Len)) {
+                    drawFont = fallback;
+                } else {
+                    CFRelease(fallback);
+                    glyphCacheInsert(gc, cp, slot);
+                    return slot;
+                }
+            } else {
+                glyphCacheInsert(gc, cp, slot);
+                return slot;
+            }
         }
     }
 
@@ -363,8 +388,32 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     CGColorSpaceRelease(cs);
 
     CGContextSetGrayFillColor(ctx, 1.0, 1.0);
-    CGPoint pos = CGPointMake(0, gh - gc->glyph_h + gc->descent);
-    CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+
+    // Powerline separators and block elements are designed to fill the entire
+    // cell (seamless tiling). Scale them to match the actual cell dimensions
+    // so they connect with adjacent cell backgrounds (like Ghostty/Kitty).
+    bool stretchToCell =
+        (cp >= 0x2580 && cp <= 0x259F) ||  // Block Elements
+        (cp >= 0xE0B0 && cp <= 0xE0D4);    // Powerline symbols
+
+    if (stretchToCell) {
+        CGRect bbox;
+        CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
+        if (bbox.size.width > 1 && bbox.size.height > 1) {
+            float sx = (float)gw / (float)bbox.size.width;
+            float sy = (float)gh / (float)bbox.size.height;
+            CGContextScaleCTM(ctx, sx, sy);
+            CGPoint pos = CGPointMake(-bbox.origin.x, -bbox.origin.y);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        } else {
+            CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        }
+    } else {
+        CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
+        CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+    }
+
     CGContextRelease(ctx);
 
     if (drawFont != gc->font) CFRelease(drawFont);
@@ -380,17 +429,100 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     return slot;
 }
 
+/// Try to create a font and verify it actually matches the requested name.
+/// CTFontCreateWithName silently substitutes when it can't find a match,
+/// so we compare the resolved family name against the request.
+static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize) {
+    CTFontRef candidate = CTFontCreateWithName(reqName, fontSize, NULL);
+    if (!candidate) return NULL;
+
+    CFStringRef resolvedFamily = CTFontCopyFamilyName(candidate);
+    if (!resolvedFamily) { CFRelease(candidate); return NULL; }
+
+    bool matches = (CFStringCompare(resolvedFamily, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
+
+    if (!matches) {
+        CFStringRef resolvedFull = CTFontCopyFullName(candidate);
+        if (resolvedFull) {
+            matches = (CFStringCompare(resolvedFull, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
+            CFRelease(resolvedFull);
+        }
+    }
+    if (!matches) {
+        CFStringRef resolvedPS = CTFontCopyPostScriptName(candidate);
+        if (resolvedPS) {
+            matches = (CFStringCompare(resolvedPS, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
+            CFRelease(resolvedPS);
+        }
+    }
+
+    CFRelease(resolvedFamily);
+    if (matches) return candidate;
+    CFRelease(candidate);
+    return NULL;
+}
+
+/// Normalize a string for fuzzy font matching: lowercased with spaces removed.
+static CFStringRef createNormalizedName(CFStringRef name) {
+    CFMutableStringRef mut = CFStringCreateMutableCopy(NULL, 0, name);
+    CFStringLowercase(mut, NULL);
+    CFStringFindAndReplace(mut, CFSTR(" "), CFSTR(""), CFRangeMake(0, CFStringGetLength(mut)), 0);
+    return mut;
+}
+
+/// Search all installed font families for a fuzzy match (ignoring spaces/case).
+/// This handles cases like "JetBrains Mono Nerd Font Mono" matching
+/// the installed "JetBrainsMono Nerd Font Mono".
+static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize) {
+    CFStringRef normReq = createNormalizedName(reqName);
+    CTFontRef result = NULL;
+
+    CFArrayRef families = CTFontManagerCopyAvailableFontFamilyNames();
+    if (families) {
+        CFIndex count = CFArrayGetCount(families);
+        for (CFIndex i = 0; i < count; i++) {
+            CFStringRef family = (CFStringRef)CFArrayGetValueAtIndex(families, i);
+            CFStringRef normFamily = createNormalizedName(family);
+            if (CFStringCompare(normReq, normFamily, 0) == kCFCompareEqualTo) {
+                result = CTFontCreateWithName(family, fontSize, NULL);
+                CFRelease(normFamily);
+                break;
+            }
+            CFRelease(normFamily);
+        }
+        CFRelease(families);
+    }
+    CFRelease(normReq);
+    return result;
+}
+
 static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
-    // Try user-specified font, then common defaults.
-    const char* fontEnv = getenv("ATTYX_FONT");
-    CGFloat fontSize = 16.0 * scale;
+    CGFloat basePt = (g_font_size > 0) ? (CGFloat)g_font_size : 14.0;
+    CGFloat fontSize = basePt * scale;
+
     CTFontRef font = NULL;
 
-    if (fontEnv && fontEnv[0]) {
-        CFStringRef name = CFStringCreateWithCString(NULL, fontEnv, kCFStringEncodingUTF8);
-        font = CTFontCreateWithName(name, fontSize, NULL);
-        CFRelease(name);
+    // 1. Try configured font family (exact match, then fuzzy).
+    if (g_font_family_len > 0) {
+        CFStringRef reqName = CFStringCreateWithCString(NULL, g_font_family, kCFStringEncodingUTF8);
+        font = createVerifiedFont(reqName, fontSize);
+        if (!font) font = createFuzzyMatchFont(reqName, fontSize);
+        if (!font) NSLog(@"[attyx] warning: font \"%s\" not found, trying fallbacks", g_font_family);
+        CFRelease(reqName);
     }
+
+    // 2. Try ATTYX_FONT env var.
+    if (!font) {
+        const char* fontEnv = getenv("ATTYX_FONT");
+        if (fontEnv && fontEnv[0]) {
+            CFStringRef reqName = CFStringCreateWithCString(NULL, fontEnv, kCFStringEncodingUTF8);
+            font = createVerifiedFont(reqName, fontSize);
+            if (!font) font = createFuzzyMatchFont(reqName, fontSize);
+            CFRelease(reqName);
+        }
+    }
+
+    // 3. System monospace fallbacks.
     if (!font) font = CTFontCreateWithName(CFSTR("Menlo-Regular"), fontSize, NULL);
     if (!font) font = CTFontCreateWithName(CFSTR("Monaco"), fontSize, NULL);
     if (!font) font = CTFontCreateWithName(CFSTR("Courier"), fontSize, NULL);
@@ -398,14 +530,39 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     CGFloat ascent  = CTFontGetAscent(font);
     CGFloat descent = CTFontGetDescent(font);
     CGFloat leading = CTFontGetLeading(font);
-    float gh = (float)ceil(ascent + descent + leading);
 
-    UniChar mChar = 'M';
-    CGGlyph mGlyph;
-    CTFontGetGlyphsForCharacters(font, &mChar, &mGlyph, 1);
-    CGSize advance;
-    CTFontGetAdvancesForGlyphs(font, kCTFontOrientationDefault, &mGlyph, &advance, 1);
-    float gw = (float)ceil(advance.width);
+    // Cell width = max advance across all printable ASCII (like Ghostty/Kitty).
+    UniChar ascii[95];
+    CGGlyph glyphs[95];
+    for (int i = 0; i < 95; i++) ascii[i] = (UniChar)(32 + i);
+    CTFontGetGlyphsForCharacters(font, ascii, glyphs, 95);
+    CGSize advances[95];
+    CTFontGetAdvancesForGlyphs(font, kCTFontOrientationDefault, glyphs, advances, 95);
+    float maxAdv = 0;
+    for (int i = 0; i < 95; i++)
+        if (advances[i].width > maxAdv) maxAdv = (float)advances[i].width;
+
+    float naturalW = roundf(maxAdv);
+    float naturalH = roundf((float)(ascent + descent + leading));
+    float gw = naturalW;
+    float gh = naturalH;
+
+    // Apply cell size from config:
+    //   0   → auto (computed above)
+    //   > 0 → fixed: absolute pixel value (points × scale already done by caller)
+    //   < 0 → percent: base × abs(value) / 100, re-rounded
+    if (g_cell_width > 0)
+        gw = roundf((float)g_cell_width * (float)scale);
+    else if (g_cell_width < 0)
+        gw = roundf(gw * (float)(-g_cell_width) / 100.0f);
+    if (g_cell_height > 0)
+        gh = roundf((float)g_cell_height * (float)scale);
+    else if (g_cell_height < 0)
+        gh = roundf(gh * (float)(-g_cell_height) / 100.0f);
+
+    // Center glyphs within the cell: distribute extra space evenly.
+    float baseline_y = (float)descent + (gh - naturalH) / 2.0f;
+    float x_offset = (gw - naturalW) / 2.0f;
 
     // Start with a 32x32 slot atlas (1024 slots).
     int cols = 32;
@@ -436,6 +593,8 @@ static GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     gc.glyph_h   = gh;
     gc.scale     = (float)scale;
     gc.descent   = descent;
+    gc.baseline_y = baseline_y;
+    gc.x_offset  = x_offset;
     gc.atlas_cols = cols;
     gc.atlas_w   = atlasW;
     gc.atlas_h   = atlasH;

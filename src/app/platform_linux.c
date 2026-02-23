@@ -62,8 +62,10 @@ volatile int  g_ime_preedit_len  = 0;
 char         g_font_family[ATTYX_FONT_FAMILY_MAX];
 volatile int g_font_family_len = 0;
 volatile int g_font_size       = 14;
-volatile int g_cell_width      = -100;
-volatile int g_cell_height     = -100;
+volatile int g_cell_width      = 0;
+volatile int g_cell_height     = 0;
+char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
+volatile int g_font_fallback_count = 0;
 
 // Search state globals
 char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
@@ -314,6 +316,8 @@ typedef struct {
     float      glyph_h;
     float      scale;
     float      ascender;
+    float      baseline_y_offset; // vertical centering: extra pixels below baseline
+    float      x_offset;          // horizontal centering offset
     int        atlas_cols;
     int        atlas_w;
     int        atlas_h;
@@ -375,29 +379,50 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     FT_UInt gi = FT_Get_Char_Index(face, cp);
 
     if (gi == 0) {
-        // Font fallback via Fontconfig
-        FcPattern* pat = FcPatternCreate();
-        FcCharSet* cs = FcCharSetCreate();
-        FcCharSetAddChar(cs, cp);
-        FcPatternAddCharSet(pat, FC_CHARSET, cs);
-        FcConfigSubstitute(NULL, pat, FcMatchPattern);
-        FcDefaultSubstitute(pat);
-        FcResult res;
-        FcPattern* match = FcFontMatch(NULL, pat, &res);
+        // Try each user-configured fallback font first.
         FT_Face fallback = NULL;
-        if (match) {
-            FcChar8* file; int index = 0;
-            FcPatternGetString(match, FC_FILE, 0, &file);
-            FcPatternGetInteger(match, FC_INDEX, 0, &index);
-            if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallback) == 0) {
-                FT_Set_Pixel_Sizes(fallback, 0, (int)gc->glyph_h);
-                gi = FT_Get_Char_Index(fallback, cp);
-                if (gi != 0) face = fallback;
+        for (int fi = 0; fi < g_font_fallback_count && gi == 0; fi++) {
+            char* fbPath = findFontPath(g_font_fallback[fi]);
+            if (!fbPath) continue;
+            FT_Face candidate;
+            if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
+                FT_Set_Pixel_Sizes(candidate, 0, (int)gc->glyph_h);
+                FT_UInt cgi = FT_Get_Char_Index(candidate, cp);
+                if (cgi != 0) {
+                    gi = cgi;
+                    fallback = candidate;
+                    face = fallback;
+                } else {
+                    FT_Done_Face(candidate);
+                }
             }
-            FcPatternDestroy(match);
+            free(fbPath);
         }
-        FcCharSetDestroy(cs);
-        FcPatternDestroy(pat);
+
+        // System fallback via Fontconfig.
+        if (gi == 0) {
+            FcPattern* pat = FcPatternCreate();
+            FcCharSet* cs = FcCharSetCreate();
+            FcCharSetAddChar(cs, cp);
+            FcPatternAddCharSet(pat, FC_CHARSET, cs);
+            FcConfigSubstitute(NULL, pat, FcMatchPattern);
+            FcDefaultSubstitute(pat);
+            FcResult res;
+            FcPattern* match = FcFontMatch(NULL, pat, &res);
+            if (match) {
+                FcChar8* file; int index = 0;
+                FcPatternGetString(match, FC_FILE, 0, &file);
+                FcPatternGetInteger(match, FC_INDEX, 0, &index);
+                if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallback) == 0) {
+                    FT_Set_Pixel_Sizes(fallback, 0, (int)gc->glyph_h);
+                    gi = FT_Get_Char_Index(fallback, cp);
+                    if (gi != 0) face = fallback;
+                }
+                FcPatternDestroy(match);
+            }
+            FcCharSetDestroy(cs);
+            FcPatternDestroy(pat);
+        }
 
         if (gi == 0) {
             if (fallback) FT_Done_Face(fallback);
@@ -412,17 +437,39 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     FT_Bitmap* bmp = &face->glyph->bitmap;
 
     uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
-    int bl = face->glyph->bitmap_left;
-    int bt = face->glyph->bitmap_top;
-    int asc = (int)gc->ascender;
 
-    for (unsigned row = 0; row < bmp->rows; row++) {
-        int dy = asc - bt + (int)row;
-        if (dy < 0 || dy >= gh) continue;
-        for (unsigned col = 0; col < bmp->width; col++) {
-            int dx = bl + (int)col;
-            if (dx < 0 || dx >= gw) continue;
-            pixels[dy * gw + dx] = bmp->buffer[row * bmp->pitch + col];
+    // Powerline separators and block elements: stretch to fill the cell.
+    bool stretchToCell =
+        (cp >= 0x2580 && cp <= 0x259F) ||
+        (cp >= 0xE0B0 && cp <= 0xE0D4);
+
+    if (stretchToCell && bmp->width > 1 && bmp->rows > 1) {
+        float sx = (float)gw / (float)bmp->width;
+        float sy = (float)gh / (float)bmp->rows;
+        for (int dy = 0; dy < gh; dy++) {
+            int srcRow = (int)((float)dy / sy);
+            if (srcRow >= (int)bmp->rows) srcRow = (int)bmp->rows - 1;
+            for (int dx = 0; dx < gw; dx++) {
+                int srcCol = (int)((float)dx / sx);
+                if (srcCol >= (int)bmp->width) srcCol = (int)bmp->width - 1;
+                pixels[dy * gw + dx] = bmp->buffer[srcRow * bmp->pitch + srcCol];
+            }
+        }
+    } else {
+        int bl = face->glyph->bitmap_left;
+        int bt = face->glyph->bitmap_top;
+        int asc = (int)gc->ascender;
+        int y_off = (int)gc->baseline_y_offset;
+        int x_off = (int)gc->x_offset;
+
+        for (unsigned row = 0; row < bmp->rows; row++) {
+            int dy = asc - bt + (int)row + y_off;
+            if (dy < 0 || dy >= gh) continue;
+            for (unsigned col = 0; col < bmp->width; col++) {
+                int dx = bl + (int)col + x_off;
+                if (dx < 0 || dx >= gw) continue;
+                pixels[dy * gw + dx] = bmp->buffer[row * bmp->pitch + col];
+            }
         }
     }
 
@@ -438,10 +485,15 @@ static int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
 }
 
 static GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
-    const char* fontEnv = getenv("ATTYX_FONT");
+    // Font family: prefer config (g_font_family), fall back to env, then defaults.
     char* fontPath = NULL;
-    if (fontEnv && fontEnv[0])
-        fontPath = findFontPath(fontEnv);
+    if (g_font_family_len > 0)
+        fontPath = findFontPath(g_font_family);
+    if (!fontPath) {
+        const char* fontEnv = getenv("ATTYX_FONT");
+        if (fontEnv && fontEnv[0])
+            fontPath = findFontPath(fontEnv);
+    }
     if (!fontPath) fontPath = findFontPath("Monospace");
     if (!fontPath) fontPath = findFontPath("DejaVu Sans Mono");
     if (!fontPath) fontPath = findFontPath("Courier");
@@ -458,12 +510,32 @@ static GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     }
     free(fontPath);
 
-    int fontSize = (int)(16.0f * contentScale);
+    // Font size: prefer config (g_font_size), in points.
+    float basePt = (g_font_size > 0) ? (float)g_font_size : 14.0f;
+    int fontSize = (int)(basePt * contentScale);
     FT_Set_Pixel_Sizes(face, 0, fontSize);
 
     float ascender = (float)(face->size->metrics.ascender >> 6);
-    float gh = (float)(face->size->metrics.height >> 6);
-    float gw = (float)(face->size->metrics.max_advance >> 6);
+    float naturalH = (float)(face->size->metrics.height >> 6);
+    float naturalW = (float)(face->size->metrics.max_advance >> 6);
+    float gh = naturalH;
+    float gw = naturalW;
+
+    // Apply cell size from config:
+    //   0   → auto (FreeType metrics above are already integer-rounded)
+    //   > 0 → fixed: absolute pixel value (points × scale already done by caller)
+    //   < 0 → percent: base × abs(value) / 100, re-rounded
+    if (g_cell_width > 0)
+        gw = roundf((float)g_cell_width * contentScale);
+    else if (g_cell_width < 0)
+        gw = roundf(gw * (float)(-g_cell_width) / 100.0f);
+    if (g_cell_height > 0)
+        gh = roundf((float)g_cell_height * contentScale);
+    else if (g_cell_height < 0)
+        gh = roundf(gh * (float)(-g_cell_height) / 100.0f);
+
+    float baseline_y_offset = (gh - naturalH) / 2.0f;
+    float x_offset = (gw - naturalW) / 2.0f;
 
     int cols = 32;
     int initRows = 32;
@@ -493,6 +565,8 @@ static GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     gc.glyph_h    = gh;
     gc.scale      = contentScale;
     gc.ascender   = ascender;
+    gc.baseline_y_offset = baseline_y_offset;
+    gc.x_offset   = x_offset;
     gc.atlas_cols = cols;
     gc.atlas_w    = atlasW;
     gc.atlas_h    = atlasH;

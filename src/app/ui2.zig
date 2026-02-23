@@ -78,10 +78,22 @@ pub fn run(config: AppConfig) !void {
     fillCells(render_cells[0..total], &engine, total);
     c.attyx_set_cursor(@intCast(engine.state.cursor.row), @intCast(engine.state.cursor.col));
 
+    // Build spawn argv: --cmd wins, then [program] config, then $SHELL default.
+    const program_argv: ?[]const [:0]const u8 = if (config.program) |prog|
+        try buildProgramArgv(allocator, prog, config.program_args)
+    else
+        null;
+    defer if (program_argv) |pa| {
+        for (pa) |s| allocator.free(@as([]const u8, s));
+        allocator.free(pa);
+    };
+
+    const spawn_argv = config.argv orelse program_argv;
+
     var pty = try Pty.spawn(.{
         .rows = config.rows,
         .cols = config.cols,
-        .argv = config.argv,
+        .argv = spawn_argv,
     });
     defer pty.deinit();
 
@@ -108,6 +120,22 @@ pub fn run(config: AppConfig) !void {
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
 }
 
+/// Convert [program] config into a [:0]const u8 slice suitable for Pty.spawn.
+fn buildProgramArgv(
+    allocator: std.mem.Allocator,
+    prog: []const u8,
+    args: ?[]const []const u8,
+) ![]const [:0]const u8 {
+    const extra = args orelse &[_][]const u8{};
+    const total = 1 + extra.len;
+    const argv = try allocator.alloc([:0]const u8, total);
+    argv[0] = try allocator.dupeZ(u8, prog);
+    for (extra, 0..) |a, i| {
+        argv[1 + i] = try allocator.dupeZ(u8, a);
+    }
+    return argv;
+}
+
 fn cursorShapeFromConfig(shape: CursorShapeConfig, blink: bool) attyx.actions.CursorShape {
     return switch (shape) {
         .block => if (blink) .blinking_block else .steady_block,
@@ -123,8 +151,22 @@ fn publishFontConfig(config: *const AppConfig) void {
     c.g_font_family[len] = 0;
     c.g_font_family_len = @intCast(len);
     c.g_font_size = @intCast(config.font_size);
-    c.g_cell_width = config.cell_width.toBridgeInt();
-    c.g_cell_height = config.cell_height.toBridgeInt();
+    c.g_cell_width = config.cell_width.encode();
+    c.g_cell_height = config.cell_height.encode();
+
+    // Publish fallback font list.
+    if (config.font_fallback) |fallback| {
+        const count = @min(fallback.len, c.ATTYX_FONT_FALLBACK_MAX);
+        for (0..count) |i| {
+            const name = fallback[i];
+            const flen = @min(name.len, c.ATTYX_FONT_FAMILY_MAX - 1);
+            @memcpy(c.g_font_fallback[i][0..flen], name[0..flen]);
+            c.g_font_fallback[i][flen] = 0;
+        }
+        c.g_font_fallback_count = @intCast(count);
+    } else {
+        c.g_font_fallback_count = 0;
+    }
 }
 
 fn syncViewportFromC(state: *attyx.TerminalState) void {

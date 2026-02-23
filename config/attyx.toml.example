@@ -9,8 +9,8 @@
 [font]
 # family = "JetBrains Mono"
 # size = 14
-# cell_width = "100%"        # pixels (e.g. 10) or percentage (e.g. "110%")
-# cell_height = "100%"       # pixels (e.g. 20) or percentage (e.g. "110%")
+# cell_width = 0              # 0 = auto from font; or fixed points (e.g. 10); or "110%" of font-derived
+# cell_height = 0             # 0 = auto from font; or fixed points (e.g. 20); or "115%" of font-derived
 # fallback = ["Symbols Nerd Font Mono", "Noto Color Emoji"]
 
 [theme]
@@ -25,3 +25,7 @@
 [cursor]
 # shape = "block"      # "block" | "beam" | "underline"
 # blink = true
+
+[program]
+# shell = "/bin/zsh"   # default: $SHELL or /bin/sh
+# args = ["-l"]        # extra arguments passed to the shell

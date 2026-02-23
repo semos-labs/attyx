@@ -84,6 +84,14 @@ fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConfig) 
             i += 1;
             if (i < args.len)
                 config.font_size = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--cell-width")) {
+            i += 1;
+            if (i < args.len)
+                config.cell_width = config_mod.CellSize.fromString(args[i]) orelse continue;
+        } else if (std.mem.eql(u8, arg, "--cell-height")) {
+            i += 1;
+            if (i < args.len)
+                config.cell_height = config_mod.CellSize.fromString(args[i]) orelse continue;
         } else if (std.mem.eql(u8, arg, "--theme")) {
             i += 1;
             if (i < args.len) config.theme_name = args[i];
@@ -105,6 +113,9 @@ fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConfig) 
             config.cursor_blink = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-blink")) {
             config.cursor_blink = false;
+        } else if (std.mem.eql(u8, arg, "--shell")) {
+            i += 1;
+            if (i < args.len) config.program = args[i];
         } else if (std.mem.eql(u8, arg, "--cmd")) {
             config.argv = @ptrCast(args[i + 1 ..]);
             break;

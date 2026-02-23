@@ -62,10 +62,9 @@ pub const Pty = struct {
 
             _ = setenv("TERM", "xterm-256color", 1);
 
-            const default_argv: []const [:0]const u8 = &.{
-                "/bin/bash", "--noprofile", "--norc",
+            const argv = opts.argv orelse &[_][:0]const u8{
+                std.posix.getenv("SHELL") orelse "/bin/sh",
             };
-            const argv = opts.argv orelse default_argv;
 
             var argv_ptrs: [33]?[*:0]const u8 = .{null} ** 33;
             for (argv, 0..) |arg, i| {

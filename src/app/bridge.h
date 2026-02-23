@@ -107,8 +107,12 @@ extern volatile int  g_ime_preedit_len;    // byte length of preedit text
 extern char          g_font_family[ATTYX_FONT_FAMILY_MAX];
 extern volatile int  g_font_family_len;
 extern volatile int  g_font_size;       // points
-extern volatile int  g_cell_width;      // >0 = pixels, <0 = -percent (e.g. -110 = 110%)
-extern volatile int  g_cell_height;     // >0 = pixels, <0 = -percent (e.g. -110 = 110%)
+extern volatile int  g_cell_width;      // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
+extern volatile int  g_cell_height;     // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
+
+#define ATTYX_FONT_FALLBACK_MAX 8
+extern char          g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
+extern volatile int  g_font_fallback_count;
 
 // ---------------------------------------------------------------------------
 // In-terminal search state

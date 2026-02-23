@@ -24,12 +24,17 @@ pub const CursorShapeConfig = enum {
     }
 };
 
-/// Cell size: absolute pixels or percentage of font-derived default.
+/// Cell size: auto (from font metrics), absolute points, or percentage of font-derived base.
+///
+/// Encoding passed to the C bridge (g_cell_width / g_cell_height):
+///   0        → auto: renderer derives from font metrics
+///   > 0      → fixed: exact point value (renderer multiplies by DPI scale)
+///   < 0      → percent: renderer applies abs(value)% to its font-derived dimension
+///              e.g. -115 means "font-derived × 115 / 100"
 pub const CellSize = union(enum) {
+    auto,
     pixels: u16,
     percent: u16,
-
-    pub const default: CellSize = .{ .percent = 100 };
 
     /// Parse from a string: "10" → pixels, "110%" → percent.
     pub fn fromString(s: []const u8) ?CellSize {
@@ -43,11 +48,15 @@ pub const CellSize = union(enum) {
         return .{ .pixels = num };
     }
 
-    /// Encode for the C bridge: positive = pixels, negative = -percent.
-    pub fn toBridgeInt(self: CellSize) i32 {
+    /// Encode for the C bridge.
+    ///   auto    → 0
+    ///   pixels  → +N (fixed points)
+    ///   percent → -N (renderer applies N% to its font-derived base)
+    pub fn encode(self: CellSize) i32 {
         return switch (self) {
+            .auto => 0,
             .pixels => |v| @intCast(v),
-            .percent => |v| -@as(i32, @intCast(v)),
+            .percent => |pct| -@as(i32, pct),
         };
     }
 };
@@ -57,8 +66,8 @@ pub const AppConfig = struct {
     // [font]
     font_family: []const u8 = "JetBrains Mono",
     font_size: u16 = 14,
-    cell_width: CellSize = CellSize.default,
-    cell_height: CellSize = CellSize.default,
+    cell_width: CellSize = .auto,
+    cell_height: CellSize = .auto,
     font_fallback: ?[]const []const u8 = null,
 
     // [theme]
@@ -74,6 +83,10 @@ pub const AppConfig = struct {
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,
 
+    // [program]
+    program: ?[]const u8 = null,
+    program_args: ?[]const []const u8 = null,
+
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
     cols: u16 = 80,
@@ -84,6 +97,8 @@ pub const AppConfig = struct {
     _owned_font_family: ?[]const u8 = null,
     _owned_theme_name: ?[]const u8 = null,
     _owned_fallback_items: ?[]const []const u8 = null,
+    _owned_program: ?[]const u8 = null,
+    _owned_program_args: ?[]const []const u8 = null,
 
     pub fn deinit(self: *AppConfig) void {
         const alloc = self._allocator orelse return;
@@ -93,10 +108,16 @@ pub const AppConfig = struct {
             for (items) |item| alloc.free(item);
             alloc.free(items);
         }
+        if (self._owned_program) |s| alloc.free(s);
+        if (self._owned_program_args) |items| {
+            for (items) |item| alloc.free(item);
+            alloc.free(items);
+        }
     }
 
     fn formatCellSize(cs: CellSize, buf: *[32]u8) []const u8 {
         return switch (cs) {
+            .auto => "0",
             .pixels => |v| std.fmt.bufPrint(buf, "{d}", .{v}) catch "0",
             .percent => |v| std.fmt.bufPrint(buf, "\"{d}%\"", .{v}) catch "\"100%\"",
         };
@@ -142,6 +163,9 @@ pub const AppConfig = struct {
             \\shape = "{s}"
             \\blink = {s}
             \\
+            \\[program]
+            \\shell = "{s}"
+            \\
         , .{
             self.font_family,
             self.font_size,
@@ -153,6 +177,7 @@ pub const AppConfig = struct {
             if (self.reflow_enabled) "true" else "false",
             self.cursor_shape.toString(),
             if (self.cursor_blink) "true" else "false",
+            self.program orelse std.posix.getenv("SHELL") orelse "/bin/sh",
         });
     }
 };
@@ -183,21 +208,21 @@ pub fn loadFromDefaultPath(allocator: std.mem.Allocator, config: *AppConfig) !vo
     return loadFromFile(allocator, config_file, config);
 }
 
-/// Parse a TOML value as CellSize: integer → pixels, string "N%" → percent.
-fn parseCellSize(v: toml.TomlValue, path: []const u8, key: []const u8) ?CellSize {
+fn parseCellSize(v: toml.TomlValue, path: []const u8, field: []const u8) ?CellSize {
     if (v == .int) {
-        if (v.int <= 0) {
-            std.debug.print("error: {s}: {s} must be > 0\n", .{ path, key });
+        if (v.int == 0) return .auto;
+        if (v.int < 0) {
+            std.debug.print("error: {s}: {s} must be >= 0\n", .{ path, field });
             return null;
         }
         return .{ .pixels = @intCast(v.int) };
     }
     if (v == .string) {
         if (CellSize.fromString(v.string)) |cs| return cs;
-        std.debug.print("error: {s}: {s} must be a pixel value (e.g. 10) or percentage (e.g. \"110%\")\n", .{ path, key });
+        std.debug.print("error: {s}: {s} must be an integer or a percentage string (e.g. \"110%\")\n", .{ path, field });
         return null;
     }
-    std.debug.print("error: {s}: {s} must be an integer or percentage string\n", .{ path, key });
+    std.debug.print("error: {s}: {s} must be an integer or a percentage string\n", .{ path, field });
     return null;
 }
 
@@ -343,6 +368,43 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
             config.cursor_blink = v.bool;
         } else {
             std.debug.print("error: {s}: cursor.blink must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
+    // [program]
+    if (Lookup.get(root, "program", "shell")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_program) |old| allocator.free(old);
+            config.program = dupe;
+            config._owned_program = dupe;
+        } else {
+            std.debug.print("error: {s}: program.shell must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "program", "args")) |v| {
+        if (v == .array) {
+            const items = try allocator.alloc([]const u8, v.array.items.len);
+            for (v.array.items, 0..) |item, idx| {
+                if (item == .string) {
+                    items[idx] = try allocator.dupe(u8, item.string);
+                } else {
+                    for (items[0..idx]) |prev| allocator.free(prev);
+                    allocator.free(items);
+                    std.debug.print("error: {s}: program.args entries must be strings\n", .{path});
+                    return error.ConfigValidationError;
+                }
+            }
+            if (config._owned_program_args) |old_items| {
+                for (old_items) |old| allocator.free(old);
+                allocator.free(old_items);
+            }
+            config.program_args = items;
+            config._owned_program_args = items;
+        } else {
+            std.debug.print("error: {s}: program.args must be an array of strings\n", .{path});
             return error.ConfigValidationError;
         }
     }
