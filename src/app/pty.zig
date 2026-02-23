@@ -1,24 +1,12 @@
 const std = @import("std");
 const posix = std.posix;
-const builtin = @import("builtin");
+const platform = @import("../platform/platform.zig");
 
 const Winsize = extern struct {
     ws_row: u16,
     ws_col: u16,
     ws_xpixel: u16,
     ws_ypixel: u16,
-};
-
-const TIOCSWINSZ: c_ulong = switch (builtin.os.tag) {
-    .macos => 0x80087467,
-    .linux => 0x5414,
-    else => @compileError("unsupported OS for PTY"),
-};
-
-const TIOCSCTTY: c_ulong = switch (builtin.os.tag) {
-    .macos => 0x20007461,
-    .linux => 0x540E,
-    else => @compileError("unsupported OS for PTY"),
 };
 
 extern "c" fn openpty(
@@ -65,7 +53,7 @@ pub const Pty = struct {
             // ── child ──
             posix.close(master);
             _ = setsid();
-            _ = ioctl(slave, TIOCSCTTY, @as(c_int, 0));
+            _ = ioctl(slave, platform.TIOCSCTTY, @as(c_int, 0));
 
             posix.dup2(slave, 0) catch posix.abort();
             posix.dup2(slave, 1) catch posix.abort();
@@ -95,9 +83,8 @@ pub const Pty = struct {
         // Non-blocking reads on master fd
         const F_GETFL: i32 = 3;
         const F_SETFL: i32 = 4;
-        const O_NONBLOCK: usize = if (builtin.os.tag == .macos) 0x0004 else 0x0800;
         const current = std.posix.fcntl(master, F_GETFL, 0) catch 0;
-        _ = std.posix.fcntl(master, F_SETFL, current | O_NONBLOCK) catch {};
+        _ = std.posix.fcntl(master, F_SETFL, current | platform.O_NONBLOCK) catch {};
 
         return .{ .master = master, .pid = pid };
     }
@@ -125,7 +112,7 @@ pub const Pty = struct {
             .ws_xpixel = 0,
             .ws_ypixel = 0,
         };
-        if (ioctl(self.master, TIOCSWINSZ, &win) != 0)
+        if (ioctl(self.master, platform.TIOCSWINSZ, &win) != 0)
             return error.ResizeFailed;
     }
 

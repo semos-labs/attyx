@@ -1,6 +1,5 @@
 const std = @import("std");
 const posix = std.posix;
-const builtin = @import("builtin");
 const attyx = @import("attyx");
 
 const Engine = attyx.Engine;
@@ -55,11 +54,7 @@ export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
 }
 
 pub fn run(config: Config) !void {
-    if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
-        std.debug.print("Attyx requires macOS or Linux.\n", .{});
-        return;
-    }
-
+    // Platform support is enforced at compile time via src/platform/platform.zig.
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();

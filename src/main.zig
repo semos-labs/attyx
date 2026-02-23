@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const ui2 = @import("app/ui2.zig");
 
 pub fn main() !void {
