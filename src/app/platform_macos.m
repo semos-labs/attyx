@@ -26,6 +26,11 @@ static volatile int g_should_quit = 0;
 static volatile int g_bracketed_paste = 0;
 static volatile int g_cursor_keys_app = 0;
 
+// Mouse mode flags (written by PTY thread, read by mouse handlers on main thread)
+// tracking: 0=off, 1=x10, 2=button_event, 3=any_event
+static volatile int g_mouse_tracking = 0;
+static volatile int g_mouse_sgr = 0;
+
 // Row-level dirty bitset (256 rows). PTY thread atomic-ORs in dirty bits;
 // renderer atomically swaps each word to zero when snapshotting.
 static volatile uint64_t g_dirty[4] = {0,0,0,0};
@@ -56,6 +61,11 @@ int attyx_should_quit(void) {
 void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app) {
     g_bracketed_paste = bracketed_paste;
     g_cursor_keys_app = cursor_keys_app;
+}
+
+void attyx_set_mouse_mode(int tracking, int sgr) {
+    g_mouse_tracking = tracking;
+    g_mouse_sgr = sgr;
 }
 
 void attyx_set_dirty(const uint64_t dirty[4]) {
@@ -769,13 +779,200 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 // Terminal view — MTKView subclass that handles keyboard + paste
 // ---------------------------------------------------------------------------
 
-@interface AttyxView : MTKView
+// ---------------------------------------------------------------------------
+// Mouse helpers
+// ---------------------------------------------------------------------------
+
+static inline int clampInt(int val, int lo, int hi) {
+    if (val < lo) return lo;
+    if (val > hi) return hi;
+    return val;
+}
+
+static void mouseCell(NSEvent *event, NSView *view, int *outCol, int *outRow) {
+    NSPoint loc = [view convertPoint:event.locationInWindow fromView:nil];
+    loc.y = view.bounds.size.height - loc.y;
+    int col = (int)(loc.x / g_cell_pt_w) + 1;
+    int row = (int)(loc.y / g_cell_pt_h) + 1;
+    *outCol = clampInt(col, 1, g_cols);
+    *outRow = clampInt(row, 1, g_rows);
+}
+
+static int mouseModifiers(NSEventModifierFlags flags) {
+    int m = 0;
+    if (flags & NSEventModifierFlagShift)   m |= 4;
+    if (flags & NSEventModifierFlagOption)  m |= 8;
+    if (flags & NSEventModifierFlagControl) m |= 16;
+    return m;
+}
+
+static void sendSgrMouse(int button, int col, int row, BOOL press) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                       button, col, row, press ? 'M' : 'm');
+    attyx_send_input((const uint8_t *)buf, len);
+}
+
+// ---------------------------------------------------------------------------
+// AttyxView — keyboard + mouse input
+// ---------------------------------------------------------------------------
+
+@interface AttyxView : MTKView {
+    int _lastMouseCol;
+    int _lastMouseRow;
+    BOOL _leftDown;
+    BOOL _rightDown;
+    BOOL _middleDown;
+}
 @end
 
 @implementation AttyxView
 
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder  { return YES; }
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas)
+        [self removeTrackingArea:area];
+    NSTrackingArea *ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:(NSTrackingMouseMoved |
+                      NSTrackingMouseEnteredAndExited |
+                      NSTrackingActiveInKeyWindow |
+                      NSTrackingInVisibleRect)
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+
+// --- Mouse: clicks ---
+
+- (void)mouseDown:(NSEvent *)event {
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 0 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _leftDown = YES;
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    _leftDown = NO;
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 0 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, NO);
+}
+
+- (void)rightMouseDown:(NSEvent *)event {
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 2 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _rightDown = YES;
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)rightMouseUp:(NSEvent *)event {
+    _rightDown = NO;
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 2 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, NO);
+}
+
+- (void)otherMouseDown:(NSEvent *)event {
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 1 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _middleDown = YES;
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)otherMouseUp:(NSEvent *)event {
+    _middleDown = NO;
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = 1 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, NO);
+}
+
+// --- Mouse: drag / motion ---
+
+- (void)mouseDragged:(NSEvent *)event {
+    int tracking = g_mouse_tracking;
+    if (!tracking || !g_mouse_sgr) return;
+    if (tracking < 2) return; // x10 has no motion
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    if (col == _lastMouseCol && row == _lastMouseRow) return;
+    int btn = 32 | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)rightMouseDragged:(NSEvent *)event {
+    int tracking = g_mouse_tracking;
+    if (!tracking || !g_mouse_sgr) return;
+    if (tracking < 2) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    if (col == _lastMouseCol && row == _lastMouseRow) return;
+    int btn = (32 | 2) | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)otherMouseDragged:(NSEvent *)event {
+    int tracking = g_mouse_tracking;
+    if (!tracking || !g_mouse_sgr) return;
+    if (tracking < 2) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    if (col == _lastMouseCol && row == _lastMouseRow) return;
+    int btn = (32 | 1) | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    int tracking = g_mouse_tracking;
+    if (tracking != 3 || !g_mouse_sgr) return; // any_event only
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    if (col == _lastMouseCol && row == _lastMouseRow) return;
+    int btn = 35 | mouseModifiers(event.modifierFlags); // 32 + 3 (no button)
+    sendSgrMouse(btn, col, row, YES);
+    _lastMouseCol = col;
+    _lastMouseRow = row;
+}
+
+// --- Mouse: scroll wheel ---
+
+- (void)scrollWheel:(NSEvent *)event {
+    if (!g_mouse_tracking || !g_mouse_sgr) return;
+    CGFloat dy = event.scrollingDeltaY;
+    if (event.hasPreciseScrollingDeltas) dy /= 3.0;
+    if (dy == 0) return;
+    int col, row;
+    mouseCell(event, self, &col, &row);
+    int btn = (dy > 0 ? 64 : 65) | mouseModifiers(event.modifierFlags);
+    sendSgrMouse(btn, col, row, YES);
+}
 
 // Suppress system beep for unhandled keys
 - (void)keyUp:(NSEvent *)event {}
@@ -986,6 +1183,7 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
                                               defer:NO];
     [_window setTitle:@"Attyx"];
     [_window setDelegate:self];
+    [_window setAcceptsMouseMovedEvents:YES];
 
     AttyxView* termView = [[AttyxView alloc] initWithFrame:frame device:device];
     termView.layer.contentsScale = scaleFactor;

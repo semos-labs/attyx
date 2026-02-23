@@ -32,6 +32,11 @@ void attyx_send_input(const uint8_t* bytes, int len);
 // Update terminal mode flags (called from PTY thread after engine.feed).
 void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app);
 
+// Update mouse mode flags (called from PTY thread after engine.feed).
+// tracking: 0=off, 1=x10, 2=button_event, 3=any_event
+// sgr: 1 if SGR 1006 encoding is enabled
+void attyx_set_mouse_mode(int tracking, int sgr);
+
 // Mark rows dirty (atomic OR). Called from PTY thread; renderer reads + clears.
 // dirty is a 4-element uint64_t array (256-row bitset).
 void attyx_set_dirty(const uint64_t dirty[4]);
