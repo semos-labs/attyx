@@ -17,6 +17,14 @@ export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 export var g_needs_reload_config: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
 export fn attyx_trigger_config_reload() void {}
+export fn attyx_log(_: c_int, _: [*:0]const u8, _: [*:0]const u8) void {}
+export var g_background_opacity: f32 = 1.0;
+export var g_background_blur: i32 = 30;
+export var g_window_decorations: i32 = 1;
+export var g_padding_left: i32 = 0;
+export var g_padding_right: i32 = 0;
+export var g_padding_top: i32 = 0;
+export var g_padding_bottom: i32 = 0;
 var _icon_stub: u8 = 0;
 export var g_icon_png: [*]const u8 = @ptrCast(&_icon_stub);
 export var g_icon_png_len: c_int = 0;

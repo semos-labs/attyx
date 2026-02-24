@@ -124,6 +124,14 @@ enabled = true
 [cursor]
 shape = "block"           # "block" | "beam" | "underline"
 blink = true
+
+[background]
+opacity = 1.0             # 0.0 (transparent) – 1.0 (opaque)
+blur = 30                 # blur radius; only applies when opacity < 1.0
+
+[logging]
+level = "info"            # "err" | "warn" | "info" | "debug" | "trace"
+# file = "/tmp/attyx.log" # append logs to file in addition to stderr
 ```
 
 ### Cell size
@@ -145,6 +153,10 @@ attyx --cell-width 120% --cell-height 18
 ### CLI flags
 
 ```
+--rows N                   Terminal rows (default: 24)
+--cols N                   Terminal cols (default: 80)
+--cmd <command...>         Override shell command
+--shell <path>             Shell program (default: $SHELL or /bin/sh)
 --font-family <string>     Font family (default: "JetBrains Mono")
 --font-size <int>          Font size in points (default: 14)
 --cell-width <value>       Cell width: pixels (e.g. 10) or percent (e.g. "110%")
@@ -154,9 +166,14 @@ attyx --cell-width 120% --cell-height 18
 --reflow / --no-reflow     Enable/disable reflow on resize
 --cursor-shape <shape>     Cursor shape: block, beam, underline
 --cursor-blink / --no-cursor-blink
+--background-opacity <f>   Window opacity 0.0–1.0 (default: 1.0)
+--background-blur <int>    Blur radius when opacity < 1 (default: 30)
+--log-level <level>        Log level: err, warn, info, debug, trace (default: info)
+--log-file <path>          Append logs to file (default: stderr only)
 --config <path>            Load config from a specific file
 --no-config                Skip reading config from disk
 --print-config             Print merged config and exit
+--help, -h                 Show this help
 ```
 
 ### Reloading config at runtime
@@ -170,9 +187,10 @@ kill -USR1 <pid>
 | Setting | On reload |
 |---------|-----------|
 | `cursor.shape`, `cursor.blink` | Applied immediately |
-| `scrollback.lines` (decrease / no change) | Applied lazily |
-| `scrollback.lines` (increase beyond startup cap) | Logged, requires restart |
-| `font.family`, `font.size`, `cell_width`, `cell_height` | Logged, requires restart |
+| `scrollback.lines` | Applied immediately |
+| `font.family`, `font.size`, `cell_width`, `cell_height` | Applied immediately — rebuilds glyph cache and snaps window size |
+| `background.opacity`, `background.blur` | Requires restart (window transparency is set at startup) |
+| `logging.level`, `logging.file` | Requires restart |
 
 ---
 
@@ -227,6 +245,10 @@ Attyx is built milestone by milestone. Each milestone is stable and tested befor
 | UI-6 | Window resize + grid snap | ✅ Done |
 | UI-7 | IME composition input (CJK, macOS) | ✅ Done |
 | UI-8 | Linux platform parity (GLFW + OpenGL + FreeType) | ✅ Done |
+| UI-9 | In-terminal search (Ctrl+F incremental search bar) | ✅ Done |
+| CFG-1 | Config reload at runtime (SIGUSR1 + Ctrl+Shift+R) | ✅ Done |
+| INF-1 | Logging + diagnostics (structured log, 5 levels, file output) | ✅ Done |
+| VIS-1 | Background transparency + blur (opacity + NSVisualEffectView) | ✅ Done |
 
 See [docs/milestones.md](docs/milestones.md) for detailed write-ups.
 
@@ -251,6 +273,10 @@ src/
   config/
     config.zig       AppConfig struct, TOML parsing, CellSize type
     cli.zig          CLI argument parser + usage text
+    reload.zig       Config reload helper (loadReloadedConfig)
+  logging/
+    log.zig          Structured logger (5 levels, file output, C bridge hook)
+    diag.zig         PTY throughput diagnostics window
   app/
     pty.zig          POSIX PTY bridge (spawn, read, write, resize)
     ui2.zig          Terminal runner (PTY thread + GPU window, macOS/Linux)

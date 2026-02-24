@@ -86,7 +86,7 @@
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
     int row = g_ime_composing ? g_ime_anchor_row : g_cursor_row;
     int col = g_ime_composing ? g_ime_anchor_col : g_cursor_col;
-    NSRect cellRect = NSMakeRect(col * g_cell_pt_w, (row + 1) * g_cell_pt_h, g_cell_pt_w, g_cell_pt_h);
+    NSRect cellRect = NSMakeRect(g_padding_left + col * g_cell_pt_w, g_padding_top + (row + 1) * g_cell_pt_h, g_cell_pt_w, g_cell_pt_h);
     NSRect screenRect = [self.window convertRectToScreen:[self convertRect:cellRect toView:nil]];
     return screenRect;
 }

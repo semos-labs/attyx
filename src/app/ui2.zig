@@ -4,6 +4,8 @@ const attyx = @import("attyx");
 const AppConfig = @import("../config/config.zig").AppConfig;
 const CursorShapeConfig = @import("../config/config.zig").CursorShapeConfig;
 const reload = @import("../config/reload.zig");
+const logging = @import("../logging/log.zig");
+const diag = @import("../logging/diag.zig");
 
 const Engine = attyx.Engine;
 const SearchState = attyx.SearchState;
@@ -32,6 +34,8 @@ const PtyThreadCtx = struct {
     applied_cursor_shape: CursorShapeConfig,
     applied_cursor_blink: bool,
     applied_scrollback_lines: u32,
+    // Diagnostics
+    throughput: diag.ThroughputWindow = .{},
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -47,6 +51,13 @@ var g_last_title_ptr: ?[*]const u8 = null;
 // Written by SIGUSR1 handler or attyx_trigger_config_reload(); read-and-reset by PTY thread.
 export var g_needs_reload_config: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
+export var g_background_opacity: f32 = 1.0;
+export var g_background_blur: i32 = 30;
+export var g_window_decorations: i32 = 1;
+export var g_padding_left: i32 = 0;
+export var g_padding_right: i32 = 0;
+export var g_padding_top: i32 = 0;
+export var g_padding_bottom: i32 = 0;
 
 // App icon embedded at build time (PNG bytes). Read-only from C.
 const _icon_bytes = @import("app_icon").data;
@@ -55,6 +66,17 @@ export var g_icon_png_len: c_int = @intCast(_icon_bytes.len);
 
 export fn attyx_trigger_config_reload() void {
     @atomicStore(i32, &g_needs_reload_config, 1, .seq_cst);
+}
+
+export fn attyx_log(level: c_int, scope: [*:0]const u8, msg: [*:0]const u8) void {
+    const l: logging.Level = switch (level) {
+        0 => .err,
+        1 => .warn,
+        2 => .info,
+        3 => .debug,
+        else => .trace,
+    };
+    logging.global.write(l, std.mem.span(scope), "{s}", .{std.mem.span(msg)});
 }
 
 fn sigusr1Handler(_: c_int) callconv(.c) void {
@@ -103,6 +125,19 @@ pub fn run(
 
     // Publish font config to C bridge
     publishFontConfig(&config);
+
+    // Publish background transparency config
+    g_background_opacity = config.background_opacity;
+    g_background_blur    = @intCast(config.background_blur);
+
+    // Publish window decorations config
+    g_window_decorations = if (config.window_decorations) 1 else 0;
+
+    // Publish window padding
+    g_padding_left   = @intCast(config.window_padding_left);
+    g_padding_right  = @intCast(config.window_padding_right);
+    g_padding_top    = @intCast(config.window_padding_top);
+    g_padding_bottom = @intCast(config.window_padding_bottom);
 
     // Install SIGUSR1 → config reload handler.
     const sa = posix.Sigaction{
@@ -407,15 +442,23 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Drain all immediately available PTY data before doing expensive work.
         var got_data = false;
         if (fds[0].revents & POLLIN != 0) {
+            const t0 = std.time.nanoTimestamp();
+            var total_read: usize = 0;
             while (true) {
                 const n = ctx.pty.read(&buf) catch break;
                 if (n == 0) break;
                 got_data = true;
+                total_read += n;
                 ctx.session.appendOutput(buf[0..n]);
                 ctx.engine.feed(buf[0..n]);
                 if (ctx.engine.state.drainResponse()) |resp| {
                     _ = ctx.pty.writeToPty(resp) catch {};
                 }
+            }
+            if (total_read > 0) {
+                const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - t0, std.time.ns_per_ms);
+                if (elapsed_ms > 16) logging.debug("pty", "slow drain: {d}ms ({d} bytes)", .{ elapsed_ms, total_read });
+                ctx.throughput.add(total_read);
             }
         }
 
@@ -465,7 +508,7 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
         ctx.config_path,
         ctx.args,
     ) catch |err| {
-        std.debug.print("[attyx] config reload failed: {}\n", .{err});
+        logging.err("config", "reload failed: {}", .{err});
         return;
     };
     defer new_cfg.deinit();
@@ -482,7 +525,7 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
     // Scrollback — fully hot-reloadable via reallocate()
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
         ctx.engine.state.scrollback.reallocate(new_cfg.scrollback_lines) catch |err| {
-            std.debug.print("[attyx] scrollback resize failed: {}\n", .{err});
+            logging.err("config", "scrollback resize failed: {}", .{err});
         };
         ctx.applied_scrollback_lines = @intCast(ctx.engine.state.scrollback.max_lines);
         // Clamp viewport offset if scrollback shrunk
@@ -507,7 +550,7 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
     }
 
     c.attyx_mark_all_dirty();
-    std.debug.print("[attyx] config reloaded\n", .{});
+    logging.info("config", "reloaded", .{});
 }
 
 fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {

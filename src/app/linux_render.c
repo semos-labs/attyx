@@ -72,8 +72,8 @@ void linux_rebuild_font(void) {
     g_cell_px_h = g_gc.glyph_h;
 
     // Snap window to new cell dimensions (logical pixels, not framebuffer).
-    int newW = (int)(g_cols * g_cell_px_w / g_content_scale);
-    int newH = (int)(g_rows * g_cell_px_h / g_content_scale);
+    int newW = (int)(g_cols * g_cell_px_w / g_content_scale) + g_padding_left + g_padding_right;
+    int newH = (int)(g_rows * g_cell_px_h / g_content_scale) + g_padding_top  + g_padding_bottom;
     glfwSetWindowSize(g_window, newW, newH);
 
     g_full_redraw = 1;
@@ -148,18 +148,24 @@ void drawFrame(void) {
     AttyxCell* cells = g_cell_snapshot;
     float gw = g_gc.glyph_w;
     float gh = g_gc.glyph_h;
-    float viewport[2] = { cols * gw, rows * gh };
+    float sc = g_content_scale;
+    float padL = g_padding_left   * sc;
+    float padR = g_padding_right  * sc;
+    float padT = g_padding_top    * sc;
+    float padB = g_padding_bottom * sc;
+    float viewport[2] = { cols * gw + padL + padR, rows * gh + padT + padB };
     float atlasW = (float)g_gc.atlas_w;
     float glyphW = g_gc.glyph_w;
     float glyphH = g_gc.glyph_h;
     int atlasCols = g_gc.atlas_cols;
 
     // Update bg vertices for dirty rows
+    float ba = g_background_opacity;
     for (int row = 0; row < rows; row++) {
         if (!g_full_redraw && !dirtyBitTest(dirty, row)) continue;
         for (int col = 0; col < cols; col++) {
             int i = row * cols + col;
-            float x0 = col * gw, y0 = row * gh;
+            float x0 = padL + col * gw, y0 = padT + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
             const AttyxCell* cell = &cells[i];
             float br, bg, bb;
@@ -171,12 +177,12 @@ void drawFrame(void) {
                 bb = cell->bg_b / 255.0f;
             }
             int bi = i * 6;
-            g_bg_verts[bi+0] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
-            g_bg_verts[bi+1] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
-            g_bg_verts[bi+2] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
-            g_bg_verts[bi+3] = (Vertex){ x1,y0, 0,0, br,bg,bb,1 };
-            g_bg_verts[bi+4] = (Vertex){ x1,y1, 0,0, br,bg,bb,1 };
-            g_bg_verts[bi+5] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
+            g_bg_verts[bi+0] = (Vertex){ x0,y0, 0,0, br,bg,bb,ba };
+            g_bg_verts[bi+1] = (Vertex){ x1,y0, 0,0, br,bg,bb,ba };
+            g_bg_verts[bi+2] = (Vertex){ x0,y1, 0,0, br,bg,bb,ba };
+            g_bg_verts[bi+3] = (Vertex){ x1,y0, 0,0, br,bg,bb,ba };
+            g_bg_verts[bi+4] = (Vertex){ x1,y1, 0,0, br,bg,bb,ba };
+            g_bg_verts[bi+5] = (Vertex){ x0,y1, 0,0, br,bg,bb,ba };
         }
     }
 
@@ -187,7 +193,7 @@ void drawFrame(void) {
     int drawCursor = curVis && g_blink_on
                      && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
     if (drawCursor) {
-        float cx0 = curCol * gw, cy0 = curRow * gh;
+        float cx0 = padL + curCol * gw, cy0 = padT + curRow * gh;
         float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
         float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
 
@@ -232,9 +238,9 @@ void drawFrame(void) {
                 lr = 0.25f; lg = 0.40f; lb = 0.65f;
             }
             int lrow = i / cols, lcol = i % cols;
-            float lx0 = lcol * gw;
+            float lx0 = padL + lcol * gw;
             float lx1 = lx0 + gw;
-            float ly1 = (lrow + 1) * gh;
+            float ly1 = padT + (lrow + 1) * gh;
             float ly0 = ly1 - ulH;
             g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
             g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -253,9 +259,9 @@ void drawFrame(void) {
             float lr = 0.4f, lg = 0.7f, lb = 1.0f;
             for (int c = dStart; c <= dEnd && c < cols; c++) {
                 if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = c * gw;
+                float lx0 = padL + c * gw;
                 float lx1 = lx0 + gw;
-                float ly1 = (dRow + 1) * gh;
+                float ly1 = padT + (dRow + 1) * gh;
                 float ly0 = ly1 - ulH;
                 g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                 g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -286,8 +292,8 @@ void drawFrame(void) {
             }
             for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                 if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = cc * gw, lx1 = lx0 + gw;
-                float ly0 = m.row * gh, ly1 = ly0 + gh;
+                float lx0 = padL + cc * gw, lx1 = lx0 + gw;
+                float ly0 = padT + m.row * gh, ly1 = ly0 + gh;
                 g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
@@ -308,7 +314,7 @@ void drawFrame(void) {
             if (ch <= 32) continue;
 
             int row = i / cols, col = i % cols;
-            float x0 = col * gw, y0 = row * gh;
+            float x0 = padL + col * gw, y0 = padT + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
 
             int slot = glyphCacheLookup(&g_gc, ch);
@@ -364,7 +370,12 @@ void drawFrame(void) {
     int fb_w, fb_h;
     glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
 
-    glClearColor(0.118f, 0.118f, 0.141f, 1.0f);
+    float a = g_background_opacity;
+    if (a >= 1.0f) {
+        glClearColor(0.118f, 0.118f, 0.141f, 1.0f);
+    } else {
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    }
     glClear(GL_COLOR_BUFFER_BIT);
 
     int grid_w = (int)viewport[0];
@@ -432,7 +443,7 @@ void drawFrame(void) {
             Vertex imeVerts[128 * 6 + 6];
             int iv = 0;
             for (int i = 0; i < preCells; i++) {
-                float x0 = (pCol + i) * gw, y0 = pRow * gh;
+                float x0 = padL + (pCol + i) * gw, y0 = padT + pRow * gh;
                 float x1 = x0 + gw, y1 = y0 + gh;
                 float br = 0.20f, bg = 0.20f, bb = 0.30f;
                 imeVerts[iv++] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
@@ -443,8 +454,8 @@ void drawFrame(void) {
                 imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
             }
             float ulH = 2.0f;
-            float ulY0 = pRow * gh + gh - ulH, ulY1 = pRow * gh + gh;
-            float ulX0 = pCol * gw, ulX1 = (pCol + preCells) * gw;
+            float ulY0 = padT + pRow * gh + gh - ulH, ulY1 = padT + pRow * gh + gh;
+            float ulX0 = padL + pCol * gw, ulX1 = padL + (pCol + preCells) * gw;
             imeVerts[iv++] = (Vertex){ ulX0,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
             imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
             imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
@@ -625,13 +636,13 @@ void drawFrame(void) {
         int labelLen = 13;
         float menuW = padX * 2.0f + (float)labelLen * gw;
 
-        // Clamp to viewport so the menu never clips out of view.
-        float vpW = cols * gw, vpH = rows * gh;
+        // Clamp to content area (viewport minus padding).
+        float vpW = padL + cols * gw, vpH = padT + rows * gh;
         float menuX = g_ctx_menu_x, menuY = g_ctx_menu_y;
         if (menuX + menuW > vpW) menuX = vpW - menuW;
         if (menuY + itemH > vpH) menuY = vpH - itemH;
-        if (menuX < 0) menuX = 0;
-        if (menuY < 0) menuY = 0;
+        if (menuX < padL) menuX = padL;
+        if (menuY < padT) menuY = padT;
 
         // Solid pass: background + optional hover highlight.
         Vertex cmBg[12];

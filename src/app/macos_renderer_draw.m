@@ -105,13 +105,19 @@ static BOOL cellIsSelected(int row, int col) {
 
         float gw = _glyphCache.glyph_w;
         float gh = _glyphCache.glyph_h;
-        float viewport[2] = { cols * gw, rows * gh };
+        float sc = _glyphCache.scale;
+        float padL = g_padding_left   * sc;
+        float padR = g_padding_right  * sc;
+        float padT = g_padding_top    * sc;
+        float padB = g_padding_bottom * sc;
+        float viewport[2] = { cols * gw + padL + padR, rows * gh + padT + padB };
 
         float atlasW = (float)_glyphCache.atlas_w;
         float glyphW = _glyphCache.glyph_w;
         float glyphH = _glyphCache.glyph_h;
         int atlasCols = _glyphCache.atlas_cols;
 
+        float ba = g_background_opacity;
         int dirtyRowCount = 0;
         for (int row = 0; row < rows; row++) {
             if (!_fullRedrawNeeded && !dirtyBitTest(dirty, row)) continue;
@@ -119,8 +125,8 @@ static BOOL cellIsSelected(int row, int col) {
 
             for (int col = 0; col < cols; col++) {
                 int i = row * cols + col;
-                float x0 = col * gw;
-                float y0 = row * gh;
+                float x0 = padL + col * gw;
+                float y0 = padT + row * gh;
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
                 const AttyxCell* cell = &cells[i];
@@ -135,12 +141,12 @@ static BOOL cellIsSelected(int row, int col) {
                 }
 
                 int bi = i * 6;
-                _bgVerts[bi+0] = (Vertex){ x0, y0, 0,0, br,bg,bb,1 };
-                _bgVerts[bi+1] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
-                _bgVerts[bi+2] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
-                _bgVerts[bi+3] = (Vertex){ x1, y0, 0,0, br,bg,bb,1 };
-                _bgVerts[bi+4] = (Vertex){ x1, y1, 0,0, br,bg,bb,1 };
-                _bgVerts[bi+5] = (Vertex){ x0, y1, 0,0, br,bg,bb,1 };
+                _bgVerts[bi+0] = (Vertex){ x0, y0, 0,0, br,bg,bb,ba };
+                _bgVerts[bi+1] = (Vertex){ x1, y0, 0,0, br,bg,bb,ba };
+                _bgVerts[bi+2] = (Vertex){ x0, y1, 0,0, br,bg,bb,ba };
+                _bgVerts[bi+3] = (Vertex){ x1, y0, 0,0, br,bg,bb,ba };
+                _bgVerts[bi+4] = (Vertex){ x1, y1, 0,0, br,bg,bb,ba };
+                _bgVerts[bi+5] = (Vertex){ x0, y1, 0,0, br,bg,bb,ba };
             }
         }
 
@@ -151,8 +157,8 @@ static BOOL cellIsSelected(int row, int col) {
         BOOL drawCursor = curVisible && _blinkOn
                           && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
         if (drawCursor) {
-            float cx0 = curCol * gw;
-            float cy0 = curRow * gh;
+            float cx0 = padL + curCol * gw;
+            float cy0 = padT + curRow * gh;
             float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
 
             float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
@@ -195,9 +201,9 @@ static BOOL cellIsSelected(int row, int col) {
                     lr = 0.25f; lg = 0.40f; lb = 0.65f;
                 }
                 int lrow = i / cols, lcol = i % cols;
-                float lx0 = lcol * gw;
+                float lx0 = padL + lcol * gw;
                 float lx1 = lx0 + gw;
-                float ly1 = (lrow + 1) * gh;
+                float ly1 = padT + (lrow + 1) * gh;
                 float ly0 = ly1 - ulH;
                 _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                 _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -215,9 +221,9 @@ static BOOL cellIsSelected(int row, int col) {
                 float lr = 0.4f, lg = 0.7f, lb = 1.0f;
                 for (int c = dStart; c <= dEnd && c < cols; c++) {
                     if (bgVertCount + 6 > _metalBufCapBg) break;
-                    float lx0 = c * gw;
+                    float lx0 = padL + c * gw;
                     float lx1 = lx0 + gw;
-                    float ly1 = (dRow + 1) * gh;
+                    float ly1 = padT + (dRow + 1) * gh;
                     float ly0 = ly1 - ulH;
                     _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                     _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -248,8 +254,8 @@ static BOOL cellIsSelected(int row, int col) {
                 }
                 for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                     if (bgVertCount + 6 > _metalBufCapBg) break;
-                    float lx0 = cc * gw, lx1 = lx0 + gw;
-                    float ly0 = m.row * gh, ly1 = ly0 + ulH;
+                    float lx0 = padL + cc * gw, lx1 = lx0 + gw;
+                    float ly0 = padT + m.row * gh, ly1 = ly0 + ulH;
                     _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
@@ -270,8 +276,8 @@ static BOOL cellIsSelected(int row, int col) {
 
                 int row = i / cols;
                 int col = i % cols;
-                float x0 = col * gw;
-                float y0 = row * gh;
+                float x0 = padL + col * gw;
+                float y0 = padT + row * gh;
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
 
@@ -339,7 +345,15 @@ static BOOL cellIsSelected(int row, int col) {
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         if (!rpd) return;
 
-        rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
+        float a = g_background_opacity;
+        if (a >= 1.0f) {
+            rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.118f, 0.118f, 0.141f, 1.0f);
+        } else {
+            // Clear to transparent so cell bg quads are the sole source of
+            // opacity. Stacking a premultiplied clear on top of alpha quads
+            // would drive the framebuffer alpha toward 1, defeating compositing.
+            rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);
+        }
 
         id<MTLRenderCommandEncoder> enc =
             [cmdBuf renderCommandEncoderWithDescriptor:rpd];

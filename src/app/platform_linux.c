@@ -226,7 +226,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     linux_set_error_callback();
     if (!glfwInit()) {
-        fprintf(stderr, "[attyx] failed to initialize GLFW\n");
+        ATTYX_LOG_ERR("platform", "failed to initialize GLFW");
         return;
     }
 
@@ -243,7 +243,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Initialize FreeType
     FT_Library ft_lib;
     if (FT_Init_FreeType(&ft_lib) != 0) {
-        fprintf(stderr, "[attyx] FreeType init failed\n");
+        ATTYX_LOG_ERR("platform", "FreeType init failed");
         glfwTerminate();
         return;
     }
@@ -260,12 +260,19 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     glfwDestroyWindow(tmpWin);
 
     // Create the real window
-    int winW = (int)(cols * g_cell_px_w / xscale);
-    int winH = (int)(rows * g_cell_px_h / yscale);
+    int winW = (int)(cols * g_cell_px_w / xscale) + g_padding_left + g_padding_right;
+    int winH = (int)(rows * g_cell_px_h / yscale) + g_padding_top  + g_padding_bottom;
+
+    if (g_background_opacity < 1.0f) {
+        glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    }
+    if (!g_window_decorations) {
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    }
 
     g_window = glfwCreateWindow(winW, winH, "Attyx", NULL, NULL);
     if (!g_window) {
-        fprintf(stderr, "[attyx] failed to create window\n");
+        ATTYX_LOG_ERR("platform", "failed to create window");
         FT_Done_Face(g_gc.ft_face);
         FT_Done_FreeType(ft_lib);
         glfwTerminate();

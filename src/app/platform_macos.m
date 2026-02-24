@@ -239,14 +239,17 @@ NSString* const kShaderSource =
     g_cell_pt_w = gc.glyph_w / gc.scale;
     g_cell_pt_h = gc.glyph_h / gc.scale;
 
-    CGFloat winW = g_cols * g_cell_pt_w;
-    CGFloat winH = g_rows * g_cell_pt_h;
+    CGFloat winW = g_cols * g_cell_pt_w + g_padding_left + g_padding_right;
+    CGFloat winH = g_rows * g_cell_pt_h + g_padding_top  + g_padding_bottom;
 
     NSRect frame = NSMakeRect(200, 200, winW, winH);
     NSUInteger mask = NSWindowStyleMaskTitled
                     | NSWindowStyleMaskClosable
                     | NSWindowStyleMaskMiniaturizable
                     | NSWindowStyleMaskResizable;
+    if (!g_window_decorations) {
+        mask |= NSWindowStyleMaskFullSizeContentView;
+    }
 
     _window = [[NSWindow alloc] initWithContentRect:frame
                                           styleMask:mask
@@ -256,11 +259,24 @@ NSString* const kShaderSource =
     [_window setDelegate:self];
     [_window setAcceptsMouseMovedEvents:YES];
 
+    if (!g_window_decorations) {
+        [_window setTitlebarAppearsTransparent:YES];
+        [_window setTitleVisibility:NSWindowTitleHidden];
+        [[_window standardWindowButton:NSWindowCloseButton] setHidden:YES];
+        [[_window standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
+        [[_window standardWindowButton:NSWindowZoomButton] setHidden:YES];
+    }
+
     AttyxView* termView = [[AttyxView alloc] initWithFrame:frame device:device];
     termView.layer.contentsScale = scaleFactor;
     termView.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
     ((CAMetalLayer*)termView.layer).presentsWithTransaction = YES;
-    termView.clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
+    float _opac = g_background_opacity;
+    if (_opac >= 1.0f) {
+        termView.clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
+    } else {
+        termView.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    }
     termView.preferredFramesPerSecond = 60;
 
     _renderer = [[AttyxRenderer alloc] initWithDevice:device
@@ -268,9 +284,31 @@ NSString* const kShaderSource =
                                            glyphCache:gc];
     termView.delegate = _renderer;
 
-    [_window setContentView:termView];
+    BOOL transparent = (g_background_opacity < 1.0f);
+    BOOL blurEnabled = transparent && (g_background_blur > 0);
+
+    if (transparent) {
+        [_window setOpaque:NO];
+        [_window setBackgroundColor:[NSColor clearColor]];
+        ((CAMetalLayer*)termView.layer).opaque = NO;
+    }
+
+    if (blurEnabled) {
+        NSVisualEffectView* blurView = [[NSVisualEffectView alloc] initWithFrame:frame];
+        blurView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        blurView.material     = NSVisualEffectMaterialDark;
+        blurView.state        = NSVisualEffectStateActive;
+        blurView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        termView.frame = blurView.bounds;  // origin must be (0,0) in parent coords
+        termView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [blurView addSubview:termView];
+        [_window setContentView:blurView];
+        [_window makeFirstResponder:termView];
+    } else {
+        [_window setContentView:termView];
+        [_window makeFirstResponder:termView];
+    }
     [_window makeKeyAndOrderFront:nil];
-    [_window makeFirstResponder:termView];
     [NSApp activateIgnoringOtherApps:YES];
 
     if (g_icon_png_len > 0) {
@@ -304,15 +342,15 @@ NSString* const kShaderSource =
     NSRect frameRect = NSMakeRect(0, 0, frameSize.width, frameSize.height);
     NSRect contentRect = [sender contentRectForFrameRect:frameRect];
 
-    int snappedCols = (int)(contentRect.size.width  / g_cell_pt_w);
-    int snappedRows = (int)(contentRect.size.height / g_cell_pt_h);
+    int snappedCols = (int)((contentRect.size.width  - g_padding_left - g_padding_right)  / g_cell_pt_w);
+    int snappedRows = (int)((contentRect.size.height - g_padding_top  - g_padding_bottom) / g_cell_pt_h);
     if (snappedCols < 1) snappedCols = 1;
     if (snappedRows < 1) snappedRows = 1;
     if (snappedCols > ATTYX_MAX_COLS) snappedCols = ATTYX_MAX_COLS;
     if (snappedRows > ATTYX_MAX_ROWS) snappedRows = ATTYX_MAX_ROWS;
 
-    contentRect.size.width  = snappedCols * g_cell_pt_w;
-    contentRect.size.height = snappedRows * g_cell_pt_h;
+    contentRect.size.width  = snappedCols * g_cell_pt_w + g_padding_left + g_padding_right;
+    contentRect.size.height = snappedRows * g_cell_pt_h + g_padding_top  + g_padding_bottom;
 
     NSRect snappedFrame = [sender frameRectForContentRect:contentRect];
     return snappedFrame.size;

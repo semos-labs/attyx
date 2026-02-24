@@ -165,4 +165,31 @@ extern volatile int g_needs_font_rebuild;
 extern const uint8_t* g_icon_png;
 extern int            g_icon_png_len;
 
+// ---------------------------------------------------------------------------
+// Background transparency and blur (written by Zig at startup)
+// ---------------------------------------------------------------------------
+
+extern volatile float g_background_opacity; // 0.0 = transparent, 1.0 = opaque
+extern volatile int   g_background_blur;    // >0 = blur enabled (macOS: NSVisualEffectView)
+extern volatile int   g_window_decorations; // 1 = show title bar, 0 = hide title bar
+
+// Window padding in logical pixels (written by Zig at startup)
+extern volatile int g_padding_left;
+extern volatile int g_padding_right;
+extern volatile int g_padding_top;
+extern volatile int g_padding_bottom;
+
+// ---------------------------------------------------------------------------
+// Logging bridge (implemented in ui2.zig / main.zig stub)
+// ---------------------------------------------------------------------------
+
+// Levels: 0=err, 1=warn, 2=info, 3=debug, 4=trace
+void attyx_log(int level, const char* scope, const char* msg);
+
+#define ATTYX_LOG_ERR(scope, fmt, ...)   do { char _lb[1024]; snprintf(_lb, sizeof(_lb), fmt, ##__VA_ARGS__); attyx_log(0, scope, _lb); } while(0)
+#define ATTYX_LOG_WARN(scope, fmt, ...)  do { char _lb[1024]; snprintf(_lb, sizeof(_lb), fmt, ##__VA_ARGS__); attyx_log(1, scope, _lb); } while(0)
+#define ATTYX_LOG_INFO(scope, fmt, ...)  do { char _lb[1024]; snprintf(_lb, sizeof(_lb), fmt, ##__VA_ARGS__); attyx_log(2, scope, _lb); } while(0)
+#define ATTYX_LOG_DEBUG(scope, fmt, ...) do { char _lb[1024]; snprintf(_lb, sizeof(_lb), fmt, ##__VA_ARGS__); attyx_log(3, scope, _lb); } while(0)
+#define ATTYX_LOG_TRACE(scope, fmt, ...) do { char _lb[1024]; snprintf(_lb, sizeof(_lb), fmt, ##__VA_ARGS__); attyx_log(4, scope, _lb); } while(0)
+
 #endif

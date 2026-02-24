@@ -242,15 +242,15 @@ static inline int clampInt(int val, int lo, int hi) {
 void mouseToCell(double mx, double my, int* outCol, int* outRow) {
     float cellW = g_cell_px_w / g_content_scale;
     float cellH = g_cell_px_h / g_content_scale;
-    *outCol = clampInt((int)(mx / cellW), 0, g_cols - 1);
-    *outRow = clampInt((int)(my / cellH), 0, g_rows - 1);
+    *outCol = clampInt((int)((mx - g_padding_left) / cellW), 0, g_cols - 1);
+    *outRow = clampInt((int)((my - g_padding_top)  / cellH), 0, g_rows - 1);
 }
 
 void mouseToCell1(double mx, double my, int* outCol, int* outRow) {
     float cellW = g_cell_px_w / g_content_scale;
     float cellH = g_cell_px_h / g_content_scale;
-    *outCol = clampInt((int)(mx / cellW) + 1, 1, g_cols);
-    *outRow = clampInt((int)(my / cellH) + 1, 1, g_rows);
+    *outCol = clampInt((int)((mx - g_padding_left) / cellW) + 1, 1, g_cols);
+    *outRow = clampInt((int)((my - g_padding_top)  / cellH) + 1, 1, g_rows);
 }
 
 static void sendSgrMouse(int button, int col, int row, int press) {
@@ -383,18 +383,20 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         if (action == GLFW_PRESS && !g_mouse_tracking) {
-            // Compute menu position in grid pixel coords, clamped to viewport.
+            // Compute menu position in vertex/framebuffer pixel coords, clamped to content area.
             float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
             float padX = gw * 0.5f, padY = gh * 0.25f;
             float itemH = gh + padY * 2.0f;
             float menuW = padX * 2.0f + 13.0f * gw;
+            float winPadL = g_padding_left  * g_content_scale;
+            float winPadT = g_padding_top   * g_content_scale;
             float vpW = g_cols * gw, vpH = g_rows * gh;
             float px = (float)(mx * g_content_scale);
             float py = (float)(my * g_content_scale);
-            if (px + menuW > vpW) px = vpW - menuW;
-            if (py + itemH > vpH) py = vpH - itemH;
-            if (px < 0) px = 0;
-            if (py < 0) py = 0;
+            if (px + menuW > winPadL + vpW) px = winPadL + vpW - menuW;
+            if (py + itemH > winPadT + vpH) py = winPadT + vpH - itemH;
+            if (px < winPadL) px = winPadL;
+            if (py < winPadT) py = winPadT;
             g_ctx_menu_x = px;
             g_ctx_menu_y = py;
             g_ctx_menu_open = 1;
@@ -621,8 +623,10 @@ void doCopy(void) {
 static void framebufferSizeCallback(GLFWwindow* w, int width, int height) {
     (void)w;
     if (g_cell_px_w <= 0 || g_cell_px_h <= 0) return;
-    int new_cols = (int)(width / g_cell_px_w + 0.01f);
-    int new_rows = (int)(height / g_cell_px_h + 0.01f);
+    float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+    float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
+    int new_cols = (int)((width  - padPxW) / g_cell_px_w + 0.01f);
+    int new_rows = (int)((height - padPxH) / g_cell_px_h + 0.01f);
     if (new_cols < 1) new_cols = 1;
     if (new_rows < 1) new_rows = 1;
     if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
@@ -637,7 +641,7 @@ static void framebufferSizeCallback(GLFWwindow* w, int width, int height) {
 // ---------------------------------------------------------------------------
 
 static void errorCallback(int error, const char* description) {
-    fprintf(stderr, "[attyx] GLFW error %d: %s\n", error, description);
+    ATTYX_LOG_ERR("input", "GLFW error %d: %s", error, description);
 }
 
 // ---------------------------------------------------------------------------

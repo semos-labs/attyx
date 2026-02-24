@@ -213,13 +213,13 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     if (!fontPath) fontPath = findFontPath("DejaVu Sans Mono");
     if (!fontPath) fontPath = findFontPath("Courier");
     if (!fontPath) {
-        fprintf(stderr, "[attyx] no monospace font found\n");
+        ATTYX_LOG_ERR("glyph", "no monospace font found");
         exit(1);
     }
 
     FT_Face face;
     if (FT_New_Face(ft_lib, fontPath, 0, &face) != 0) {
-        fprintf(stderr, "[attyx] failed to load font: %s\n", fontPath);
+        ATTYX_LOG_ERR("glyph", "failed to load font: %s", fontPath);
         free(fontPath);
         exit(1);
     }

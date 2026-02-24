@@ -21,6 +21,10 @@
 | UI-6 | Window resize + grid snap | ✅ Done |
 | UI-7 | IME composition input (CJK, macOS) | ✅ Done |
 | UI-8 | Linux platform parity (GLFW + OpenGL + FreeType) | ✅ Done |
+| UI-9 | In-terminal search (incremental Ctrl+F search bar) | ✅ Done |
+| CFG-1 | Config reload at runtime (SIGUSR1 + Ctrl+Shift+R) | ✅ Done |
+| INF-1 | Logging + diagnostics (structured log, 5 levels, file output) | ✅ Done |
+| VIS-1 | Background transparency + blur | ✅ Done |
 
 ---
 
@@ -975,3 +979,166 @@ macOS Metal/Cocoa layer, using the same `bridge.h` shared-state interface.
 ```bash
 sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
 ```
+
+---
+
+## Milestone UI-9 — In-Terminal Search
+
+**Status:** ✅ Complete
+
+**Goal:** Add an incremental search bar that lets users search through the visible
+scrollback content without leaving the terminal.
+
+### What was built
+
+- **`macos_search.m`** — native macOS search bar rendered as a translucent overlay
+  (`NSVisualEffectView` with `behindWindow` blending) at the top of the terminal.
+- **`linux_render.c` search overlay** — GLSL-rendered search bar matching the macOS UI.
+- **Incremental search engine** (`SearchState` in `src/term/`) — finds all matches
+  across scrollback + live grid in O(n) on each query change.
+- **Navigation** — Cmd+G / Ctrl+G (next), Cmd+Shift+G / Ctrl+Shift+G (prev);
+  viewport scrolls to show the current match.
+- **Highlight rendering** — all visible matches highlighted in the bg quad pass
+  (semi-transparent amber); current match brighter.
+- **Search bridge globals** (`bridge.h`): `g_search_query`, `g_search_gen`,
+  `g_search_active`, `g_search_nav_delta`, `g_search_total`, `g_search_current`,
+  `g_search_vis[512]`, `g_search_cur_vis_*`.
+- **Search activation** — Ctrl+F opens the bar; Escape closes it and returns focus
+  to the terminal.
+
+---
+
+## Milestone CFG-1 — Config Reload at Runtime
+
+**Status:** ✅ Complete
+
+**Goal:** Allow config changes to take effect without restarting the terminal.
+
+### What was built
+
+- **`src/config/reload.zig`** — `loadReloadedConfig()`: re-reads the TOML file,
+  re-applies CLI flag overrides, returns a fresh `AppConfig`.
+- **SIGUSR1 handler** in `ui2.zig` — signal-safe handler sets `g_needs_reload_config = 1`.
+- **PTY thread reload loop** — checks `g_needs_reload_config` on every tick via
+  atomic read-and-reset; calls `doReloadConfig()` when set.
+- **Ctrl+Shift+R** hotkey on both platforms dispatches `attyx_trigger_config_reload()`.
+- **"Reload Config" menu item** on macOS (in the application menu).
+
+### Hot-reload matrix
+
+| Setting | Behavior |
+|---------|----------|
+| `cursor.shape`, `cursor.blink` | Applied immediately |
+| `scrollback.lines` | Applied immediately via `scrollback.reallocate()` |
+| `font.family`, `font.size`, `cell_width`, `cell_height` | Sets `g_needs_font_rebuild`; render thread rebuilds glyph cache and snaps window size |
+| `background.opacity`, `background.blur` | Requires restart (set at window creation) |
+| `logging.*` | Requires restart (logger initialized once in `main.zig`) |
+
+### Files modified
+
+- `src/config/reload.zig` (new)
+- `src/app/ui2.zig` — SIGUSR1 handler, reload loop, `doReloadConfig()`
+- `src/app/bridge.h` — `g_needs_reload_config`, `attyx_trigger_config_reload()`
+- `src/app/platform_macos.m` — Ctrl+Shift+R key, "Reload Config" menu item
+- `src/app/platform_linux.c` — Ctrl+Shift+R key
+
+---
+
+## Milestone INF-1 — Logging + Diagnostics
+
+**Status:** ✅ Complete
+
+**Goal:** Replace ad-hoc `fprintf(stderr, ...)` and `std.debug.print` calls with a
+structured, levelled logging system that writes to stderr and optionally to a file.
+
+### What was built
+
+**`src/logging/log.zig`** — core logger:
+
+- Five-level enum: `err`, `warn`, `info`, `debug`, `trace`.
+- `Logger` struct: mutex-guarded write to stderr + optional log file.
+  Format: `HH:MM:SS.mmm [LVL] [scope] message`.
+- Global `log.global` instance; initialized in `main.zig` from config before threads start.
+- `stdLogFn` — hooks `std_options.logFn`, routing `std.log.*` through the global logger.
+
+**`src/logging/diag.zig`** — diagnostics:
+
+- `ThroughputWindow` — rolling counter; reports PTY bytes/sec at debug level every 2 s.
+  Short-circuits to a no-op when the active level is above `debug`.
+- Slow drain detector — PTY thread logs at debug if a drain iteration exceeds 16 ms.
+
+**C bridge:**
+
+- `attyx_log(level, scope, msg)` — exported from `ui2.zig`, called by platform C/ObjC code.
+- `ATTYX_LOG_ERR/WARN/INFO/DEBUG/TRACE(scope, fmt, ...)` macros in `bridge.h` —
+  format into a 1 KB stack buffer, then call `attyx_log`.
+
+**Config integration:**
+
+- `[logging] level` and `[logging] file` in TOML.
+- `--log-level` and `--log-file` CLI flags.
+- `AppConfig.log_level` / `AppConfig.log_file` stored as owned strings, freed in `deinit()`.
+
+### Files modified / created
+
+- `src/logging/log.zig` (new)
+- `src/logging/diag.zig` (new)
+- `src/config/config.zig` — `log_level`, `log_file` fields + `[logging]` TOML parsing
+- `src/config/cli.zig` — `--log-level`, `--log-file` flags
+- `src/main.zig` — logger init + `std_options.logFn` hook
+- `src/app/ui2.zig` — `attyx_log` export, `ThroughputWindow`, slow drain logging
+- `src/app/bridge.h` — `attyx_log` declaration + `ATTYX_LOG_*` macros
+- `src/app/platform_macos.m`, `macos_renderer.m`, `platform_linux.c`,
+  `linux_glyph.c`, `linux_input.c`, `linux_render_util.c` — replaced all
+  `fprintf(stderr, ...)` calls with `ATTYX_LOG_*` macros
+
+---
+
+## Milestone VIS-1 — Background Transparency + Blur
+
+**Status:** ✅ Complete
+
+**Goal:** Allow users to configure a transparent terminal background with optional
+compositor blur, controlled via config and CLI flags.
+
+### What was built
+
+**Config:**
+
+- `background_opacity: f32 = 1.0` — window opacity (0.0 fully transparent, 1.0 fully opaque).
+- `background_blur: u16 = 30` — blur radius; only has effect when `opacity < 1.0`.
+- TOML `[background]` section; `--background-opacity` and `--background-blur` CLI flags.
+
+**macOS (`platform_macos.m`):**
+
+- When `opacity < 1.0`: `[window setOpaque:NO]`, `clearColor` alpha = opacity,
+  `CAMetalLayer.opaque = NO`.
+- When `opacity < 1.0 && blur > 0`: wraps `termView` in `NSVisualEffectView`
+  (blending mode `behindWindow`, material `dark`) — same compositor blur API used
+  by the search bar.
+- `clearColor` is pre-multiplied: `MTLClearColorMake(r*a, g*a, b*a, a)`.
+
+**macOS renderer (`macos_renderer_draw.m`):**
+
+- Cell background quads use `g_background_opacity` as the alpha channel per vertex.
+- Cursor quads remain fully opaque (`a = 1`) — cursor is a UI element, not background.
+
+**Linux (`platform_linux.c` + `linux_render.c`):**
+
+- `GLFW_TRANSPARENT_FRAMEBUFFER` hint set before `glfwCreateWindow` when `opacity < 1`.
+- `glClearColor` uses pre-multiplied alpha.
+- Cell bg vertices use `g_background_opacity` as alpha.
+- Blur is accepted in config but has no renderer-side effect on Linux
+  (compositor-dependent: KDE Plasma, etc.).
+
+**Bridge globals (`bridge.h`, `ui2.zig`):**
+
+- `g_background_opacity` (f32) and `g_background_blur` (i32) — exported from Zig,
+  declared `extern volatile` in C, written at startup before `attyx_run()`.
+
+### Platform behavior
+
+| Platform | Transparency | Blur |
+|----------|-------------|------|
+| macOS | `CAMetalLayer.opaque = NO` + alpha in clear/vertex | `NSVisualEffectView` (system compositor) |
+| Linux | `GLFW_TRANSPARENT_FRAMEBUFFER` | Compositor-dependent (no renderer effect) |

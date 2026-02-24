@@ -95,6 +95,52 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.cursor_blink = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             result.config.program = requireArg(args, &i, "--shell");
+        } else if (std.mem.eql(u8, arg, "--background-opacity")) {
+            const val = requireArg(args, &i, "--background-opacity");
+            const raw = std.fmt.parseFloat(f32, val) catch fatal("invalid --background-opacity value");
+            if (raw < 0.0 or raw > 1.0) fatal("--background-opacity must be between 0.0 and 1.0");
+            result.config.background_opacity = raw;
+        } else if (std.mem.eql(u8, arg, "--background-blur")) {
+            const val = requireArg(args, &i, "--background-blur");
+            result.config.background_blur = std.fmt.parseInt(u16, val, 10) catch
+                fatal("invalid --background-blur value");
+        } else if (std.mem.eql(u8, arg, "--decorations")) {
+            result.config.window_decorations = true;
+        } else if (std.mem.eql(u8, arg, "--no-decorations")) {
+            result.config.window_decorations = false;
+        } else if (std.mem.eql(u8, arg, "--padding")) {
+            const val = requireArg(args, &i, "--padding");
+            const p = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding value");
+            result.config.window_padding_left   = p;
+            result.config.window_padding_right  = p;
+            result.config.window_padding_top    = p;
+            result.config.window_padding_bottom = p;
+        } else if (std.mem.eql(u8, arg, "--padding-x")) {
+            const val = requireArg(args, &i, "--padding-x");
+            const p = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-x value");
+            result.config.window_padding_left  = p;
+            result.config.window_padding_right = p;
+        } else if (std.mem.eql(u8, arg, "--padding-y")) {
+            const val = requireArg(args, &i, "--padding-y");
+            const p = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-y value");
+            result.config.window_padding_top    = p;
+            result.config.window_padding_bottom = p;
+        } else if (std.mem.eql(u8, arg, "--padding-left")) {
+            const val = requireArg(args, &i, "--padding-left");
+            result.config.window_padding_left = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-left value");
+        } else if (std.mem.eql(u8, arg, "--padding-right")) {
+            const val = requireArg(args, &i, "--padding-right");
+            result.config.window_padding_right = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-right value");
+        } else if (std.mem.eql(u8, arg, "--padding-top")) {
+            const val = requireArg(args, &i, "--padding-top");
+            result.config.window_padding_top = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-top value");
+        } else if (std.mem.eql(u8, arg, "--padding-bottom")) {
+            const val = requireArg(args, &i, "--padding-bottom");
+            result.config.window_padding_bottom = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding-bottom value");
+        } else if (std.mem.eql(u8, arg, "--log-level")) {
+            result.config.log_level = requireArg(args, &i, "--log-level");
+        } else if (std.mem.eql(u8, arg, "--log-file")) {
+            result.config.log_file = requireArg(args, &i, "--log-file");
         } else if (std.mem.eql(u8, arg, "--cmd")) {
             result.config.argv = @ptrCast(args[i + 1 ..]);
             break;
@@ -158,6 +204,66 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         } else if (std.mem.eql(u8, arg, "--shell")) {
             i += 1;
             if (i < args.len) config.program = args[i];
+        } else if (std.mem.eql(u8, arg, "--background-opacity")) {
+            i += 1;
+            if (i < args.len)
+                config.background_opacity = std.fmt.parseFloat(f32, args[i]) catch continue;
+        } else if (std.mem.eql(u8, arg, "--background-blur")) {
+            i += 1;
+            if (i < args.len)
+                config.background_blur = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--decorations")) {
+            config.window_decorations = true;
+        } else if (std.mem.eql(u8, arg, "--no-decorations")) {
+            config.window_decorations = false;
+        } else if (std.mem.eql(u8, arg, "--padding")) {
+            i += 1;
+            if (i < args.len) {
+                if (std.fmt.parseInt(u16, args[i], 10)) |p| {
+                    config.window_padding_left   = p;
+                    config.window_padding_right  = p;
+                    config.window_padding_top    = p;
+                    config.window_padding_bottom = p;
+                } else |_| {}
+            }
+        } else if (std.mem.eql(u8, arg, "--padding-x")) {
+            i += 1;
+            if (i < args.len) {
+                if (std.fmt.parseInt(u16, args[i], 10)) |p| {
+                    config.window_padding_left  = p;
+                    config.window_padding_right = p;
+                } else |_| {}
+            }
+        } else if (std.mem.eql(u8, arg, "--padding-y")) {
+            i += 1;
+            if (i < args.len) {
+                if (std.fmt.parseInt(u16, args[i], 10)) |p| {
+                    config.window_padding_top    = p;
+                    config.window_padding_bottom = p;
+                } else |_| {}
+            }
+        } else if (std.mem.eql(u8, arg, "--padding-left")) {
+            i += 1;
+            if (i < args.len)
+                config.window_padding_left = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--padding-right")) {
+            i += 1;
+            if (i < args.len)
+                config.window_padding_right = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--padding-top")) {
+            i += 1;
+            if (i < args.len)
+                config.window_padding_top = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--padding-bottom")) {
+            i += 1;
+            if (i < args.len)
+                config.window_padding_bottom = std.fmt.parseInt(u16, args[i], 10) catch continue;
+        } else if (std.mem.eql(u8, arg, "--log-level")) {
+            i += 1;
+            if (i < args.len) config.log_level = args[i];
+        } else if (std.mem.eql(u8, arg, "--log-file")) {
+            i += 1;
+            if (i < args.len) config.log_file = args[i];
         } else if (std.mem.eql(u8, arg, "--cmd")) {
             config.argv = @ptrCast(args[i + 1 ..]);
             break;
@@ -165,7 +271,9 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
             std.mem.eql(u8, arg, "--no-config") or
             std.mem.eql(u8, arg, "--print-config") or
             std.mem.eql(u8, arg, "--help") or
-            std.mem.eql(u8, arg, "-h"))
+            std.mem.eql(u8, arg, "-h") or
+            std.mem.eql(u8, arg, "--decorations") or
+            std.mem.eql(u8, arg, "--no-decorations"))
         {
             if (std.mem.eql(u8, arg, "--config")) i += 1;
         }
@@ -196,6 +304,17 @@ pub fn printUsage() void {
         \\  --cursor-blink / --no-cursor-blink
         \\                             Enable/disable cursor blinking
         \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
+        \\  --background-opacity <f>   Background opacity 0.0-1.0 (default: 1.0)
+        \\  --background-blur <int>    Background blur radius when opacity < 1 (default: 30)
+        \\  --decorations / --no-decorations
+        \\                             Show/hide window title bar (default: shown)
+        \\  --padding <int>            Window padding on all sides (logical pixels)
+        \\  --padding-x <int>         Left + right padding
+        \\  --padding-y <int>         Top + bottom padding
+        \\  --padding-left/right/top/bottom <int>
+        \\                             Per-side padding
+        \\  --log-level <level>        Log level: err, warn, info, debug, trace (default: info)
+        \\  --log-file <path>          Append logs to file (default: stderr only)
         \\  --print-config             Print merged config and exit
         \\  --help, -h                 Show this help
         \\

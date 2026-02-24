@@ -165,15 +165,20 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 
     NSWindow* window = view.window;
     if (window) {
-        [window setContentSize:NSMakeSize(g_cols * g_cell_pt_w, g_rows * g_cell_pt_h)];
+        [window setContentSize:NSMakeSize(g_cols * g_cell_pt_w + g_padding_left + g_padding_right,
+                                          g_rows * g_cell_pt_h + g_padding_top  + g_padding_bottom)];
     }
 
     _fullRedrawNeeded = YES;
 }
 
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size {
-    int new_cols = (int)(size.width  / _glyphCache.glyph_w + 0.01f);
-    int new_rows = (int)(size.height / _glyphCache.glyph_h + 0.01f);
+    float padLpx = g_padding_left  * _glyphCache.scale;
+    float padRpx = g_padding_right * _glyphCache.scale;
+    float padTpx = g_padding_top   * _glyphCache.scale;
+    float padBpx = g_padding_bottom * _glyphCache.scale;
+    int new_cols = (int)((size.width  - padLpx - padRpx) / _glyphCache.glyph_w + 0.01f);
+    int new_rows = (int)((size.height - padTpx - padBpx) / _glyphCache.glyph_h + 0.01f);
     if (new_cols < 1) new_cols = 1;
     if (new_rows < 1) new_rows = 1;
     if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
@@ -192,7 +197,7 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
         double skipPct = _statsFrames > 0 ? 100.0 * _statsSkipped / _statsFrames : 0;
         double avgDirty = (_statsFrames - _statsSkipped) > 0
             ? (double)_statsDirtyRows / (_statsFrames - _statsSkipped) : 0;
-        fprintf(stderr, "[attyx] fps=%.0f skip=%.0f%% avg_dirty=%.1f rows\n",
+        ATTYX_LOG_DEBUG("renderer", "fps=%.0f skip=%.0f%% avg_dirty=%.1f rows",
                 fps, skipPct, avgDirty);
         _statsFrames = 0;
         _statsSkipped = 0;

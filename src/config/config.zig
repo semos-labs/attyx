@@ -83,9 +83,24 @@ pub const AppConfig = struct {
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,
 
+    // [background]
+    background_opacity: f32 = 1.0,
+    background_blur: u16 = 30,
+
+    // [window]
+    window_decorations: bool = true,
+    window_padding_left: u16 = 0,
+    window_padding_right: u16 = 0,
+    window_padding_top: u16 = 0,
+    window_padding_bottom: u16 = 0,
+
     // [program]
     program: ?[]const u8 = null,
     program_args: ?[]const []const u8 = null,
+
+    // [logging]
+    log_level: ?[]const u8 = null,
+    log_file: ?[]const u8 = null,
 
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
@@ -99,6 +114,8 @@ pub const AppConfig = struct {
     _owned_fallback_items: ?[]const []const u8 = null,
     _owned_program: ?[]const u8 = null,
     _owned_program_args: ?[]const []const u8 = null,
+    _owned_log_level: ?[]const u8 = null,
+    _owned_log_file: ?[]const u8 = null,
 
     pub fn deinit(self: *AppConfig) void {
         const alloc = self._allocator orelse return;
@@ -113,6 +130,8 @@ pub const AppConfig = struct {
             for (items) |item| alloc.free(item);
             alloc.free(items);
         }
+        if (self._owned_log_level) |s| alloc.free(s);
+        if (self._owned_log_file)  |s| alloc.free(s);
     }
 
     fn formatCellSize(cs: CellSize, buf: *[32]u8) []const u8 {
@@ -372,6 +391,108 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
         }
     }
 
+    // [background]
+    if (Lookup.get(root, "background", "opacity")) |v| {
+        const raw: f64 = if (v == .float) v.float
+            else if (v == .int) @floatFromInt(v.int)
+            else {
+                std.debug.print("error: {s}: background.opacity must be a number\n", .{path});
+                return error.ConfigValidationError;
+            };
+        if (raw < 0.0 or raw > 1.0) {
+            std.debug.print("error: {s}: background.opacity must be between 0.0 and 1.0\n", .{path});
+            return error.ConfigValidationError;
+        }
+        config.background_opacity = @floatCast(raw);
+    }
+    if (Lookup.get(root, "background", "blur")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: background.blur must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.background_blur = @intCast(v.int);
+        } else {
+            std.debug.print("error: {s}: background.blur must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
+    // [window]
+    if (Lookup.get(root, "window", "decorations")) |v| {
+        if (v == .bool) {
+            config.window_decorations = v.bool;
+        } else {
+            std.debug.print("error: {s}: window.decorations must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    // Padding shorthand: apply in increasing-specificity order so more-specific
+    // keys override less-specific ones regardless of file ordering.
+    if (Lookup.get(root, "window", "padding")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: window.padding must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            const p: u16 = @intCast(v.int);
+            config.window_padding_left   = p;
+            config.window_padding_right  = p;
+            config.window_padding_top    = p;
+            config.window_padding_bottom = p;
+        } else {
+            std.debug.print("error: {s}: window.padding must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "window", "padding_x")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: window.padding_x must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            const p: u16 = @intCast(v.int);
+            config.window_padding_left  = p;
+            config.window_padding_right = p;
+        } else {
+            std.debug.print("error: {s}: window.padding_x must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "window", "padding_y")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: window.padding_y must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            const p: u16 = @intCast(v.int);
+            config.window_padding_top    = p;
+            config.window_padding_bottom = p;
+        } else {
+            std.debug.print("error: {s}: window.padding_y must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    inline for (.{
+        .{ "padding_left",   &config.window_padding_left   },
+        .{ "padding_right",  &config.window_padding_right  },
+        .{ "padding_top",    &config.window_padding_top    },
+        .{ "padding_bottom", &config.window_padding_bottom },
+    }) |kv| {
+        if (Lookup.get(root, "window", kv[0])) |v| {
+            if (v == .int) {
+                if (v.int < 0) {
+                    std.debug.print("error: {s}: window.{s} must be >= 0\n", .{ path, kv[0] });
+                    return error.ConfigValidationError;
+                }
+                kv[1].* = @intCast(v.int);
+            } else {
+                std.debug.print("error: {s}: window.{s} must be an integer\n", .{ path, kv[0] });
+                return error.ConfigValidationError;
+            }
+        }
+    }
+
     // [program]
     if (Lookup.get(root, "program", "shell")) |v| {
         if (v == .string) {
@@ -405,6 +526,30 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
             config._owned_program_args = items;
         } else {
             std.debug.print("error: {s}: program.args must be an array of strings\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
+    // [logging]
+    if (Lookup.get(root, "logging", "level")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_log_level) |old| allocator.free(old);
+            config.log_level = dupe;
+            config._owned_log_level = dupe;
+        } else {
+            std.debug.print("error: {s}: logging.level must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "logging", "file")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_log_file) |old| allocator.free(old);
+            config.log_file = dupe;
+            config._owned_log_file = dupe;
+        } else {
+            std.debug.print("error: {s}: logging.file must be a string\n", .{path});
             return error.ConfigValidationError;
         }
     }

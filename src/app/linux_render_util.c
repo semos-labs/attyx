@@ -53,9 +53,9 @@ GLuint compileShader(GLenum type, const char* src) {
     GLint ok;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        char log[512];
-        glGetShaderInfoLog(s, sizeof(log), NULL, log);
-        fprintf(stderr, "[attyx] shader error: %s\n", log);
+        char gl_log[512];
+        glGetShaderInfoLog(s, sizeof(gl_log), NULL, gl_log);
+        ATTYX_LOG_ERR("render", "shader error: %s", gl_log);
     }
     return s;
 }
@@ -70,9 +70,9 @@ GLuint createProgram(const char* vertSrc, const char* fragSrc) {
     GLint ok;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char log[512];
-        glGetProgramInfoLog(prog, sizeof(log), NULL, log);
-        fprintf(stderr, "[attyx] link error: %s\n", log);
+        char gl_log[512];
+        glGetProgramInfoLog(prog, sizeof(gl_log), NULL, gl_log);
+        ATTYX_LOG_ERR("render", "link error: %s", gl_log);
     }
     glDeleteShader(vs);
     glDeleteShader(fs);

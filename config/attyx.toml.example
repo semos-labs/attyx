@@ -29,3 +29,34 @@
 [program]
 # shell = "/bin/zsh"   # default: $SHELL or /bin/sh
 # args = ["-l"]        # extra arguments passed to the shell
+
+[logging]
+# level = "info"       # "err" | "warn" | "info" | "debug" | "trace"
+# file = "/tmp/attyx.log"   # append logs to file in addition to stderr
+
+[background]
+# Window background opacity: 0.0 (fully transparent) to 1.0 (fully opaque).
+# Values < 1.0 enable composited transparency.
+# opacity = 1.0
+
+# Background blur radius. Only applies when opacity < 1.0.
+# On macOS: activates NSVisualEffectView (system compositor blur).
+# On Linux: accepted but blur is compositor-dependent (KDE Plasma, etc.).
+# blur = 30
+
+[window]
+# Show or hide the window title bar. Resize handles are preserved on macOS.
+# On Linux: removes all window decorations (title bar + borders);
+# resizing from edges depends on the compositor/window manager.
+# decorations = true
+
+# Padding between the window edge and the terminal grid (logical pixels).
+# Shorthands: padding sets all sides; padding_x = left+right; padding_y = top+bottom.
+# More-specific keys override less-specific ones.
+# padding = 0
+# padding_x = 0
+# padding_y = 0
+# padding_left = 0
+# padding_right = 0
+# padding_top = 0
+# padding_bottom = 0

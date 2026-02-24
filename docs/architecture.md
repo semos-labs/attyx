@@ -40,6 +40,10 @@ src/
   config/            Configuration loading + CLI parsing
     config.zig         AppConfig struct, TOML file parsing, CellSize type
     cli.zig            CLI argument parser + usage text
+    reload.zig         Config reload helper (loadReloadedConfig)
+  logging/           Structured logging + diagnostics
+    log.zig            Logger (5 levels, file output, C bridge hook, stdLogFn)
+    diag.zig           PTY throughput window + slow drain detector
   app/               PTY + OS integration
     pty.zig            POSIX PTY bridge (spawn, read, write, resize)
     ui2.zig            Terminal orchestrator (PTY thread + GPU window, macOS/Linux)
@@ -89,6 +93,10 @@ Central struct holding all configuration values. Key fields:
 | `[reflow]` | `enabled` | bool | `true` | Reflow on resize |
 | `[cursor]` | `shape` | enum | `block` | Cursor shape |
 | | `blink` | bool | `true` | Cursor blinking |
+| `[background]` | `opacity` | f32 | `1.0` | Window opacity (0.0–1.0) |
+| | `blur` | u16 | `30` | Blur radius (macOS compositor blur when opacity < 1) |
+| `[logging]` | `level` | string | `"info"` | Log level (err/warn/info/debug/trace) |
+| | `file` | string | none | Append log output to file |
 
 ### CellSize
 
@@ -105,6 +113,13 @@ In TOML: `cell_width = 10` (pixels) or `cell_width = "110%"` (percent).
 In CLI: `--cell-width 10` or `--cell-width 110%`.
 
 Default is `"100%"` — use the font-derived cell size as-is.
+
+### Config reload (`config/reload.zig`)
+
+`loadReloadedConfig()` re-reads the TOML file and re-applies CLI overrides. Called
+by the PTY thread when `g_needs_reload_config` is set (via SIGUSR1 or Ctrl+Shift+R).
+Hot-reloadable settings: cursor shape/blink, scrollback lines, font family/size/cell
+dimensions. Background opacity/blur and logging settings take effect only at startup.
 
 ### Bridge encoding
 
@@ -307,6 +322,9 @@ PTY thread (Zig):        poll PTY fd (16ms) ──▸ read bytes ──▸ engin
 - `g_cell_gen` — seqlock counter to detect torn frames.
 - `g_ime_*` — IME composition state for preedit overlay.
 - `g_sel_*` — mouse selection state.
+- `g_background_opacity` / `g_background_blur` — written by Zig at startup; read by renderer for per-cell alpha and clear color.
+- `g_needs_reload_config` — atomic flag; set by SIGUSR1 or Ctrl+Shift+R; read-and-reset by PTY thread.
+- `g_needs_font_rebuild` — set by PTY thread after font config change; read-and-reset by render thread.
 
 **C bridge (`bridge.h`):** Defines `AttyxCell` struct (character + fg/bg RGB + flags)
 and functions: `attyx_run`, `attyx_set_cursor`, `attyx_request_quit`,
@@ -332,6 +350,38 @@ and functions: `attyx_run`, `attyx_set_cursor`, `attyx_request_quit`,
 
 **Color resolution:** `render/color.zig` maps `Color` enum variants (default, ansi,
 palette, rgb) to concrete RGB values using a hardcoded xterm-like palette.
+
+### Logging (`logging/log.zig`, `logging/diag.zig`)
+
+Structured logger with five levels: `err`, `warn`, `info`, `debug`, `trace`.
+
+**`Logger`** — mutex-guarded writer that formats `HH:MM:SS.mmm [LVL] [scope] message`
+and emits to stderr and optionally to a log file. The global instance `log.global`
+is initialized once in `main.zig` from config before the PTY thread starts.
+
+**`stdLogFn`** — hooks into `std_options.logFn`, routing all `std.log.*` calls
+through the global logger.
+
+**C bridge (`attyx_log` + `ATTYX_LOG_*` macros)** — platform C/ObjC code calls
+`attyx_log(level, scope, msg)` (implemented in `ui2.zig`). Macros format into a
+stack-local buffer to avoid heap allocation.
+
+**`ThroughputWindow`** (`logging/diag.zig`) — rolling byte-rate counter for the
+PTY drain loop. Reports bytes/sec at debug level every 2 seconds. The counter is
+a no-op if the active log level is above `debug`.
+
+**Slow drain detector** — the PTY thread logs at debug level if a single drain
+iteration exceeds 16 ms (useful for identifying high-throughput stalls).
+
+Log levels (controlled by `--log-level` or `[logging] level` in config):
+
+| Level | Label | Use |
+|-------|-------|-----|
+| `err` | `ERR` | Fatal or unrecoverable errors |
+| `warn` | `WRN` | Degraded operation, recoverable |
+| `info` | `INF` | Startup, config reload, lifecycle events (default) |
+| `debug` | `DBG` | PTY throughput, slow drains, renderer stats |
+| `trace` | `TRC` | Per-frame and per-byte detail |
 
 ### Keyboard Input
 

@@ -2,6 +2,11 @@ const std = @import("std");
 const cli = @import("config/cli.zig");
 const config_mod = @import("config/config.zig");
 const ui2 = @import("app/ui2.zig");
+const logging = @import("logging/log.zig");
+
+pub const std_options: std.Options = .{
+    .logFn = logging.stdLogFn,
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -33,6 +38,16 @@ pub fn main() !void {
 
     var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
     defer merged.deinit();
+
+    const log_level = if (merged.log_level) |s|
+        logging.Level.fromString(s) orelse blk: {
+            std.debug.print("warning: unknown log level '{s}', using 'info'\n", .{s});
+            break :blk logging.Level.info;
+        }
+    else
+        logging.Level.info;
+    logging.init(log_level, merged.log_file);
+    defer logging.deinit();
 
     try ui2.run(merged, result.no_config, result.config_path, args);
 }
