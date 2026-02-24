@@ -285,7 +285,7 @@ void linux_rebuild_font(void);
 // Draw frame (linux_render.c)
 // ---------------------------------------------------------------------------
 
-void drawFrame(void);
+int drawFrame(void);
 
 // ---------------------------------------------------------------------------
 // Renderer init / cleanup (linux_render.c)
