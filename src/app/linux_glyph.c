@@ -498,7 +498,15 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
 
     float ascender = (float)(face->size->metrics.ascender >> 6);
     float naturalH = (float)(face->size->metrics.height >> 6);
-    float naturalW = (float)(face->size->metrics.max_advance >> 6);
+
+    // Measure actual monospace cell width from a reference ASCII glyph.
+    // max_advance includes double-width CJK glyphs and can be 2x too wide.
+    float naturalW;
+    if (FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0) {
+        naturalW = (float)(face->glyph->advance.x >> 6);
+    } else {
+        naturalW = (float)(face->size->metrics.max_advance >> 6);
+    }
     float gh = naturalH;
     float gw = naturalW;
 
