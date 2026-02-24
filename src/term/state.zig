@@ -74,6 +74,9 @@ pub const TerminalState = struct {
     cursor_keys_app: bool = false,
     cursor_visible: bool = true,
     cursor_shape: actions_mod.CursorShape = .blinking_block,
+    /// DEC private mode 2026 — Synchronized Output Mode.
+    /// When true the renderer should defer painting until the mode is reset.
+    synchronized_output: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
@@ -116,7 +119,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode => {},
             else => {
                 self.wrap_next = false;
             },
@@ -212,6 +215,7 @@ pub const TerminalState = struct {
             .cursor_position_report => self.respondCursorPosition(),
             .device_attributes => self.respondDeviceAttributes(),
             .secondary_device_attributes => self.respondSecondaryDeviceAttributes(),
+            .query_dec_private_mode => |mode| self.respondDecRequestMode(mode),
             .set_cursor_shape => |shape| {
                 self.cursor_shape = shape;
             },
@@ -226,6 +230,32 @@ pub const TerminalState = struct {
 
     // -- Text output -------------------------------------------------------
 
+    /// Returns 2 for Unicode characters with East Asian Width W or F (wide),
+    /// 1 for everything else. Mirrors the canBeWide() logic in the glyph caches.
+    fn charDisplayWidth(char: u21) u2 {
+        const cp: u32 = char;
+        if (cp < 0x1100) return 1;
+        if (cp <= 0x115F) return 2;  // Hangul Jamo
+        if (cp == 0x2329 or cp == 0x232A) return 2;
+        if (cp >= 0x2E80 and cp <= 0x303E) return 2;
+        if (cp >= 0x3041 and cp <= 0x33FF) return 2;
+        if (cp >= 0x3400 and cp <= 0x4DBF) return 2;
+        if (cp >= 0x4E00 and cp <= 0x9FFF) return 2;
+        if (cp >= 0xA000 and cp <= 0xA4CF) return 2;
+        if (cp >= 0xA960 and cp <= 0xA97F) return 2;
+        if (cp >= 0xAC00 and cp <= 0xD7AF) return 2;
+        if (cp >= 0xF900 and cp <= 0xFAFF) return 2;
+        if (cp >= 0xFE10 and cp <= 0xFE6F) return 2;
+        if (cp >= 0xFF01 and cp <= 0xFF60) return 2;
+        if (cp >= 0xFFE0 and cp <= 0xFFE6) return 2;
+        if (cp >= 0x1B000 and cp <= 0x1B2FF) return 2;
+        if (cp >= 0x1F300 and cp <= 0x1F64F) return 2;
+        if (cp >= 0x1F900 and cp <= 0x1FAFF) return 2;
+        if (cp >= 0x20000 and cp <= 0x2FFFD) return 2;
+        if (cp >= 0x30000 and cp <= 0x3FFFD) return 2;
+        return 1;
+    }
+
     fn printChar(self: *TerminalState, char: u21) void {
         if (self.wrap_next) {
             if (self.auto_wrap) {
@@ -236,6 +266,8 @@ pub const TerminalState = struct {
             self.wrap_next = false;
         }
 
+        const width = charDisplayWidth(char);
+
         self.grid.setCell(self.cursor.row, self.cursor.col, .{
             .char = char,
             .style = self.pen,
@@ -243,10 +275,22 @@ pub const TerminalState = struct {
         });
         self.dirty.mark(self.cursor.row);
 
-        if (self.cursor.col >= self.grid.cols - 1) {
+        if (width == 2 and self.cursor.col + 1 < self.grid.cols) {
+            // Place a blank continuation cell at col+1 to hold the second column
+            // of the wide glyph. This prevents subsequent narrow characters from
+            // overwriting the right half of the rendered 2-cell quad.
+            self.grid.setCell(self.cursor.row, self.cursor.col + 1, .{
+                .char = ' ',
+                .style = self.pen,
+                .link_id = self.pen_link_id,
+            });
+        }
+
+        const advance: usize = width;
+        if (self.cursor.col + advance >= self.grid.cols) {
             self.wrap_next = self.auto_wrap;
         } else {
-            self.cursor.col += 1;
+            self.cursor.col += advance;
         }
     }
 
@@ -356,6 +400,7 @@ pub const TerminalState = struct {
                     1003 => self.mouse_tracking = .any_event,
                     1006 => self.mouse_sgr = true,
                     2004 => self.bracketed_paste = true,
+                    2026 => self.synchronized_output = true,
                     else => {},
                 }
             } else {
@@ -378,6 +423,7 @@ pub const TerminalState = struct {
                     },
                     1006 => self.mouse_sgr = false,
                     2004 => self.bracketed_paste = false,
+                    2026 => self.synchronized_output = false,
                     else => {},
                 }
             }
@@ -498,6 +544,17 @@ pub const TerminalState = struct {
     fn respondSecondaryDeviceAttributes(self: *TerminalState) void {
         // VT220-like: type 0, version 10, ROM version 1
         self.appendResponse("\x1b[>0;10;1c");
+    }
+
+    fn respondDecRequestMode(self: *TerminalState, mode: u16) void {
+        // DECRQM response: ESC[?Ps;Pm$y  where Pm = 0 not recognized, 1 set, 2 reset
+        const pm: u8 = switch (mode) {
+            2026 => if (self.synchronized_output) 1 else 2,
+            else => 0,
+        };
+        var buf: [32]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, pm }) catch return;
+        self.appendResponse(resp);
     }
 
     /// Drain the response buffer. Returns the pending response bytes and

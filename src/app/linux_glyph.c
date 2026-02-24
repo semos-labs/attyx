@@ -28,6 +28,40 @@ char* findFontPath(const char* family) {
     return path;
 }
 
+// Fixed reference cell dimensions (in logical points) captured on the first
+// createGlyphCache call. Percent-mode cell sizes are anchored to these values
+// so that changing the font size does not affect the configured cell height/width.
+static float s_ref_h_pt = 0.0f;
+static float s_ref_w_pt = 0.0f;
+
+/// Returns true if `cp` belongs to a Unicode range whose East Asian Width
+/// property is W (Wide) or F (Fullwidth) — i.e. it occupies 2 terminal cells.
+/// Characters with EAW = N / Na / H must return false even if the font
+/// happens to draw them wider than one cell (e.g. regional indicators).
+static bool canBeWide(uint32_t cp) {
+    if (cp < 0x1100) return false;
+    if (cp <= 0x115F) return true;   // Hangul Jamo
+    if (cp == 0x2329 || cp == 0x232A) return true;
+    if (cp >= 0x2E80 && cp <= 0x303E) return true;  // CJK Radicals, Kangxi, Bopomofo
+    if (cp >= 0x3041 && cp <= 0x33FF) return true;  // Kana, CJK symbols, Compatibility
+    if (cp >= 0x3400 && cp <= 0x4DBF) return true;  // CJK Unified Ext-A
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;  // CJK Unified
+    if (cp >= 0xA000 && cp <= 0xA4CF) return true;  // Yi
+    if (cp >= 0xA960 && cp <= 0xA97F) return true;  // Hangul Jamo Ext-A
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;  // Hangul Syllables
+    if (cp >= 0xE000 && cp <= 0xF8FF) return true;  // PUA (Nerd Font icons)
+    if (cp >= 0xF900 && cp <= 0xFAFF) return true;  // CJK Compatibility Ideographs
+    if (cp >= 0xFE10 && cp <= 0xFE6F) return true;  // Vertical / Compat forms
+    if (cp >= 0xFF01 && cp <= 0xFF60) return true;  // Fullwidth ASCII
+    if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;  // Fullwidth signs
+    if (cp >= 0x1B000 && cp <= 0x1B2FF) return true; // Kana Supplement / Extended
+    if (cp >= 0x1F300 && cp <= 0x1F64F) return true; // Misc Symbols, Emoticons (NOT 1F1E0-1F1FF)
+    if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
+    if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
+    if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    return false;
+}
+
 // Like findFontPath but without the monospace spacing constraint.
 // Used for user-configured fallback fonts (e.g. symbol/icon fonts).
 static char* findFontPathAny(const char* family) {
@@ -155,8 +189,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         }
     }
 
-    // 2. If no glyph found, allocate a blank slot and return
-    if (gi == 0) {
+    // Block elements are drawn as geometry — no glyph needed.
+    bool isBlock = (cp >= 0x2580 && cp <= 0x259F);
+
+    // 2. If no glyph found and not a geometry-drawn block char, return blank slot.
+    if (gi == 0 && !isBlock) {
         if (face != gc->ft_face) FT_Done_Face(face);
         if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
         int blankSlot = gc->next_slot++;
@@ -175,9 +212,9 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     //    full size rather than being squished or clipped.
     bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
                     || (cp >= 0x2500 && cp <= 0x257F);
-    bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
+    // isBlock declared above (needed before the early-return check)
     bool wide = false;
-    if (!isPowerline && !isBlock) {
+    if (!isPowerline && !isBlock && canBeWide(cp)) {
         int adv_px   = (int)(face->glyph->advance.x >> 6);
         int ink_right = face->glyph->bitmap_left + (int)bmp->width;
         int src_w    = adv_px > ink_right ? adv_px : ink_right;
@@ -224,16 +261,89 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 pixels[dy * gw + dx] = bmp->buffer[src_row * bmp->pitch + src_col];
             }
         }
-    } else if (isBlock && bmp->width > 1 && bmp->rows > 1) {
-        float sx = (float)gw / (float)bmp->width;
-        float sy = (float)gh / (float)bmp->rows;
-        for (int dy = 0; dy < gh; dy++) {
-            int srcRow = (int)((float)dy / sy);
-            if (srcRow >= (int)bmp->rows) srcRow = (int)bmp->rows - 1;
-            for (int dx = 0; dx < gw; dx++) {
-                int srcCol = (int)((float)dx / sx);
-                if (srcCol >= (int)bmp->width) srcCol = (int)bmp->width - 1;
-                pixels[dy * gw + dx] = bmp->buffer[srcRow * bmp->pitch + srcCol];
+    } else if (isBlock) {
+        // Render block/quadrant elements as pure geometry — no font glyph needed.
+        // Pixel buffer is top-to-bottom: row 0 = top of cell, row gh-1 = bottom.
+        bool drawn = false;
+        if (cp >= 0x2581 && cp <= 0x2588) {
+            // LOWER ONE-EIGHTH .. FULL BLOCK (U+2581–U+2588)
+            int eighths = (int)(cp - 0x2580); // 1..8
+            int blockH  = (int)roundf((float)gh * eighths / 8.0f);
+            int y0 = gh - blockH;
+            for (int dy = y0; dy < gh; dy++)
+                for (int dx = 0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp == 0x2580) {
+            // UPPER HALF BLOCK
+            int blockH = (int)roundf((float)gh / 2.0f);
+            for (int dy = 0; dy < blockH; dy++)
+                for (int dx = 0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp >= 0x2589 && cp <= 0x258F) {
+            // LEFT SEVEN-EIGHTHS .. LEFT ONE-EIGHTH BLOCK (U+2589–U+258F)
+            int eighths = (int)(0x2590 - cp); // 7..1
+            int blockW  = (int)roundf((float)gw * eighths / 8.0f);
+            for (int dy = 0; dy < gh; dy++)
+                for (int dx = 0; dx < blockW; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp == 0x2590) {
+            // RIGHT HALF BLOCK
+            int blockW = (int)roundf((float)gw / 2.0f);
+            int x0 = gw - blockW;
+            for (int dy = 0; dy < gh; dy++)
+                for (int dx = x0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp == 0x2594) {
+            // UPPER ONE EIGHTH BLOCK
+            int blockH = (int)roundf((float)gh / 8.0f);
+            for (int dy = 0; dy < blockH; dy++)
+                for (int dx = 0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp == 0x2595) {
+            // RIGHT ONE EIGHTH BLOCK
+            int blockW = (int)roundf((float)gw / 8.0f);
+            int x0 = gw - blockW;
+            for (int dy = 0; dy < gh; dy++)
+                for (int dx = x0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = 255;
+            drawn = true;
+        } else if (cp >= 0x2596 && cp <= 0x259F) {
+            // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
+            static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};
+            int bits = quadBits[cp - 0x2596];
+            int hw = (int)roundf((float)gw / 2.0f);
+            int hh = (int)roundf((float)gh / 2.0f);
+            for (int dy = 0; dy < gh; dy++) {
+                int isTop = (dy < hh);
+                for (int dx = 0; dx < gw; dx++) {
+                    int isLeft = (dx < hw);
+                    int fill = 0;
+                    if ( isTop &&  isLeft && (bits & 1)) fill = 1; // UL
+                    if ( isTop && !isLeft && (bits & 2)) fill = 1; // UR
+                    if (!isTop &&  isLeft && (bits & 4)) fill = 1; // BL
+                    if (!isTop && !isLeft && (bits & 8)) fill = 1; // BR
+                    if (fill) pixels[dy * gw + dx] = 255;
+                }
+            }
+            drawn = true;
+        }
+        if (!drawn && bmp->width > 1 && bmp->rows > 1) {
+            // Shade chars (U+2591–U+2593) and other unhandled: bbox-scale glyph.
+            float sx = (float)gw / (float)bmp->width;
+            float sy = (float)gh / (float)bmp->rows;
+            for (int dy = 0; dy < gh; dy++) {
+                int srcRow = (int)((float)dy / sy);
+                if (srcRow >= (int)bmp->rows) srcRow = (int)bmp->rows - 1;
+                for (int dx = 0; dx < gw; dx++) {
+                    int srcCol = (int)((float)dx / sx);
+                    if (srcCol >= (int)bmp->width) srcCol = (int)bmp->width - 1;
+                    pixels[dy * gw + dx] = bmp->buffer[srcRow * bmp->pitch + srcCol];
+                }
             }
         }
     } else {
@@ -311,6 +421,11 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     float gh = naturalH;
     float gw = naturalW;
 
+    // Capture fixed reference dimensions (in logical points) on first call.
+    // Percent mode uses these so that cell size is independent of font size.
+    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / contentScale;
+    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / contentScale;
+
     // Apply cell size from config:
     //   0   → auto
     //   > 0 → fixed absolute pixel value
@@ -318,11 +433,11 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     if (g_cell_width > 0)
         gw = roundf((float)g_cell_width * contentScale);
     else if (g_cell_width < 0)
-        gw = roundf(gw * (float)(-g_cell_width) / 100.0f);
+        gw = roundf(s_ref_w_pt * contentScale * (float)(-g_cell_width) / 100.0f);
     if (g_cell_height > 0)
         gh = roundf((float)g_cell_height * contentScale);
     else if (g_cell_height < 0)
-        gh = roundf(gh * (float)(-g_cell_height) / 100.0f);
+        gh = roundf(s_ref_h_pt * contentScale * (float)(-g_cell_height) / 100.0f);
 
     float baseline_y_offset = (gh - naturalH) / 2.0f;
     float x_offset = (gw - naturalW) / 2.0f;

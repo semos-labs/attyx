@@ -185,6 +185,12 @@ pub fn dispatchDecPrivate(final: u8, param_buf: []const u8) Action {
     return switch (final) {
         'h' => makeDecPrivateMode(params, true),
         'l' => makeDecPrivateMode(params, false),
+        'p' => blk: {
+            // DECRQM: ESC[?Ps$p — '$' is accumulated as a param byte before final 'p'.
+            if (param_buf.len > 0 and param_buf[param_buf.len - 1] == '$')
+                break :blk .{ .query_dec_private_mode = params.params[0] };
+            break :blk .nop;
+        },
         else => .nop,
     };
 }

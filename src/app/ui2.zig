@@ -44,6 +44,8 @@ const PtyThreadCtx = struct {
     active_theme: Theme,
     // Diagnostics
     throughput: diag.ThroughputWindow = .{},
+    // DEC 2026: timestamp (ns) when synchronized_output became true; 0 = not active.
+    sync_start_ns: i128 = 0,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -509,6 +511,18 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         processSearch(&ctx.engine.state);
         const search_vp_changed = (ctx.engine.state.viewport_offset != last_published_vp);
         const need_update_final = need_update or search_vp_changed;
+
+        // DEC 2026 Synchronized Output: defer rendering while the app holds the
+        // sync lock so we never present a partial frame.  A 100 ms safety timeout
+        // forces a render even if ESC[?2026l is never received (hung or misbehaving app).
+        if (ctx.engine.state.synchronized_output) {
+            if (ctx.sync_start_ns == 0)
+                ctx.sync_start_ns = std.time.nanoTimestamp();
+            const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - ctx.sync_start_ns, std.time.ns_per_ms);
+            if (elapsed_ms < 100) continue;
+        } else {
+            ctx.sync_start_ns = 0;
+        }
 
         if (need_update_final) {
             c.attyx_begin_cell_update();

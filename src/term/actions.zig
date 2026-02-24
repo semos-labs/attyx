@@ -152,4 +152,6 @@ pub const Action = union(enum) {
     secondary_device_attributes,
     /// CSI Ps SP q — DECSCUSR: set cursor shape.
     set_cursor_shape: CursorShape,
+    /// CSI ?Ps$p — DECRQM: request the current setting of a DEC private mode.
+    query_dec_private_mode: u16,
 };

@@ -12,6 +12,40 @@
 static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize);
 static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize);
 
+// Fixed reference cell dimensions (in logical points) captured on the first
+// createGlyphCache call. Percent-mode cell sizes are anchored to these values
+// so that changing the font size does not affect the configured cell height/width.
+static float s_ref_h_pt = 0.0f;
+static float s_ref_w_pt = 0.0f;
+
+/// Returns true if `cp` belongs to a Unicode range whose East Asian Width
+/// property is W (Wide) or F (Fullwidth) — i.e. it occupies 2 terminal cells.
+/// Characters with EAW = N / Na / H must return false even if the font
+/// happens to draw them wider than one cell (e.g. regional indicators).
+static bool canBeWide(uint32_t cp) {
+    if (cp < 0x1100) return false;
+    if (cp <= 0x115F) return true;   // Hangul Jamo
+    if (cp == 0x2329 || cp == 0x232A) return true;
+    if (cp >= 0x2E80 && cp <= 0x303E) return true;  // CJK Radicals, Kangxi, Bopomofo
+    if (cp >= 0x3041 && cp <= 0x33FF) return true;  // Kana, CJK symbols, Compatibility
+    if (cp >= 0x3400 && cp <= 0x4DBF) return true;  // CJK Unified Ext-A
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;  // CJK Unified
+    if (cp >= 0xA000 && cp <= 0xA4CF) return true;  // Yi
+    if (cp >= 0xA960 && cp <= 0xA97F) return true;  // Hangul Jamo Ext-A
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;  // Hangul Syllables
+    if (cp >= 0xE000 && cp <= 0xF8FF) return true;  // PUA (Nerd Font icons)
+    if (cp >= 0xF900 && cp <= 0xFAFF) return true;  // CJK Compatibility Ideographs
+    if (cp >= 0xFE10 && cp <= 0xFE6F) return true;  // Vertical / Compat forms
+    if (cp >= 0xFF01 && cp <= 0xFF60) return true;  // Fullwidth ASCII
+    if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;  // Fullwidth signs
+    if (cp >= 0x1B000 && cp <= 0x1B2FF) return true; // Kana Supplement / Extended
+    if (cp >= 0x1F300 && cp <= 0x1F64F) return true; // Misc Symbols, Emoticons (NOT 1F1E0-1F1FF)
+    if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
+    if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
+    if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    return false;
+}
+
 static void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
     uint32_t idx = (cp * 2654435761u) % GLYPH_CACHE_CAP;
     for (int probe = 0; probe < GLYPH_CACHE_CAP; probe++) {
@@ -120,15 +154,18 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         }
     }
 
-    // 3. Classify: detect wide glyphs (advance or ink > 1.3× cell width).
-    //    Wide glyphs get a 2-cell atlas slot and a 2×gw wide renderer quad,
-    //    matching the approach used by Ghostty/WezTerm — the icon renders at
-    //    full size and bleeds into the next cell (which overdraw it if non-empty).
+    // 3. Classify: detect wide glyphs (advance or ink > 1.05× cell width).
+    //    Wide glyphs get a 2-cell atlas slot and a 2×gw wide renderer quad.
+    //    canBeWide() gates this check: characters with EAW = N/Na/H (e.g. regional
+    //    indicator symbols U+1F1E0–U+1F1FF) must never be given a 2-cell slot even
+    //    if the font happens to draw them wider than one cell — they are 1-cell
+    //    characters in the terminal model, and 2-cell allocation causes bleed into
+    //    adjacent cells.
     bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
                     || (cp >= 0x2500 && cp <= 0x257F);
     bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
     bool wide = false;
-    if (haveGlyph && !isPowerline && !isBlock) {
+    if (haveGlyph && !isPowerline && !isBlock && canBeWide(cp)) {
         CGRect bbox;
         CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
         CGSize adv;
@@ -155,8 +192,9 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int ac = slot % gc->atlas_cols;
     int ar = slot / gc->atlas_cols;
 
-    // 5. If no glyph was found, store a blank slot (all-zero pixels) and return
-    if (!haveGlyph) {
+    // 5. If no glyph was found, store a blank slot (all-zero pixels) and return.
+    //    Block elements skip this: they are drawn as geometry, no glyph needed.
+    if (!haveGlyph && !isBlock) {
         if (drawFont != gc->font) CFRelease(drawFont);
         glyphCacheInsert(gc, cp, slot);
         return slot;
@@ -190,17 +228,70 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         CGPoint pos = CGPointMake(0.0f, (float)desc);
         CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
     } else if (isBlock) {
-        CGRect bbox;
-        CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
-        if (bbox.size.width > 1 && bbox.size.height > 1) {
-            float sx = (float)gw / (float)bbox.size.width;
-            float sy = (float)gh / (float)bbox.size.height;
-            CGContextScaleCTM(ctx, sx, sy);
-            CGPoint pos = CGPointMake(-bbox.origin.x, -bbox.origin.y);
-            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
-        } else {
-            CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
-            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        // Render block/quadrant elements as pure geometry for pixel-perfect results.
+        // Font-glyph bounding-box scaling doesn't preserve partial fills:
+        // scaling ▄ (bbox height = gh/2) by gh/bbox.height = 2× yields a full block.
+        // CG coordinate system: y=0 at bottom of context.
+        bool drawn = false;
+        if (cp >= 0x2581 && cp <= 0x2588) {
+            // LOWER ONE-EIGHTH .. FULL BLOCK (U+2581–U+2588)
+            int eighths = (int)(cp - 0x2580); // 1..8
+            float blockH = roundf((float)gh * eighths / 8.0f);
+            CGContextFillRect(ctx, CGRectMake(0, 0, (float)gw, blockH));
+            drawn = true;
+        } else if (cp == 0x2580) {
+            // UPPER HALF BLOCK
+            float halfH = roundf((float)gh / 2.0f);
+            CGContextFillRect(ctx, CGRectMake(0, (float)gh - halfH, (float)gw, halfH));
+            drawn = true;
+        } else if (cp >= 0x2589 && cp <= 0x258F) {
+            // LEFT SEVEN-EIGHTHS .. LEFT ONE-EIGHTH BLOCK (U+2589–U+258F)
+            int eighths = (int)(0x2590 - cp); // 7..1
+            float blockW = roundf((float)gw * eighths / 8.0f);
+            CGContextFillRect(ctx, CGRectMake(0, 0, blockW, (float)gh));
+            drawn = true;
+        } else if (cp == 0x2590) {
+            // RIGHT HALF BLOCK
+            float halfW = roundf((float)gw / 2.0f);
+            CGContextFillRect(ctx, CGRectMake((float)gw - halfW, 0, halfW, (float)gh));
+            drawn = true;
+        } else if (cp == 0x2594) {
+            // UPPER ONE EIGHTH BLOCK
+            float blockH = roundf((float)gh / 8.0f);
+            CGContextFillRect(ctx, CGRectMake(0, (float)gh - blockH, (float)gw, blockH));
+            drawn = true;
+        } else if (cp == 0x2595) {
+            // RIGHT ONE EIGHTH BLOCK
+            float blockW = roundf((float)gw / 8.0f);
+            CGContextFillRect(ctx, CGRectMake((float)gw - blockW, 0, blockW, (float)gh));
+            drawn = true;
+        } else if (cp >= 0x2596 && cp <= 0x259F) {
+            // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
+            static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};
+            int bits = quadBits[cp - 0x2596];
+            float hw = roundf((float)gw / 2.0f);
+            float hh = roundf((float)gh / 2.0f);
+            if (bits & 1) CGContextFillRect(ctx, CGRectMake(0,  hh, hw,            (float)gh - hh)); // UL
+            if (bits & 2) CGContextFillRect(ctx, CGRectMake(hw, hh, (float)gw - hw, (float)gh - hh)); // UR
+            if (bits & 4) CGContextFillRect(ctx, CGRectMake(0,  0,  hw,            hh));              // BL
+            if (bits & 8) CGContextFillRect(ctx, CGRectMake(hw, 0,  (float)gw - hw, hh));             // BR
+            drawn = true;
+        }
+        if (!drawn && haveGlyph) {
+            // Shade characters (U+2591–U+2593) and other unhandled block chars:
+            // fall back to bbox-scaled glyph (they fill the full cell so scaling is fine).
+            CGRect bbox;
+            CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
+            if (bbox.size.width > 1 && bbox.size.height > 1) {
+                float sx = (float)gw / (float)bbox.size.width;
+                float sy = (float)gh / (float)bbox.size.height;
+                CGContextScaleCTM(ctx, sx, sy);
+                CGPoint pos = CGPointMake(-bbox.origin.x, -bbox.origin.y);
+                CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+            } else {
+                CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
+                CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+            }
         }
     } else if (wide) {
         // Wide icon: draw at natural origin in the 2×gw context — no scaling needed.
@@ -343,14 +434,19 @@ GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     float gw = naturalW;
     float gh = naturalH;
 
+    // Capture fixed reference dimensions (in logical points) on first call.
+    // Percent mode uses these so that cell size is independent of font size.
+    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / (float)scale;
+    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / (float)scale;
+
     if (g_cell_width > 0)
         gw = roundf((float)g_cell_width * (float)scale);
     else if (g_cell_width < 0)
-        gw = roundf(gw * (float)(-g_cell_width) / 100.0f);
+        gw = roundf(s_ref_w_pt * (float)scale * (float)(-g_cell_width) / 100.0f);
     if (g_cell_height > 0)
         gh = roundf((float)g_cell_height * (float)scale);
     else if (g_cell_height < 0)
-        gh = roundf(gh * (float)(-g_cell_height) / 100.0f);
+        gh = roundf(s_ref_h_pt * (float)scale * (float)(-g_cell_height) / 100.0f);
 
     float baseline_y = (float)descent + (gh - naturalH) / 2.0f;
     float x_offset = (gw - naturalW) / 2.0f;
