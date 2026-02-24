@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include "macos_internal.h"
 
+// Forward declarations (defined later in this file)
+static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize);
+static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize);
+
 static void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
     uint32_t idx = (cp * 2654435761u) % GLYPH_CACHE_CAP;
     for (int probe = 0; probe < GLYPH_CACHE_CAP; probe++) {
@@ -60,16 +64,10 @@ static void glyphCacheGrow(GlyphCache* gc) {
 }
 
 int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
-    if (gc->next_slot >= gc->max_slots) {
-        glyphCacheGrow(gc);
-    }
-
-    int slot = gc->next_slot++;
-    int ac = slot % gc->atlas_cols;
-    int ar = slot / gc->atlas_cols;
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
 
+    // 1. UTF-16 encoding
     UniChar utf16[2];
     int utf16Len;
     if (cp <= 0xFFFF) {
@@ -82,19 +80,24 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         utf16Len = 2;
     }
 
+    // 2. Glyph lookup: primary font → user fallbacks → system fallback
     CTFontRef drawFont = gc->font;
-    CGGlyph glyph;
-    if (!CTFontGetGlyphsForCharacters(gc->font, utf16, &glyph, utf16Len)) {
+    CGGlyph glyph = 0;
+    bool haveGlyph = CTFontGetGlyphsForCharacters(gc->font, utf16, &glyph, utf16Len)
+                  && glyph != 0;
+    if (!haveGlyph) {
         CGFloat fontSize = CTFontGetSize(gc->font);
         CTFontRef found = NULL;
         for (int fi = 0; fi < g_font_fallback_count; fi++) {
             CFStringRef name = CFStringCreateWithCString(NULL, g_font_fallback[fi],
                                                          kCFStringEncodingUTF8);
-            CTFontRef candidate = CTFontCreateWithName(name, fontSize, NULL);
+            CTFontRef candidate = createVerifiedFont(name, fontSize);
+            if (!candidate) candidate = createFuzzyMatchFont(name, fontSize);
             CFRelease(name);
             if (candidate) {
                 if (CTFontGetGlyphsForCharacters(candidate, utf16, &glyph, utf16Len)) {
                     found = candidate;
+                    haveGlyph = true;
                     break;
                 }
                 CFRelease(candidate);
@@ -109,30 +112,84 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             if (fallback) {
                 if (CTFontGetGlyphsForCharacters(fallback, utf16, &glyph, utf16Len)) {
                     drawFont = fallback;
+                    haveGlyph = true;
                 } else {
                     CFRelease(fallback);
-                    glyphCacheInsert(gc, cp, slot);
-                    return slot;
                 }
-            } else {
-                glyphCacheInsert(gc, cp, slot);
-                return slot;
             }
         }
     }
 
+    // 3. Classify: detect wide glyphs (advance or ink > 1.3× cell width).
+    //    Wide glyphs get a 2-cell atlas slot and a 2×gw wide renderer quad,
+    //    matching the approach used by Ghostty/WezTerm — the icon renders at
+    //    full size and bleeds into the next cell (which overdraw it if non-empty).
+    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
+                    || (cp >= 0x2500 && cp <= 0x257F);
+    bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
+    bool wide = false;
+    if (haveGlyph && !isPowerline && !isBlock) {
+        CGRect bbox;
+        CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
+        CGSize adv;
+        CTFontGetAdvancesForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &adv, 1);
+        float inkRight = (float)(bbox.origin.x + bbox.size.width);
+        float srcW = fmaxf((float)adv.width, inkRight);
+        wide = (srcW > (float)gw * 1.3f);
+    }
+    int renderW = wide ? 2 * gw : gw;
+
+    // 4. Allocate atlas slot(s)
+    int slot;
+    if (wide) {
+        // Ensure wide glyph doesn't split across atlas rows
+        if (gc->next_slot % gc->atlas_cols == gc->atlas_cols - 1)
+            gc->next_slot++;
+        while (gc->next_slot + 1 >= gc->max_slots) glyphCacheGrow(gc);
+        slot = gc->next_slot;
+        gc->next_slot += 2;
+    } else {
+        if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
+        slot = gc->next_slot++;
+    }
+    int ac = slot % gc->atlas_cols;
+    int ar = slot / gc->atlas_cols;
+
+    // 5. If no glyph was found, store a blank slot (all-zero pixels) and return
+    if (!haveGlyph) {
+        if (drawFont != gc->font) CFRelease(drawFont);
+        glyphCacheInsert(gc, cp, slot);
+        return slot;
+    }
+
+    // 6. Create bitmap context (renderW × gh)
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceGray();
-    uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
-    CGContextRef ctx = CGBitmapContextCreate(pixels, gw, gh, 8, gw, cs, kCGImageAlphaNone);
+    uint8_t* pixels = (uint8_t*)calloc(renderW * gh, 1);
+    CGContextRef ctx = CGBitmapContextCreate(pixels, renderW, gh, 8, renderW, cs, kCGImageAlphaNone);
     CGColorSpaceRelease(cs);
-
     CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+    // Disable LCD subpixel smoothing — it fattens strokes in grayscale contexts.
+    CGContextSetShouldSmoothFonts(ctx, NO);
+    CGContextSetAllowsFontSmoothing(ctx, NO);
 
-    bool stretchToCell =
-        (cp >= 0x2580 && cp <= 0x259F) ||  // Block Elements
-        (cp >= 0xE0B0 && cp <= 0xE0D4);    // Powerline symbols
-
-    if (stretchToCell) {
+    // 7. Draw glyph into the bitmap
+    if (isPowerline) {
+        // Box-drawing (U+2500–U+257F) and powerline (U+E0B0–U+E0D4): scale to full
+        // cell using advance × (asc+desc) as the source rect.  Vertical connectors (│)
+        // then reach top/bottom regardless of cell_height percentage.
+        CGSize adv;
+        CTFontGetAdvancesForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &adv, 1);
+        CGFloat asc  = CTFontGetAscent(drawFont);
+        CGFloat desc = CTFontGetDescent(drawFont);
+        CGFloat srcW = (adv.width > 1) ? adv.width : (CGFloat)gw;
+        CGFloat srcH = asc + desc;
+        if (srcH < 1) srcH = (CGFloat)gh;
+        float sx = (float)gw / (float)srcW;
+        float sy = (float)gh / (float)srcH;
+        CGContextScaleCTM(ctx, sx, sy);
+        CGPoint pos = CGPointMake(0.0f, (float)desc);
+        CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+    } else if (isBlock) {
         CGRect bbox;
         CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
         if (bbox.size.width > 1 && bbox.size.height > 1) {
@@ -145,23 +202,31 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
             CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
         }
+    } else if (wide) {
+        // Wide icon: draw at natural origin in the 2×gw context — no scaling needed.
+        // The glyph's advance fills the wider slot; the renderer quad spans 2 cells.
+        CGPoint pos = CGPointMake(0.0f, gc->baseline_y);
+        CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
     } else {
+        // Normal glyph: fits within one cell.
         CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
         CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
     }
 
     CGContextRelease(ctx);
-
     if (drawFont != gc->font) CFRelease(drawFont);
 
-    [gc->texture replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, gw, gh)
+    // 8. Upload to atlas
+    [gc->texture replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, renderW, gh)
                    mipmapLevel:0
                      withBytes:pixels
-                   bytesPerRow:gw];
+                   bytesPerRow:renderW];
     free(pixels);
 
-    glyphCacheInsert(gc, cp, slot);
-    return slot;
+    // 9. Insert into map — encode wide flag in bit 30 of the slot value
+    int encoded = wide ? (slot | GLYPH_WIDE_BIT) : slot;
+    glyphCacheInsert(gc, cp, encoded);
+    return encoded;
 }
 
 static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize) {
@@ -211,7 +276,14 @@ static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize) {
         for (CFIndex i = 0; i < count; i++) {
             CFStringRef family = (CFStringRef)CFArrayGetValueAtIndex(families, i);
             CFStringRef normFamily = createNormalizedName(family);
-            if (CFStringCompare(normReq, normFamily, 0) == kCFCompareEqualTo) {
+            // Exact normalized match, or prefix match in either direction.
+            // This lets "JetBrains Mono Nerd" find "JetBrainsMono Nerd Font Mono".
+            NSString* nsFamily = (__bridge NSString*)normFamily;
+            NSString* nsReq    = (__bridge NSString*)normReq;
+            BOOL matches = [nsFamily isEqualToString:nsReq]
+                        || [nsFamily hasPrefix:nsReq]
+                        || [nsReq hasPrefix:nsFamily];
+            if (matches) {
                 result = CTFontCreateWithName(family, fontSize, NULL);
                 CFRelease(normFamily);
                 break;

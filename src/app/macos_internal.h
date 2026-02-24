@@ -65,7 +65,10 @@ typedef struct __attribute__((packed)) {
 // GlyphCache
 // ---------------------------------------------------------------------------
 
-#define GLYPH_CACHE_CAP 4096
+#define GLYPH_CACHE_CAP  4096
+// Bit 30 of the slot value flags a 2-cell-wide glyph (advance > 1.3×cell).
+// Bit 31 is reserved for the "not found" sentinel (-1 = all bits set).
+#define GLYPH_WIDE_BIT   (1 << 30)
 
 typedef struct {
     uint32_t codepoint;

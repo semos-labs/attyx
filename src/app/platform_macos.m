@@ -209,7 +209,7 @@ NSString* const kShaderSource =
  "    VertexOut in [[stage_in]],\n"
  "    texture2d<float> tex [[texture(0)]])\n"
  "{\n"
- "    constexpr sampler s(filter::linear);\n"
+ "    constexpr sampler s(filter::nearest);\n"
  "    float a = tex.sample(s, in.texcoord).r;\n"
  "    return float4(in.color.rgb, in.color.a * a);\n"
  "}\n";

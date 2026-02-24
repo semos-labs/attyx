@@ -133,7 +133,8 @@ typedef struct __attribute__((packed)) {
 // GlyphCache
 // ---------------------------------------------------------------------------
 
-#define GLYPH_CACHE_CAP 4096
+#define GLYPH_CACHE_CAP  4096
+#define GLYPH_WIDE_BIT   (1 << 30)
 
 typedef struct {
     uint32_t codepoint;

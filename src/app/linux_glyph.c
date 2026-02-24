@@ -28,6 +28,32 @@ char* findFontPath(const char* family) {
     return path;
 }
 
+// Like findFontPath but without the monospace spacing constraint.
+// Used for user-configured fallback fonts (e.g. symbol/icon fonts).
+static char* findFontPathAny(const char* family) {
+    char* path = findFontPath(family);
+    if (path) return path;
+
+    // Retry without FC_MONO — catches symbol fonts not tagged as monospace.
+    FcConfig* config = FcInitLoadConfigAndFonts();
+    FcPattern* pat = FcPatternCreate();
+    FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)family);
+    FcConfigSubstitute(config, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+
+    FcResult result;
+    FcPattern* match = FcFontMatch(config, pat, &result);
+    path = NULL;
+    if (match) {
+        FcChar8* file;
+        if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch)
+            path = strdup((char*)file);
+        FcPatternDestroy(match);
+    }
+    FcPatternDestroy(pat);
+    return path;
+}
+
 // ---------------------------------------------------------------------------
 // Hash-map helpers
 // ---------------------------------------------------------------------------
@@ -77,23 +103,17 @@ static void glyphCacheGrow(GlyphCache* gc) {
 // ---------------------------------------------------------------------------
 
 int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
-    if (gc->next_slot >= gc->max_slots)
-        glyphCacheGrow(gc);
-
-    int slot = gc->next_slot++;
-    int ac = slot % gc->atlas_cols;
-    int ar = slot / gc->atlas_cols;
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
 
+    // 1. Glyph index lookup: primary font → user fallbacks → system fallback
     FT_Face face = gc->ft_face;
-    FT_UInt gi = FT_Get_Char_Index(face, cp);
+    FT_UInt gi   = FT_Get_Char_Index(face, cp);
 
     if (gi == 0) {
-        // Try each user-configured fallback font first.
         FT_Face fallback = NULL;
         for (int fi = 0; fi < g_font_fallback_count && gi == 0; fi++) {
-            char* fbPath = findFontPath(g_font_fallback[fi]);
+            char* fbPath = findFontPathAny(g_font_fallback[fi]);
             if (!fbPath) continue;
             FT_Face candidate;
             if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
@@ -110,7 +130,6 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             free(fbPath);
         }
 
-        // System fallback via Fontconfig.
         if (gi == 0) {
             FcPattern* pat = FcPatternCreate();
             FcCharSet* cs = FcCharSetCreate();
@@ -134,27 +153,78 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             FcCharSetDestroy(cs);
             FcPatternDestroy(pat);
         }
-
-        if (gi == 0) {
-            if (fallback) FT_Done_Face(fallback);
-            glyphCacheInsert(gc, cp, slot);
-            return slot;
-        }
-        // face is set to fallback; we'll free it after rasterizing
     }
 
+    // 2. If no glyph found, allocate a blank slot and return
+    if (gi == 0) {
+        if (face != gc->ft_face) FT_Done_Face(face);
+        if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
+        int blankSlot = gc->next_slot++;
+        glyphCacheInsert(gc, cp, blankSlot);
+        return blankSlot;
+    }
+
+    // 3. Render glyph so we can measure its bitmap extent
     FT_Load_Glyph(face, gi, FT_LOAD_DEFAULT);
     FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
     FT_Bitmap* bmp = &face->glyph->bitmap;
 
-    uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
+    // 4. Classify: detect wide glyphs (ink or advance > 1.3× cell width).
+    //    Wide glyphs get a 2-cell atlas slot and 2×gw renderer quad — same
+    //    approach as Ghostty/WezTerm; the icon bleeds into the next cell at
+    //    full size rather than being squished or clipped.
+    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
+                    || (cp >= 0x2500 && cp <= 0x257F);
+    bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
+    bool wide = false;
+    if (!isPowerline && !isBlock) {
+        int adv_px   = (int)(face->glyph->advance.x >> 6);
+        int ink_right = face->glyph->bitmap_left + (int)bmp->width;
+        int src_w    = adv_px > ink_right ? adv_px : ink_right;
+        wide = (src_w > (int)(gw * 1.3f));
+    }
+    int renderW = wide ? 2 * gw : gw;
 
-    // Powerline separators and block elements: stretch to fill the cell.
-    bool stretchToCell =
-        (cp >= 0x2580 && cp <= 0x259F) ||
-        (cp >= 0xE0B0 && cp <= 0xE0D4);
+    // 5. Allocate atlas slot(s)
+    int slot;
+    if (wide) {
+        if (gc->next_slot % gc->atlas_cols == gc->atlas_cols - 1)
+            gc->next_slot++; // skip last column to avoid row split
+        while (gc->next_slot + 1 >= gc->max_slots) glyphCacheGrow(gc);
+        slot = gc->next_slot;
+        gc->next_slot += 2;
+    } else {
+        if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
+        slot = gc->next_slot++;
+    }
+    int ac = slot % gc->atlas_cols;
+    int ar = slot / gc->atlas_cols;
 
-    if (stretchToCell && bmp->width > 1 && bmp->rows > 1) {
+    // 6. Render pixels into renderW × gh buffer
+    uint8_t* pixels = (uint8_t*)calloc(renderW * gh, 1);
+
+    if (isPowerline && bmp->rows > 0 && bmp->width > 0) {
+        // Scale to full cell using advance × (asc+desc) as reference rect.
+        int adv_px  = (int)(face->glyph->advance.x >> 6);
+        if (adv_px < 1) adv_px = bmp->width;
+        int asc_px  = (int)(face->size->metrics.ascender  >> 6);
+        int desc_px = -(int)(face->size->metrics.descender >> 6);
+        int srcH    = asc_px + desc_px;
+        if (srcH < 1) srcH = bmp->rows;
+        int srcW    = adv_px;
+        if (srcW < 1) srcW = bmp->width;
+        int bx0 = face->glyph->bitmap_left;
+        int by0 = asc_px - face->glyph->bitmap_top;
+        for (int dy = 0; dy < gh; dy++) {
+            int src_row = (int)((float)dy / gh * srcH) - by0;
+            if (src_row < 0 || src_row >= (int)bmp->rows) continue;
+            for (int dx = 0; dx < gw; dx++) {
+                int src_col = (int)((float)dx / gw * srcW) - bx0;
+                if (src_col < 0 || src_col >= (int)bmp->width) continue;
+                pixels[dy * gw + dx] = bmp->buffer[src_row * bmp->pitch + src_col];
+            }
+        }
+    } else if (isBlock && bmp->width > 1 && bmp->rows > 1) {
         float sx = (float)gw / (float)bmp->width;
         float sy = (float)gh / (float)bmp->rows;
         for (int dy = 0; dy < gh; dy++) {
@@ -167,32 +237,37 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             }
         }
     } else {
-        int bl = face->glyph->bitmap_left;
-        int bt = face->glyph->bitmap_top;
-        int asc = (int)gc->ascender;
+        int bl    = face->glyph->bitmap_left;
+        int bt    = face->glyph->bitmap_top;
+        int asc   = (int)gc->ascender;
         int y_off = (int)gc->baseline_y_offset;
-        int x_off = (int)gc->x_offset;
-
+        // Wide: draw at natural position in renderW-wide buffer (no centering offset).
+        // Normal: apply x_offset centering for the primary font cell width.
+        int x_off = wide ? 0 : (int)gc->x_offset;
         for (unsigned row = 0; row < bmp->rows; row++) {
             int dy = asc - bt + (int)row + y_off;
             if (dy < 0 || dy >= gh) continue;
             for (unsigned col = 0; col < bmp->width; col++) {
                 int dx = bl + (int)col + x_off;
-                if (dx < 0 || dx >= gw) continue;
-                pixels[dy * gw + dx] = bmp->buffer[row * bmp->pitch + col];
+                if (dx < 0 || dx >= renderW) continue;
+                pixels[dy * renderW + dx] = bmp->buffer[row * bmp->pitch + col];
             }
         }
     }
 
     if (face != gc->ft_face) FT_Done_Face(face);
 
+    // 7. Upload to atlas
     glBindTexture(GL_TEXTURE_2D, gc->texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, gw, gh,
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, renderW, gh,
                     GL_RED, GL_UNSIGNED_BYTE, pixels);
     free(pixels);
 
-    glyphCacheInsert(gc, cp, slot);
-    return slot;
+    // 8. Insert into map — encode wide flag in bit 30
+    int encoded = wide ? (slot | GLYPH_WIDE_BIT) : slot;
+    glyphCacheInsert(gc, cp, encoded);
+    return encoded;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,8 +335,8 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
