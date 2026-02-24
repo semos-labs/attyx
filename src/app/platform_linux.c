@@ -340,8 +340,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
             g_needs_font_rebuild = 0;
             linux_rebuild_font();
         }
-        drawFrame();
-        glfwSwapBuffers(g_window);
+        if (drawFrame())
+            glfwSwapBuffers(g_window);
     }
 
     g_should_quit = 1;

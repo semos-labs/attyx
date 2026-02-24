@@ -100,11 +100,11 @@ void linux_rebuild_font(void) {
 // ---------------------------------------------------------------------------
 // Draw frame (main render loop body)
 // ---------------------------------------------------------------------------
-void drawFrame(void) {
-    if (!g_cells || g_cols <= 0 || g_rows <= 0) return;
+int drawFrame(void) {
+    if (!g_cells || g_cols <= 0 || g_rows <= 0) return 0;
 
     uint64_t gen1 = g_cell_gen;
-    if (gen1 & 1) return;
+    if (gen1 & 1) return 0;
 
     int rows = g_rows;
     int cols = g_cols;
@@ -156,15 +156,15 @@ void drawFrame(void) {
         g_full_redraw = 1;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active) return;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
     else
-        return;
+        return 0;
 
     uint64_t gen2 = g_cell_gen;
-    if (gen1 != gen2) return;
+    if (gen1 != gen2) return 0;
 
     AttyxCell* cells = g_cell_snapshot;
     float gw = g_gc.glyph_w;
@@ -897,4 +897,5 @@ void drawFrame(void) {
     }
 
     glBindVertexArray(0);
+    return 1;
 }
