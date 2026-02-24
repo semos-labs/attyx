@@ -242,15 +242,35 @@ static inline int clampInt(int val, int lo, int hi) {
 void mouseToCell(double mx, double my, int* outCol, int* outRow) {
     float cellW = g_cell_px_w / g_content_scale;
     float cellH = g_cell_px_h / g_content_scale;
-    *outCol = clampInt((int)((mx - g_padding_left) / cellW), 0, g_cols - 1);
-    *outRow = clampInt((int)((my - g_padding_top)  / cellH), 0, g_rows - 1);
+    int win_w, win_h;
+    glfwGetWindowSize(g_window, &win_w, &win_h);
+    float availW = (float)win_w - g_padding_left - g_padding_right;
+    float availH = (float)win_h - g_padding_top  - g_padding_bottom;
+    float cx = floorf((availW - g_cols * cellW) * 0.5f);
+    float cy = floorf((availH - g_rows * cellH) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = g_padding_left + cx;
+    float offY = g_padding_top  + cy;
+    *outCol = clampInt((int)((mx - offX) / cellW), 0, g_cols - 1);
+    *outRow = clampInt((int)((my - offY) / cellH), 0, g_rows - 1);
 }
 
 void mouseToCell1(double mx, double my, int* outCol, int* outRow) {
     float cellW = g_cell_px_w / g_content_scale;
     float cellH = g_cell_px_h / g_content_scale;
-    *outCol = clampInt((int)((mx - g_padding_left) / cellW) + 1, 1, g_cols);
-    *outRow = clampInt((int)((my - g_padding_top)  / cellH) + 1, 1, g_rows);
+    int win_w, win_h;
+    glfwGetWindowSize(g_window, &win_w, &win_h);
+    float availW = (float)win_w - g_padding_left - g_padding_right;
+    float availH = (float)win_h - g_padding_top  - g_padding_bottom;
+    float cx = floorf((availW - g_cols * cellW) * 0.5f);
+    float cy = floorf((availH - g_rows * cellH) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = g_padding_left + cx;
+    float offY = g_padding_top  + cy;
+    *outCol = clampInt((int)((mx - offX) / cellW) + 1, 1, g_cols);
+    *outRow = clampInt((int)((my - offY) / cellH) + 1, 1, g_rows);
 }
 
 static void sendSgrMouse(int button, int col, int row, int press) {
@@ -383,20 +403,31 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         if (action == GLFW_PRESS && !g_mouse_tracking) {
-            // Compute menu position in vertex/framebuffer pixel coords, clamped to content area.
+            // Compute menu position in vertex/framebuffer pixel coords, clamped to centered grid area.
             float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
             float padX = gw * 0.5f, padY = gh * 0.25f;
             float itemH = gh + padY * 2.0f;
             float menuW = padX * 2.0f + 13.0f * gw;
-            float winPadL = g_padding_left  * g_content_scale;
-            float winPadT = g_padding_top   * g_content_scale;
-            float vpW = g_cols * gw, vpH = g_rows * gh;
             float px = (float)(mx * g_content_scale);
             float py = (float)(my * g_content_scale);
-            if (px + menuW > winPadL + vpW) px = winPadL + vpW - menuW;
-            if (py + itemH > winPadT + vpH) py = winPadT + vpH - itemH;
-            if (px < winPadL) px = winPadL;
-            if (py < winPadT) py = winPadT;
+            int fb_w2, fb_h2;
+            glfwGetFramebufferSize(w, &fb_w2, &fb_h2);
+            float padLpx = g_padding_left   * g_content_scale;
+            float padRpx = g_padding_right  * g_content_scale;
+            float padTpx = g_padding_top    * g_content_scale;
+            float padBpx = g_padding_bottom * g_content_scale;
+            float avW = (float)fb_w2 - padLpx - padRpx;
+            float avH = (float)fb_h2 - padTpx - padBpx;
+            float cxp = floorf((avW - g_cols * gw) * 0.5f);
+            float cyp = floorf((avH - g_rows * gh) * 0.5f);
+            if (cxp < 0) cxp = 0;
+            if (cyp < 0) cyp = 0;
+            float offXpx = padLpx + cxp;
+            float offYpx = padTpx + cyp;
+            if (px + menuW > offXpx + g_cols * gw) px = offXpx + g_cols * gw - menuW;
+            if (py + itemH > offYpx + g_rows * gh) py = offYpx + g_rows * gh - itemH;
+            if (px < offXpx) px = offXpx;
+            if (py < offYpx) py = offYpx;
             g_ctx_menu_x = px;
             g_ctx_menu_y = py;
             g_ctx_menu_open = 1;

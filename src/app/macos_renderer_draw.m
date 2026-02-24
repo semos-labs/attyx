@@ -23,6 +23,18 @@ static BOOL cellIsSelected(int row, int col) {
     return YES;
 }
 
+static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
+                     float r, float g, float b, float a) {
+    float x1 = x + w, y1 = y + h;
+    v[i+0] = (Vertex){ x,  y,  0,0, r,g,b,a };
+    v[i+1] = (Vertex){ x1, y,  0,0, r,g,b,a };
+    v[i+2] = (Vertex){ x,  y1, 0,0, r,g,b,a };
+    v[i+3] = (Vertex){ x1, y,  0,0, r,g,b,a };
+    v[i+4] = (Vertex){ x1, y1, 0,0, r,g,b,a };
+    v[i+5] = (Vertex){ x,  y1, 0,0, r,g,b,a };
+    return i + 6;
+}
+
 @implementation AttyxRenderer (DrawFrame)
 
 - (void)drawFrameImpl:(MTKView*)view {
@@ -110,7 +122,18 @@ static BOOL cellIsSelected(int row, int col) {
         float padR = g_padding_right  * sc;
         float padT = g_padding_top    * sc;
         float padB = g_padding_bottom * sc;
-        float viewport[2] = { cols * gw + padL + padR, rows * gh + padT + padB };
+        CGSize ds = view.drawableSize;
+        float dW = (float)ds.width;
+        float dH = (float)ds.height;
+        float availW = dW - padL - padR;
+        float availH = dH - padT - padB;
+        float cx = floorf((availW - cols * gw) * 0.5f);
+        float cy = floorf((availH - rows * gh) * 0.5f);
+        if (cx < 0) cx = 0;
+        if (cy < 0) cy = 0;
+        float offX = padL + cx;
+        float offY = padT + cy;
+        float viewport[2] = { dW, dH };
 
         float atlasW = (float)_glyphCache.atlas_w;
         float glyphW = _glyphCache.glyph_w;
@@ -125,8 +148,8 @@ static BOOL cellIsSelected(int row, int col) {
 
             for (int col = 0; col < cols; col++) {
                 int i = row * cols + col;
-                float x0 = padL + col * gw;
-                float y0 = padT + row * gh;
+                float x0 = offX + col * gw;
+                float y0 = offY + row * gh;
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
                 const AttyxCell* cell = &cells[i];
@@ -157,8 +180,8 @@ static BOOL cellIsSelected(int row, int col) {
         BOOL drawCursor = curVisible && _blinkOn
                           && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
         if (drawCursor) {
-            float cx0 = padL + curCol * gw;
-            float cy0 = padT + curRow * gh;
+            float cx0 = offX + curCol * gw;
+            float cy0 = offY + curRow * gh;
             float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
 
             float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
@@ -201,9 +224,9 @@ static BOOL cellIsSelected(int row, int col) {
                     lr = 0.25f; lg = 0.40f; lb = 0.65f;
                 }
                 int lrow = i / cols, lcol = i % cols;
-                float lx0 = padL + lcol * gw;
+                float lx0 = offX + lcol * gw;
                 float lx1 = lx0 + gw;
-                float ly1 = padT + (lrow + 1) * gh;
+                float ly1 = offY + (lrow + 1) * gh;
                 float ly0 = ly1 - ulH;
                 _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                 _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -221,9 +244,9 @@ static BOOL cellIsSelected(int row, int col) {
                 float lr = 0.4f, lg = 0.7f, lb = 1.0f;
                 for (int c = dStart; c <= dEnd && c < cols; c++) {
                     if (bgVertCount + 6 > _metalBufCapBg) break;
-                    float lx0 = padL + c * gw;
+                    float lx0 = offX + c * gw;
                     float lx1 = lx0 + gw;
-                    float ly1 = padT + (dRow + 1) * gh;
+                    float ly1 = offY + (dRow + 1) * gh;
                     float ly0 = ly1 - ulH;
                     _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                     _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -254,8 +277,8 @@ static BOOL cellIsSelected(int row, int col) {
                 }
                 for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                     if (bgVertCount + 6 > _metalBufCapBg) break;
-                    float lx0 = padL + cc * gw, lx1 = lx0 + gw;
-                    float ly0 = padT + m.row * gh, ly1 = ly0 + ulH;
+                    float lx0 = offX + cc * gw, lx1 = lx0 + gw;
+                    float ly0 = offY + m.row * gh, ly1 = ly0 + ulH;
                     _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
@@ -276,8 +299,8 @@ static BOOL cellIsSelected(int row, int col) {
 
                 int row = i / cols;
                 int col = i % cols;
-                float x0 = padL + col * gw;
-                float y0 = padT + row * gh;
+                float x0 = offX + col * gw;
+                float y0 = offY + row * gh;
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
 
@@ -345,25 +368,43 @@ static BOOL cellIsSelected(int row, int col) {
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         if (!rpd) return;
 
-        float a = g_background_opacity;
-        if (a >= 1.0f) {
-            rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.118f, 0.118f, 0.141f, 1.0f);
-        } else {
-            // Clear to transparent so cell bg quads are the sole source of
-            // opacity. Stacking a premultiplied clear on top of alpha quads
-            // would drive the framebuffer alpha toward 1, defeating compositing.
-            rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);
-        }
+        // Gap quads fill all areas outside the centered grid, so clear to transparent.
+        rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);
 
         id<MTLRenderCommandEncoder> enc =
             [cmdBuf renderCommandEncoderWithDescriptor:rpd];
 
         MTLViewport gridViewport = {
             .originX = 0, .originY = 0,
-            .width = cols * gw, .height = rows * gh,
+            .width = dW, .height = dH,
             .znear = 0, .zfar = 1
         };
         [enc setViewport:gridViewport];
+
+        // Fill gap areas outside the centered grid with the terminal background color.
+        {
+            float defR = cells[0].bg_r / 255.0f;
+            float defG = cells[0].bg_g / 255.0f;
+            float defB = cells[0].bg_b / 255.0f;
+            float gridRight  = offX + cols * gw;
+            float gridBottom = offY + rows * gh;
+            Vertex gapVerts[24];
+            int gvc = 0;
+            if (offY > 0.5f)
+                gvc = emitRectV(gapVerts, gvc, 0, 0, dW, offY, defR, defG, defB, ba);
+            if (gridBottom + 0.5f < dH)
+                gvc = emitRectV(gapVerts, gvc, 0, gridBottom, dW, dH - gridBottom, defR, defG, defB, ba);
+            if (offX > 0.5f)
+                gvc = emitRectV(gapVerts, gvc, 0, offY, offX, (float)rows * gh, defR, defG, defB, ba);
+            if (gridRight + 0.5f < dW)
+                gvc = emitRectV(gapVerts, gvc, gridRight, offY, dW - gridRight, (float)rows * gh, defR, defG, defB, ba);
+            if (gvc > 0) {
+                [enc setRenderPipelineState:self.bgPipeline];
+                [enc setVertexBytes:gapVerts length:sizeof(Vertex) * gvc atIndex:0];
+                [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:gvc];
+            }
+        }
 
         [enc setRenderPipelineState:self.bgPipeline];
         [enc setVertexBuffer:_bgMetalBuf offset:0 atIndex:0];
@@ -411,8 +452,8 @@ static BOOL cellIsSelected(int row, int col) {
                 int iv = 0;
 
                 for (int i = 0; i < preCells; i++) {
-                    float x0 = (pCol + i) * gw;
-                    float y0 = pRow * gh;
+                    float x0 = offX + (pCol + i) * gw;
+                    float y0 = offY + pRow * gh;
                     float x1 = x0 + gw;
                     float y1 = y0 + gh;
                     float br = 0.20f, bg = 0.20f, bb = 0.30f;
@@ -425,10 +466,10 @@ static BOOL cellIsSelected(int row, int col) {
                 }
 
                 float ulH = 2.0f;
-                float ulY0 = pRow * gh + gh - ulH;
-                float ulY1 = pRow * gh + gh;
-                float ulX0 = pCol * gw;
-                float ulX1 = (pCol + preCells) * gw;
+                float ulY0 = offY + pRow * gh + gh - ulH;
+                float ulY1 = offY + pRow * gh + gh;
+                float ulX0 = offX + pCol * gw;
+                float ulX1 = offX + (pCol + preCells) * gw;
                 imeVerts[iv++] = (Vertex){ ulX0,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
                 imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
                 imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
@@ -447,8 +488,8 @@ static BOOL cellIsSelected(int row, int col) {
                 for (int i = 0; i < preCells; i++) {
                     uint32_t cp = preCPs[i];
                     if (cp <= 32) continue;
-                    float x0 = (pCol + i) * gw;
-                    float y0 = pRow * gh;
+                    float x0 = offX + (pCol + i) * gw;
+                    float y0 = offY + pRow * gh;
                     float x1 = x0 + gw;
                     float y1 = y0 + gh;
 
