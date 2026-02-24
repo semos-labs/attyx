@@ -148,12 +148,22 @@ void drawFrame(void) {
     AttyxCell* cells = g_cell_snapshot;
     float gw = g_gc.glyph_w;
     float gh = g_gc.glyph_h;
+    int fb_w, fb_h;
+    glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
     float sc = g_content_scale;
     float padL = g_padding_left   * sc;
     float padR = g_padding_right  * sc;
     float padT = g_padding_top    * sc;
     float padB = g_padding_bottom * sc;
-    float viewport[2] = { cols * gw + padL + padR, rows * gh + padT + padB };
+    float availW = (float)fb_w - padL - padR;
+    float availH = (float)fb_h - padT - padB;
+    float cx = floorf((availW - cols * gw) * 0.5f);
+    float cy = floorf((availH - rows * gh) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = padL + cx;
+    float offY = padT + cy;
+    float viewport[2] = { (float)fb_w, (float)fb_h };
     float atlasW = (float)g_gc.atlas_w;
     float glyphW = g_gc.glyph_w;
     float glyphH = g_gc.glyph_h;
@@ -165,7 +175,7 @@ void drawFrame(void) {
         if (!g_full_redraw && !dirtyBitTest(dirty, row)) continue;
         for (int col = 0; col < cols; col++) {
             int i = row * cols + col;
-            float x0 = padL + col * gw, y0 = padT + row * gh;
+            float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
             const AttyxCell* cell = &cells[i];
             float br, bg, bb;
@@ -193,7 +203,7 @@ void drawFrame(void) {
     int drawCursor = curVis && g_blink_on
                      && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
     if (drawCursor) {
-        float cx0 = padL + curCol * gw, cy0 = padT + curRow * gh;
+        float cx0 = offX + curCol * gw, cy0 = offY + curRow * gh;
         float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
         float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
 
@@ -238,9 +248,9 @@ void drawFrame(void) {
                 lr = 0.25f; lg = 0.40f; lb = 0.65f;
             }
             int lrow = i / cols, lcol = i % cols;
-            float lx0 = padL + lcol * gw;
+            float lx0 = offX + lcol * gw;
             float lx1 = lx0 + gw;
-            float ly1 = padT + (lrow + 1) * gh;
+            float ly1 = offY + (lrow + 1) * gh;
             float ly0 = ly1 - ulH;
             g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
             g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -259,9 +269,9 @@ void drawFrame(void) {
             float lr = 0.4f, lg = 0.7f, lb = 1.0f;
             for (int c = dStart; c <= dEnd && c < cols; c++) {
                 if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = padL + c * gw;
+                float lx0 = offX + c * gw;
                 float lx1 = lx0 + gw;
-                float ly1 = padT + (dRow + 1) * gh;
+                float ly1 = offY + (dRow + 1) * gh;
                 float ly0 = ly1 - ulH;
                 g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
                 g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
@@ -292,8 +302,8 @@ void drawFrame(void) {
             }
             for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                 if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = padL + cc * gw, lx1 = lx0 + gw;
-                float ly0 = padT + m.row * gh, ly1 = ly0 + gh;
+                float lx0 = offX + cc * gw, lx1 = lx0 + gw;
+                float ly0 = offY + m.row * gh, ly1 = ly0 + gh;
                 g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
@@ -314,7 +324,7 @@ void drawFrame(void) {
             if (ch <= 32) continue;
 
             int row = i / cols, col = i % cols;
-            float x0 = padL + col * gw, y0 = padT + row * gh;
+            float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
 
             int slot = glyphCacheLookup(&g_gc, ch);
@@ -367,22 +377,43 @@ void drawFrame(void) {
     }
 
     // --- GL draw ---
-    int fb_w, fb_h;
-    glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
-
-    float a = g_background_opacity;
-    if (a >= 1.0f) {
-        glClearColor(0.118f, 0.118f, 0.141f, 1.0f);
-    } else {
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    }
+    // Gap quads fill all areas outside the centered grid, so clear to transparent.
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    int grid_w = (int)viewport[0];
-    int grid_h = (int)viewport[1];
-    glViewport(0, fb_h - grid_h, grid_w, grid_h);
+    glViewport(0, 0, fb_w, fb_h);
 
     glBindVertexArray(g_vao);
+
+    // Fill gap areas outside the centered grid with the terminal background color.
+    {
+        float defR = cells[0].bg_r / 255.0f;
+        float defG = cells[0].bg_g / 255.0f;
+        float defB = cells[0].bg_b / 255.0f;
+        float gridRight  = offX + cols * gw;
+        float gridBottom = offY + rows * gh;
+        Vertex gapVerts[24];
+        int gvc = 0;
+        if (offY > 0.5f)
+            gvc = emitRect(gapVerts, gvc, 0, 0, (float)fb_w, offY, defR, defG, defB, ba);
+        if (gridBottom + 0.5f < (float)fb_h)
+            gvc = emitRect(gapVerts, gvc, 0, gridBottom, (float)fb_w, (float)fb_h - gridBottom, defR, defG, defB, ba);
+        if (offX > 0.5f)
+            gvc = emitRect(gapVerts, gvc, 0, offY, offX, (float)rows * gh, defR, defG, defB, ba);
+        if (gridRight + 0.5f < (float)fb_w)
+            gvc = emitRect(gapVerts, gvc, gridRight, offY, (float)fb_w - gridRight, (float)rows * gh, defR, defG, defB, ba);
+        if (gvc > 0) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(g_solid_prog);
+            glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
+            glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * gvc, gapVerts, GL_DYNAMIC_DRAW);
+            setupVertexAttribs();
+            glDrawArrays(GL_TRIANGLES, 0, gvc);
+            glDisable(GL_BLEND);
+        }
+    }
 
     // BG pass (blending on so search highlights respect alpha)
     glEnable(GL_BLEND);
@@ -443,7 +474,7 @@ void drawFrame(void) {
             Vertex imeVerts[128 * 6 + 6];
             int iv = 0;
             for (int i = 0; i < preCells; i++) {
-                float x0 = padL + (pCol + i) * gw, y0 = padT + pRow * gh;
+                float x0 = offX + (pCol + i) * gw, y0 = offY + pRow * gh;
                 float x1 = x0 + gw, y1 = y0 + gh;
                 float br = 0.20f, bg = 0.20f, bb = 0.30f;
                 imeVerts[iv++] = (Vertex){ x0,y0, 0,0, br,bg,bb,1 };
@@ -454,8 +485,8 @@ void drawFrame(void) {
                 imeVerts[iv++] = (Vertex){ x0,y1, 0,0, br,bg,bb,1 };
             }
             float ulH = 2.0f;
-            float ulY0 = padT + pRow * gh + gh - ulH, ulY1 = padT + pRow * gh + gh;
-            float ulX0 = padL + pCol * gw, ulX1 = padL + (pCol + preCells) * gw;
+            float ulY0 = offY + pRow * gh + gh - ulH, ulY1 = offY + pRow * gh + gh;
+            float ulX0 = offX + pCol * gw, ulX1 = offX + (pCol + preCells) * gw;
             imeVerts[iv++] = (Vertex){ ulX0,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
             imeVerts[iv++] = (Vertex){ ulX1,ulY0, 0,0, 0.9f,0.9f,0.3f,1 };
             imeVerts[iv++] = (Vertex){ ulX0,ulY1, 0,0, 0.9f,0.9f,0.3f,1 };
@@ -476,7 +507,7 @@ void drawFrame(void) {
             for (int i = 0; i < preCells; i++) {
                 uint32_t cp = preCPs[i];
                 if (cp <= 32) continue;
-                float x0 = (pCol + i) * gw, y0 = pRow * gh;
+                float x0 = offX + (pCol + i) * gw, y0 = offY + pRow * gh;
                 float x1 = x0 + gw, y1 = y0 + gh;
                 int slot = glyphCacheLookup(&g_gc, cp);
                 if (slot < 0) slot = glyphCacheRasterize(&g_gc, cp);
@@ -552,22 +583,22 @@ void drawFrame(void) {
         Vertex sBg[6 + 6 + 3 + 3];
         int si = 0;
 
-        si = emitRect(sBg, si, 0, 0, totalW, barH,
+        si = emitRect(sBg, si, offX, offY, totalW, barH,
                       0.10f, 0.10f, 0.13f, 0.95f);
-        si = emitRect(sBg, si, inputX, inputY, inputW, inputH,
+        si = emitRect(sBg, si, offX + inputX, offY + inputY, inputW, inputH,
                       0.18f, 0.18f, 0.22f, 1.0f);
 
         float aw2 = gw * 0.40f, ah2 = gh * 0.40f;
         float acy = barH / 2.0f;
         si = emitTri(sBg, si,
-                     upCx,          acy - ah2/2,
-                     upCx - aw2/2,  acy + ah2/2,
-                     upCx + aw2/2,  acy + ah2/2,
+                     offX + upCx,          offY + acy - ah2/2,
+                     offX + upCx - aw2/2,  offY + acy + ah2/2,
+                     offX + upCx + aw2/2,  offY + acy + ah2/2,
                      0.50f, 0.55f, 0.65f, 1.0f);
         si = emitTri(sBg, si,
-                     downCx,          acy + ah2/2,
-                     downCx - aw2/2,  acy - ah2/2,
-                     downCx + aw2/2,  acy - ah2/2,
+                     offX + downCx,          offY + acy + ah2/2,
+                     offX + downCx - aw2/2,  offY + acy - ah2/2,
+                     offX + downCx + aw2/2,  offY + acy - ah2/2,
                      0.50f, 0.55f, 0.65f, 1.0f);
 
         glEnable(GL_BLEND);
@@ -584,11 +615,11 @@ void drawFrame(void) {
         int sti = 0;
 
         sti = emitString(stv, sti, &g_gc, "Find:", 5,
-                         padX, textY, gw, gh, 0.40f, 0.50f, 0.65f);
+                         offX + padX, offY + textY, gw, gh, 0.40f, 0.50f, 0.65f);
 
         float qx = inputX + inputPad;
         sti = emitString(stv, sti, &g_gc, queryCopy, qLen,
-                         qx, textY, gw, gh, 0.92f, 0.92f, 0.92f);
+                         offX + qx, offY + textY, gw, gh, 0.92f, 0.92f, 0.92f);
 
         // Blinking cursor bar
         {
@@ -596,7 +627,7 @@ void drawFrame(void) {
             int phase = ((int)(tnow / 0.5)) % 2;
             if (phase == 0) {
                 float cx = qx + qLen * gw;
-                sti = emitRect(stv, sti, cx, textY, 2.0f, gh,
+                sti = emitRect(stv, sti, offX + cx, offY + textY, 2.0f, gh,
                                0.45f, 0.65f, 1.0f, 1.0f);
             }
         }
@@ -606,11 +637,11 @@ void drawFrame(void) {
             float cg = (sTotal > 0) ? 0.50f : 0.30f;
             float cb = (sTotal > 0) ? 0.55f : 0.30f;
             sti = emitString(stv, sti, &g_gc, countLabel, countLen,
-                             countX, textY, gw, gh, cr, cg, cb);
+                             offX + countX, offY + textY, gw, gh, cr, cg, cb);
         }
 
         sti = emitGlyph(stv, sti, &g_gc, 'x',
-                        closeX, textY, gw, gh, 0.50f, 0.50f, 0.55f);
+                        offX + closeX, offY + textY, gw, gh, 0.50f, 0.50f, 0.55f);
 
         if (sti > 0) {
             glEnable(GL_BLEND);
@@ -636,13 +667,13 @@ void drawFrame(void) {
         int labelLen = 13;
         float menuW = padX * 2.0f + (float)labelLen * gw;
 
-        // Clamp to content area (viewport minus padding).
-        float vpW = padL + cols * gw, vpH = padT + rows * gh;
+        // Clamp to content area (centered grid bounds).
+        float vpW = offX + cols * gw, vpH = offY + rows * gh;
         float menuX = g_ctx_menu_x, menuY = g_ctx_menu_y;
         if (menuX + menuW > vpW) menuX = vpW - menuW;
         if (menuY + itemH > vpH) menuY = vpH - itemH;
-        if (menuX < padL) menuX = padL;
-        if (menuY < padT) menuY = padT;
+        if (menuX < offX) menuX = offX;
+        if (menuY < offY) menuY = offY;
 
         // Solid pass: background + optional hover highlight.
         Vertex cmBg[12];

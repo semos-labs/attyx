@@ -337,23 +337,8 @@ NSString* const kShaderSource =
 }
 
 - (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
-    if (g_cell_pt_w <= 0 || g_cell_pt_h <= 0) return frameSize;
-
-    NSRect frameRect = NSMakeRect(0, 0, frameSize.width, frameSize.height);
-    NSRect contentRect = [sender contentRectForFrameRect:frameRect];
-
-    int snappedCols = (int)((contentRect.size.width  - g_padding_left - g_padding_right)  / g_cell_pt_w);
-    int snappedRows = (int)((contentRect.size.height - g_padding_top  - g_padding_bottom) / g_cell_pt_h);
-    if (snappedCols < 1) snappedCols = 1;
-    if (snappedRows < 1) snappedRows = 1;
-    if (snappedCols > ATTYX_MAX_COLS) snappedCols = ATTYX_MAX_COLS;
-    if (snappedRows > ATTYX_MAX_ROWS) snappedRows = ATTYX_MAX_ROWS;
-
-    contentRect.size.width  = snappedCols * g_cell_pt_w + g_padding_left + g_padding_right;
-    contentRect.size.height = snappedRows * g_cell_pt_h + g_padding_top  + g_padding_bottom;
-
-    NSRect snappedFrame = [sender frameRectForContentRect:contentRect];
-    return snappedFrame.size;
+    (void)sender;
+    return frameSize;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {

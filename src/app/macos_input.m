@@ -21,8 +21,16 @@ static inline int clampInt(int val, int lo, int hi) {
 static void mouseCell(NSEvent *event, NSView *view, int *outCol, int *outRow) {
     NSPoint loc = [view convertPoint:event.locationInWindow fromView:nil];
     loc.y = view.bounds.size.height - loc.y;
-    int col = (int)((loc.x - g_padding_left) / g_cell_pt_w) + 1;
-    int row = (int)((loc.y - g_padding_top)  / g_cell_pt_h) + 1;
+    float availW = (float)view.bounds.size.width  - g_padding_left - g_padding_right;
+    float availH = (float)view.bounds.size.height - g_padding_top  - g_padding_bottom;
+    float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
+    float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = g_padding_left + cx;
+    float offY = g_padding_top  + cy;
+    int col = (int)((loc.x - offX) / g_cell_pt_w) + 1;
+    int row = (int)((loc.y - offY) / g_cell_pt_h) + 1;
     *outCol = clampInt(col, 1, g_cols);
     *outRow = clampInt(row, 1, g_rows);
 }
@@ -30,8 +38,16 @@ static void mouseCell(NSEvent *event, NSView *view, int *outCol, int *outRow) {
 static void mouseCell0(NSEvent *event, NSView *view, int *outCol, int *outRow) {
     NSPoint loc = [view convertPoint:event.locationInWindow fromView:nil];
     loc.y = view.bounds.size.height - loc.y;
-    int col = (int)((loc.x - g_padding_left) / g_cell_pt_w);
-    int row = (int)((loc.y - g_padding_top)  / g_cell_pt_h);
+    float availW = (float)view.bounds.size.width  - g_padding_left - g_padding_right;
+    float availH = (float)view.bounds.size.height - g_padding_top  - g_padding_bottom;
+    float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
+    float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = g_padding_left + cx;
+    float offY = g_padding_top  + cy;
+    int col = (int)((loc.x - offX) / g_cell_pt_w);
+    int row = (int)((loc.y - offY) / g_cell_pt_h);
     *outCol = clampInt(col, 0, g_cols - 1);
     *outRow = clampInt(row, 0, g_rows - 1);
 }

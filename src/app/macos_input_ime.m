@@ -86,7 +86,15 @@
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
     int row = g_ime_composing ? g_ime_anchor_row : g_cursor_row;
     int col = g_ime_composing ? g_ime_anchor_col : g_cursor_col;
-    NSRect cellRect = NSMakeRect(g_padding_left + col * g_cell_pt_w, g_padding_top + (row + 1) * g_cell_pt_h, g_cell_pt_w, g_cell_pt_h);
+    float availW = (float)self.bounds.size.width  - g_padding_left - g_padding_right;
+    float availH = (float)self.bounds.size.height - g_padding_top  - g_padding_bottom;
+    float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
+    float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    float offX = g_padding_left + cx;
+    float offY = g_padding_top  + cy;
+    NSRect cellRect = NSMakeRect(offX + col * g_cell_pt_w, offY + (row + 1) * g_cell_pt_h, g_cell_pt_w, g_cell_pt_h);
     NSRect screenRect = [self.window convertRectToScreen:[self convertRect:cellRect toView:nil]];
     return screenRect;
 }
