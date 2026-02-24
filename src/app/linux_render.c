@@ -28,6 +28,9 @@ static int          g_prev_cursor_shape = -1;
 static int          g_prev_cursor_vis = -1;
 static int          g_blink_on = 1;
 static double       g_blink_last_toggle = 0.0;
+static float        g_trail_x = 0, g_trail_y = 0;
+static int          g_trail_active = 0;
+static double       g_trail_last_time = 0.0;
 int                 g_full_redraw = 1;
 static int          g_alloc_rows = 0;
 static int          g_alloc_cols = 0;
@@ -153,7 +156,7 @@ void drawFrame(void) {
         g_full_redraw = 1;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open) return;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active) return;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -261,6 +264,96 @@ void drawFrame(void) {
         g_bg_verts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
         g_bg_verts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
         bgVertCount += 6;
+    }
+
+    // Cursor trail effect (Neovide-style: stretched comet tail)
+    if (g_cursor_trail && cursorChanged && g_prev_cursor_row >= 0) {
+        int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);
+        if (cellDist > 1) {
+            g_trail_x = offX + g_prev_cursor_col * gw;
+            g_trail_y = offY + g_prev_cursor_row * gh;
+            g_trail_active = 1;
+            g_trail_last_time = now;
+        }
+    }
+    if (g_trail_active && g_cursor_trail) {
+        float targetX = offX + curCol * gw;
+        float targetY = offY + curRow * gh;
+        float dt = (float)(now - g_trail_last_time);
+        g_trail_last_time = now;
+        float speed = 14.0f;
+        float t = 1.0f - expf(-speed * dt);
+        g_trail_x += (targetX - g_trail_x) * t;
+        g_trail_y += (targetY - g_trail_y) * t;
+        float dx = targetX - g_trail_x;
+        float dy = targetY - g_trail_y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist < 0.5f) {
+            g_trail_active = 0;
+        } else {
+            float cr_t, cg_t, cb_t;
+            if (g_theme_cursor_r >= 0) {
+                cr_t = g_theme_cursor_r / 255.0f;
+                cg_t = g_theme_cursor_g / 255.0f;
+                cb_t = g_theme_cursor_b / 255.0f;
+            } else {
+                cr_t = 0.86f; cg_t = 0.86f; cb_t = 0.86f;
+            }
+
+            float alpha = 1.0f;
+
+            // Cursor shape dimensions for the trail cross-axis
+            float cw = gw, ch = gh;   // block (cases 0,1)
+            float cyOff = 0;          // y offset within cell
+            float cxOff = 0;          // x offset within cell
+            switch (curShape) {
+                case 2: case 3: { // underline
+                    float th = fmaxf(2.0f, 1.0f);
+                    cyOff = gh - th;
+                    ch = th;
+                    break;
+                }
+                case 4: case 5: { // bar
+                    cw = fmaxf(2.0f, 1.0f);
+                    break;
+                }
+                default: break;
+            }
+
+            // Convex hull of cursor rect at trail pos and cursor pos (hexagon)
+            float tx0 = g_trail_x + cxOff, ty0 = g_trail_y + cyOff;
+            float tx1 = tx0 + cw,           ty1 = ty0 + ch;
+            float cx0 = targetX + cxOff,     cy0 = targetY + cyOff;
+            float cx1 = cx0 + cw,            cy1 = cy0 + ch;
+
+            float hex[6][2];
+            if (dx >= 0 && dy >= 0) {
+                hex[0][0]=tx0; hex[0][1]=ty0; hex[1][0]=tx1; hex[1][1]=ty0;
+                hex[2][0]=cx1; hex[2][1]=cy0; hex[3][0]=cx1; hex[3][1]=cy1;
+                hex[4][0]=cx0; hex[4][1]=cy1; hex[5][0]=tx0; hex[5][1]=ty1;
+            } else if (dx >= 0) {
+                hex[0][0]=tx0; hex[0][1]=ty1; hex[1][0]=tx1; hex[1][1]=ty1;
+                hex[2][0]=cx1; hex[2][1]=cy1; hex[3][0]=cx1; hex[3][1]=cy0;
+                hex[4][0]=cx0; hex[4][1]=cy0; hex[5][0]=tx0; hex[5][1]=ty0;
+            } else if (dy >= 0) {
+                hex[0][0]=tx1; hex[0][1]=ty0; hex[1][0]=tx0; hex[1][1]=ty0;
+                hex[2][0]=cx0; hex[2][1]=cy0; hex[3][0]=cx0; hex[3][1]=cy1;
+                hex[4][0]=cx1; hex[4][1]=cy1; hex[5][0]=tx1; hex[5][1]=ty1;
+            } else {
+                hex[0][0]=tx1; hex[0][1]=ty1; hex[1][0]=tx0; hex[1][1]=ty1;
+                hex[2][0]=cx0; hex[2][1]=cy1; hex[3][0]=cx0; hex[3][1]=cy0;
+                hex[4][0]=cx1; hex[4][1]=cy0; hex[5][0]=tx1; hex[5][1]=ty0;
+            }
+
+            if (bgVertCount + 12 <= g_bg_vert_cap) {
+                for (int ti = 0; ti < 4; ti++) {
+                    g_bg_verts[bgVertCount++] = (Vertex){ hex[0][0],hex[0][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                    g_bg_verts[bgVertCount++] = (Vertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                    g_bg_verts[bgVertCount++] = (Vertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                }
+            }
+            g_full_redraw = 1;
+        }
     }
 
     // Hyperlink underlines: OSC 8 (always visible) + detected URLs (on hover)
@@ -397,6 +490,12 @@ void drawFrame(void) {
                     fr = g_theme_sel_fg_r / 255.0f;
                     fg = g_theme_sel_fg_g / 255.0f;
                     fb = g_theme_sel_fg_b / 255.0f;
+                } else if (drawCursor && row == curRow && col == curCol
+                           && (curShape == 0 || curShape == 1)) {
+                    // Block cursor: use cell bg for contrast
+                    fr = cell->bg_r / 255.0f;
+                    fg = cell->bg_g / 255.0f;
+                    fb = cell->bg_b / 255.0f;
                 } else {
                     fr = cell->fg_r / 255.0f;
                     fg = cell->fg_g / 255.0f;
@@ -423,7 +522,7 @@ void drawFrame(void) {
     g_prev_cursor_col   = curCol;
     g_prev_cursor_shape = curShape;
     g_prev_cursor_vis   = curVis;
-    g_full_redraw = 0;
+    if (!g_trail_active) g_full_redraw = 0;
 
     // Window title update
     if (g_title_changed && g_window) {

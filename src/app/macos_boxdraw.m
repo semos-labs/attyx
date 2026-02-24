@@ -61,80 +61,82 @@ static void drawSegs(CGContextRef ctx, uint8_t enc,
 static int drawDouble(CGContextRef ctx, uint32_t cp,
                       float gw, float gh, float cx, float cy,
                       float lw, float off) {
-    // For mixed single+double, the single line is at center; double lines at ±off
+    // e = half stroke width; extend each segment past its junction point by e
+    // so perpendicular segments overlap cleanly (same trick as drawSegs ext_h/ext_v).
+    float e = roundf(lw * 0.5f);
     switch (cp) {
     case 0x2550: HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break; // ═
     case 0x2551: VLINE(0,gh,cx-off,lw); VLINE(0,gh,cx+off,lw); break; // ║
 
     // Corners — double both directions
     case 0x2554: // ╔ down+right
-        VLINE(0,cy+off,cx-off,lw); VLINE(0,cy-off,cx+off,lw);
-        HLINE(cx-off,gw,cy+off,lw); HLINE(cx+off,gw,cy-off,lw); break;
+        VLINE(0,cy+off+e,cx-off,lw); VLINE(0,cy-off+e,cx+off,lw);
+        HLINE(cx-off-e,gw,cy+off,lw); HLINE(cx+off-e,gw,cy-off,lw); break;
     case 0x2557: // ╗ down+left
-        VLINE(0,cy+off,cx+off,lw); VLINE(0,cy-off,cx-off,lw);
-        HLINE(0,cx+off,cy+off,lw); HLINE(0,cx-off,cy-off,lw); break;
+        VLINE(0,cy+off+e,cx+off,lw); VLINE(0,cy-off+e,cx-off,lw);
+        HLINE(0,cx+off+e,cy+off,lw); HLINE(0,cx-off+e,cy-off,lw); break;
     case 0x255A: // ╚ up+right
-        VLINE(cy-off,gh,cx-off,lw); VLINE(cy+off,gh,cx+off,lw);
-        HLINE(cx-off,gw,cy-off,lw); HLINE(cx+off,gw,cy+off,lw); break;
+        VLINE(cy-off-e,gh,cx-off,lw); VLINE(cy+off-e,gh,cx+off,lw);
+        HLINE(cx-off-e,gw,cy-off,lw); HLINE(cx+off-e,gw,cy+off,lw); break;
     case 0x255D: // ╝ up+left
-        VLINE(cy-off,gh,cx+off,lw); VLINE(cy+off,gh,cx-off,lw);
-        HLINE(0,cx+off,cy-off,lw); HLINE(0,cx-off,cy+off,lw); break;
+        VLINE(cy-off-e,gh,cx+off,lw); VLINE(cy+off-e,gh,cx-off,lw);
+        HLINE(0,cx+off+e,cy-off,lw); HLINE(0,cx-off+e,cy+off,lw); break;
 
     // T-junctions — double all three directions
     case 0x2560: // ╠ vert+right
-        VLINE(0,cy-off,cx-off,lw); VLINE(cy+off,gh,cx-off,lw);
+        VLINE(0,cy-off+e,cx-off,lw); VLINE(cy+off-e,gh,cx-off,lw);
         VLINE(0,gh,cx+off,lw);
-        HLINE(cx-off,gw,cy-off,lw); HLINE(cx-off,gw,cy+off,lw); break;
+        HLINE(cx-off-e,gw,cy-off,lw); HLINE(cx-off-e,gw,cy+off,lw); break;
     case 0x2563: // ╣ vert+left
-        VLINE(0,cy-off,cx+off,lw); VLINE(cy+off,gh,cx+off,lw);
+        VLINE(0,cy-off+e,cx+off,lw); VLINE(cy+off-e,gh,cx+off,lw);
         VLINE(0,gh,cx-off,lw);
-        HLINE(0,cx+off,cy-off,lw); HLINE(0,cx+off,cy+off,lw); break;
+        HLINE(0,cx+off+e,cy-off,lw); HLINE(0,cx+off+e,cy+off,lw); break;
     case 0x2566: // ╦ down+horiz
         HLINE(0,gw,cy+off,lw); HLINE(0,gw,cy-off,lw);
-        VLINE(0,cy+off,cx-off,lw); VLINE(0,cy-off,cx+off,lw); break;
+        VLINE(0,cy+off+e,cx-off,lw); VLINE(0,cy-off+e,cx+off,lw); break;
     case 0x2569: // ╩ up+horiz
         HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw);
-        VLINE(cy-off,gh,cx-off,lw); VLINE(cy+off,gh,cx+off,lw); break;
+        VLINE(cy-off-e,gh,cx-off,lw); VLINE(cy+off-e,gh,cx+off,lw); break;
     case 0x256C: // ╬ cross
         HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw);
-        VLINE(0,cy-off,cx-off,lw); VLINE(cy+off,gh,cx-off,lw);
-        VLINE(0,cy-off,cx+off,lw); VLINE(cy+off,gh,cx+off,lw); break;
+        VLINE(0,cy-off+e,cx-off,lw); VLINE(cy+off-e,gh,cx-off,lw);
+        VLINE(0,cy-off+e,cx+off,lw); VLINE(cy+off-e,gh,cx+off,lw); break;
 
     // Mixed single+double corners (single down/up + double horiz)
     case 0x2552: // ╒ single-down, double-right
-        VLINE(0,cy+off,cx,lw); HLINE(cx,gw,cy-off,lw); HLINE(cx,gw,cy+off,lw); break;
+        VLINE(0,cy+off+e,cx,lw); HLINE(cx-e,gw,cy-off,lw); HLINE(cx-e,gw,cy+off,lw); break;
     case 0x2555: // ╕ single-down, double-left
-        VLINE(0,cy+off,cx,lw); HLINE(0,cx,cy-off,lw); HLINE(0,cx,cy+off,lw); break;
+        VLINE(0,cy+off+e,cx,lw); HLINE(0,cx+e,cy-off,lw); HLINE(0,cx+e,cy+off,lw); break;
     case 0x2558: // ╘ single-up, double-right
-        VLINE(cy-off,gh,cx,lw); HLINE(cx,gw,cy-off,lw); HLINE(cx,gw,cy+off,lw); break;
+        VLINE(cy-off-e,gh,cx,lw); HLINE(cx-e,gw,cy-off,lw); HLINE(cx-e,gw,cy+off,lw); break;
     case 0x255B: // ╛ single-up, double-left
-        VLINE(cy-off,gh,cx,lw); HLINE(0,cx,cy-off,lw); HLINE(0,cx,cy+off,lw); break;
+        VLINE(cy-off-e,gh,cx,lw); HLINE(0,cx+e,cy-off,lw); HLINE(0,cx+e,cy+off,lw); break;
     // Mixed single+double corners (double down/up + single horiz)
     case 0x2553: // ╓ double-down, single-right
-        HLINE(cx-off,gw,cy,lw); VLINE(0,cy,cx-off,lw); VLINE(0,cy,cx+off,lw); break;
+        HLINE(cx-off-e,gw,cy,lw); VLINE(0,cy+e,cx-off,lw); VLINE(0,cy+e,cx+off,lw); break;
     case 0x2556: // ╖ double-down, single-left
-        HLINE(0,cx+off,cy,lw); VLINE(0,cy,cx-off,lw); VLINE(0,cy,cx+off,lw); break;
+        HLINE(0,cx+off+e,cy,lw); VLINE(0,cy+e,cx-off,lw); VLINE(0,cy+e,cx+off,lw); break;
     case 0x2559: // ╙ double-up, single-right
-        HLINE(cx-off,gw,cy,lw); VLINE(cy,gh,cx-off,lw); VLINE(cy,gh,cx+off,lw); break;
+        HLINE(cx-off-e,gw,cy,lw); VLINE(cy-e,gh,cx-off,lw); VLINE(cy-e,gh,cx+off,lw); break;
     case 0x255C: // ╜ double-up, single-left
-        HLINE(0,cx+off,cy,lw); VLINE(cy,gh,cx-off,lw); VLINE(cy,gh,cx+off,lw); break;
+        HLINE(0,cx+off+e,cy,lw); VLINE(cy-e,gh,cx-off,lw); VLINE(cy-e,gh,cx+off,lw); break;
     // Mixed T-junctions
     case 0x255E: // ╞ single-vert, double-right
-        VLINE(0,gh,cx,lw); HLINE(cx,gw,cy-off,lw); HLINE(cx,gw,cy+off,lw); break;
+        VLINE(0,gh,cx,lw); HLINE(cx-e,gw,cy-off,lw); HLINE(cx-e,gw,cy+off,lw); break;
     case 0x2561: // ╡ single-vert, double-left
-        VLINE(0,gh,cx,lw); HLINE(0,cx,cy-off,lw); HLINE(0,cx,cy+off,lw); break;
+        VLINE(0,gh,cx,lw); HLINE(0,cx+e,cy-off,lw); HLINE(0,cx+e,cy+off,lw); break;
     case 0x255F: // ╟ double-vert, single-right
-        VLINE(0,gh,cx-off,lw); VLINE(0,gh,cx+off,lw); HLINE(cx-off,gw,cy,lw); break;
+        VLINE(0,gh,cx-off,lw); VLINE(0,gh,cx+off,lw); HLINE(cx-off-e,gw,cy,lw); break;
     case 0x2562: // ╢ double-vert, single-left
-        VLINE(0,gh,cx-off,lw); VLINE(0,gh,cx+off,lw); HLINE(0,cx+off,cy,lw); break;
+        VLINE(0,gh,cx-off,lw); VLINE(0,gh,cx+off,lw); HLINE(0,cx+off+e,cy,lw); break;
     case 0x2564: // ╤ single-down, double-horiz
-        VLINE(0,cy,cx,lw); HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break;
+        VLINE(0,cy+e,cx,lw); HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break;
     case 0x2567: // ╧ single-up, double-horiz
-        VLINE(cy,gh,cx,lw); HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break;
+        VLINE(cy-e,gh,cx,lw); HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break;
     case 0x2565: // ╥ double-down, single-horiz
-        HLINE(0,gw,cy,lw); VLINE(0,cy,cx-off,lw); VLINE(0,cy,cx+off,lw); break;
+        HLINE(0,gw,cy,lw); VLINE(0,cy+e,cx-off,lw); VLINE(0,cy+e,cx+off,lw); break;
     case 0x2568: // ╨ double-up, single-horiz
-        HLINE(0,gw,cy,lw); VLINE(cy,gh,cx-off,lw); VLINE(cy,gh,cx+off,lw); break;
+        HLINE(0,gw,cy,lw); VLINE(cy-e,gh,cx-off,lw); VLINE(cy-e,gh,cx+off,lw); break;
     case 0x256A: // ╪ single-vert, double-horiz
         VLINE(0,gh,cx,lw); HLINE(0,gw,cy-off,lw); HLINE(0,gw,cy+off,lw); break;
     case 0x256B: // ╫ double-vert, single-horiz
@@ -191,7 +193,7 @@ int renderBoxDraw(CGContextRef ctx, uint32_t cp, int gw_i, int gh_i, float scale
     float gw = (float)gw_i, gh = (float)gh_i;
     float lw = roundf(scale);          // light stroke = 1 logical pixel
     float hw = roundf(scale * 2.0f);   // heavy stroke = 2 logical pixels
-    float off = roundf(lw + 1.0f);     // double-line offset from center
+    float off = lw;                     // double-line offset = stroke width → gap equals stroke
     float cx = roundf(gw * 0.5f);
     float cy = roundf(gh * 0.5f);
 

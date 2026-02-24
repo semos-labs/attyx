@@ -384,6 +384,15 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 for (int dx = x0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
+        } else if (cp >= 0x2591 && cp <= 0x2593) {
+            // SHADE CHARACTERS — render as solid fills at fractional brightness.
+            // ░ = 25%, ▒ = 50%, ▓ = 75%
+            static const uint8_t shadeVal[] = {64, 128, 191};
+            uint8_t v = shadeVal[cp - 0x2591];
+            for (int dy = 0; dy < gh; dy++)
+                for (int dx = 0; dx < gw; dx++)
+                    pixels[dy * gw + dx] = v;
+            drawn = true;
         } else if (cp >= 0x2596 && cp <= 0x259F) {
             // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
             static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};

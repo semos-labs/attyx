@@ -93,6 +93,10 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.cursor_blink = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-blink")) {
             result.config.cursor_blink = false;
+        } else if (std.mem.eql(u8, arg, "--cursor-trail")) {
+            result.config.cursor_trail = true;
+        } else if (std.mem.eql(u8, arg, "--no-cursor-trail")) {
+            result.config.cursor_trail = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             result.config.program = requireArg(args, &i, "--shell");
         } else if (std.mem.eql(u8, arg, "--background-opacity")) {
@@ -201,6 +205,10 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
             config.cursor_blink = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-blink")) {
             config.cursor_blink = false;
+        } else if (std.mem.eql(u8, arg, "--cursor-trail")) {
+            config.cursor_trail = true;
+        } else if (std.mem.eql(u8, arg, "--no-cursor-trail")) {
+            config.cursor_trail = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             i += 1;
             if (i < args.len) config.program = args[i];
@@ -303,6 +311,8 @@ pub fn printUsage() void {
         \\  --cursor-shape <shape>     Cursor shape: block, beam, underline
         \\  --cursor-blink / --no-cursor-blink
         \\                             Enable/disable cursor blinking
+        \\  --cursor-trail / --no-cursor-trail
+        \\                             Enable/disable cursor trail effect
         \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
         \\  --background-opacity <f>   Background opacity 0.0-1.0 (default: 1.0)
         \\  --background-blur <int>    Background blur radius when opacity < 1 (default: 30)

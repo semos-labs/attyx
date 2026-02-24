@@ -21,7 +21,8 @@ pub fn diff(old: AppConfig, new: AppConfig) ConfigDiff {
         !sameFallback(old, new);
     return .{
         .cursor_changed = old.cursor_shape != new.cursor_shape or
-            old.cursor_blink != new.cursor_blink,
+            old.cursor_blink != new.cursor_blink or
+            old.cursor_trail != new.cursor_trail,
         .scrollback_changed = old.scrollback_lines != new.scrollback_lines,
         .font_changed = font_changed,
         .reflow_changed = old.reflow_enabled != new.reflow_enabled,

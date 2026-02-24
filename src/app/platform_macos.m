@@ -41,6 +41,7 @@ volatile int g_sel_active = 0;
 
 volatile int g_cursor_shape   = 0;
 volatile int g_cursor_visible = 1;
+volatile int g_cursor_trail   = 0;
 
 char         g_title_buf[ATTYX_TITLE_MAX];
 volatile int g_title_len     = 0;
@@ -225,6 +226,23 @@ NSString* const kShaderSource =
  "}\n";
 
 // ---------------------------------------------------------------------------
+// Spawn new window (new process)
+// ---------------------------------------------------------------------------
+
+void attyx_spawn_new_window(void) {
+    NSString* path = NSProcessInfo.processInfo.arguments[0];
+    const char* cpath = [path fileSystemRepresentation];
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child: exec a fresh attyx process.
+        char* argv[] = { (char*)cpath, NULL };
+        execv(cpath, argv);
+        _exit(1); // exec failed
+    }
+    // Parent continues; ignore child (auto-reaped).
+}
+
+// ---------------------------------------------------------------------------
 // App Delegate
 // ---------------------------------------------------------------------------
 
@@ -364,6 +382,11 @@ NSString* const kShaderSource =
     attyx_trigger_config_reload();
 }
 
+- (void)spawnNewWindow:(id)sender {
+    (void)sender;
+    attyx_spawn_new_window();
+}
+
 @end
 
 // ---------------------------------------------------------------------------
@@ -397,6 +420,17 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                            action:@selector(terminate:)
                     keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
+
+        NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:windowMenuItem];
+        NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+        [windowMenu addItemWithTitle:@"New Window"
+                              action:@selector(spawnNewWindow:)
+                       keyEquivalent:@"n"];
+        [windowMenu addItemWithTitle:@"Close Window"
+                              action:@selector(performClose:)
+                       keyEquivalent:@"w"];
+        [windowMenuItem setSubmenu:windowMenu];
 
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:editMenuItem];

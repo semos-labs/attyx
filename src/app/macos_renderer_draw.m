@@ -100,7 +100,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                                                      options:MTLResourceStorageModeShared];
         }
 
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active) {
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -362,6 +362,12 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                         fr = g_theme_sel_fg_r / 255.0f;
                         fg = g_theme_sel_fg_g / 255.0f;
                         fb = g_theme_sel_fg_b / 255.0f;
+                    } else if (drawCursor && row == curRow && col == curCol
+                               && (curShape == 0 || curShape == 1)) {
+                        // Block cursor: use cell bg for contrast
+                        fr = cell->bg_r / 255.0f;
+                        fg = cell->bg_g / 255.0f;
+                        fb = cell->bg_b / 255.0f;
                     } else {
                         fr = cell->fg_r / 255.0f;
                         fg = cell->fg_g / 255.0f;
@@ -384,11 +390,101 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             ci = _totalColorVerts;
         }
 
+        // Cursor trail effect (Neovide-style: stretched comet tail)
+        if (g_cursor_trail && cursorChanged && _prevCursorRow >= 0) {
+            int cellDist = abs(curRow - _prevCursorRow) + abs(curCol - _prevCursorCol);
+            if (cellDist > 1) {
+                _trailX = offX + _prevCursorCol * gw;
+                _trailY = offY + _prevCursorRow * gh;
+                _trailActive = YES;
+                _trailLastTime = now;
+            }
+        }
+        if (_trailActive && g_cursor_trail) {
+            float targetX = offX + curCol * gw;
+            float targetY = offY + curRow * gh;
+            float dt = (float)(now - _trailLastTime);
+            _trailLastTime = now;
+            float speed = 14.0f;
+            float t = 1.0f - expf(-speed * dt);
+            _trailX += (targetX - _trailX) * t;
+            _trailY += (targetY - _trailY) * t;
+            float dx = targetX - _trailX;
+            float dy = targetY - _trailY;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist < 0.5f) {
+                _trailActive = NO;
+            } else {
+                float cr_t, cg_t, cb_t;
+                if (g_theme_cursor_r >= 0) {
+                    cr_t = g_theme_cursor_r / 255.0f;
+                    cg_t = g_theme_cursor_g / 255.0f;
+                    cb_t = g_theme_cursor_b / 255.0f;
+                } else {
+                    cr_t = 0.86f; cg_t = 0.86f; cb_t = 0.86f;
+                }
+
+                float alpha = 1.0f;
+
+                // Cursor shape dimensions for the trail cross-axis
+                float cw = gw, ch = gh;   // block (cases 0,1)
+                float cyOff = 0;          // y offset within cell
+                float cxOff = 0;          // x offset within cell
+                switch (curShape) {
+                    case 2: case 3: { // underline
+                        float th = fmaxf(2.0f, 1.0f);
+                        cyOff = gh - th;
+                        ch = th;
+                        break;
+                    }
+                    case 4: case 5: { // bar
+                        cw = fmaxf(2.0f, 1.0f);
+                        break;
+                    }
+                    default: break;
+                }
+
+                // Convex hull of cursor rect at trail pos and cursor pos (hexagon)
+                float tx0 = _trailX + cxOff, ty0 = _trailY + cyOff;
+                float tx1 = tx0 + cw,        ty1 = ty0 + ch;
+                float cx0 = targetX + cxOff,  cy0 = targetY + cyOff;
+                float cx1 = cx0 + cw,         cy1 = cy0 + ch;
+
+                float hex[6][2];
+                if (dx >= 0 && dy >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty0; hex[1][0]=tx1; hex[1][1]=ty0;
+                    hex[2][0]=cx1; hex[2][1]=cy0; hex[3][0]=cx1; hex[3][1]=cy1;
+                    hex[4][0]=cx0; hex[4][1]=cy1; hex[5][0]=tx0; hex[5][1]=ty1;
+                } else if (dx >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty1; hex[1][0]=tx1; hex[1][1]=ty1;
+                    hex[2][0]=cx1; hex[2][1]=cy1; hex[3][0]=cx1; hex[3][1]=cy0;
+                    hex[4][0]=cx0; hex[4][1]=cy0; hex[5][0]=tx0; hex[5][1]=ty0;
+                } else if (dy >= 0) {
+                    hex[0][0]=tx1; hex[0][1]=ty0; hex[1][0]=tx0; hex[1][1]=ty0;
+                    hex[2][0]=cx0; hex[2][1]=cy0; hex[3][0]=cx0; hex[3][1]=cy1;
+                    hex[4][0]=cx1; hex[4][1]=cy1; hex[5][0]=tx1; hex[5][1]=ty1;
+                } else {
+                    hex[0][0]=tx1; hex[0][1]=ty1; hex[1][0]=tx0; hex[1][1]=ty1;
+                    hex[2][0]=cx0; hex[2][1]=cy1; hex[3][0]=cx0; hex[3][1]=cy0;
+                    hex[4][0]=cx1; hex[4][1]=cy0; hex[5][0]=tx1; hex[5][1]=ty0;
+                }
+
+                if (bgVertCount + 12 <= _metalBufCapBg) {
+                    for (int ti = 0; ti < 4; ti++) {
+                        _bgVerts[bgVertCount++] = (Vertex){ hex[0][0],hex[0][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                        _bgVerts[bgVertCount++] = (Vertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                        _bgVerts[bgVertCount++] = (Vertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr_t,cg_t,cb_t,alpha };
+                    }
+                }
+                _fullRedrawNeeded = YES;
+            }
+        }
+
         _prevCursorRow     = curRow;
         _prevCursorCol     = curCol;
         _prevCursorShape   = curShape;
         _prevCursorVisible = curVisible;
-        _fullRedrawNeeded  = NO;
+        if (!_trailActive) _fullRedrawNeeded = NO;
 
         if (g_title_changed) {
             int tlen = g_title_len;

@@ -82,6 +82,7 @@ pub const AppConfig = struct {
     // [cursor]
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,
+    cursor_trail: bool = false,
 
     // [background]
     background_opacity: f32 = 1.0,
@@ -395,6 +396,14 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
             config.cursor_blink = v.bool;
         } else {
             std.debug.print("error: {s}: cursor.blink must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "cursor", "trail")) |v| {
+        if (v == .bool) {
+            config.cursor_trail = v.bool;
+        } else {
+            std.debug.print("error: {s}: cursor.trail must be a boolean\n", .{path});
             return error.ConfigValidationError;
         }
     }

@@ -35,6 +35,7 @@ volatile int g_sel_active = 0;
 
 volatile int g_cursor_shape   = 0;
 volatile int g_cursor_visible = 1;
+volatile int g_cursor_trail   = 0;
 
 char         g_title_buf[ATTYX_TITLE_MAX];
 volatile int g_title_len     = 0;
@@ -213,6 +214,23 @@ static void linux_set_window_icon(GLFWwindow* win) {
     GLFWimage img = { w, h, pixels };
     glfwSetWindowIcon(win, 1, &img);
     free(pixels);
+}
+
+// ---------------------------------------------------------------------------
+// Spawn new window (new process)
+// ---------------------------------------------------------------------------
+
+void attyx_spawn_new_window(void) {
+    char exe[4096];
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len <= 0) return;
+    exe[len] = '\0';
+    pid_t pid = fork();
+    if (pid == 0) {
+        char* argv[] = { exe, NULL };
+        execv(exe, argv);
+        _exit(1);
+    }
 }
 
 // ---------------------------------------------------------------------------

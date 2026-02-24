@@ -126,6 +126,8 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("freetype2", .{});
         exe.root_module.linkSystemLibrary("fontconfig", .{});
         exe.root_module.linkSystemLibrary("libpng", .{});
+        exe.root_module.linkSystemLibrary("pthread", .{});
+        exe.root_module.linkSystemLibrary("dl", .{});
     }
 
     // This declares intent for the executable to be installed into the

@@ -38,6 +38,7 @@ const PtyThreadCtx = struct {
     // Applied live settings (updated after each successful reload)
     applied_cursor_shape: CursorShapeConfig,
     applied_cursor_blink: bool,
+    applied_cursor_trail: bool,
     applied_scrollback_lines: u32,
     // Theme (registry lives in run(); active_theme updated on reload)
     theme_registry: *ThemeRegistry,
@@ -148,6 +149,9 @@ pub fn run(
     // Publish font config to C bridge
     publishFontConfig(&config);
 
+    // Publish cursor trail config
+    c.g_cursor_trail = @intFromBool(config.cursor_trail);
+
     // Publish background transparency config
     g_background_opacity = config.background_opacity;
     g_background_blur    = @intCast(config.background_blur);
@@ -230,6 +234,7 @@ pub fn run(
         .args = args,
         .applied_cursor_shape = config.cursor_shape,
         .applied_cursor_blink = config.cursor_blink,
+        .applied_cursor_trail = config.cursor_trail,
         .applied_scrollback_lines = @intCast(engine.state.scrollback.max_lines),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
@@ -570,6 +575,10 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
         ctx.engine.state.cursor_shape = cursorShapeFromConfig(new_cfg.cursor_shape, new_cfg.cursor_blink);
         ctx.applied_cursor_shape = new_cfg.cursor_shape;
         ctx.applied_cursor_blink = new_cfg.cursor_blink;
+    }
+    if (new_cfg.cursor_trail != ctx.applied_cursor_trail) {
+        c.g_cursor_trail = @intFromBool(new_cfg.cursor_trail);
+        ctx.applied_cursor_trail = new_cfg.cursor_trail;
     }
 
     // Scrollback — fully hot-reloadable via reallocate()

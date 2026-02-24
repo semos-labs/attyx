@@ -26,6 +26,9 @@
     int         _allocCols;
     BOOL        _blinkOn;
     CFAbsoluteTime _blinkLastToggle;
+    float       _trailX, _trailY;
+    BOOL        _trailActive;
+    CFAbsoluteTime _trailLastTime;
     int         _prevCursorShape;
     int         _prevCursorVisible;
     BOOL        _debugStats;

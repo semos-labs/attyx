@@ -127,6 +127,16 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         g_suppress_char = 1;
         return;
     }
+    if (ctrl && shift && key == GLFW_KEY_N) {
+        attyx_spawn_new_window();
+        g_suppress_char = 1;
+        return;
+    }
+    if (ctrl && shift && key == GLFW_KEY_W) {
+        glfwSetWindowShouldClose(g_window, 1);
+        g_suppress_char = 1;
+        return;
+    }
 
     snapViewport();
 

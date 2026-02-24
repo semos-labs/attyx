@@ -354,6 +354,15 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             float blockW = roundf((float)gw / 8.0f);
             CGContextFillRect(ctx, CGRectMake((float)gw - blockW, 0, blockW, (float)gh));
             drawn = true;
+        } else if (cp >= 0x2591 && cp <= 0x2593) {
+            // SHADE CHARACTERS — render as solid fills at fractional brightness.
+            // ░ = 25%, ▒ = 50%, ▓ = 75%
+            static const float shadeAlpha[] = {0.25f, 0.50f, 0.75f};
+            float a = shadeAlpha[cp - 0x2591];
+            CGContextSetGrayFillColor(ctx, 1.0f, a);
+            CGContextFillRect(ctx, CGRectMake(0, 0, (float)gw, (float)gh));
+            CGContextSetGrayFillColor(ctx, 1.0f, 1.0f); // restore
+            drawn = true;
         } else if (cp >= 0x2596 && cp <= 0x259F) {
             // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
             static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};

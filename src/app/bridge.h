@@ -20,6 +20,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows);
 // Update cursor position (called from PTY thread).
 void attyx_set_cursor(int row, int col);
 
+// Spawn a new attyx process (new window with fresh shell session).
+void attyx_spawn_new_window(void);
+
 // Signal the window to close (called from PTY thread on child exit).
 void attyx_request_quit(void);
 
@@ -78,6 +81,7 @@ extern volatile int g_sel_active;
 //        3=steady_underline, 4=blinking_bar, 5=steady_bar
 extern volatile int g_cursor_shape;
 extern volatile int g_cursor_visible;   // 1=visible, 0=hidden
+extern volatile int g_cursor_trail;     // 1=trail enabled, 0=disabled
 
 // Window title (written by PTY thread, read by renderer).
 #define ATTYX_TITLE_MAX 256
