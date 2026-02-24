@@ -173,6 +173,27 @@ extern volatile float g_background_opacity; // 0.0 = transparent, 1.0 = opaque
 extern volatile int   g_background_blur;    // >0 = blur enabled (macOS: NSVisualEffectView)
 extern volatile int   g_window_decorations; // 1 = show title bar, 0 = hide title bar
 
+// ---------------------------------------------------------------------------
+// Theme colors (written by Zig at startup and on config reload)
+// ---------------------------------------------------------------------------
+
+// Cursor color components (0–255). g_theme_cursor_r < 0 means "use foreground color".
+extern volatile int g_theme_cursor_r;
+extern volatile int g_theme_cursor_g;
+extern volatile int g_theme_cursor_b;
+
+// Selection highlight background. g_theme_sel_bg_set=0 means use renderer default.
+extern volatile int g_theme_sel_bg_set;
+extern volatile int g_theme_sel_bg_r;
+extern volatile int g_theme_sel_bg_g;
+extern volatile int g_theme_sel_bg_b;
+
+// Selection highlight foreground. g_theme_sel_fg_set=0 means use cell foreground.
+extern volatile int g_theme_sel_fg_set;
+extern volatile int g_theme_sel_fg_r;
+extern volatile int g_theme_sel_fg_g;
+extern volatile int g_theme_sel_fg_b;
+
 // Window padding in logical pixels (written by Zig at startup)
 extern volatile int g_padding_left;
 extern volatile int g_padding_right;
