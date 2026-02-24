@@ -327,30 +327,35 @@ void drawFrame(void) {
             float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
 
-            int slot = glyphCacheLookup(&g_gc, ch);
-            if (slot < 0) {
-                slot = glyphCacheRasterize(&g_gc, ch);
+            int rawSlot = glyphCacheLookup(&g_gc, ch);
+            if (rawSlot < 0) {
+                rawSlot = glyphCacheRasterize(&g_gc, ch);
                 atlasW = (float)g_gc.atlas_w;
             }
+
+            int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
+            int slot = rawSlot & ~GLYPH_WIDE_BIT;
 
             int ac = slot % atlasCols;
             int ar = slot / atlasCols;
             float atlasH = (float)g_gc.atlas_h;
-            float au0 = ac       * glyphW / atlasW;
-            float av0 = ar       * glyphH / atlasH;
-            float au1 = (ac + 1) * glyphW / atlasW;
-            float av1 = (ar + 1) * glyphH / atlasH;
+            float au0 = ac              * glyphW / atlasW;
+            float av0 = ar              * glyphH / atlasH;
+            float au1 = (ac + 1 + wide) * glyphW / atlasW;
+            float av1 = (ar + 1)        * glyphH / atlasH;
+
+            float x1w = wide ? x0 + 2.0f * gw : x1;
 
             float fr = cell->fg_r / 255.0f;
             float fg = cell->fg_g / 255.0f;
             float fb = cell->fg_b / 255.0f;
 
-            g_text_verts[ti+0] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
-            g_text_verts[ti+1] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-            g_text_verts[ti+2] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
-            g_text_verts[ti+3] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-            g_text_verts[ti+4] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
-            g_text_verts[ti+5] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+            g_text_verts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
+            g_text_verts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+            g_text_verts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+            g_text_verts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+            g_text_verts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
+            g_text_verts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
             ti += 6;
         }
         g_total_text_verts = ti;

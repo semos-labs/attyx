@@ -304,31 +304,39 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
 
-                int slot = glyphCacheLookup(&_glyphCache, ch);
-                if (slot < 0) {
-                    slot = glyphCacheRasterize(&_glyphCache, ch);
+                int rawSlot = glyphCacheLookup(&_glyphCache, ch);
+                if (rawSlot < 0) {
+                    rawSlot = glyphCacheRasterize(&_glyphCache, ch);
                     atlasW = (float)_glyphCache.atlas_w;
                 }
+
+                // Extract wide flag (bit 30) and actual atlas slot index
+                int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
+                int slot = rawSlot & ~GLYPH_WIDE_BIT;
 
                 int ac = slot % atlasCols;
                 int ar = slot / atlasCols;
                 float atlasH = (float)_glyphCache.atlas_h;
 
-                float au0 = ac       * glyphW / atlasW;
-                float av0 = ar       * glyphH / atlasH;
-                float au1 = (ac + 1) * glyphW / atlasW;
-                float av1 = (ar + 1) * glyphH / atlasH;
+                float au0 = ac             * glyphW / atlasW;
+                float av0 = ar             * glyphH / atlasH;
+                float au1 = (ac + 1 + wide)* glyphW / atlasW; // 2 cols wide for wide glyphs
+                float av1 = (ar + 1)       * glyphH / atlasH;
+
+                // Wide glyphs extend the quad into the next cell (Ghostty/WezTerm style).
+                // The next cell's content renders on top, covering overflow when non-empty.
+                float x1w = wide ? x0 + 2.0f * gw : x1;
 
                 float fr = cell->fg_r / 255.0f;
                 float fg = cell->fg_g / 255.0f;
                 float fb = cell->fg_b / 255.0f;
 
-                _textVerts[ti+0] = (Vertex){ x0,y0, au0,av0, fr,fg,fb,1 };
-                _textVerts[ti+1] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-                _textVerts[ti+2] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
-                _textVerts[ti+3] = (Vertex){ x1,y0, au1,av0, fr,fg,fb,1 };
-                _textVerts[ti+4] = (Vertex){ x1,y1, au1,av1, fr,fg,fb,1 };
-                _textVerts[ti+5] = (Vertex){ x0,y1, au0,av1, fr,fg,fb,1 };
+                _textVerts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
+                _textVerts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                _textVerts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+                _textVerts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                _textVerts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
+                _textVerts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
                 ti += 6;
             }
             _totalTextVerts = ti;
