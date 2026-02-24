@@ -258,8 +258,7 @@ pub const TerminalState = struct {
         // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
         if (cp == 0x231A or cp == 0x231B) return 2;
         if (cp >= 0x23E9 and cp <= 0x23F3) return 2;
-        if (cp >= 0x23F8 and cp <= 0x23FA) return 2;
-        if (cp >= 0x25FB and cp <= 0x25FE) return 2;
+        if (cp >= 0x25FD and cp <= 0x25FE) return 2;
         if (cp == 0x2614 or cp == 0x2615) return 2;
         if (cp >= 0x2648 and cp <= 0x2653) return 2;
         if (cp == 0x267F or cp == 0x2693 or cp == 0x26A1) return 2;
@@ -267,10 +266,11 @@ pub const TerminalState = struct {
         if (cp == 0x26F2 or cp == 0x26F3 or cp == 0x26F5) return 2;
         if (cp == 0x26FA or cp == 0x26FD) return 2;
         if (cp == 0x2702 or cp == 0x2705) return 2;
-        if (cp >= 0x2708 and cp <= 0x270D) return 2;
-        if (cp == 0x270F or cp == 0x2712 or cp == 0x2714 or cp == 0x2716) return 2;
-        if (cp == 0x271D or cp == 0x2721 or cp == 0x2728) return 2;
-        if (cp == 0x2733 or cp == 0x2734 or cp == 0x2744 or cp == 0x2747) return 2;
+        if (cp == 0x2708) return 2;                                    // ✈ airplane
+        if (cp >= 0x270A and cp <= 0x270B) return 2;                  // ✊✋ fists
+        if (cp == 0x270D) return 2;                                    // ✍ writing hand
+        if (cp == 0x2728) return 2;
+        if (cp == 0x2744 or cp == 0x2747) return 2;
         if (cp == 0x274C or cp == 0x274E) return 2;
         if (cp >= 0x2753 and cp <= 0x2755) return 2;
         if (cp == 0x2757) return 2;

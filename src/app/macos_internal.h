@@ -104,6 +104,7 @@ typedef struct {
 GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale);
 int  glyphCacheLookup(GlyphCache* gc, uint32_t cp);
 int  glyphCacheRasterize(GlyphCache* gc, uint32_t cp);
+int  renderBoxDraw(CGContextRef ctx, uint32_t cp, int gw, int gh, float scale);
 
 // ---------------------------------------------------------------------------
 // Emit helpers (macos_renderer.m — used by renderer and search bar)

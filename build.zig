@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         const macos_flags = &.{"-fobjc-arc"};
         exe.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = macos_flags });
@@ -179,6 +180,7 @@ pub fn build(b: *std.Build) void {
         const app_macos_flags = &.{"-fobjc-arc"};
         app.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = app_macos_flags });

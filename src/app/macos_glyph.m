@@ -33,7 +33,6 @@ static bool canBeWide(uint32_t cp) {
     if (cp >= 0xA000 && cp <= 0xA4CF) return true;  // Yi
     if (cp >= 0xA960 && cp <= 0xA97F) return true;  // Hangul Jamo Ext-A
     if (cp >= 0xAC00 && cp <= 0xD7AF) return true;  // Hangul Syllables
-    if (cp >= 0xE000 && cp <= 0xF8FF) return true;  // PUA (Nerd Font icons)
     if (cp >= 0xF900 && cp <= 0xFAFF) return true;  // CJK Compatibility Ideographs
     if (cp >= 0xFE10 && cp <= 0xFE6F) return true;  // Vertical / Compat forms
     if (cp >= 0xFF01 && cp <= 0xFF60) return true;  // Fullwidth ASCII
@@ -48,8 +47,7 @@ static bool canBeWide(uint32_t cp) {
     // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
     if (cp == 0x231A || cp == 0x231B) return true;
     if (cp >= 0x23E9 && cp <= 0x23F3) return true;
-    if (cp >= 0x23F8 && cp <= 0x23FA) return true;
-    if (cp >= 0x25FB && cp <= 0x25FE) return true;
+    if (cp >= 0x25FD && cp <= 0x25FE) return true;
     if (cp == 0x2614 || cp == 0x2615) return true;
     if (cp >= 0x2648 && cp <= 0x2653) return true;
     if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
@@ -57,10 +55,11 @@ static bool canBeWide(uint32_t cp) {
     if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
     if (cp == 0x26FA || cp == 0x26FD) return true;
     if (cp == 0x2702 || cp == 0x2705) return true;
-    if (cp >= 0x2708 && cp <= 0x270D) return true;
-    if (cp == 0x270F || cp == 0x2712 || cp == 0x2714 || cp == 0x2716) return true;
-    if (cp == 0x271D || cp == 0x2721 || cp == 0x2728) return true;
-    if (cp == 0x2733 || cp == 0x2734 || cp == 0x2744 || cp == 0x2747) return true;
+    if (cp == 0x2708) return true;                           // ✈ airplane
+    if (cp >= 0x270A && cp <= 0x270B) return true;          // ✊✋ fists
+    if (cp == 0x270D) return true;                           // ✍ writing hand
+    if (cp == 0x2728) return true;
+    if (cp == 0x2744 || cp == 0x2747) return true;
     if (cp == 0x274C || cp == 0x274E) return true;
     if (cp >= 0x2753 && cp <= 0x2755) return true;
     if (cp == 0x2757) return true;
@@ -204,8 +203,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     //    if the font happens to draw them wider than one cell — they are 1-cell
     //    characters in the terminal model, and 2-cell allocation causes bleed into
     //    adjacent cells.
-    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
-                    || (cp >= 0x2500 && cp <= 0x257F);
+    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4);
+    bool isBoxDraw   = (cp >= 0x2500 && cp <= 0x257F);
     bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
     bool wide = false;
     if (haveGlyph && !isPowerline && !isBlock && canBeWide(cp)) {
@@ -294,10 +293,17 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     CGContextSetAllowsFontSmoothing(ctx, NO);
 
     // 7. Draw glyph into the bitmap
-    if (isPowerline) {
-        // Box-drawing (U+2500–U+257F) and powerline (U+E0B0–U+E0D4): scale to full
-        // cell using advance × (asc+desc) as the source rect.  Vertical connectors (│)
-        // then reach top/bottom regardless of cell_height percentage.
+    if (isBoxDraw) {
+        // Box-drawing (U+2500–U+257F): geometry-based rendering for pixel-perfect
+        // thin lines at exactly 1 logical pixel — no font metrics involved.
+        // Falls back to unscaled glyph draw for dashed/arc variants not in the table.
+        if (!renderBoxDraw(ctx, cp, gw, gh, gc->scale)) {
+            CGPoint pos = CGPointMake((float)gc->x_offset, gc->baseline_y);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        }
+    } else if (isPowerline) {
+        // Powerline glyphs (U+E0B0–U+E0D4): scale to fill the full cell so that
+        // chevrons and hard-separators tile seamlessly regardless of cell height.
         CGSize adv;
         CTFontGetAdvancesForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &adv, 1);
         CGFloat asc  = CTFontGetAscent(drawFont);
@@ -383,8 +389,30 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
     } else {
         // Normal glyph: fits within one cell.
-        CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
-        CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        // Check if the glyph's ink overflows the cell. If so, scale it down uniformly to fit.
+        CGRect bbox;
+        CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
+        float inkL = gc->x_offset + (float)bbox.origin.x;
+        float inkR = inkL + (float)bbox.size.width;
+        float inkB = gc->baseline_y + (float)bbox.origin.y;
+        float inkT = inkB + (float)bbox.size.height;
+        bool overflows = (inkR > (float)gw + 0.5f) || (inkT > (float)gh + 0.5f) ||
+                         (inkL < -0.5f) || (inkB < -0.5f);
+        if (overflows && bbox.size.width > 0.5 && bbox.size.height > 0.5) {
+            float sx = (float)gw / (float)bbox.size.width;
+            float sy = (float)gh / (float)bbox.size.height;
+            float s  = fminf(sx, sy);
+            if (s > 1.0f) s = 1.0f;
+            CGContextScaleCTM(ctx, s, s);
+            // Center the scaled glyph in the cell
+            float posX = ((float)gw / s - (float)bbox.size.width) * 0.5f - (float)bbox.origin.x;
+            float posY = ((float)gh / s - (float)bbox.size.height) * 0.5f - (float)bbox.origin.y;
+            CGPoint pos = CGPointMake(posX, posY);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        } else {
+            CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
+        }
     }
 
     CGContextRelease(ctx);
