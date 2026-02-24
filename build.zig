@@ -126,8 +126,9 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("freetype2", .{});
         exe.root_module.linkSystemLibrary("fontconfig", .{});
         exe.root_module.linkSystemLibrary("libpng", .{});
-        exe.root_module.linkSystemLibrary("pthread", .{ .use_pkg_config = .no });
-        exe.root_module.linkSystemLibrary("dl", .{ .use_pkg_config = .no });
+        // glibc 2.34+ merged pthread/dl into libc; allow shlib undefined
+        // so lld doesn't reject transitive deps from libglfw.so
+        exe.allow_shlib_undefined = true;
     }
 
     // This declares intent for the executable to be installed into the
