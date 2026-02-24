@@ -216,6 +216,14 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8, config: *App
     return applyToml(allocator, file_content, path, config);
 }
 
+/// Returns the path to the user's custom themes directory (e.g. ~/.config/attyx/themes).
+/// Caller is responsible for freeing the returned string.
+pub fn getThemesDir(allocator: std.mem.Allocator) ![]const u8 {
+    var paths = try platform.getConfigPaths(allocator);
+    defer paths.deinit();
+    return std.fmt.allocPrint(allocator, "{s}/themes", .{paths.config_dir});
+}
+
 /// Load config from the default XDG location.
 pub fn loadFromDefaultPath(allocator: std.mem.Allocator, config: *AppConfig) !void {
     var paths = platform.getConfigPaths(allocator) catch return;

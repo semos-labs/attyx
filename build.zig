@@ -67,6 +67,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("images/icon_data.zig"),
     });
 
+    const themes_mod = b.createModule(.{
+        .root_source_file = b.path("themes/themes.zig"),
+    });
+
     const exe = b.addExecutable(.{
         .name = "attyx",
         .root_module = b.createModule(.{
@@ -77,6 +81,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "attyx", .module = mod },
                 .{ .name = "toml", .module = toml_mod },
                 .{ .name = "app_icon", .module = icon_mod },
+                .{ .name = "builtin_themes", .module = themes_mod },
             },
         }),
     });

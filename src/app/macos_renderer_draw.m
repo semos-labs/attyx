@@ -140,7 +140,6 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         float glyphH = _glyphCache.glyph_h;
         int atlasCols = _glyphCache.atlas_cols;
 
-        float ba = g_background_opacity;
         int dirtyRowCount = 0;
         for (int row = 0; row < rows; row++) {
             if (!_fullRedrawNeeded && !dirtyBitTest(dirty, row)) continue;
@@ -154,13 +153,14 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 float y1 = y0 + gh;
                 const AttyxCell* cell = &cells[i];
 
-                float br, bg, bb;
+                float br, bg, bb, ba;
                 if (cellIsSelected(row, col)) {
-                    br = 0.20f; bg = 0.40f; bb = 0.70f;
+                    br = 0.20f; bg = 0.40f; bb = 0.70f; ba = 1.0f;
                 } else {
                     br = cell->bg_r / 255.0f;
                     bg = cell->bg_g / 255.0f;
                     bb = cell->bg_b / 255.0f;
+                    ba = (cell->flags & 4) ? g_background_opacity : 1.0f;
                 }
 
                 int bi = i * 6;
@@ -394,6 +394,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             float defR = cells[0].bg_r / 255.0f;
             float defG = cells[0].bg_g / 255.0f;
             float defB = cells[0].bg_b / 255.0f;
+            float ba   = g_background_opacity;
             float gridRight  = offX + cols * gw;
             float gridBottom = offY + rows * gh;
             Vertex gapVerts[24];

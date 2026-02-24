@@ -135,7 +135,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         CTFontGetAdvancesForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &adv, 1);
         float inkRight = (float)(bbox.origin.x + bbox.size.width);
         float srcW = fmaxf((float)adv.width, inkRight);
-        wide = (srcW > (float)gw * 1.3f);
+        wide = (srcW > (float)gw * 1.05f);
     }
     int renderW = wide ? 2 * gw : gw;
 

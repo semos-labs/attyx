@@ -170,7 +170,6 @@ void drawFrame(void) {
     int atlasCols = g_gc.atlas_cols;
 
     // Update bg vertices for dirty rows
-    float ba = g_background_opacity;
     for (int row = 0; row < rows; row++) {
         if (!g_full_redraw && !dirtyBitTest(dirty, row)) continue;
         for (int col = 0; col < cols; col++) {
@@ -178,13 +177,14 @@ void drawFrame(void) {
             float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
             const AttyxCell* cell = &cells[i];
-            float br, bg, bb;
+            float br, bg, bb, ba;
             if (cellIsSelected(row, col)) {
-                br = 0.20f; bg = 0.40f; bb = 0.70f;
+                br = 0.20f; bg = 0.40f; bb = 0.70f; ba = 1.0f;
             } else {
                 br = cell->bg_r / 255.0f;
                 bg = cell->bg_g / 255.0f;
                 bb = cell->bg_b / 255.0f;
+                ba = (cell->flags & 4) ? g_background_opacity : 1.0f;
             }
             int bi = i * 6;
             g_bg_verts[bi+0] = (Vertex){ x0,y0, 0,0, br,bg,bb,ba };

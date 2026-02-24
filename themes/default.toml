@@ -1,0 +1,24 @@
+# Attyx default built-in theme.
+# Colors match the renderer's built-in defaults.
+
+[colors]
+foreground = "#dcdcdc"
+background = "#1e1e24"
+
+[palette]
+0  = "#000000"
+1  = "#aa0000"
+2  = "#00aa00"
+3  = "#aa5500"
+4  = "#0000aa"
+5  = "#aa00aa"
+6  = "#00aaaa"
+7  = "#aaaaaa"
+8  = "#555555"
+9  = "#ff5555"
+10 = "#55ff55"
+11 = "#ffff55"
+12 = "#5555ff"
+13 = "#ff55ff"
+14 = "#55ffff"
+15 = "#ffffff"

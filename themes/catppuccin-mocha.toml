@@ -1,0 +1,28 @@
+# Catppuccin Mocha
+# https://github.com/catppuccin/catppuccin
+
+[colors]
+foreground           = "#cdd6f4"   # Text
+background           = "#1e1e2e"   # Base
+cursor               = "#f5e0dc"   # Rosewater
+cursor_text          = "#1e1e2e"   # Base
+selection_background = "#585b70"   # Surface2
+selection_foreground = "#cdd6f4"   # Text
+
+[palette]
+0  = "#45475a"   # Surface1  (black)
+1  = "#f38ba8"   # Red
+2  = "#a6e3a1"   # Green
+3  = "#f9e2af"   # Yellow
+4  = "#89b4fa"   # Blue
+5  = "#f5c2e7"   # Pink       (magenta)
+6  = "#94e2d5"   # Teal       (cyan)
+7  = "#bac2de"   # Subtext1   (white)
+8  = "#585b70"   # Surface2   (bright black)
+9  = "#f38ba8"   # Red
+10 = "#a6e3a1"   # Green
+11 = "#f9e2af"   # Yellow
+12 = "#89b4fa"   # Blue
+13 = "#f5c2e7"   # Pink
+14 = "#94e2d5"   # Teal
+15 = "#a6adc8"   # Subtext0   (bright white)

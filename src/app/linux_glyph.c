@@ -181,7 +181,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         int adv_px   = (int)(face->glyph->advance.x >> 6);
         int ink_right = face->glyph->bitmap_left + (int)bmp->width;
         int src_w    = adv_px > ink_right ? adv_px : ink_right;
-        wide = (src_w > (int)(gw * 1.3f));
+        wide = (src_w > (int)(gw * 1.05f));
     }
     int renderW = wide ? 2 * gw : gw;
 

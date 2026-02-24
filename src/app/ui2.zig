@@ -14,6 +14,11 @@ const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
 const SessionLog = @import("session_log.zig").SessionLog;
 
+const config_mod = @import("../config/config.zig");
+const theme_registry_mod = @import("../theme/registry.zig");
+const ThemeRegistry = theme_registry_mod.ThemeRegistry;
+pub const Theme = theme_registry_mod.Theme;
+
 const c = @cImport({
     @cInclude("bridge.h");
 });
@@ -34,6 +39,9 @@ const PtyThreadCtx = struct {
     applied_cursor_shape: CursorShapeConfig,
     applied_cursor_blink: bool,
     applied_scrollback_lines: u32,
+    // Theme (registry lives in run(); active_theme updated on reload)
+    theme_registry: *ThemeRegistry,
+    active_theme: Theme,
     // Diagnostics
     throughput: diag.ThroughputWindow = .{},
 };
@@ -139,6 +147,19 @@ pub fn run(
     g_padding_top    = @intCast(config.window_padding_top);
     g_padding_bottom = @intCast(config.window_padding_bottom);
 
+    // Theme registry — load built-ins, then custom themes from ~/.config/attyx/themes/
+    var theme_registry = ThemeRegistry.init(allocator);
+    defer theme_registry.deinit();
+    theme_registry.loadBuiltins() catch |err| {
+        logging.warn("theme", "failed to load built-in themes: {}", .{err});
+    };
+    if (config_mod.getThemesDir(allocator)) |themes_dir| {
+        defer allocator.free(themes_dir);
+        theme_registry.loadDir(themes_dir);
+    } else |_| {}
+    logging.info("theme", "registry: {d} theme(s) loaded", .{theme_registry.count()});
+    const initial_theme = theme_registry.resolve(config.theme_name);
+
     // Install SIGUSR1 → config reload handler.
     const sa = posix.Sigaction{
         .handler = .{ .handler = sigusr1Handler },
@@ -195,6 +216,8 @@ pub fn run(
         .applied_cursor_shape = config.cursor_shape,
         .applied_cursor_blink = config.cursor_blink,
         .applied_scrollback_lines = @intCast(engine.state.scrollback.max_lines),
+        .theme_registry = &theme_registry,
+        .active_theme = initial_theme,
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -549,6 +572,9 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
         c.g_needs_font_rebuild = 1;
     }
 
+    // Theme — re-resolve from registry (colors will be wired in a future iteration)
+    ctx.active_theme = ctx.theme_registry.resolve(new_cfg.theme_name);
+
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }
@@ -565,7 +591,8 @@ fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {
         .bg_g = bg.g,
         .bg_b = bg.b,
         .flags = @as(u8, if (cell.style.bold) 1 else 0) |
-            @as(u8, if (cell.style.underline) 2 else 0),
+            @as(u8, if (cell.style.underline) 2 else 0) |
+            @as(u8, switch (cell.style.bg) { .default => @as(u8, 4), else => @as(u8, 0) }),
         .link_id = cell.link_id,
     };
 }
