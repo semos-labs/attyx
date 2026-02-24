@@ -75,10 +75,14 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
     _bgVerts          = NULL;
     _textVerts        = NULL;
     _totalTextVerts   = 0;
+    _colorVerts       = NULL;
+    _totalColorVerts  = 0;
     _bgMetalBuf       = nil;
     _textMetalBuf     = nil;
+    _colorMetalBuf    = nil;
     _metalBufCapBg    = 0;
     _metalBufCapText  = 0;
+    _metalBufCapColor = 0;
     _cellSnapshot     = NULL;
     _cellSnapshotCap  = 0;
     _prevCursorRow      = -1;
@@ -135,12 +139,28 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
         if (!_textPipeline) { NSLog(@"Text pipeline: %@", err); return nil; }
     }
 
+    id<MTLFunction> fragColorText = [lib newFunctionWithName:@"frag_color_text"];
+    {
+        MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
+        d.vertexFunction   = vertFn;
+        d.fragmentFunction = fragColorText;
+        d.colorAttachments[0].pixelFormat              = view.colorPixelFormat;
+        d.colorAttachments[0].blendingEnabled           = YES;
+        d.colorAttachments[0].sourceRGBBlendFactor      = MTLBlendFactorOne;
+        d.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        d.colorAttachments[0].sourceAlphaBlendFactor    = MTLBlendFactorOne;
+        d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        _colorPipeline = [device newRenderPipelineStateWithDescriptor:d error:&err];
+        if (!_colorPipeline) { NSLog(@"Color pipeline: %@", err); return nil; }
+    }
+
     return self;
 }
 
 - (void)dealloc {
     free(_bgVerts);
     free(_textVerts);
+    free(_colorVerts);
     free(_cellSnapshot);
 }
 

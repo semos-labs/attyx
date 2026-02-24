@@ -9,10 +9,14 @@
     Vertex*     _bgVerts;
     Vertex*     _textVerts;
     int         _totalTextVerts;
+    Vertex*     _colorVerts;
+    int         _totalColorVerts;
     id<MTLBuffer> _bgMetalBuf;
     id<MTLBuffer> _textMetalBuf;
+    id<MTLBuffer> _colorMetalBuf;
     int           _metalBufCapBg;
     int           _metalBufCapText;
+    int           _metalBufCapColor;
     AttyxCell*  _cellSnapshot;
     int         _cellSnapshotCap;
     int         _prevCursorRow;
@@ -34,6 +38,7 @@
 @property (nonatomic, strong) id<MTLCommandQueue>        cmdQueue;
 @property (nonatomic, strong) id<MTLRenderPipelineState> bgPipeline;
 @property (nonatomic, strong) id<MTLRenderPipelineState> textPipeline;
+@property (nonatomic, strong) id<MTLRenderPipelineState> colorPipeline;
 - (void)drawFrameImpl:(MTKView*)view;
 - (void)rebuildFont:(MTKView*)view;
 - (void)printStatsIfNeeded;

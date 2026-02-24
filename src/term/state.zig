@@ -250,13 +250,47 @@ pub const TerminalState = struct {
         if (cp >= 0xFFE0 and cp <= 0xFFE6) return 2;
         if (cp >= 0x1B000 and cp <= 0x1B2FF) return 2;
         if (cp >= 0x1F300 and cp <= 0x1F64F) return 2;
+        if (cp >= 0x1F680 and cp <= 0x1F6FF) return 2; // Transport & Map Symbols
+        if (cp >= 0x1F7E0 and cp <= 0x1F7FF) return 2; // Coloured circles/squares
         if (cp >= 0x1F900 and cp <= 0x1FAFF) return 2;
         if (cp >= 0x20000 and cp <= 0x2FFFD) return 2;
         if (cp >= 0x30000 and cp <= 0x3FFFD) return 2;
+        // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
+        if (cp == 0x231A or cp == 0x231B) return 2;
+        if (cp >= 0x23E9 and cp <= 0x23F3) return 2;
+        if (cp >= 0x23F8 and cp <= 0x23FA) return 2;
+        if (cp >= 0x25FB and cp <= 0x25FE) return 2;
+        if (cp == 0x2614 or cp == 0x2615) return 2;
+        if (cp >= 0x2648 and cp <= 0x2653) return 2;
+        if (cp == 0x267F or cp == 0x2693 or cp == 0x26A1) return 2;
+        if (cp == 0x26CE or cp == 0x26D4 or cp == 0x26EA) return 2;
+        if (cp == 0x26F2 or cp == 0x26F3 or cp == 0x26F5) return 2;
+        if (cp == 0x26FA or cp == 0x26FD) return 2;
+        if (cp == 0x2702 or cp == 0x2705) return 2;
+        if (cp >= 0x2708 and cp <= 0x270D) return 2;
+        if (cp == 0x270F or cp == 0x2712 or cp == 0x2714 or cp == 0x2716) return 2;
+        if (cp == 0x271D or cp == 0x2721 or cp == 0x2728) return 2;
+        if (cp == 0x2733 or cp == 0x2734 or cp == 0x2744 or cp == 0x2747) return 2;
+        if (cp == 0x274C or cp == 0x274E) return 2;
+        if (cp >= 0x2753 and cp <= 0x2755) return 2;
+        if (cp == 0x2757) return 2;
+        if (cp == 0x2763 or cp == 0x2764) return 2;
+        if (cp >= 0x2795 and cp <= 0x2797) return 2;
+        if (cp == 0x27A1 or cp == 0x27B0 or cp == 0x27BF) return 2;
+        if (cp == 0x2934 or cp == 0x2935) return 2;
+        if (cp >= 0x2B05 and cp <= 0x2B07) return 2;
+        if (cp == 0x2B1B or cp == 0x2B1C or cp == 0x2B50 or cp == 0x2B55) return 2;
         return 1;
     }
 
     fn printChar(self: *TerminalState, char: u21) void {
+        // Silently absorb zero-width / combining codepoints that must not occupy a cell.
+        if (char == 0xFE0F) return; // VS16 — emoji presentation selector
+        if (char == 0x200D) return; // ZWJ — zero width joiner
+        if (char == 0x20E3) return; // combining enclosing keycap
+        if (char >= 0xFE00 and char <= 0xFE0E) return; // VS1-15 variation selectors
+        if (char >= 0x1F3FB and char <= 0x1F3FF) return; // Fitzpatrick skin-tone modifiers
+
         if (self.wrap_next) {
             if (self.auto_wrap) {
                 self.grid.row_wrapped[self.cursor.row] = true;

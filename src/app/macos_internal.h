@@ -68,7 +68,9 @@ typedef struct __attribute__((packed)) {
 #define GLYPH_CACHE_CAP  4096
 // Bit 30 of the slot value flags a 2-cell-wide glyph (advance > 1.3×cell).
 // Bit 31 is reserved for the "not found" sentinel (-1 = all bits set).
+// Bit 29 flags a color emoji glyph stored in color_texture (BGRA8), not texture (R8).
 #define GLYPH_WIDE_BIT   (1 << 30)
+#define GLYPH_COLOR_BIT  (1 << 29)
 
 typedef struct {
     uint32_t codepoint;
@@ -76,7 +78,8 @@ typedef struct {
 } GlyphEntry;
 
 typedef struct {
-    id<MTLTexture> texture;
+    id<MTLTexture> texture;        // R8Unorm  — grayscale glyphs
+    id<MTLTexture> color_texture;  // BGRA8Unorm — color emoji
     CTFontRef      font;
     float          glyph_w;
     float          glyph_h;
