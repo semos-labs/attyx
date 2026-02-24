@@ -155,7 +155,14 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
 
                 float br, bg, bb, ba;
                 if (cellIsSelected(row, col)) {
-                    br = 0.20f; bg = 0.40f; bb = 0.70f; ba = 1.0f;
+                    if (g_theme_sel_bg_set) {
+                        br = g_theme_sel_bg_r / 255.0f;
+                        bg = g_theme_sel_bg_g / 255.0f;
+                        bb = g_theme_sel_bg_b / 255.0f;
+                    } else {
+                        br = 0.20f; bg = 0.40f; bb = 0.70f;
+                    }
+                    ba = 1.0f;
                 } else {
                     br = cell->bg_r / 255.0f;
                     bg = cell->bg_g / 255.0f;
@@ -182,7 +189,14 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         if (drawCursor) {
             float cx0 = offX + curCol * gw;
             float cy0 = offY + curRow * gh;
-            float cr = 0.86f, cg_c = 0.86f, cb = 0.86f;
+            float cr, cg_c, cb;
+            if (g_theme_cursor_r >= 0) {
+                cr = g_theme_cursor_r / 255.0f;
+                cg_c = g_theme_cursor_g / 255.0f;
+                cb = g_theme_cursor_b / 255.0f;
+            } else {
+                cr = 0.86f; cg_c = 0.86f; cb = 0.86f;
+            }
 
             float rx0 = cx0, ry0 = cy0, rx1 = cx0 + gw, ry1 = cy0 + gh;
             switch (curShape) {
@@ -327,9 +341,16 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 // The next cell's content renders on top, covering overflow when non-empty.
                 float x1w = wide ? x0 + 2.0f * gw : x1;
 
-                float fr = cell->fg_r / 255.0f;
-                float fg = cell->fg_g / 255.0f;
-                float fb = cell->fg_b / 255.0f;
+                float fr, fg, fb;
+                if (g_theme_sel_fg_set && cellIsSelected(row, col)) {
+                    fr = g_theme_sel_fg_r / 255.0f;
+                    fg = g_theme_sel_fg_g / 255.0f;
+                    fb = g_theme_sel_fg_b / 255.0f;
+                } else {
+                    fr = cell->fg_r / 255.0f;
+                    fg = cell->fg_g / 255.0f;
+                    fb = cell->fg_b / 255.0f;
+                }
 
                 _textVerts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
                 _textVerts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };

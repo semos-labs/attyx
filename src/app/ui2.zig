@@ -66,6 +66,18 @@ export var g_padding_left: i32 = 0;
 export var g_padding_right: i32 = 0;
 export var g_padding_top: i32 = 0;
 export var g_padding_bottom: i32 = 0;
+// Theme colors (g_theme_cursor_r < 0 = use foreground; g_theme_sel_*_set = 0 = renderer default)
+export var g_theme_cursor_r: i32 = -1;
+export var g_theme_cursor_g: i32 = 0;
+export var g_theme_cursor_b: i32 = 0;
+export var g_theme_sel_bg_set: i32 = 0;
+export var g_theme_sel_bg_r: i32 = 0;
+export var g_theme_sel_bg_g: i32 = 0;
+export var g_theme_sel_bg_b: i32 = 0;
+export var g_theme_sel_fg_set: i32 = 0;
+export var g_theme_sel_fg_r: i32 = 0;
+export var g_theme_sel_fg_g: i32 = 0;
+export var g_theme_sel_fg_b: i32 = 0;
 
 // App icon embedded at build time (PNG bytes). Read-only from C.
 const _icon_bytes = @import("app_icon").data;
@@ -159,6 +171,7 @@ pub fn run(
     } else |_| {}
     logging.info("theme", "registry: {d} theme(s) loaded", .{theme_registry.count()});
     const initial_theme = theme_registry.resolve(config.theme_name);
+    publishTheme(&initial_theme);
 
     // Install SIGUSR1 → config reload handler.
     const sa = posix.Sigaction{
@@ -172,7 +185,7 @@ pub fn run(
     defer allocator.free(render_cells);
 
     const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
-    fillCells(render_cells[0..total], &engine, total);
+    fillCells(render_cells[0..total], &engine, total, &initial_theme);
     c.attyx_set_cursor(@intCast(engine.state.cursor.row), @intCast(engine.state.cursor.col));
 
     // Build spawn argv: --cmd wins, then [program] config, then $SHELL default.
@@ -442,7 +455,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
                 c.attyx_begin_cell_update();
                 const new_total = nr * nc;
-                fillCells(ctx.cells[0..new_total], ctx.engine, new_total);
+                fillCells(ctx.cells[0..new_total], ctx.engine, new_total, &ctx.active_theme);
                 c.attyx_set_cursor(
                     @intCast(ctx.engine.state.cursor.row),
                     @intCast(ctx.engine.state.cursor.col),
@@ -500,7 +513,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (need_update_final) {
             c.attyx_begin_cell_update();
             const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
-            fillCells(ctx.cells[0..total], ctx.engine, total);
+            fillCells(ctx.cells[0..total], ctx.engine, total, &ctx.active_theme);
             c.attyx_set_cursor(
                 @intCast(ctx.engine.state.cursor.row),
                 @intCast(ctx.engine.state.cursor.col),
@@ -572,16 +585,59 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
         c.g_needs_font_rebuild = 1;
     }
 
-    // Theme — re-resolve from registry (colors will be wired in a future iteration)
+    // Theme — re-resolve and republish
     ctx.active_theme = ctx.theme_registry.resolve(new_cfg.theme_name);
+    publishTheme(&ctx.active_theme);
 
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }
 
-fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {
-    const fg = color_mod.resolve(cell.style.fg, false);
-    const bg = color_mod.resolve(cell.style.bg, true);
+/// Publish active theme colors to the C bridge globals.
+fn publishTheme(theme: *const Theme) void {
+    if (theme.cursor) |cur| {
+        c.g_theme_cursor_r = @intCast(cur.r);
+        c.g_theme_cursor_g = @intCast(cur.g);
+        c.g_theme_cursor_b = @intCast(cur.b);
+    } else {
+        c.g_theme_cursor_r = -1;
+    }
+    if (theme.selection_background) |sel| {
+        c.g_theme_sel_bg_set = 1;
+        c.g_theme_sel_bg_r = @intCast(sel.r);
+        c.g_theme_sel_bg_g = @intCast(sel.g);
+        c.g_theme_sel_bg_b = @intCast(sel.b);
+    } else {
+        c.g_theme_sel_bg_set = 0;
+    }
+    if (theme.selection_foreground) |sel| {
+        c.g_theme_sel_fg_set = 1;
+        c.g_theme_sel_fg_r = @intCast(sel.r);
+        c.g_theme_sel_fg_g = @intCast(sel.g);
+        c.g_theme_sel_fg_b = @intCast(sel.b);
+    } else {
+        c.g_theme_sel_fg_set = 0;
+    }
+}
+
+/// Resolve a cell color using the active theme for default fg/bg and ANSI palette.
+fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.Rgb {
+    switch (color) {
+        .default => {
+            const src = if (is_bg) theme.background else theme.foreground;
+            return .{ .r = src.r, .g = src.g, .b = src.b };
+        },
+        .ansi => |n| {
+            if (theme.palette[n]) |p| return .{ .r = p.r, .g = p.g, .b = p.b };
+            return color_mod.resolve(color, is_bg);
+        },
+        else => return color_mod.resolve(color, is_bg),
+    }
+}
+
+fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
+    const fg = resolveWithTheme(cell.style.fg, false, theme);
+    const bg = resolveWithTheme(cell.style.bg, true, theme);
     return .{
         .character = cell.char,
         .fg_r = fg.r,
@@ -597,7 +653,7 @@ fn cellToAttyxCell(cell: attyx.Cell) c.AttyxCell {
     };
 }
 
-fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize) void {
+fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme) void {
     const vp = eng.state.viewport_offset;
     const cols = eng.state.grid.cols;
     const rows = eng.state.grid.rows;
@@ -606,7 +662,7 @@ fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize) void {
     if (vp == 0) {
         const total = rows * cols;
         for (0..total) |i| {
-            cells[i] = cellToAttyxCell(eng.state.grid.cells[i]);
+            cells[i] = cellToAttyxCell(eng.state.grid.cells[i], theme);
         }
         return;
     }
@@ -617,12 +673,12 @@ fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize) void {
             const sb_line_idx = sb.count - effective_vp + row;
             const sb_cells = sb.getLine(sb_line_idx);
             for (0..cols) |col| {
-                cells[row * cols + col] = cellToAttyxCell(sb_cells[col]);
+                cells[row * cols + col] = cellToAttyxCell(sb_cells[col], theme);
             }
         } else {
             const grid_row = row - effective_vp;
             for (0..cols) |col| {
-                cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col]);
+                cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col], theme);
             }
         }
     }
