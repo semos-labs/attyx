@@ -56,9 +56,36 @@ static bool canBeWide(uint32_t cp) {
     if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;  // Fullwidth signs
     if (cp >= 0x1B000 && cp <= 0x1B2FF) return true; // Kana Supplement / Extended
     if (cp >= 0x1F300 && cp <= 0x1F64F) return true; // Misc Symbols, Emoticons (NOT 1F1E0-1F1FF)
+    if (cp >= 0x1F680 && cp <= 0x1F6FF) return true; // Transport & Map Symbols
+    if (cp >= 0x1F7E0 && cp <= 0x1F7FF) return true; // Coloured circles/squares
     if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
     if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
     if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
+    if (cp == 0x231A || cp == 0x231B) return true;
+    if (cp >= 0x23E9 && cp <= 0x23F3) return true;
+    if (cp >= 0x23F8 && cp <= 0x23FA) return true;
+    if (cp >= 0x25FB && cp <= 0x25FE) return true;
+    if (cp == 0x2614 || cp == 0x2615) return true;
+    if (cp >= 0x2648 && cp <= 0x2653) return true;
+    if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
+    if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
+    if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
+    if (cp == 0x26FA || cp == 0x26FD) return true;
+    if (cp == 0x2702 || cp == 0x2705) return true;
+    if (cp >= 0x2708 && cp <= 0x270D) return true;
+    if (cp == 0x270F || cp == 0x2712 || cp == 0x2714 || cp == 0x2716) return true;
+    if (cp == 0x271D || cp == 0x2721 || cp == 0x2728) return true;
+    if (cp == 0x2733 || cp == 0x2734 || cp == 0x2744 || cp == 0x2747) return true;
+    if (cp == 0x274C || cp == 0x274E) return true;
+    if (cp >= 0x2753 && cp <= 0x2755) return true;
+    if (cp == 0x2757) return true;
+    if (cp == 0x2763 || cp == 0x2764) return true;
+    if (cp >= 0x2795 && cp <= 0x2797) return true;
+    if (cp == 0x27A1 || cp == 0x27B0 || cp == 0x27BF) return true;
+    if (cp == 0x2934 || cp == 0x2935) return true;
+    if (cp >= 0x2B05 && cp <= 0x2B07) return true;
+    if (cp == 0x2B1B || cp == 0x2B1C || cp == 0x2B50 || cp == 0x2B55) return true;
     return false;
 }
 
@@ -121,12 +148,21 @@ static void glyphCacheGrow(GlyphCache* gc) {
     int newH = (int)(gc->glyph_h * newRows);
     int newMaxSlots = gc->atlas_cols * newRows;
 
+    // Grow grayscale atlas
     uint8_t* buf = (uint8_t*)calloc(gc->atlas_w * newH, 1);
     glBindTexture(GL_TEXTURE_2D, gc->texture);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_UNSIGNED_BYTE, buf);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, gc->atlas_w, newH, 0,
                  GL_RED, GL_UNSIGNED_BYTE, buf);
     free(buf);
+
+    // Grow color atlas in parallel (slot indices must remain consistent)
+    uint8_t* cbuf = (uint8_t*)calloc(gc->atlas_w * newH * 4, 1);
+    glBindTexture(GL_TEXTURE_2D, gc->color_texture);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, cbuf);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gc->atlas_w, newH, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, cbuf);
+    free(cbuf);
 
     gc->atlas_h = newH;
     gc->max_slots = newMaxSlots;
@@ -201,8 +237,13 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         return blankSlot;
     }
 
-    // 3. Render glyph so we can measure its bitmap extent
-    FT_Load_Glyph(face, gi, FT_LOAD_DEFAULT);
+    // 3. Render glyph so we can measure its bitmap extent.
+    //    For color fonts, prefer FT_LOAD_COLOR to get BGRA bitmap.
+    if (FT_HAS_COLOR(face)) {
+        FT_Load_Glyph(face, gi, FT_LOAD_COLOR);
+    } else {
+        FT_Load_Glyph(face, gi, FT_LOAD_DEFAULT);
+    }
     FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
     FT_Bitmap* bmp = &face->glyph->bitmap;
 
@@ -237,7 +278,38 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int ac = slot % gc->atlas_cols;
     int ar = slot / gc->atlas_cols;
 
-    // 6. Render pixels into renderW × gh buffer
+    // 6. Color emoji path: FT_PIXEL_MODE_BGRA — upload premultiplied BGRA→RGBA to color atlas.
+    bool isColorGlyph = (bmp->pixel_mode == FT_PIXEL_MODE_BGRA);
+    if (isColorGlyph) {
+        uint8_t* pixels = (uint8_t*)calloc(renderW * gh * 4, 1);
+        int bx0 = face->glyph->bitmap_left;
+        int by0 = (int)gc->ascender - face->glyph->bitmap_top;
+        for (int dy = 0; dy < gh; dy++) {
+            int src_row = dy - by0;
+            if (src_row < 0 || src_row >= (int)bmp->rows) continue;
+            for (int dx = 0; dx < renderW; dx++) {
+                int src_col = dx - bx0;
+                if (src_col < 0 || src_col >= (int)bmp->width) continue;
+                int di = (dy * renderW + dx) * 4;
+                int si = src_row * bmp->pitch + src_col * 4;
+                // FreeType BGRA (premultiplied) → GL_RGBA: swap B↔R
+                pixels[di+0] = bmp->buffer[si+2]; // R
+                pixels[di+1] = bmp->buffer[si+1]; // G
+                pixels[di+2] = bmp->buffer[si+0]; // B
+                pixels[di+3] = bmp->buffer[si+3]; // A
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, gc->color_texture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, renderW, gh,
+                        GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        free(pixels);
+        if (face != gc->ft_face) FT_Done_Face(face);
+        int encoded = (wide ? GLYPH_WIDE_BIT : 0) | GLYPH_COLOR_BIT | slot;
+        glyphCacheInsert(gc, cp, encoded);
+        return encoded;
+    }
+
+    // 7. Render grayscale pixels into renderW × gh buffer
     uint8_t* pixels = (uint8_t*)calloc(renderW * gh, 1);
 
     if (isPowerline && bmp->rows > 0 && bmp->width > 0) {
@@ -461,9 +533,20 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
                  GL_RED, GL_UNSIGNED_BYTE, zeroes);
     free(zeroes);
 
+    GLuint colorTex;
+    glGenTextures(1, &colorTex);
+    glBindTexture(GL_TEXTURE_2D, colorTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
     GlyphCache gc;
     memset(&gc, 0, sizeof(gc));
-    gc.texture    = tex;
+    gc.texture       = tex;
+    gc.color_texture = colorTex;
     gc.ft_lib     = ft_lib;
     gc.ft_face    = face;
     gc.glyph_w    = gw;

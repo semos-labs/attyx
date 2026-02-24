@@ -42,6 +42,18 @@ const char* kFragTextSrc =
     "    fragColor = vec4(vColor.rgb, vColor.a * a);\n"
     "}\n";
 
+const char* kFragColorTextSrc =
+    "#version 330 core\n"
+    "in vec2 vTexCoord;\n"
+    "in vec4 vColor;\n"
+    "uniform sampler2D tex;\n"
+    "out vec4 fragColor;\n"
+    "void main() {\n"
+    "    vec4 c = texture(tex, vTexCoord);\n"
+    // Premultiplied RGBA; scale by vertex alpha for window opacity.
+    "    fragColor = vec4(c.rgb * vColor.a, c.a * vColor.a);\n"
+    "}\n";
+
 // ---------------------------------------------------------------------------
 // GL helpers
 // ---------------------------------------------------------------------------

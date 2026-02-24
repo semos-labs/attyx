@@ -212,6 +212,16 @@ NSString* const kShaderSource =
  "    constexpr sampler s(filter::nearest);\n"
  "    float a = tex.sample(s, in.texcoord).r;\n"
  "    return float4(in.color.rgb, in.color.a * a);\n"
+ "}\n"
+ "\n"
+ "fragment float4 frag_color_text(\n"
+ "    VertexOut in [[stage_in]],\n"
+ "    texture2d<float> tex [[texture(0)]])\n"
+ "{\n"
+ "    constexpr sampler s(filter::nearest);\n"
+ "    float4 c = tex.sample(s, in.texcoord);\n"
+ "    // Premultiplied BGRA; Metal auto-swizzles BGRA8Unorm to RGBA. Scale by vertex alpha.\n"
+ "    return float4(c.rgb * in.color.a, c.a * in.color.a);\n"
  "}\n";
 
 // ---------------------------------------------------------------------------

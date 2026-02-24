@@ -11,9 +11,14 @@ GlyphCache   g_gc;
 GLuint       g_solid_prog, g_text_prog;
 GLint        g_vp_loc_solid, g_vp_loc_text, g_tex_loc;
 GLuint       g_vao, g_vbo;
+static GLuint       g_color_prog = 0;
+static GLuint       g_color_vao  = 0;
+static GLuint       g_color_vbo  = 0;
 static Vertex*      g_bg_verts = NULL;
 static Vertex*      g_text_verts = NULL;
 static int          g_total_text_verts = 0;
+static Vertex*      g_color_verts = NULL;
+static int          g_total_color_verts = 0;
 static AttyxCell*   g_cell_snapshot = NULL;
 static int          g_cell_snapshot_cap = 0;
 
@@ -45,17 +50,27 @@ void linux_renderer_init(void) {
 
     glGenVertexArrays(1, &g_vao);
     glGenBuffers(1, &g_vbo);
+
+    // Color emoji program: premultiplied-alpha RGBA texture
+    g_color_prog = createProgram(kVertSrc, kFragColorTextSrc);
+    glGenVertexArrays(1, &g_color_vao);
+    glGenBuffers(1, &g_color_vbo);
 }
 
 void linux_renderer_cleanup(void) {
-    free(g_bg_verts);   g_bg_verts = NULL;
-    free(g_text_verts); g_text_verts = NULL;
+    free(g_bg_verts);    g_bg_verts = NULL;
+    free(g_text_verts);  g_text_verts = NULL;
+    free(g_color_verts); g_color_verts = NULL;
     free(g_cell_snapshot); g_cell_snapshot = NULL;
     glDeleteBuffers(1, &g_vbo);
     glDeleteVertexArrays(1, &g_vao);
+    glDeleteBuffers(1, &g_color_vbo);
+    glDeleteVertexArrays(1, &g_color_vao);
     glDeleteProgram(g_solid_prog);
     glDeleteProgram(g_text_prog);
+    glDeleteProgram(g_color_prog);
     glDeleteTextures(1, &g_gc.texture);
+    glDeleteTextures(1, &g_gc.color_texture);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,14 +137,17 @@ void drawFrame(void) {
     if (rows != g_alloc_rows || cols != g_alloc_cols) {
         free(g_bg_verts);
         free(g_text_verts);
+        free(g_color_verts);
         free(g_cell_snapshot);
 
         g_bg_vert_cap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
         g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
         g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
+        g_color_verts   = (Vertex*)calloc(total * 6, sizeof(Vertex));
         g_cell_snapshot = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
         g_cell_snapshot_cap = total;
-        g_total_text_verts = 0;
+        g_total_text_verts  = 0;
+        g_total_color_verts = 0;
         g_alloc_rows = rows;
         g_alloc_cols = cols;
         g_full_redraw = 1;
@@ -331,6 +349,7 @@ void drawFrame(void) {
 
     // Text vertices
     int ti = 0;
+    int ci = 0;
     if (g_full_redraw || dirtyAny(dirty)) {
         for (int i = 0; i < total; i++) {
             const AttyxCell* cell = &cells[i];
@@ -347,8 +366,10 @@ void drawFrame(void) {
                 atlasW = (float)g_gc.atlas_w;
             }
 
-            int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
-            int slot = rawSlot & ~GLYPH_WIDE_BIT;
+            // Extract color flag (bit 29), wide flag (bit 30), and actual atlas slot index
+            int isColor = (rawSlot & GLYPH_COLOR_BIT) ? 1 : 0;
+            int wide    = (rawSlot & GLYPH_WIDE_BIT)  ? 1 : 0;
+            int slot    = rawSlot & ~(GLYPH_WIDE_BIT | GLYPH_COLOR_BIT);
 
             int ac = slot % atlasCols;
             int ar = slot / atlasCols;
@@ -360,28 +381,42 @@ void drawFrame(void) {
 
             float x1w = wide ? x0 + 2.0f * gw : x1;
 
-            float fr, fg, fb;
-            if (g_theme_sel_fg_set && cellIsSelected(row, col)) {
-                fr = g_theme_sel_fg_r / 255.0f;
-                fg = g_theme_sel_fg_g / 255.0f;
-                fb = g_theme_sel_fg_b / 255.0f;
+            if (isColor) {
+                // Color emoji: vertex color = white, alpha = window opacity
+                float wa = g_background_opacity < 1.0f ? g_background_opacity : 1.0f;
+                g_color_verts[ci+0] = (Vertex){ x0,  y0, au0,av0, 1,1,1,wa };
+                g_color_verts[ci+1] = (Vertex){ x1w, y0, au1,av0, 1,1,1,wa };
+                g_color_verts[ci+2] = (Vertex){ x0,  y1, au0,av1, 1,1,1,wa };
+                g_color_verts[ci+3] = (Vertex){ x1w, y0, au1,av0, 1,1,1,wa };
+                g_color_verts[ci+4] = (Vertex){ x1w, y1, au1,av1, 1,1,1,wa };
+                g_color_verts[ci+5] = (Vertex){ x0,  y1, au0,av1, 1,1,1,wa };
+                ci += 6;
             } else {
-                fr = cell->fg_r / 255.0f;
-                fg = cell->fg_g / 255.0f;
-                fb = cell->fg_b / 255.0f;
-            }
+                float fr, fg, fb;
+                if (g_theme_sel_fg_set && cellIsSelected(row, col)) {
+                    fr = g_theme_sel_fg_r / 255.0f;
+                    fg = g_theme_sel_fg_g / 255.0f;
+                    fb = g_theme_sel_fg_b / 255.0f;
+                } else {
+                    fr = cell->fg_r / 255.0f;
+                    fg = cell->fg_g / 255.0f;
+                    fb = cell->fg_b / 255.0f;
+                }
 
-            g_text_verts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
-            g_text_verts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
-            g_text_verts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
-            g_text_verts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
-            g_text_verts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
-            g_text_verts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
-            ti += 6;
+                g_text_verts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
+                g_text_verts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                g_text_verts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+                g_text_verts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                g_text_verts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
+                g_text_verts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+                ti += 6;
+            }
         }
-        g_total_text_verts = ti;
+        g_total_text_verts  = ti;
+        g_total_color_verts = ci;
     } else {
         ti = g_total_text_verts;
+        ci = g_total_color_verts;
     }
 
     g_prev_cursor_row   = curRow;
@@ -454,7 +489,7 @@ void drawFrame(void) {
     glDrawArrays(GL_TRIANGLES, 0, bgVertCount);
     glDisable(GL_BLEND);
 
-    // Text pass
+    // Text pass (grayscale glyphs)
     if (ti > 0) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -468,6 +503,29 @@ void drawFrame(void) {
         setupVertexAttribs();
         glDrawArrays(GL_TRIANGLES, 0, ti);
         glDisable(GL_BLEND);
+    }
+
+    // Color emoji pass (premultiplied RGBA)
+    if (ci > 0) {
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
+                            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(g_color_prog);
+        glBindVertexArray(g_color_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_color_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * ci,
+                     g_color_verts, GL_DYNAMIC_DRAW);
+        setupVertexAttribs();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_gc.color_texture);
+        glUniform1i(glGetUniformLocation(g_color_prog, "tex"), 0);
+        float vp[2] = { viewport[0], viewport[1] };
+        glUniform2fv(glGetUniformLocation(g_color_prog, "viewport"), 1, vp);
+        glDrawArrays(GL_TRIANGLES, 0, ci);
+        glDisable(GL_BLEND);
+        // Restore standard VAO/VBO for subsequent passes
+        glBindVertexArray(g_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     }
 
     // IME preedit overlay

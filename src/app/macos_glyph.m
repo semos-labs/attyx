@@ -40,9 +40,36 @@ static bool canBeWide(uint32_t cp) {
     if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;  // Fullwidth signs
     if (cp >= 0x1B000 && cp <= 0x1B2FF) return true; // Kana Supplement / Extended
     if (cp >= 0x1F300 && cp <= 0x1F64F) return true; // Misc Symbols, Emoticons (NOT 1F1E0-1F1FF)
+    if (cp >= 0x1F680 && cp <= 0x1F6FF) return true; // Transport & Map Symbols
+    if (cp >= 0x1F7E0 && cp <= 0x1F7FF) return true; // Coloured circles/squares
     if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
     if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
     if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
+    if (cp == 0x231A || cp == 0x231B) return true;
+    if (cp >= 0x23E9 && cp <= 0x23F3) return true;
+    if (cp >= 0x23F8 && cp <= 0x23FA) return true;
+    if (cp >= 0x25FB && cp <= 0x25FE) return true;
+    if (cp == 0x2614 || cp == 0x2615) return true;
+    if (cp >= 0x2648 && cp <= 0x2653) return true;
+    if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
+    if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
+    if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
+    if (cp == 0x26FA || cp == 0x26FD) return true;
+    if (cp == 0x2702 || cp == 0x2705) return true;
+    if (cp >= 0x2708 && cp <= 0x270D) return true;
+    if (cp == 0x270F || cp == 0x2712 || cp == 0x2714 || cp == 0x2716) return true;
+    if (cp == 0x271D || cp == 0x2721 || cp == 0x2728) return true;
+    if (cp == 0x2733 || cp == 0x2734 || cp == 0x2744 || cp == 0x2747) return true;
+    if (cp == 0x274C || cp == 0x274E) return true;
+    if (cp >= 0x2753 && cp <= 0x2755) return true;
+    if (cp == 0x2757) return true;
+    if (cp == 0x2763 || cp == 0x2764) return true;
+    if (cp >= 0x2795 && cp <= 0x2797) return true;
+    if (cp == 0x27A1 || cp == 0x27B0 || cp == 0x27BF) return true;
+    if (cp == 0x2934 || cp == 0x2935) return true;
+    if (cp >= 0x2B05 && cp <= 0x2B07) return true;
+    if (cp == 0x2B1B || cp == 0x2B1C || cp == 0x2B50 || cp == 0x2B55) return true;
     return false;
 }
 
@@ -74,6 +101,7 @@ static void glyphCacheGrow(GlyphCache* gc) {
     int newH = (int)(gc->glyph_h * newRows);
     int newMaxSlots = gc->atlas_cols * newRows;
 
+    // Grow grayscale atlas
     MTLTextureDescriptor* desc =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
                                                            width:gc->atlas_w
@@ -91,8 +119,23 @@ static void glyphCacheGrow(GlyphCache* gc) {
                 withBytes:buf
               bytesPerRow:gc->atlas_w];
     free(buf);
-
     gc->texture = newTex;
+
+    // Grow color atlas in parallel (slots are shared — indices must stay consistent)
+    uint8_t* cbuf = (uint8_t*)calloc(gc->atlas_w * newH * 4, 1);
+    [gc->color_texture getBytes:cbuf
+                    bytesPerRow:gc->atlas_w * 4
+                     fromRegion:MTLRegionMake2D(0, 0, gc->atlas_w, oldH)
+                    mipmapLevel:0];
+    MTLTextureDescriptor* cd = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:gc->atlas_w height:newH mipmapped:NO];
+    id<MTLTexture> newColorTex = [gc->device newTextureWithDescriptor:cd];
+    [newColorTex replaceRegion:MTLRegionMake2D(0, 0, gc->atlas_w, newH)
+                   mipmapLevel:0 withBytes:cbuf bytesPerRow:gc->atlas_w * 4];
+    free(cbuf);
+    gc->color_texture = newColorTex;
+
     gc->atlas_h = newH;
     gc->max_slots = newMaxSlots;
 }
@@ -198,6 +241,46 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         if (drawFont != gc->font) CFRelease(drawFont);
         glyphCacheInsert(gc, cp, slot);
         return slot;
+    }
+
+    // 5b. Color emoji path: detect Apple Color Emoji and rasterize into BGRA color atlas.
+    if (haveGlyph && !isBlock) {
+        CFStringRef familyName = CTFontCopyFamilyName(drawFont);
+        bool isColorEmoji = (CFStringCompare(familyName, CFSTR("Apple Color Emoji"), 0)
+                             == kCFCompareEqualTo);
+        CFRelease(familyName);
+
+        if (isColorEmoji) {
+            CGColorSpaceRef rgbCS = CGColorSpaceCreateDeviceRGB();
+            uint8_t* pixels = (uint8_t*)calloc(renderW * gh * 4, 1);
+            CGContextRef ctx = CGBitmapContextCreate(pixels, renderW, gh, 8, renderW * 4,
+                rgbCS, kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst);
+            CGColorSpaceRelease(rgbCS);
+
+            NSString* str = [[NSString alloc] initWithCharacters:utf16 length:utf16Len];
+            NSDictionary* attrs = @{(NSString*)kCTFontAttributeName: (__bridge id)drawFont};
+            NSAttributedString* attrStr = [[NSAttributedString alloc]
+                initWithString:str attributes:attrs];
+            CTLineRef line = CTLineCreateWithAttributedString(
+                (__bridge CFAttributedStringRef)attrStr);
+            // Match the gray glyph path: wide uses x=0, narrow uses x_offset;
+            // baseline_y centers the glyph in the cell (same as CTFontDrawGlyphs).
+            float posX = wide ? 0.0f : (float)gc->x_offset;
+            CGContextSetTextPosition(ctx, (CGFloat)posX, (CGFloat)gc->baseline_y);
+            CTLineDraw(line, ctx);
+            CFRelease(line);
+            CGContextRelease(ctx);
+
+            [gc->color_texture
+                replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, renderW, gh)
+                  mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)(renderW * 4)];
+            free(pixels);
+
+            if (drawFont != gc->font) CFRelease(drawFont);
+            int encoded = (wide ? GLYPH_WIDE_BIT : 0) | GLYPH_COLOR_BIT | slot;
+            glyphCacheInsert(gc, cp, encoded);
+            return encoded;
+        }
     }
 
     // 6. Create bitmap context (renderW × gh)
@@ -470,9 +553,16 @@ GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
            bytesPerRow:atlasW];
     free(zeroes);
 
+    MTLTextureDescriptor* cd =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:atlasW height:atlasH
+                                                       mipmapped:NO];
+    id<MTLTexture> colorTex = [device newTextureWithDescriptor:cd];
+
     GlyphCache gc;
     memset((void*)&gc, 0, sizeof(gc));
-    gc.texture    = tex;
+    gc.texture       = tex;
+    gc.color_texture = colorTex;
     gc.font       = (CTFontRef)CFRetain(font);
     gc.glyph_w    = gw;
     gc.glyph_h    = gh;

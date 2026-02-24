@@ -135,6 +135,8 @@ typedef struct __attribute__((packed)) {
 
 #define GLYPH_CACHE_CAP  4096
 #define GLYPH_WIDE_BIT   (1 << 30)
+// Bit 29 flags a color emoji glyph stored in color_texture (GL_RGBA8), not texture (GL_R8).
+#define GLYPH_COLOR_BIT  (1 << 29)
 
 typedef struct {
     uint32_t codepoint;
@@ -142,7 +144,8 @@ typedef struct {
 } GlyphEntry;
 
 typedef struct {
-    GLuint     texture;
+    GLuint     texture;         // GL_R8 — grayscale glyphs
+    GLuint     color_texture;   // GL_RGBA8 — color emoji (premultiplied BGRA→RGBA)
     FT_Library ft_lib;
     FT_Face    ft_face;
     float      glyph_w;
@@ -177,6 +180,7 @@ extern int g_full_redraw;
 extern const char* kVertSrc;
 extern const char* kFragSolidSrc;
 extern const char* kFragTextSrc;
+extern const char* kFragColorTextSrc;
 
 // ---------------------------------------------------------------------------
 // GlyphCache functions (linux_glyph.c)

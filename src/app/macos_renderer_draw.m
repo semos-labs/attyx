@@ -77,14 +77,17 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         if (rows != _allocRows || cols != _allocCols) {
             free(_bgVerts);
             free(_textVerts);
+            free(_colorVerts);
             free(_cellSnapshot);
 
             int bgVertCap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
             _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
             _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
+            _colorVerts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
             _cellSnapshot  = (AttyxCell*)malloc(sizeof(AttyxCell) * total);
             _cellSnapshotCap = total;
-            _totalTextVerts = 0;
+            _totalTextVerts  = 0;
+            _totalColorVerts = 0;
             _allocRows = rows;
             _allocCols = cols;
             _fullRedrawNeeded = YES;
@@ -305,6 +308,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         }
 
         int ti = 0;
+        int ci = 0;
         if (_fullRedrawNeeded || dirtyAny(dirty)) {
             for (int i = 0; i < total; i++) {
                 const AttyxCell* cell = &cells[i];
@@ -324,9 +328,10 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                     atlasW = (float)_glyphCache.atlas_w;
                 }
 
-                // Extract wide flag (bit 30) and actual atlas slot index
-                int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
-                int slot = rawSlot & ~GLYPH_WIDE_BIT;
+                // Extract color flag (bit 29), wide flag (bit 30), and actual atlas slot index
+                int isColor = (rawSlot & GLYPH_COLOR_BIT) ? 1 : 0;
+                int wide    = (rawSlot & GLYPH_WIDE_BIT)  ? 1 : 0;
+                int slot    = rawSlot & ~(GLYPH_WIDE_BIT | GLYPH_COLOR_BIT);
 
                 int ac = slot % atlasCols;
                 int ar = slot / atlasCols;
@@ -341,28 +346,42 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 // The next cell's content renders on top, covering overflow when non-empty.
                 float x1w = wide ? x0 + 2.0f * gw : x1;
 
-                float fr, fg, fb;
-                if (g_theme_sel_fg_set && cellIsSelected(row, col)) {
-                    fr = g_theme_sel_fg_r / 255.0f;
-                    fg = g_theme_sel_fg_g / 255.0f;
-                    fb = g_theme_sel_fg_b / 255.0f;
+                if (isColor) {
+                    // Color emoji: vertex color = white, alpha = window opacity
+                    float wa = g_background_opacity < 1.0f ? g_background_opacity : 1.0f;
+                    _colorVerts[ci+0] = (Vertex){ x0,  y0, au0,av0, 1,1,1,wa };
+                    _colorVerts[ci+1] = (Vertex){ x1w, y0, au1,av0, 1,1,1,wa };
+                    _colorVerts[ci+2] = (Vertex){ x0,  y1, au0,av1, 1,1,1,wa };
+                    _colorVerts[ci+3] = (Vertex){ x1w, y0, au1,av0, 1,1,1,wa };
+                    _colorVerts[ci+4] = (Vertex){ x1w, y1, au1,av1, 1,1,1,wa };
+                    _colorVerts[ci+5] = (Vertex){ x0,  y1, au0,av1, 1,1,1,wa };
+                    ci += 6;
                 } else {
-                    fr = cell->fg_r / 255.0f;
-                    fg = cell->fg_g / 255.0f;
-                    fb = cell->fg_b / 255.0f;
-                }
+                    float fr, fg, fb;
+                    if (g_theme_sel_fg_set && cellIsSelected(row, col)) {
+                        fr = g_theme_sel_fg_r / 255.0f;
+                        fg = g_theme_sel_fg_g / 255.0f;
+                        fb = g_theme_sel_fg_b / 255.0f;
+                    } else {
+                        fr = cell->fg_r / 255.0f;
+                        fg = cell->fg_g / 255.0f;
+                        fb = cell->fg_b / 255.0f;
+                    }
 
-                _textVerts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
-                _textVerts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
-                _textVerts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
-                _textVerts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
-                _textVerts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
-                _textVerts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
-                ti += 6;
+                    _textVerts[ti+0] = (Vertex){ x0,  y0, au0,av0, fr,fg,fb,1 };
+                    _textVerts[ti+1] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                    _textVerts[ti+2] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+                    _textVerts[ti+3] = (Vertex){ x1w, y0, au1,av0, fr,fg,fb,1 };
+                    _textVerts[ti+4] = (Vertex){ x1w, y1, au1,av1, fr,fg,fb,1 };
+                    _textVerts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
+                    ti += 6;
+                }
             }
-            _totalTextVerts = ti;
+            _totalTextVerts  = ti;
+            _totalColorVerts = ci;
         } else {
             ti = _totalTextVerts;
+            ci = _totalColorVerts;
         }
 
         _prevCursorRow     = curRow;
@@ -391,6 +410,16 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         if (ti > 0) {
             memcpy(_textMetalBuf.contents, _textVerts, sizeof(Vertex) * ti);
             [_textMetalBuf didModifyRange:NSMakeRange(0, sizeof(Vertex) * ti)];
+        }
+        if (ci > 0) {
+            NSUInteger colorBytes = sizeof(Vertex) * ci;
+            if (!_colorMetalBuf || _metalBufCapColor < ci) {
+                _colorMetalBuf = [self.device newBufferWithLength:colorBytes * 2
+                                                          options:MTLResourceStorageModeShared];
+                _metalBufCapColor = ci * 2;
+            }
+            memcpy(_colorMetalBuf.contents, _colorVerts, colorBytes);
+            [_colorMetalBuf didModifyRange:NSMakeRange(0, colorBytes)];
         }
 
         id<MTLCommandBuffer> cmdBuf = [self.cmdQueue commandBuffer];
@@ -449,6 +478,14 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             [enc setFragmentTexture:_glyphCache.texture atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
                     vertexCount:ti];
+        }
+
+        if (ci > 0) {
+            [enc setRenderPipelineState:self.colorPipeline];
+            [enc setVertexBuffer:_colorMetalBuf offset:0 atIndex:0];
+            [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];
+            [enc setFragmentTexture:_glyphCache.color_texture atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:ci];
         }
 
         if (g_ime_composing && g_ime_preedit_len > 0) {
