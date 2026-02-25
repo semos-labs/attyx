@@ -20,11 +20,9 @@ jobs:
           - target: darwin-arm64
             runner: macos-latest
             artifact: attyx-darwin-arm64.zip
-            zig-target: "-Dtarget=aarch64-macos.13.0"
           - target: darwin-x64
             runner: macos-15-intel
             artifact: attyx-darwin-x64.zip
-            zig-target: "-Dtarget=x86_64-macos.13.0"
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -45,7 +43,9 @@ jobs:
 
       - name: Build
         timeout-minutes: 30
-        run: zig build -Doptimize=ReleaseFast ${{ matrix.zig-target }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: zig build -Doptimize=ReleaseFast
 
       - name: Create .icns from PNG
         run: |
