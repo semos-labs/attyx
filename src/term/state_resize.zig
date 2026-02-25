@@ -110,6 +110,9 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
         self.scrollback = new_sb;
     }
 
+    const old_rows = self.grid.rows;
+    const old_cursor_row = self.cursor.row;
+
     const drop: ?grid_mod.Grid.DropHandler = if (!self.alt_active)
         .{ .ctx = @ptrCast(self), .save = onDropRow }
     else
@@ -117,36 +120,76 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
     try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col, drop);
     try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
 
-    // Compact content upward: shift all rows so the first non-empty
-    // row lands at row 0. Shells often push the cursor to the bottom
-    // of the initial grid; after growing, that leaves empty rows above.
     if (!self.alt_active) {
-        var first_used: usize = new_rows;
-        for (0..new_rows) |r| {
-            const base = r * self.grid.cols;
-            for (0..self.grid.cols) |col| {
-                if (!grid_mod.isDefaultCell(self.grid.cells[base + col])) {
-                    first_used = r;
-                    break;
+        if (new_rows > old_rows and old_cursor_row == old_rows - 1) {
+            // Pin content to bottom: cursor was at the last row of the
+            // old grid, so keep it anchored at the bottom after growing.
+            // Shift content down so blank rows appear above.
+            const shift = new_rows - old_rows;
+            const cols = self.grid.cols;
+
+            // Find how many rows actually have content
+            var last_used: usize = 0;
+            for (0..new_rows) |r| {
+                const base = r * cols;
+                for (0..cols) |col| {
+                    if (!grid_mod.isDefaultCell(self.grid.cells[base + col])) {
+                        last_used = r + 1;
+                        break;
+                    }
                 }
             }
-            if (first_used < new_rows) break;
-        }
-        if (first_used > 0 and first_used < new_rows) {
-            const cols = self.grid.cols;
-            for (first_used..new_rows) |r| {
-                const dst = r - first_used;
-                @memcpy(
-                    self.grid.cells[dst * cols .. (dst + 1) * cols],
-                    self.grid.cells[r * cols .. (r + 1) * cols],
-                );
-                self.grid.row_wrapped[dst] = self.grid.row_wrapped[r];
+
+            if (last_used > 0 and last_used + shift <= new_rows) {
+                // Shift rows down (iterate in reverse to avoid overwriting)
+                var r: usize = last_used;
+                while (r > 0) {
+                    r -= 1;
+                    const dst = r + shift;
+                    @memcpy(
+                        self.grid.cells[dst * cols .. (dst + 1) * cols],
+                        self.grid.cells[r * cols .. (r + 1) * cols],
+                    );
+                    self.grid.row_wrapped[dst] = self.grid.row_wrapped[r];
+                }
+                // Clear the top rows that are now blank
+                for (0..shift) |rr| {
+                    @memset(self.grid.cells[rr * cols .. (rr + 1) * cols], grid_mod.Cell{});
+                    self.grid.row_wrapped[rr] = false;
+                }
+                self.cursor.row += shift;
             }
-            for ((new_rows - first_used)..new_rows) |r| {
-                @memset(self.grid.cells[r * cols .. (r + 1) * cols], grid_mod.Cell{});
-                self.grid.row_wrapped[r] = false;
+        } else {
+            // Compact content upward: shift all rows so the first non-empty
+            // row lands at row 0. Shells often push the cursor to the bottom
+            // of the initial grid; after growing, that leaves empty rows above.
+            var first_used: usize = new_rows;
+            for (0..new_rows) |r| {
+                const base = r * self.grid.cols;
+                for (0..self.grid.cols) |col| {
+                    if (!grid_mod.isDefaultCell(self.grid.cells[base + col])) {
+                        first_used = r;
+                        break;
+                    }
+                }
+                if (first_used < new_rows) break;
             }
-            self.cursor.row -|= first_used;
+            if (first_used > 0 and first_used < new_rows) {
+                const cols = self.grid.cols;
+                for (first_used..new_rows) |r| {
+                    const dst = r - first_used;
+                    @memcpy(
+                        self.grid.cells[dst * cols .. (dst + 1) * cols],
+                        self.grid.cells[r * cols .. (r + 1) * cols],
+                    );
+                    self.grid.row_wrapped[dst] = self.grid.row_wrapped[r];
+                }
+                for ((new_rows - first_used)..new_rows) |r| {
+                    @memset(self.grid.cells[r * cols .. (r + 1) * cols], grid_mod.Cell{});
+                    self.grid.row_wrapped[r] = false;
+                }
+                self.cursor.row -|= first_used;
+            }
         }
     }
 
