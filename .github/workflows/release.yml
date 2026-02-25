@@ -93,7 +93,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           codesign --force --options runtime \
-            --sign "Developer ID Application: ($APPLE_TEAM_ID)" \
+            --sign "$APPLE_TEAM_ID" \
             --timestamp \
             Attyx.app
 
