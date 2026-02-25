@@ -132,7 +132,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         float availW = dW - padL - padR;
         float availH = dH - padT - padB;
         float cx = floorf((availW - cols * gw) * 0.5f);
-        float cy = floorf((availH - rows * gh) * 0.5f);
+        float cy = 0;
         if (cx < 0) cx = 0;
         if (cy < 0) cy = 0;
         float offX = padL + cx;

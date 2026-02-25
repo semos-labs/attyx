@@ -24,7 +24,7 @@ static void mouseCell(NSEvent *event, NSView *view, int *outCol, int *outRow) {
     float availW = (float)view.bounds.size.width  - g_padding_left - g_padding_right;
     float availH = (float)view.bounds.size.height - g_padding_top  - g_padding_bottom;
     float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
-    float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+    float cy = 0;
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = g_padding_left + cx;
@@ -41,7 +41,7 @@ static void mouseCell0(NSEvent *event, NSView *view, int *outCol, int *outRow) {
     float availW = (float)view.bounds.size.width  - g_padding_left - g_padding_right;
     float availH = (float)view.bounds.size.height - g_padding_top  - g_padding_bottom;
     float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
-    float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+    float cy = 0;
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = g_padding_left + cx;
@@ -361,7 +361,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             NSPoint loc = [self convertPoint:event.locationInWindow fromView:nil];
             loc.y = self.bounds.size.height - loc.y;
             float availH = (float)self.bounds.size.height - g_padding_top - g_padding_bottom;
-            float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+            float cy = 0;
             if (cy < 0) cy = 0;
             float offY = g_padding_top + cy;
             int rawRow = (int)((loc.y - offY) / g_cell_pt_h);

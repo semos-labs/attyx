@@ -179,7 +179,7 @@ int drawFrame(void) {
     float availW = (float)fb_w - padL - padR;
     float availH = (float)fb_h - padT - padB;
     float cx = floorf((availW - cols * gw) * 0.5f);
-    float cy = floorf((availH - rows * gh) * 0.5f);
+    float cy = 0;
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = padL + cx;

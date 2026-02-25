@@ -305,7 +305,7 @@ void mouseToCell(double mx, double my, int* outCol, int* outRow) {
     float availW = (float)win_w - g_padding_left - g_padding_right;
     float availH = (float)win_h - g_padding_top  - g_padding_bottom;
     float cx = floorf((availW - g_cols * cellW) * 0.5f);
-    float cy = floorf((availH - g_rows * cellH) * 0.5f);
+    float cy = 0;
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = g_padding_left + cx;
@@ -322,7 +322,7 @@ void mouseToCell1(double mx, double my, int* outCol, int* outRow) {
     float availW = (float)win_w - g_padding_left - g_padding_right;
     float availH = (float)win_h - g_padding_top  - g_padding_bottom;
     float cx = floorf((availW - g_cols * cellW) * 0.5f);
-    float cy = floorf((availH - g_rows * cellH) * 0.5f);
+    float cy = 0;
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = g_padding_left + cx;
@@ -477,7 +477,7 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             float avW = (float)fb_w2 - padLpx - padRpx;
             float avH = (float)fb_h2 - padTpx - padBpx;
             float cxp = floorf((avW - g_cols * gw) * 0.5f);
-            float cyp = floorf((avH - g_rows * gh) * 0.5f);
+            float cyp = 0;
             if (cxp < 0) cxp = 0;
             if (cyp < 0) cyp = 0;
             float offXpx = padLpx + cxp;
@@ -535,7 +535,7 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
             int win_w, win_h;
             glfwGetWindowSize(g_window, &win_w, &win_h);
             float availH = (float)win_h - g_padding_top - g_padding_bottom;
-            float cyp = floorf((availH - g_rows * cellH) * 0.5f);
+            float cyp = 0;
             if (cyp < 0) cyp = 0;
             float offY = g_padding_top + cyp;
             int rawRow = (int)((my - offY) / cellH);
