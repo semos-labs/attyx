@@ -1,0 +1,12 @@
+{
+  "name": "attyx-scripts",
+  "private": true,
+  "scripts": {
+    "release": "bun scripts/release.ts",
+    "release:minor": "bun scripts/release.ts --minor",
+    "release:major": "bun scripts/release.ts --major",
+    "release:rc": "bun scripts/release.ts --rc",
+    "release:minor:rc": "bun scripts/release.ts --minor --rc",
+    "release:major:rc": "bun scripts/release.ts --major --rc"
+  }
+}

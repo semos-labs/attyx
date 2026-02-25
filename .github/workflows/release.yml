@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  GITHUB_REPO: semos-labs/attyx
+  HOMEBREW_TAP: semos-labs/homebrew-tap
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-latest
+            artifact: attyx-darwin-arm64.zip
+          - target: darwin-x64
+            runner: macos-13
+            artifact: attyx-darwin-x64.zip
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Create .icns from PNG
+        run: |
+          mkdir -p Attyx.iconset
+          sips -z 16 16     images/Attyx.png --out Attyx.iconset/icon_16x16.png
+          sips -z 32 32     images/Attyx.png --out Attyx.iconset/icon_16x16@2x.png
+          sips -z 32 32     images/Attyx.png --out Attyx.iconset/icon_32x32.png
+          sips -z 64 64     images/Attyx.png --out Attyx.iconset/icon_32x32@2x.png
+          sips -z 128 128   images/Attyx.png --out Attyx.iconset/icon_128x128.png
+          sips -z 256 256   images/Attyx.png --out Attyx.iconset/icon_128x128@2x.png
+          sips -z 256 256   images/Attyx.png --out Attyx.iconset/icon_256x256.png
+          sips -z 512 512   images/Attyx.png --out Attyx.iconset/icon_256x256@2x.png
+          sips -z 512 512   images/Attyx.png --out Attyx.iconset/icon_512x512.png
+          sips -z 1024 1024 images/Attyx.png --out Attyx.iconset/icon_512x512@2x.png
+          iconutil -c icns Attyx.iconset -o Attyx.icns
+
+      - name: Create .app bundle
+        run: |
+          mkdir -p Attyx.app/Contents/MacOS
+          mkdir -p Attyx.app/Contents/Resources
+          cp zig-out/bin/attyx Attyx.app/Contents/MacOS/attyx
+          cp Attyx.icns Attyx.app/Contents/Resources/Attyx.icns
+          cp resources/Info.plist Attyx.app/Contents/Info.plist
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_FILE=$(mktemp /tmp/cert.XXXXXX.p12)
+          KEYCHAIN_FILE=$(mktemp /tmp/keychain.XXXXXX.keychain-db)
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_FILE"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_FILE"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security import "$CERT_FILE" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_FILE"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security list-keychains -d user -s "$KEYCHAIN_FILE" $(security list-keychains -d user | tr -d '"')
+
+          echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> "$GITHUB_ENV"
+
+      - name: Codesign .app bundle
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          codesign --force --options runtime \
+            --sign "Developer ID Application: ($APPLE_TEAM_ID)" \
+            --timestamp \
+            Attyx.app
+
+      - name: Package .app as zip
+        run: ditto -c -k --keepParent Attyx.app ${{ matrix.artifact }}
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_FILE" ]; then
+            security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          fi
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Strip binary
+        run: llvm-strip zig-out/bin/attyx
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp zig-out/bin/attyx staging/attyx
+          cd staging
+          tar --zstd -cf ../attyx-linux-x64.tar.zst attyx
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: attyx-linux-x64.tar.zst
+
+  homebrew:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for release assets
+        run: sleep 30
+
+      - name: Download release assets
+        run: |
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPO" \
+            --pattern "attyx-*" \
+            --dir assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        run: |
+          cd assets
+          echo "darwin_arm64=$(sha256sum attyx-darwin-arm64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin_x64=$(sha256sum attyx-darwin-x64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha256sum attyx-linux-x64.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch Homebrew tap update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: ${{ env.HOMEBREW_TAP }}
+          event-type: update-formula-attyx
+          client-payload: |
+            {
+              "version": "${{ steps.version.outputs.version }}",
+              "tag": "${{ github.ref_name }}",
+              "darwin_arm64_sha256": "${{ steps.checksums.outputs.darwin_arm64 }}",
+              "darwin_x64_sha256": "${{ steps.checksums.outputs.darwin_x64 }}",
+              "linux_x64_sha256": "${{ steps.checksums.outputs.linux_x64 }}"
+            }
+
+      - name: Step summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Release ${{ github.ref_name }}
+
+          | Platform | SHA256 |
+          |----------|--------|
+          | darwin-arm64 | \`${{ steps.checksums.outputs.darwin_arm64 }}\` |
+          | darwin-x64 | \`${{ steps.checksums.outputs.darwin_x64 }}\` |
+          | linux-x64 | \`${{ steps.checksums.outputs.linux_x64 }}\` |
+          EOF

@@ -1,2 +1,7 @@
 .zig-cache
 .DS_Store
+node_modules/
+bun.lock
+package-lock.json
+.env
+cert
