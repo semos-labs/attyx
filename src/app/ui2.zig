@@ -109,7 +109,21 @@ fn sigusr1Handler(_: c_int) callconv(.c) void {
 
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (g_pty_master < 0 or len <= 0) return;
-    _ = posix.write(g_pty_master, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]) catch {};
+    const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
+    const chunk_size: usize = 4096;
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const end = @min(offset + chunk_size, data.len);
+        const n = posix.write(g_pty_master, data[offset..end]) catch |err| {
+            if (err == error.WouldBlock) {
+                // PTY buffer full — yield briefly and retry
+                posix.nanosleep(0, 1_000_000); // 1ms
+                continue;
+            }
+            return; // broken pipe or other fatal error
+        };
+        offset += n;
+    }
 }
 
 export fn attyx_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: u32) void {
