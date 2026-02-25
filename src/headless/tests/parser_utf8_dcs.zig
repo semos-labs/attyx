@@ -129,7 +129,7 @@ test "APC with inner BEL is not prematurely terminated" {
         "C    \n");
 }
 
-test "parser: APC enters str_ignore and exits on ST" {
+test "parser: APC graphics command dispatches and returns to ground" {
     var p: Parser = .{};
     _ = p.next(0x1B);
     _ = p.next('_');
@@ -137,6 +137,22 @@ test "parser: APC enters str_ignore and exits on ST" {
     _ = p.next('a');
     _ = p.next('=');
     _ = p.next('p');
+    _ = p.next(0x1B);
+    // APC G... produces a graphics_command action (not nop).
+    const result = p.next('\\').?;
+    try std.testing.expect(result == .graphics_command);
+    try std.testing.expectEqual(Action{ .print = 'X' }, p.next('X').?);
+}
+
+test "parser: APC non-graphics enters str_ignore and exits on ST" {
+    var p: Parser = .{};
+    _ = p.next(0x1B);
+    _ = p.next('_');
+    _ = p.next('X'); // Not 'G' — falls back to str_ignore.
+    _ = p.next('d');
+    _ = p.next('a');
+    _ = p.next('t');
+    _ = p.next('a');
     _ = p.next(0x1B);
     try std.testing.expectEqual(Action.nop, p.next('\\').?);
     try std.testing.expectEqual(Action{ .print = 'X' }, p.next('X').?);

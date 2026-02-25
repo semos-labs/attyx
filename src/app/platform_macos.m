@@ -78,6 +78,10 @@ volatile int  g_search_cur_vis_ce  = 0;
 volatile uint32_t g_hover_link_id = 0;
 volatile int g_hover_row = -1;
 
+AttyxImagePlacement g_image_placements[ATTYX_MAX_IMAGE_PLACEMENTS];
+volatile int      g_image_placement_count = 0;
+volatile uint64_t g_image_gen = 0;
+
 char g_detected_url[DETECTED_URL_MAX];
 volatile int g_detected_url_len = 0;
 volatile int g_detected_url_row = -1;
@@ -223,6 +227,15 @@ NSString* const kShaderSource =
  "    float4 c = tex.sample(s, in.texcoord);\n"
  "    // Premultiplied BGRA; Metal auto-swizzles BGRA8Unorm to RGBA. Scale by vertex alpha.\n"
  "    return float4(c.rgb * in.color.a, c.a * in.color.a);\n"
+ "}\n"
+ "\n"
+ "fragment float4 frag_image(\n"
+ "    VertexOut in [[stage_in]],\n"
+ "    texture2d<float> tex [[texture(0)]])\n"
+ "{\n"
+ "    constexpr sampler s(filter::linear);\n"
+ "    float4 c = tex.sample(s, in.texcoord);\n"
+ "    return float4(c.rgb, c.a * in.color.a);\n"
  "}\n";
 
 // ---------------------------------------------------------------------------

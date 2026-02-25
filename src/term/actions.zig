@@ -154,4 +154,7 @@ pub const Action = union(enum) {
     set_cursor_shape: CursorShape,
     /// CSI ?Ps$p — DECRQM: request the current setting of a DEC private mode.
     query_dec_private_mode: u16,
+    /// APC G — Kitty graphics protocol command. Payload is the raw key=value
+    /// data (after the 'G' prefix, before ST), borrowed from the parser buffer.
+    graphics_command: []const u8,
 };
