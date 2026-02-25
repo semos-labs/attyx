@@ -734,19 +734,30 @@ fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.
 }
 
 fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
-    const fg = resolveWithTheme(cell.style.fg, false, theme);
-    const bg = resolveWithTheme(cell.style.bg, true, theme);
+    // Swap fg/bg when reverse video is active.
+    // Also flip the is_bg hint so .default resolves to the opposite theme color.
+    const eff_fg = if (cell.style.reverse) cell.style.bg else cell.style.fg;
+    const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;
+    const fg = resolveWithTheme(eff_fg, cell.style.reverse, theme);
+    const bg = resolveWithTheme(eff_bg, !cell.style.reverse, theme);
+    // Dim: halve foreground brightness
+    const fg_r = if (cell.style.dim) fg.r / 2 else fg.r;
+    const fg_g = if (cell.style.dim) fg.g / 2 else fg.g;
+    const fg_b = if (cell.style.dim) fg.b / 2 else fg.b;
     return .{
         .character = cell.char,
-        .fg_r = fg.r,
-        .fg_g = fg.g,
-        .fg_b = fg.b,
+        .fg_r = fg_r,
+        .fg_g = fg_g,
+        .fg_b = fg_b,
         .bg_r = bg.r,
         .bg_g = bg.g,
         .bg_b = bg.b,
         .flags = @as(u8, if (cell.style.bold) 1 else 0) |
             @as(u8, if (cell.style.underline) 2 else 0) |
-            @as(u8, switch (cell.style.bg) { .default => @as(u8, 4), else => @as(u8, 0) }),
+            @as(u8, if (!cell.style.reverse and eff_bg == .default) @as(u8, 4) else @as(u8, 0)) |
+            @as(u8, if (cell.style.dim) 8 else 0) |
+            @as(u8, if (cell.style.italic) 16 else 0) |
+            @as(u8, if (cell.style.strikethrough) 32 else 0),
         .link_id = cell.link_id,
     };
 }

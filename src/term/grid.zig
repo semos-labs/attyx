@@ -31,7 +31,11 @@ pub const Style = struct {
     fg: Color = .default,
     bg: Color = .default,
     bold: bool = false,
+    dim: bool = false,
+    italic: bool = false,
     underline: bool = false,
+    reverse: bool = false,
+    strikethrough: bool = false,
 };
 
 /// A single cell in the terminal grid.

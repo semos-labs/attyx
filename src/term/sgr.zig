@@ -22,8 +22,45 @@ pub fn applySgr(pen: *Style, sgr: actions_mod.Sgr) void {
                 pen.bold = true;
                 i += 1;
             },
+            2 => {
+                pen.dim = true;
+                i += 1;
+            },
+            3 => {
+                pen.italic = true;
+                i += 1;
+            },
             4 => {
                 pen.underline = true;
+                i += 1;
+            },
+            7 => {
+                pen.reverse = true;
+                i += 1;
+            },
+            9 => {
+                pen.strikethrough = true;
+                i += 1;
+            },
+            22 => {
+                pen.bold = false;
+                pen.dim = false;
+                i += 1;
+            },
+            23 => {
+                pen.italic = false;
+                i += 1;
+            },
+            24 => {
+                pen.underline = false;
+                i += 1;
+            },
+            27 => {
+                pen.reverse = false;
+                i += 1;
+            },
+            29 => {
+                pen.strikethrough = false;
                 i += 1;
             },
             30...37 => {

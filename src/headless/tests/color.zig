@@ -140,6 +140,59 @@ test "attr: truecolor fg survives chunked input" {
     try std.testing.expectEqual(Color{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, cell.style.fg);
 }
 
+// ===========================================================================
+// SGR 7 (reverse video) and attribute reset codes
+// ===========================================================================
+
+test "attr: SGR 7 sets reverse flag" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[7mA");
+    const cell = engine.state.grid.getCell(0, 0);
+    try std.testing.expect(cell.style.reverse);
+}
+
+test "attr: SGR 27 clears reverse flag" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[7mA\x1b[27mB");
+    try std.testing.expect(engine.state.grid.getCell(0, 0).style.reverse);
+    try std.testing.expect(!engine.state.grid.getCell(0, 1).style.reverse);
+}
+
+test "attr: SGR 0 resets reverse flag" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[7mA\x1b[0mB");
+    try std.testing.expect(engine.state.grid.getCell(0, 0).style.reverse);
+    try std.testing.expect(!engine.state.grid.getCell(0, 1).style.reverse);
+}
+
+test "attr: SGR 22 clears bold, SGR 24 clears underline" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 5);
+    defer engine.deinit();
+
+    engine.feed("\x1b[1;4mA\x1b[22mB\x1b[24mC");
+    const a = engine.state.grid.getCell(0, 0);
+    try std.testing.expect(a.style.bold);
+    try std.testing.expect(a.style.underline);
+
+    const b = engine.state.grid.getCell(0, 1);
+    try std.testing.expect(!b.style.bold);
+    try std.testing.expect(b.style.underline);
+
+    const cell_c = engine.state.grid.getCell(0, 2);
+    try std.testing.expect(!cell_c.style.bold);
+    try std.testing.expect(!cell_c.style.underline);
+}
+
 test "attr: save/restore also captures scroll region" {
     const alloc = std.testing.allocator;
     var engine = try Engine.init(alloc, 5, 4);

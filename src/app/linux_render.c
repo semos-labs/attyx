@@ -143,7 +143,7 @@ int drawFrame(void) {
         free(g_color_verts);
         free(g_cell_snapshot);
 
-        g_bg_vert_cap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
+        g_bg_vert_cap = (total * 4 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
         g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
         g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
         g_color_verts   = (Vertex*)calloc(total * 6, sizeof(Vertex));
@@ -435,6 +435,45 @@ int drawFrame(void) {
                 g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                bgVertCount += 6;
+            }
+        }
+    }
+
+    // Underline + strikethrough decorations
+    {
+        float decoH = fmaxf(2.0f, 1.0f);
+        for (int i = 0; i < total; i++) {
+            const AttyxCell* cell = &cells[i];
+            uint8_t fl = cell->flags;
+            int hasUnderline = (fl & 2);
+            int hasStrike = (fl & 32);
+            if (!hasUnderline && !hasStrike) continue;
+            int drow = i / cols, dcol = i % cols;
+            float dr = cell->fg_r / 255.0f;
+            float dg = cell->fg_g / 255.0f;
+            float db = cell->fg_b / 255.0f;
+            float dx0 = offX + dcol * gw, dx1 = dx0 + gw;
+            if (hasUnderline && bgVertCount + 6 <= g_bg_vert_cap) {
+                float uy1 = offY + (drow + 1) * gh;
+                float uy0 = uy1 - decoH;
+                g_bg_verts[bgVertCount+0] = (Vertex){ dx0,uy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+1] = (Vertex){ dx1,uy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+2] = (Vertex){ dx0,uy1, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+3] = (Vertex){ dx1,uy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+4] = (Vertex){ dx1,uy1, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+5] = (Vertex){ dx0,uy1, 0,0, dr,dg,db,1 };
+                bgVertCount += 6;
+            }
+            if (hasStrike && bgVertCount + 6 <= g_bg_vert_cap) {
+                float sy0 = offY + drow * gh + gh * 0.5f - decoH * 0.5f;
+                float sy1 = sy0 + decoH;
+                g_bg_verts[bgVertCount+0] = (Vertex){ dx0,sy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+1] = (Vertex){ dx1,sy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+2] = (Vertex){ dx0,sy1, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+3] = (Vertex){ dx1,sy0, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+4] = (Vertex){ dx1,sy1, 0,0, dr,dg,db,1 };
+                g_bg_verts[bgVertCount+5] = (Vertex){ dx0,sy1, 0,0, dr,dg,db,1 };
                 bgVertCount += 6;
             }
         }

@@ -80,7 +80,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             free(_colorVerts);
             free(_cellSnapshot);
 
-            int bgVertCap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
+            int bgVertCap = (total * 4 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
             _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
             _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
             _colorVerts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
@@ -303,6 +303,45 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                     _bgVerts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
+                    bgVertCount += 6;
+                }
+            }
+        }
+
+        // Underline + strikethrough decorations
+        {
+            float decoH = fmaxf(2.0f, 1.0f);
+            for (int i = 0; i < total; i++) {
+                const AttyxCell* cell = &cells[i];
+                uint8_t fl = cell->flags;
+                int hasUnderline = (fl & 2);
+                int hasStrike = (fl & 32);
+                if (!hasUnderline && !hasStrike) continue;
+                int drow = i / cols, dcol = i % cols;
+                float dr = cell->fg_r / 255.0f;
+                float dg = cell->fg_g / 255.0f;
+                float db = cell->fg_b / 255.0f;
+                float dx0 = offX + dcol * gw, dx1 = dx0 + gw;
+                if (hasUnderline && bgVertCount + 6 <= _metalBufCapBg) {
+                    float uy1 = offY + (drow + 1) * gh;
+                    float uy0 = uy1 - decoH;
+                    _bgVerts[bgVertCount+0] = (Vertex){ dx0,uy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+1] = (Vertex){ dx1,uy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+2] = (Vertex){ dx0,uy1, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+3] = (Vertex){ dx1,uy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+4] = (Vertex){ dx1,uy1, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+5] = (Vertex){ dx0,uy1, 0,0, dr,dg,db,1 };
+                    bgVertCount += 6;
+                }
+                if (hasStrike && bgVertCount + 6 <= _metalBufCapBg) {
+                    float sy0 = offY + drow * gh + gh * 0.5f - decoH * 0.5f;
+                    float sy1 = sy0 + decoH;
+                    _bgVerts[bgVertCount+0] = (Vertex){ dx0,sy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+1] = (Vertex){ dx1,sy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+2] = (Vertex){ dx0,sy1, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+3] = (Vertex){ dx1,sy0, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+4] = (Vertex){ dx1,sy1, 0,0, dr,dg,db,1 };
+                    _bgVerts[bgVertCount+5] = (Vertex){ dx0,sy1, 0,0, dr,dg,db,1 };
                     bgVertCount += 6;
                 }
             }

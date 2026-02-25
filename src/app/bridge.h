@@ -10,7 +10,7 @@ typedef struct {
     uint32_t character;
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
-    uint8_t flags; // bit 0 = bold, bit 1 = underline, bit 2 = default bg (apply opacity)
+    uint8_t flags; // bit 0 = bold, bit 1 = underline, bit 2 = default bg (apply opacity), bit 3 = dim, bit 4 = italic, bit 5 = strikethrough
     uint32_t link_id; // hyperlink ID (0 = none), maps to engine's link table
 } AttyxCell;
 
