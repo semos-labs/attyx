@@ -43,9 +43,10 @@ jobs:
 
       - name: Build
         timeout-minutes: 30
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: zig build -Doptimize=ReleaseFast
+
+      - name: Set minimum macOS version to 13.0
+        run: vtool -set-build-version macos 13.0 15.0 -replace -output zig-out/bin/attyx zig-out/bin/attyx
 
       - name: Create .icns from PNG
         run: |
