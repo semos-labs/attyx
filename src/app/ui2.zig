@@ -163,8 +163,6 @@ pub fn run(
     var engine = try Engine.init(allocator, config.rows, config.cols);
     defer engine.deinit();
 
-    engine.state.cursor.row = config.rows - 1;
-
     // Apply config: default cursor shape
     engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
 
