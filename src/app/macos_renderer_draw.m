@@ -354,6 +354,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 const AttyxCell* cell = &cells[i];
                 uint32_t ch = cell->character;
                 if (ch <= 32) continue;
+                if (ch == 0x10EEEE) continue;  // Kitty Unicode placeholder
 
                 int row = i / cols;
                 int col = i % cols;
@@ -431,7 +432,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         }
 
         // Cursor trail effect (Neovide-style: stretched comet tail)
-        if (g_cursor_trail && cursorChanged && _prevCursorRow >= 0) {
+        if (g_cursor_trail && g_cursor_visible && cursorChanged && _prevCursorRow >= 0) {
             int cellDist = abs(curRow - _prevCursorRow) + abs(curCol - _prevCursorCol);
             if (cellDist > 1) {
                 _trailX = offX + _prevCursorCol * gw;
@@ -440,7 +441,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 _trailLastTime = now;
             }
         }
-        if (_trailActive && g_cursor_trail) {
+        if (_trailActive && !g_cursor_visible) _trailActive = NO;
+        if (_trailActive && g_cursor_trail && g_cursor_visible) {
             float targetX = offX + curCol * gw;
             float targetY = offY + curRow * gh;
             float dt = (float)(now - _trailLastTime);

@@ -267,7 +267,7 @@ int drawFrame(void) {
     }
 
     // Cursor trail effect (Neovide-style: stretched comet tail)
-    if (g_cursor_trail && cursorChanged && g_prev_cursor_row >= 0) {
+    if (g_cursor_trail && g_cursor_visible && cursorChanged && g_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);
         if (cellDist > 1) {
             g_trail_x = offX + g_prev_cursor_col * gw;
@@ -276,7 +276,8 @@ int drawFrame(void) {
             g_trail_last_time = now;
         }
     }
-    if (g_trail_active && g_cursor_trail) {
+    if (g_trail_active && !g_cursor_visible) g_trail_active = 0;
+    if (g_trail_active && g_cursor_trail && g_cursor_visible) {
         float targetX = offX + curCol * gw;
         float targetY = offY + curRow * gh;
         float dt = (float)(now - g_trail_last_time);
@@ -487,6 +488,7 @@ int drawFrame(void) {
             const AttyxCell* cell = &cells[i];
             uint32_t ch = cell->character;
             if (ch <= 32) continue;
+            if (ch == 0x10EEEE) continue;  // Kitty Unicode placeholder
 
             int row = i / cols, col = i % cols;
             float x0 = offX + col * gw, y0 = offY + row * gh;

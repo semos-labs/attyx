@@ -327,6 +327,35 @@ fn syncViewportFromC(state: *attyx.TerminalState) void {
     }
 }
 
+/// Extract image_id from a cell's foreground color (Kitty Unicode placement protocol).
+fn imageIdFromFg(fg: attyx.grid.Color) ?u32 {
+    return switch (fg) {
+        .palette => |v| @as(u32, v),
+        .ansi => |v| @as(u32, v),
+        .rgb => |rgb| (@as(u32, rgb.r) << 16) | (@as(u32, rgb.g) << 8) | @as(u32, rgb.b),
+        .default => null,
+    };
+}
+
+/// Scan the grid for the first U+10EEEE placeholder cell whose fg color encodes the given image_id.
+fn findPlaceholderPosition(grid: anytype, image_id: u32) ?struct { row: i32, col: i32 } {
+    const rows: usize = @intCast(grid.rows);
+    const cols: usize = @intCast(grid.cols);
+    for (0..rows) |r| {
+        for (0..cols) |co| {
+            const cell = grid.cells[r * cols + co];
+            if (cell.char == 0x10EEEE) {
+                if (imageIdFromFg(cell.style.fg)) |id| {
+                    if (id == image_id) {
+                        return .{ .row = @intCast(r), .col = @intCast(co) };
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
 fn publishImagePlacements(ctx: *PtyThreadCtx) void {
     const state = &ctx.engine.state;
     const store = state.graphics_store orelse {
@@ -345,10 +374,20 @@ fn publishImagePlacements(ctx: *PtyThreadCtx) void {
         const img = store.getImage(p.image_id) orelse continue;
         const idx: usize = @intCast(out_count);
 
+        // For virtual placements, derive position from grid placeholder cells.
+        var row = p.row;
+        var col = p.col;
+        if (p.virtual) {
+            if (findPlaceholderPosition(&state.grid, p.image_id)) |pos| {
+                row = pos.row;
+                col = pos.col;
+            }
+        }
+
         c.g_image_placements[idx] = .{
             .image_id = p.image_id,
-            .row = p.row,
-            .col = p.col,
+            .row = row,
+            .col = col,
             .img_width = img.width,
             .img_height = img.height,
             .src_x = p.src_x,

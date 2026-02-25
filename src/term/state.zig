@@ -310,11 +310,9 @@ pub const TerminalState = struct {
         if (char >= 0xFE00 and char <= 0xFE0E) return; // VS1-15 variation selectors
         if (char >= 0x1F3FB and char <= 0x1F3FF) return; // Fitzpatrick skin-tone modifiers
 
-        // Kitty graphics Unicode placeholder (U+10EEEE) — virtual image cell.
-        if (char == 0x10EEEE) return;
-        // Combining diacritical marks (U+0300-U+036F): used by Kitty Unicode
-        // placements for encoding image indices, and generally zero-width.
-        // Absorb them since we don't have combining support yet.
+        // Combining diacritical marks (U+0300-U+036F): zero-width combining
+        // characters. Absorb them since we don't have combining support yet.
+        // (Also used by Kitty Unicode placements for encoding image indices.)
         if (char >= 0x0300 and char <= 0x036F) return;
 
         if (self.wrap_next) {
