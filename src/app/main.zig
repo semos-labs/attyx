@@ -13,8 +13,10 @@ const c = @cImport({
 
 // Stubs: ui2.zig normally provides these. UI-0 demo has no PTY.
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
+export fn attyx_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 export var g_needs_reload_config: i32 = 0;
+export var g_kitty_kbd_flags: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
 export fn attyx_trigger_config_reload() void {}
 export fn attyx_log(_: c_int, _: [*:0]const u8, _: [*:0]const u8) void {}

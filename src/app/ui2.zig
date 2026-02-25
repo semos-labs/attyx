@@ -61,6 +61,7 @@ var g_last_title_ptr: ?[*]const u8 = null;
 // Atomic flag: set to 1 to request a config reload on the next PTY thread tick.
 // Written by SIGUSR1 handler or attyx_trigger_config_reload(); read-and-reset by PTY thread.
 export var g_needs_reload_config: i32 = 0;
+export var g_kitty_kbd_flags: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
 export var g_background_opacity: f32 = 1.0;
 export var g_background_blur: i32 = 30;
@@ -109,6 +110,32 @@ fn sigusr1Handler(_: c_int) callconv(.c) void {
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (g_pty_master < 0 or len <= 0) return;
     _ = posix.write(g_pty_master, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]) catch {};
+}
+
+export fn attyx_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: u32) void {
+    if (g_pty_master < 0) return;
+    const eng = g_engine orelse return;
+    const key_encode = attyx.key_encode;
+
+    const key: key_encode.KeyCode = std.meta.intToEnum(key_encode.KeyCode, key_raw) catch return;
+    const mods: key_encode.Modifiers = @bitCast(mods_raw);
+    const event_type: key_encode.EventType = std.meta.intToEnum(key_encode.EventType, event_type_raw) catch return;
+    const cp: u21 = if (codepoint_raw <= 0x10FFFF) @intCast(codepoint_raw) else 0;
+
+    // Read terminal state from engine (published by PTY thread via volatile globals)
+    const cursor_keys_app = eng.state.cursor_keys_app;
+    const kitty_flags = eng.state.kittyFlags();
+
+    var buf: [128]u8 = undefined;
+    const encoded = key_encode.encodeKey(
+        .{ .key = key, .mods = mods, .event_type = event_type, .codepoint = cp },
+        .{ .cursor_keys_app = cursor_keys_app, .kitty_flags = kitty_flags },
+        &buf,
+    );
+
+    if (encoded.len > 0) {
+        _ = posix.write(g_pty_master, encoded) catch {};
+    }
 }
 
 export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {
@@ -360,6 +387,7 @@ fn publishState(ctx: *PtyThreadCtx) void {
 
     c.g_cursor_shape = @intFromEnum(ctx.engine.state.cursor_shape);
     c.g_cursor_visible = @intFromBool(ctx.engine.state.cursor_visible);
+    g_kitty_kbd_flags = @intCast(ctx.engine.state.kittyFlags());
 
     if (ctx.engine.state.title) |title| {
         if (g_last_title_ptr != title.ptr) {

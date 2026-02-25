@@ -28,6 +28,9 @@ extern volatile int g_cursor_keys_app;
 extern volatile int g_mouse_tracking;
 extern volatile int g_mouse_sgr;
 
+// Kitty keyboard protocol flags
+extern volatile int g_kitty_kbd_flags;
+
 // Hyperlink hover state
 extern volatile uint32_t g_hover_link_id;
 extern volatile int g_hover_row;

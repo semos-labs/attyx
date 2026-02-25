@@ -92,6 +92,9 @@ extern volatile int  g_search_cur_vis_row;
 extern volatile int  g_search_cur_vis_cs;
 extern volatile int  g_search_cur_vis_ce;
 
+// Kitty keyboard protocol flags
+extern volatile int g_kitty_kbd_flags;
+
 // Hyperlink hover state
 extern volatile uint32_t g_hover_link_id;
 extern volatile int g_hover_row;

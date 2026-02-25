@@ -157,4 +157,11 @@ pub const Action = union(enum) {
     /// APC G — Kitty graphics protocol command. Payload is the raw key=value
     /// data (after the 'G' prefix, before ST), borrowed from the parser buffer.
     graphics_command: []const u8,
+
+    /// CSI > N u — Kitty keyboard protocol: push flags onto stack.
+    kitty_push_flags: u5,
+    /// CSI < N u — Kitty keyboard protocol: pop N entries from stack.
+    kitty_pop_flags: u8,
+    /// CSI ? u — Kitty keyboard protocol: query current flags.
+    kitty_query_flags,
 };

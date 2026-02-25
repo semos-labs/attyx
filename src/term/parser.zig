@@ -322,10 +322,16 @@ pub const Parser = struct {
         const buf = self.csi_buf[0..self.csi_len];
 
         if (buf.len > 0 and buf[0] == '?') {
+            if (final == 'u') return csi.dispatchKittyQuery(buf[1..]);
             return csi.dispatchDecPrivate(final, buf[1..]);
         }
         if (buf.len > 0 and buf[0] == '>') {
+            if (final == 'u') return csi.dispatchKittyPush(buf[1..]);
             return csi.dispatchSecondaryDA(final, buf[1..]);
+        }
+        if (buf.len > 0 and buf[0] == '<') {
+            if (final == 'u') return csi.dispatchKittyPop(buf[1..]);
+            return .nop;
         }
 
         // CSI Ps SP q — DECSCUSR (set cursor shape)

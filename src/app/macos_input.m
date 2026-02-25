@@ -356,6 +356,25 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         return;
     }
     if (_selecting) {
+        // Auto-scroll when dragging past top/bottom edge
+        if (!g_alt_screen) {
+            NSPoint loc = [self convertPoint:event.locationInWindow fromView:nil];
+            loc.y = self.bounds.size.height - loc.y;
+            float availH = (float)self.bounds.size.height - g_padding_top - g_padding_bottom;
+            float cy = floorf((availH - g_rows * g_cell_pt_h) * 0.5f);
+            if (cy < 0) cy = 0;
+            float offY = g_padding_top + cy;
+            int rawRow = (int)((loc.y - offY) / g_cell_pt_h);
+            if (rawRow < 0 && g_scrollback_count > 0) {
+                attyx_scroll_viewport(1);
+                g_sel_start_row++;
+            }
+            if (rawRow >= g_rows && g_viewport_offset > 0) {
+                attyx_scroll_viewport(-1);
+                g_sel_start_row--;
+            }
+        }
+
         int col, row;
         mouseCell0(event, self, &col, &row);
         if (col == g_sel_end_col && row == g_sel_end_row) return;

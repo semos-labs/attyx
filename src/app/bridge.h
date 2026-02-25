@@ -33,6 +33,12 @@ int attyx_should_quit(void);
 // Implemented in Zig (ui2.zig).
 void attyx_send_input(const uint8_t* bytes, int len);
 
+// Handle a key event from the platform layer. Encodes using xterm or Kitty
+// protocol depending on terminal state, then writes to PTY.
+// key: KeyCode enum value, mods: modifier bitmask (bit0=shift,1=alt,2=ctrl,3=super),
+// event_type: 1=press,2=repeat,3=release, codepoint: Unicode codepoint (for KeyCode.codepoint)
+void attyx_handle_key(uint16_t key, uint8_t mods, uint8_t event_type, uint32_t codepoint);
+
 // Update terminal mode flags (called from PTY thread after engine.feed).
 void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app);
 
@@ -75,6 +81,9 @@ void attyx_mark_all_dirty(void);
 extern volatile int g_sel_start_row, g_sel_start_col;
 extern volatile int g_sel_end_row, g_sel_end_col;
 extern volatile int g_sel_active;
+
+// Kitty keyboard protocol flags (written by PTY thread, read by main thread).
+extern volatile int g_kitty_kbd_flags;
 
 // Cursor shape and visibility (written by PTY thread, read by renderer).
 // shape: 0=blinking_block, 1=steady_block, 2=blinking_underline,

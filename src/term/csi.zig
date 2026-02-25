@@ -205,6 +205,27 @@ fn makeDecPrivateMode(params: CsiParams, set: bool) Action {
     return .{ .dec_private_mode = dm };
 }
 
+/// CSI > N u — Kitty keyboard protocol: push flags.
+pub fn dispatchKittyPush(param_buf: []const u8) Action {
+    const params = parseCsiParams(param_buf);
+    const flags: u16 = if (params.len > 0) params.params[0] else 0;
+    if (flags > 31) return .nop;
+    return .{ .kitty_push_flags = @intCast(flags) };
+}
+
+/// CSI < N u — Kitty keyboard protocol: pop N entries.
+pub fn dispatchKittyPop(param_buf: []const u8) Action {
+    const params = parseCsiParams(param_buf);
+    const n: u16 = if (params.len > 0) params.params[0] else 1;
+    return .{ .kitty_pop_flags = @intCast(@min(n, 255)) };
+}
+
+/// CSI ? u — Kitty keyboard protocol: query current flags.
+pub fn dispatchKittyQuery(param_buf: []const u8) Action {
+    _ = param_buf;
+    return .kitty_query_flags;
+}
+
 /// Parse the rest of an OSC 8 payload after the "8;".
 /// Format: "params;URI" — params are ignored, URI determines start/end.
 pub fn makeOscHyperlink(rest: []const u8) Action {
