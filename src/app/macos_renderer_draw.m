@@ -100,7 +100,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                                                      options:MTLResourceStorageModeShared];
         }
 
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive) {
+        BOOL imagesChanged = (g_image_gen != _lastImageGen) || (g_image_placement_count > 0);
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !imagesChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -583,6 +584,10 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             [enc setFragmentTexture:_glyphCache.color_texture atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:ci];
         }
+
+        // Kitty graphics: draw image placements over text.
+        [self drawImagesWithEncoder:enc viewport:viewport
+                             glyphW:gw glyphH:gh offX:offX offY:offY];
 
         if (g_ime_composing && g_ime_preedit_len > 0) {
             int pRow = g_ime_anchor_row;

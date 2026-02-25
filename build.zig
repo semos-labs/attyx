@@ -41,6 +41,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // Vendored stb_image for image decoding (Kitty graphics protocol).
+    // Pure computation — no platform dependencies.
+    mod.addCSourceFile(.{ .file = b.path("src/vendor/stb_image_impl.c"), .flags = &.{} });
+    mod.addCSourceFile(.{ .file = b.path("src/vendor/jebp_impl.c"), .flags = &.{} });
+    mod.addIncludePath(b.path("src/vendor"));
+    mod.linkSystemLibrary("c", .{});
+    mod.linkSystemLibrary("z", .{}); // zlib for Kitty graphics o=z compression
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -98,8 +106,9 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = macos_flags });
-        exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = macos_flags });
-        exe.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"),    .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_images.m"), .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),          .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
@@ -185,8 +194,9 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = app_macos_flags });
-        app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"), .flags = app_macos_flags });
-        app.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),        .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_draw.m"),    .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer_images.m"), .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_search.m"),          .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });

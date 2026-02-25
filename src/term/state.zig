@@ -4,6 +4,7 @@ const actions_mod = @import("actions.zig");
 const sgr_mod = @import("sgr.zig");
 const dirty_mod = @import("dirty.zig");
 const scrollback_mod = @import("scrollback.zig");
+const graphics_store_mod = @import("graphics_store.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const Cell = grid_mod.Cell;
@@ -58,13 +59,16 @@ pub const TerminalState = struct {
     // -- Damage tracking (row-level dirty bitset) --------------------------
     dirty: dirty_mod.DirtyRows = .{},
 
-    // -- Response buffer (filled by DSR/DA, consumed by app layer) ----------
-    response_buf: [128]u8 = undefined,
+    // -- Response buffer (filled by DSR/DA/graphics, consumed by app layer) --
+    response_buf: [512]u8 = undefined,
     response_len: usize = 0,
 
     // -- Scrollback (main screen only, not alt) ------------------------------
     scrollback: scrollback_mod.Scrollback,
     viewport_offset: usize = 0,
+
+    // -- Kitty graphics protocol ---------------------------------------------
+    graphics_store: ?*graphics_store_mod.GraphicsStore = null,
 
     // -- Terminal modes (global, not per-buffer) ----------------------------
     auto_wrap: bool = true,
@@ -88,12 +92,15 @@ pub const TerminalState = struct {
             scrollback_mod.Scrollback.default_max_lines,
             cols,
         );
+        const gs = try allocator.create(graphics_store_mod.GraphicsStore);
+        gs.* = graphics_store_mod.GraphicsStore.init(allocator);
         return .{
             .grid = main_grid,
             .scroll_bottom = rows - 1,
             .inactive_grid = alt_grid,
             .inactive_scroll_bottom = rows - 1,
             .scrollback = sb,
+            .graphics_store = gs,
         };
     }
 
@@ -102,6 +109,10 @@ pub const TerminalState = struct {
         for (self.link_uris.items) |uri| alloc.free(uri);
         self.link_uris.deinit(alloc);
         if (self.title) |t| alloc.free(t);
+        if (self.graphics_store) |gs| {
+            gs.deinit();
+            alloc.destroy(gs);
+        }
         self.scrollback.deinit();
         self.grid.deinit();
         self.inactive_grid.deinit();
@@ -119,7 +130,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command => {},
             else => {
                 self.wrap_next = false;
             },
@@ -219,6 +230,7 @@ pub const TerminalState = struct {
             .set_cursor_shape => |shape| {
                 self.cursor_shape = shape;
             },
+            .graphics_command => |raw| self.handleGraphicsCommand(raw),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -290,6 +302,13 @@ pub const TerminalState = struct {
         if (char == 0x20E3) return; // combining enclosing keycap
         if (char >= 0xFE00 and char <= 0xFE0E) return; // VS1-15 variation selectors
         if (char >= 0x1F3FB and char <= 0x1F3FF) return; // Fitzpatrick skin-tone modifiers
+
+        // Kitty graphics Unicode placeholder (U+10EEEE) — virtual image cell.
+        if (char == 0x10EEEE) return;
+        // Combining diacritical marks (U+0300-U+036F): used by Kitty Unicode
+        // placements for encoding image indices, and generally zero-width.
+        // Absorb them since we don't have combining support yet.
+        if (char >= 0x0300 and char <= 0x036F) return;
 
         if (self.wrap_next) {
             if (self.auto_wrap) {
@@ -550,46 +569,13 @@ pub const TerminalState = struct {
         self.title = alloc.dupe(u8, title_slice) catch null;
     }
 
-    // -- Device reports (DSR / DA) -------------------------------------------
-
-    fn appendResponse(self: *TerminalState, data: []const u8) void {
-        const avail = self.response_buf.len - self.response_len;
-        const n = @min(data.len, avail);
-        @memcpy(self.response_buf[self.response_len .. self.response_len + n], data[0..n]);
-        self.response_len += n;
-    }
-
-    fn respondDeviceStatus(self: *TerminalState) void {
-        self.appendResponse("\x1b[0n");
-    }
-
-    fn respondCursorPosition(self: *TerminalState) void {
-        var buf: [32]u8 = undefined;
-        const row = self.cursor.row + 1;
-        const col = self.cursor.col + 1;
-        const len = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ row, col }) catch return;
-        self.appendResponse(len);
-    }
-
-    fn respondDeviceAttributes(self: *TerminalState) void {
-        self.appendResponse("\x1b[?62c");
-    }
-
-    fn respondSecondaryDeviceAttributes(self: *TerminalState) void {
-        // VT220-like: type 0, version 10, ROM version 1
-        self.appendResponse("\x1b[>0;10;1c");
-    }
-
-    fn respondDecRequestMode(self: *TerminalState, mode: u16) void {
-        // DECRQM response: ESC[?Ps;Pm$y  where Pm = 0 not recognized, 1 set, 2 reset
-        const pm: u8 = switch (mode) {
-            2026 => if (self.synchronized_output) 1 else 2,
-            else => 0,
-        };
-        var buf: [32]u8 = undefined;
-        const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, pm }) catch return;
-        self.appendResponse(resp);
-    }
+    // -- Device reports (state_report.zig) -----------------------------------
+    pub const appendResponse = @import("state_report.zig").appendResponse;
+    pub const respondDeviceStatus = @import("state_report.zig").respondDeviceStatus;
+    pub const respondCursorPosition = @import("state_report.zig").respondCursorPosition;
+    pub const respondDeviceAttributes = @import("state_report.zig").respondDeviceAttributes;
+    pub const respondSecondaryDeviceAttributes = @import("state_report.zig").respondSecondaryDeviceAttributes;
+    pub const respondDecRequestMode = @import("state_report.zig").respondDecRequestMode;
 
     /// Drain the response buffer. Returns the pending response bytes and
     /// resets the buffer. Caller must write these to the PTY.
@@ -599,6 +585,9 @@ pub const TerminalState = struct {
         self.response_len = 0;
         return self.response_buf[0..len];
     }
+
+    // -- Graphics (state_graphics.zig) ------------------------------------
+    pub const handleGraphicsCommand = @import("state_graphics.zig").handleGraphicsCommand;
 
     // -- Resize (state_resize.zig) ----------------------------------------
     pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {

@@ -14,6 +14,8 @@ pub const State = enum {
     osc_escape,
     str_ignore,
     str_ignore_escape,
+    apc,
+    apc_escape,
 };
 
 /// Incremental VT parser.
@@ -25,6 +27,7 @@ pub const State = enum {
 /// Zero allocations — all state lives in fixed-size fields.
 pub const Parser = struct {
     pub const osc_buf_size = 4096;
+    pub const apc_buf_size = 65536;
 
     state: State = .ground,
 
@@ -46,6 +49,11 @@ pub const Parser = struct {
     osc_len: u16 = 0,
     osc_overflow: bool = false,
 
+    /// Buffer for APC graphics payload (after the 'G' prefix).
+    apc_buf: [apc_buf_size]u8 = undefined,
+    apc_len: u32 = 0,
+    apc_overflow: bool = false,
+
     /// Process a single byte. Returns an Action if one is ready,
     /// or null if the byte was consumed as part of an incomplete sequence.
     ///
@@ -62,6 +70,8 @@ pub const Parser = struct {
             .osc_escape => self.onOscEscape(byte),
             .str_ignore => self.onStrIgnore(byte),
             .str_ignore_escape => self.onStrIgnoreEscape(byte),
+            .apc => self.onApc(byte),
+            .apc_escape => self.onApcEscape(byte),
         };
     }
 
@@ -83,12 +93,16 @@ pub const Parser = struct {
             '\r' => return .{ .control = .cr },
             0x08 => return .{ .control = .bs },
             '\t' => return .{ .control = .tab },
-            // C1 string-type controls (8-bit forms): DCS, SOS, PM, APC.
-            // Transition to str_ignore so the payload is silently consumed
-            // until ST.  Without this, the payload bytes following the C1
-            // introducer would be parsed as ground-state printable text.
-            0x90, 0x98, 0x9E, 0x9F => {
+            // C1 string-type controls (8-bit forms): DCS, SOS, PM.
+            0x90, 0x98, 0x9E => {
                 self.state = .str_ignore;
+                return null;
+            },
+            // C1 APC (8-bit form) — may be a Kitty graphics command.
+            0x9F => {
+                self.state = .apc;
+                self.apc_len = 0;
+                self.apc_overflow = false;
                 return null;
             },
             0xC2...0xDF => return self.utf8Start(byte, 2),
@@ -162,9 +176,16 @@ pub const Parser = struct {
                 self.state = .escape_charset;
                 return null;
             },
-            // DCS (ESC P), APC (ESC _), PM (ESC ^) — consume payload until ST.
-            'P', '_', '^' => {
+            // DCS (ESC P), PM (ESC ^) — consume payload until ST.
+            'P', '^' => {
                 self.state = .str_ignore;
+                return null;
+            },
+            // APC (ESC _) — may be a Kitty graphics command (ESC _ G ...).
+            '_' => {
+                self.state = .apc;
+                self.apc_len = 0;
+                self.apc_overflow = false;
                 return null;
             },
             // DECKPAM / DECKPNM — application/normal keypad mode, ignored for now.
@@ -189,7 +210,59 @@ pub const Parser = struct {
         return .nop;
     }
 
-    // -- DCS / APC / PM string ignore ----------------------------------------
+    // -- APC handler (Kitty graphics protocol) --------------------------------
+
+    fn onApc(self: *Parser, byte: u8) ?Action {
+        switch (byte) {
+            0x1B => {
+                self.state = .apc_escape;
+                return null;
+            },
+            0x9C => return self.dispatchApc(),
+            else => {
+                // First byte must be 'G' for a graphics command.
+                if (self.apc_len == 0 and byte != 'G') {
+                    self.state = .str_ignore;
+                    return null;
+                }
+                // Accumulate into buffer (including the 'G' prefix;
+                // dispatchApc strips it before emitting the action).
+                if (!self.apc_overflow) {
+                    if (self.apc_len < self.apc_buf.len) {
+                        self.apc_buf[self.apc_len] = byte;
+                        self.apc_len += 1;
+                    } else {
+                        self.apc_overflow = true;
+                    }
+                }
+                return null;
+            },
+        }
+    }
+
+    fn onApcEscape(self: *Parser, byte: u8) ?Action {
+        if (byte == '\\') {
+            return self.dispatchApc();
+        }
+        // Not ST — continue accumulating in APC state.
+        self.state = .apc;
+        // The ESC byte itself is part of the payload in some protocols,
+        // but for Kitty graphics it shouldn't appear. Just drop it.
+        return null;
+    }
+
+    fn dispatchApc(self: *Parser) Action {
+        self.state = .ground;
+        if (self.apc_overflow) return .nop;
+        if (self.apc_len < 1) return .nop;
+        // First byte must be 'G' (verified on entry).
+        if (self.apc_buf[0] != 'G') return .nop;
+        // Payload after 'G' is the graphics command data.
+        const payload = self.apc_buf[1..self.apc_len];
+        return .{ .graphics_command = payload };
+    }
+
+    // -- DCS / PM string ignore ----------------------------------------------
 
     fn onStrIgnore(self: *Parser, byte: u8) ?Action {
         switch (byte) {

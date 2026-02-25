@@ -19,6 +19,7 @@ extern "c" fn openpty(
 
 extern "c" fn setsid() c_int;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 
@@ -61,6 +62,13 @@ pub const Pty = struct {
             if (slave > 2) posix.close(slave);
 
             _ = setenv("TERM", "xterm-256color", 1);
+            _ = setenv("TERM_PROGRAM", "attyx", 1);
+            // Prevent child processes from thinking they're inside tmux.
+            // When Attyx is launched from a tmux session, TMUX is inherited
+            // but Attyx doesn't support DCS tmux passthrough, so apps that
+            // wrap escape sequences for tmux (e.g. Kitty graphics) break.
+            _ = unsetenv("TMUX");
+            _ = unsetenv("TMUX_PANE");
 
             const argv = opts.argv orelse &[_][:0]const u8{
                 std.posix.getenv("SHELL") orelse "/bin/sh",

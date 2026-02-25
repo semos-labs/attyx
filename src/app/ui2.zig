@@ -302,6 +302,49 @@ fn syncViewportFromC(state: *attyx.TerminalState) void {
     }
 }
 
+fn publishImagePlacements(ctx: *PtyThreadCtx) void {
+    const state = &ctx.engine.state;
+    const store = state.graphics_store orelse {
+        c.g_image_placement_count = 0;
+        return;
+    };
+
+    const gs = attyx.graphics_store;
+    var buf: [c.ATTYX_MAX_IMAGE_PLACEMENTS]gs.Placement = undefined;
+    const visible = store.visiblePlacements(state.grid.rows, &buf);
+
+    var out_count: c_int = 0;
+    for (visible) |p| {
+        if (out_count >= c.ATTYX_MAX_IMAGE_PLACEMENTS) break;
+
+        const img = store.getImage(p.image_id) orelse continue;
+        const idx: usize = @intCast(out_count);
+
+        c.g_image_placements[idx] = .{
+            .image_id = p.image_id,
+            .row = p.row,
+            .col = p.col,
+            .img_width = img.width,
+            .img_height = img.height,
+            .src_x = p.src_x,
+            .src_y = p.src_y,
+            .src_w = p.src_width,
+            .src_h = p.src_height,
+            .display_cols = p.display_cols,
+            .display_rows = p.display_rows,
+            .z_index = p.z_index,
+            .pixels = img.pixels.ptr,
+        };
+        out_count += 1;
+    }
+
+    c.g_image_placement_count = out_count;
+    if (out_count > 0) {
+        // Bump generation so renderer knows to check for texture changes.
+        _ = @atomicRmw(u64, @as(*u64, @ptrCast(@volatileCast(&c.g_image_gen))), .Add, 1, .seq_cst);
+    }
+}
+
 fn publishState(ctx: *PtyThreadCtx) void {
     c.attyx_set_mode_flags(
         @intFromBool(ctx.engine.state.bracketed_paste),
@@ -470,6 +513,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 c.attyx_set_grid_size(rc, rr);
                 c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
                 ctx.engine.state.dirty.clear();
+                publishImagePlacements(ctx);
                 c.attyx_end_cell_update();
                 publishState(ctx);
                 last_published_vp = ctx.engine.state.viewport_offset;
@@ -539,6 +583,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             );
             c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
             ctx.engine.state.dirty.clear();
+            publishImagePlacements(ctx);
             c.attyx_end_cell_update();
             publishState(ctx);
             last_published_vp = ctx.engine.state.viewport_offset;

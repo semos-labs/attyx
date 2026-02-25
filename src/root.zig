@@ -18,6 +18,9 @@ pub const search = @import("term/search.zig");
 pub const dirty = @import("term/dirty.zig");
 pub const hash = @import("term/hash.zig");
 pub const render_color = @import("render/color.zig");
+pub const graphics_cmd = @import("term/graphics_cmd.zig");
+pub const graphics_store = @import("term/graphics_store.zig");
+pub const graphics_decode = @import("term/graphics_decode.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -58,6 +61,11 @@ test {
     _ = @import("term/search.zig");
     _ = @import("term/dirty.zig");
     _ = @import("term/hash.zig");
+    _ = @import("term/graphics_cmd.zig");
+    _ = @import("term/graphics_store.zig");
+    _ = @import("term/graphics_decode.zig");
+    _ = @import("term/state_report.zig");
+    _ = @import("term/state_graphics.zig");
     _ = @import("headless/runner.zig");
     _ = @import("headless/tests.zig");
 }

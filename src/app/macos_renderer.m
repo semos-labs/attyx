@@ -154,6 +154,23 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
         if (!_colorPipeline) { NSLog(@"Color pipeline: %@", err); return nil; }
     }
 
+    id<MTLFunction> fragImage = [lib newFunctionWithName:@"frag_image"];
+    {
+        MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
+        d.vertexFunction   = vertFn;
+        d.fragmentFunction = fragImage;
+        d.colorAttachments[0].pixelFormat              = view.colorPixelFormat;
+        d.colorAttachments[0].blendingEnabled           = YES;
+        d.colorAttachments[0].sourceRGBBlendFactor      = MTLBlendFactorSourceAlpha;
+        d.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        d.colorAttachments[0].sourceAlphaBlendFactor    = MTLBlendFactorOne;
+        d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        _imagePipeline = [device newRenderPipelineStateWithDescriptor:d error:&err];
+        if (!_imagePipeline) { NSLog(@"Image pipeline: %@", err); return nil; }
+    }
+
+    _lastImageGen = 0;
+
     return self;
 }
 

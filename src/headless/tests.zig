@@ -11,4 +11,6 @@ test {
     _ = @import("tests/modes.zig");
     _ = @import("tests/scrollback.zig");
     _ = @import("tests/search.zig");
+    _ = @import("tests/graphics_parse.zig");
+    _ = @import("tests/graphics_store.zig");
 }

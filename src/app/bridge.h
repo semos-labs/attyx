@@ -205,6 +205,31 @@ extern volatile int g_padding_top;
 extern volatile int g_padding_bottom;
 
 // ---------------------------------------------------------------------------
+// Kitty graphics image placements (written by PTY thread inside seqlock,
+// read by renderer thread)
+// ---------------------------------------------------------------------------
+
+#define ATTYX_MAX_IMAGE_PLACEMENTS 64
+
+typedef struct {
+    uint32_t image_id;
+    int      row;          // viewport-relative row
+    int      col;          // column
+    uint32_t img_width;    // full image pixel width
+    uint32_t img_height;   // full image pixel height
+    uint32_t src_x, src_y; // source rect offset in pixels
+    uint32_t src_w, src_h; // source rect size (0 = full image)
+    uint32_t display_cols; // display width in cells (0 = auto)
+    uint32_t display_rows; // display height in cells (0 = auto)
+    int32_t  z_index;
+    const uint8_t* pixels; // RGBA8 pixel data pointer (valid during seqlock)
+} AttyxImagePlacement;
+
+extern AttyxImagePlacement g_image_placements[ATTYX_MAX_IMAGE_PLACEMENTS];
+extern volatile int      g_image_placement_count;
+extern volatile uint64_t g_image_gen; // bumped when image placements change
+
+// ---------------------------------------------------------------------------
 // Logging bridge (implemented in ui2.zig / main.zig stub)
 // ---------------------------------------------------------------------------
 
