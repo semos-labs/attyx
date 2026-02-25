@@ -12,6 +12,7 @@ pub const sgr = @import("term/sgr.zig");
 pub const snapshot = @import("term/snapshot.zig");
 pub const engine = @import("term/engine.zig");
 pub const input = @import("term/input.zig");
+pub const key_encode = @import("term/key_encode.zig");
 
 pub const scrollback = @import("term/scrollback.zig");
 pub const search = @import("term/search.zig");
@@ -66,6 +67,8 @@ test {
     _ = @import("term/graphics_decode.zig");
     _ = @import("term/state_report.zig");
     _ = @import("term/state_graphics.zig");
+    _ = @import("term/key_encode.zig");
+    _ = @import("term/key_encode_test.zig");
     _ = @import("headless/runner.zig");
     _ = @import("headless/tests.zig");
 }

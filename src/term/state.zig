@@ -82,6 +82,10 @@ pub const TerminalState = struct {
     /// When true the renderer should defer painting until the mode is reset.
     synchronized_output: bool = false,
 
+    /// Kitty keyboard protocol flags stack (max 16 entries).
+    kitty_kbd_flags: [16]u5 = .{0} ** 16,
+    kitty_kbd_stack_len: u4 = 0,
+
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
         errdefer main_grid.deinit();
@@ -130,7 +134,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags => {},
             else => {
                 self.wrap_next = false;
             },
@@ -231,6 +235,9 @@ pub const TerminalState = struct {
                 self.cursor_shape = shape;
             },
             .graphics_command => |raw| self.handleGraphicsCommand(raw),
+            .kitty_push_flags => |flags| self.kittyPushFlags(flags),
+            .kitty_pop_flags => |n| self.kittyPopFlags(n),
+            .kitty_query_flags => self.respondKittyFlags(),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -483,40 +490,9 @@ pub const TerminalState = struct {
         }
     }
 
-    // -- Alternate screen --------------------------------------------------
-
-    fn swapBuffers(self: *TerminalState) void {
-        std.mem.swap(Grid, &self.grid, &self.inactive_grid);
-        std.mem.swap(Cursor, &self.cursor, &self.inactive_cursor);
-        std.mem.swap(Style, &self.pen, &self.inactive_pen);
-        std.mem.swap(usize, &self.scroll_top, &self.inactive_scroll_top);
-        std.mem.swap(usize, &self.scroll_bottom, &self.inactive_scroll_bottom);
-        std.mem.swap(?SavedCursor, &self.saved_cursor, &self.inactive_saved_cursor);
-        std.mem.swap(u32, &self.pen_link_id, &self.inactive_pen_link_id);
-    }
-
-    fn enterAltScreen(self: *TerminalState) void {
-        if (self.alt_active) return;
-        self.swapBuffers();
-        @memset(self.grid.cells, Cell{});
-        @memset(&self.grid.row_wrapped, false);
-        self.cursor = .{};
-        self.pen = .{};
-        self.pen_link_id = 0;
-        self.scroll_top = 0;
-        self.scroll_bottom = self.grid.rows - 1;
-        self.saved_cursor = null;
-        self.wrap_next = false;
-        self.alt_active = true;
-        self.dirty.markAll(self.grid.rows);
-    }
-
-    fn leaveAltScreen(self: *TerminalState) void {
-        if (!self.alt_active) return;
-        self.swapBuffers();
-        self.alt_active = false;
-        self.dirty.markAll(self.grid.rows);
-    }
+    // -- Alternate screen (state_altscreen.zig) ----------------------------
+    const enterAltScreen = @import("state_altscreen.zig").enterAltScreen;
+    const leaveAltScreen = @import("state_altscreen.zig").leaveAltScreen;
 
     // -- Cursor save / restore ---------------------------------------------
 
@@ -538,35 +514,39 @@ pub const TerminalState = struct {
         }
     }
 
-    // -- OSC: hyperlinks + title -------------------------------------------
+    // -- OSC: hyperlinks + title (state_osc.zig) ----------------------------
+    const startHyperlink = @import("state_osc.zig").startHyperlink;
+    const endHyperlink = @import("state_osc.zig").endHyperlink;
+    const setTitle = @import("state_osc.zig").setTitle;
 
-    fn startHyperlink(self: *TerminalState, uri: []const u8) void {
-        if (uri.len == 0) {
-            self.pen_link_id = 0;
-            return;
-        }
-        const alloc = self.grid.allocator;
-        const uri_copy = alloc.dupe(u8, uri) catch return;
-        self.link_uris.append(alloc, uri_copy) catch {
-            alloc.free(uri_copy);
-            return;
-        };
-        self.pen_link_id = self.next_link_id;
-        self.next_link_id += 1;
+    // -- Kitty keyboard protocol ---------------------------------------------
+
+    /// Return the currently active kitty keyboard flags (top of stack, or 0).
+    pub fn kittyFlags(self: *const TerminalState) u5 {
+        if (self.kitty_kbd_stack_len == 0) return 0;
+        return self.kitty_kbd_flags[self.kitty_kbd_stack_len - 1];
     }
 
-    fn endHyperlink(self: *TerminalState) void {
-        self.pen_link_id = 0;
+    fn kittyPushFlags(self: *TerminalState, flags: u5) void {
+        if (self.kitty_kbd_stack_len < 16) {
+            self.kitty_kbd_flags[self.kitty_kbd_stack_len] = flags;
+            self.kitty_kbd_stack_len += 1;
+        } else {
+            // Stack full — shift entries down and push at top
+            for (0..15) |i| {
+                self.kitty_kbd_flags[i] = self.kitty_kbd_flags[i + 1];
+            }
+            self.kitty_kbd_flags[15] = flags;
+        }
     }
 
-    fn setTitle(self: *TerminalState, title_slice: []const u8) void {
-        const alloc = self.grid.allocator;
-        if (self.title) |old| alloc.free(old);
-        if (title_slice.len == 0) {
-            self.title = null;
-            return;
-        }
-        self.title = alloc.dupe(u8, title_slice) catch null;
+    fn kittyPopFlags(self: *TerminalState, n: u8) void {
+        const count = @min(n, self.kitty_kbd_stack_len);
+        self.kitty_kbd_stack_len -= @intCast(count);
+    }
+
+    pub fn kittyResetFlags(self: *TerminalState) void {
+        self.kitty_kbd_stack_len = 0;
     }
 
     // -- Device reports (state_report.zig) -----------------------------------
@@ -576,6 +556,7 @@ pub const TerminalState = struct {
     pub const respondDeviceAttributes = @import("state_report.zig").respondDeviceAttributes;
     pub const respondSecondaryDeviceAttributes = @import("state_report.zig").respondSecondaryDeviceAttributes;
     pub const respondDecRequestMode = @import("state_report.zig").respondDecRequestMode;
+    pub const respondKittyFlags = @import("state_report.zig").respondKittyFlags;
 
     /// Drain the response buffer. Returns the pending response bytes and
     /// resets the buffer. Caller must write these to the PTY.

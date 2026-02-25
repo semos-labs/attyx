@@ -157,6 +157,9 @@
     uint64_t gen;
     do { gen = g_cell_gen; } while (gen & 1);
 
+    if (sr < 0) { sr = 0; sc = 0; }
+    if (er >= rows) { er = rows - 1; ec = cols - 1; }
+
     for (int row = sr; row <= er && row < rows; row++) {
         int cStart = (row == sr) ? sc : 0;
         int cEnd   = (row == er) ? ec : cols - 1;

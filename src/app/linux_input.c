@@ -7,6 +7,17 @@
 // Keyboard handling
 // ---------------------------------------------------------------------------
 
+// KeyCode enum values (must match src/term/key_encode.zig KeyCode)
+enum {
+    KC_UP = 0, KC_DOWN, KC_LEFT, KC_RIGHT,
+    KC_HOME, KC_END, KC_PAGE_UP, KC_PAGE_DOWN,
+    KC_INSERT, KC_DELETE,
+    KC_BACKSPACE, KC_ENTER, KC_TAB, KC_ESCAPE,
+    KC_F1, KC_F2, KC_F3, KC_F4, KC_F5, KC_F6,
+    KC_F7, KC_F8, KC_F9, KC_F10, KC_F11, KC_F12,
+    KC_CODEPOINT,
+};
+
 static int g_suppress_char = 0;
 
 static void snapViewport(void) {
@@ -20,9 +31,74 @@ static void snapViewport(void) {
     }
 }
 
+static uint16_t mapGlfwKey(int key) {
+    switch (key) {
+        case GLFW_KEY_UP:        return KC_UP;
+        case GLFW_KEY_DOWN:      return KC_DOWN;
+        case GLFW_KEY_RIGHT:     return KC_RIGHT;
+        case GLFW_KEY_LEFT:      return KC_LEFT;
+        case GLFW_KEY_HOME:      return KC_HOME;
+        case GLFW_KEY_END:       return KC_END;
+        case GLFW_KEY_PAGE_UP:   return KC_PAGE_UP;
+        case GLFW_KEY_PAGE_DOWN: return KC_PAGE_DOWN;
+        case GLFW_KEY_INSERT:    return KC_INSERT;
+        case GLFW_KEY_DELETE:    return KC_DELETE;
+        case GLFW_KEY_BACKSPACE: return KC_BACKSPACE;
+        case GLFW_KEY_ENTER:     return KC_ENTER;
+        case GLFW_KEY_TAB:       return KC_TAB;
+        case GLFW_KEY_ESCAPE:    return KC_ESCAPE;
+        case GLFW_KEY_F1:        return KC_F1;
+        case GLFW_KEY_F2:        return KC_F2;
+        case GLFW_KEY_F3:        return KC_F3;
+        case GLFW_KEY_F4:        return KC_F4;
+        case GLFW_KEY_F5:        return KC_F5;
+        case GLFW_KEY_F6:        return KC_F6;
+        case GLFW_KEY_F7:        return KC_F7;
+        case GLFW_KEY_F8:        return KC_F8;
+        case GLFW_KEY_F9:        return KC_F9;
+        case GLFW_KEY_F10:       return KC_F10;
+        case GLFW_KEY_F11:       return KC_F11;
+        case GLFW_KEY_F12:       return KC_F12;
+        default:                 return UINT16_MAX;
+    }
+}
+
+static uint8_t buildGlfwMods(int mods) {
+    uint8_t m = 0;
+    if (mods & GLFW_MOD_SHIFT)   m |= 1;
+    if (mods & GLFW_MOD_ALT)     m |= 2;
+    if (mods & GLFW_MOD_CONTROL) m |= 4;
+    if (mods & GLFW_MOD_SUPER)   m |= 8;
+    return m;
+}
+
+static uint8_t glfwActionToEventType(int action) {
+    switch (action) {
+        case GLFW_PRESS:   return 1;
+        case GLFW_REPEAT:  return 2;
+        case GLFW_RELEASE: return 3;
+        default:           return 1;
+    }
+}
+
 static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mods) {
     (void)w; (void)scancode;
-    if (action == GLFW_RELEASE) return;
+
+    // Handle key releases for kitty protocol
+    if (action == GLFW_RELEASE) {
+        if (g_kitty_kbd_flags & 2) {
+            uint16_t mapped = mapGlfwKey(key);
+            uint8_t m = buildGlfwMods(mods);
+            if (mapped != UINT16_MAX) {
+                attyx_handle_key(mapped, m, 3, 0);
+            } else if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+                uint32_t cp = 'a' + (key - GLFW_KEY_A);
+                attyx_handle_key(KC_CODEPOINT, m, 3, cp);
+            }
+        }
+        return;
+    }
+
     g_suppress_char = 0;
 
     // Context menu: Escape dismisses it.
@@ -55,7 +131,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
-    // Ctrl+G / Shift+Ctrl+G — find next/prev (works whenever search is active)
+    // Ctrl+G / Shift+Ctrl+G — find next/prev
     if (ctrl && key == GLFW_KEY_G && g_search_active) {
         if (shift) {
             __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
@@ -96,8 +172,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
             g_suppress_char = 1;
             return;
         }
-        // Swallow other special keys in search mode
-        g_suppress_char = 0; // let charCallback handle printable chars
+        g_suppress_char = 0;
         return;
     }
 
@@ -148,65 +223,39 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         if (key == GLFW_KEY_END)       { g_viewport_offset = 0; attyx_mark_all_dirty(); g_suppress_char = 1; return; }
     }
 
-    // Arrow keys (DECCKM-aware)
-    int appMode = (g_cursor_keys_app != 0);
-    switch (key) {
-        case GLFW_KEY_UP:    attyx_send_input((const uint8_t*)(appMode ? "\x1bOA" : "\x1b[A"), 3); g_suppress_char = 1; return;
-        case GLFW_KEY_DOWN:  attyx_send_input((const uint8_t*)(appMode ? "\x1bOB" : "\x1b[B"), 3); g_suppress_char = 1; return;
-        case GLFW_KEY_RIGHT: attyx_send_input((const uint8_t*)(appMode ? "\x1bOC" : "\x1b[C"), 3); g_suppress_char = 1; return;
-        case GLFW_KEY_LEFT:  attyx_send_input((const uint8_t*)(appMode ? "\x1bOD" : "\x1b[D"), 3); g_suppress_char = 1; return;
-        case GLFW_KEY_ENTER:     attyx_send_input((const uint8_t*)"\r", 1); g_suppress_char = 1; return;
-        case GLFW_KEY_BACKSPACE: attyx_send_input((const uint8_t*)"\x7f", 1); g_suppress_char = 1; return;
-        case GLFW_KEY_TAB:       attyx_send_input((const uint8_t*)"\t", 1); g_suppress_char = 1; return;
-        case GLFW_KEY_ESCAPE:    attyx_send_input((const uint8_t*)"\x1b", 1); g_suppress_char = 1; return;
-        case GLFW_KEY_HOME:      attyx_send_input((const uint8_t*)"\x1b[H", 3); g_suppress_char = 1; return;
-        case GLFW_KEY_END:       attyx_send_input((const uint8_t*)"\x1b[F", 3); g_suppress_char = 1; return;
-        case GLFW_KEY_PAGE_UP:   attyx_send_input((const uint8_t*)"\x1b[5~", 4); g_suppress_char = 1; return;
-        case GLFW_KEY_PAGE_DOWN: attyx_send_input((const uint8_t*)"\x1b[6~", 4); g_suppress_char = 1; return;
-        case GLFW_KEY_DELETE:    attyx_send_input((const uint8_t*)"\x1b[3~", 4); g_suppress_char = 1; return;
-        case GLFW_KEY_INSERT:    attyx_send_input((const uint8_t*)"\x1b[2~", 4); g_suppress_char = 1; return;
-        case GLFW_KEY_F1:  attyx_send_input((const uint8_t*)"\x1bOP",   3); g_suppress_char = 1; return;
-        case GLFW_KEY_F2:  attyx_send_input((const uint8_t*)"\x1bOQ",   3); g_suppress_char = 1; return;
-        case GLFW_KEY_F3:  attyx_send_input((const uint8_t*)"\x1bOR",   3); g_suppress_char = 1; return;
-        case GLFW_KEY_F4:  attyx_send_input((const uint8_t*)"\x1bOS",   3); g_suppress_char = 1; return;
-        case GLFW_KEY_F5:  attyx_send_input((const uint8_t*)"\x1b[15~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F6:  attyx_send_input((const uint8_t*)"\x1b[17~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F7:  attyx_send_input((const uint8_t*)"\x1b[18~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F8:  attyx_send_input((const uint8_t*)"\x1b[19~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F9:  attyx_send_input((const uint8_t*)"\x1b[20~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F10: attyx_send_input((const uint8_t*)"\x1b[21~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F11: attyx_send_input((const uint8_t*)"\x1b[23~", 5); g_suppress_char = 1; return;
-        case GLFW_KEY_F12: attyx_send_input((const uint8_t*)"\x1b[24~", 5); g_suppress_char = 1; return;
-        default: break;
-    }
+    // Map special keys through the encoder
+    uint16_t mapped = mapGlfwKey(key);
+    uint8_t m = buildGlfwMods(mods);
+    uint8_t et = glfwActionToEventType(action);
 
-    // Ctrl+key → control codes
-    if (ctrl && !alt && !shift) {
-        if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
-            uint8_t b = (uint8_t)(key - GLFW_KEY_A + 1);
-            attyx_send_input(&b, 1);
-            g_suppress_char = 1;
-            return;
-        }
-        if (key == GLFW_KEY_LEFT_BRACKET)  { attyx_send_input((const uint8_t*)"\x1b", 1); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_RIGHT_BRACKET) { uint8_t b = 0x1d; attyx_send_input(&b, 1); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_BACKSLASH)     { uint8_t b = 0x1c; attyx_send_input(&b, 1); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_SPACE)         { uint8_t b = 0x00; attyx_send_input(&b, 1); g_suppress_char = 1; return; }
+    if (mapped != UINT16_MAX) {
+        attyx_handle_key(mapped, m, et, 0);
         g_suppress_char = 1;
         return;
     }
 
-    // Alt+key → ESC prefix
-    if (alt && !ctrl) {
-        if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
-            uint8_t esc = 0x1b;
-            attyx_send_input(&esc, 1);
-            uint8_t ch = (uint8_t)('a' + (key - GLFW_KEY_A));
-            if (shift) ch = (uint8_t)(ch - 32);
-            attyx_send_input(&ch, 1);
-            g_suppress_char = 1;
-            return;
+    // Ctrl+key or Alt+key with a letter
+    if ((ctrl || alt) && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+        uint32_t cp = 'a' + (key - GLFW_KEY_A);
+        if (shift) cp -= 32;
+        attyx_handle_key(KC_CODEPOINT, m, et, cp);
+        g_suppress_char = 1;
+        return;
+    }
+
+    // Ctrl+punctuation
+    if (ctrl && !alt && !shift) {
+        uint32_t cp = 0;
+        switch (key) {
+            case GLFW_KEY_LEFT_BRACKET:  cp = '['; break;
+            case GLFW_KEY_RIGHT_BRACKET: cp = ']'; break;
+            case GLFW_KEY_BACKSLASH:     cp = '\\'; break;
+            case GLFW_KEY_SPACE:         cp = ' '; break;
+            default: g_suppress_char = 1; return;
         }
+        attyx_handle_key(KC_CODEPOINT, m, et, cp);
+        g_suppress_char = 1;
+        return;
     }
 }
 
@@ -228,9 +277,8 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
 
     snapViewport();
 
-    uint8_t buf[4];
-    int len = utf8Encode(codepoint, buf);
-    if (len > 0) attyx_send_input(buf, len);
+    // Send through encoder for kitty protocol support
+    attyx_handle_key(KC_CODEPOINT, 0, 1, codepoint);
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +529,26 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         return;
     }
     if (g_selecting && g_left_down) {
+        // Auto-scroll when dragging past top/bottom edge
+        if (!g_alt_screen) {
+            float cellH = g_cell_px_h / g_content_scale;
+            int win_w, win_h;
+            glfwGetWindowSize(g_window, &win_w, &win_h);
+            float availH = (float)win_h - g_padding_top - g_padding_bottom;
+            float cyp = floorf((availH - g_rows * cellH) * 0.5f);
+            if (cyp < 0) cyp = 0;
+            float offY = g_padding_top + cyp;
+            int rawRow = (int)((my - offY) / cellH);
+            if (rawRow < 0 && g_scrollback_count > 0) {
+                attyx_scroll_viewport(1);
+                g_sel_start_row++;
+            }
+            if (rawRow >= g_rows && g_viewport_offset > 0) {
+                attyx_scroll_viewport(-1);
+                g_sel_start_row--;
+            }
+        }
+
         int col, row;
         mouseToCell(mx, my, &col, &row);
         if (col == g_sel_end_col && row == g_sel_end_row) return;
@@ -620,6 +688,9 @@ void doCopy(void) {
 
     uint64_t gen;
     do { gen = g_cell_gen; } while (gen & 1);
+
+    if (sr < 0) { sr = 0; sc = 0; }
+    if (er >= rows) { er = rows - 1; ec = cols - 1; }
 
     int maxlen = (er - sr + 1) * (cols * 4 + 1) + 1;
     char* buf = (char*)malloc(maxlen);

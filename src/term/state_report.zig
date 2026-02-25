@@ -29,6 +29,13 @@ pub fn respondSecondaryDeviceAttributes(self: *TerminalState) void {
     self.appendResponse("\x1b[>0;10;1c");
 }
 
+pub fn respondKittyFlags(self: *TerminalState) void {
+    const flags = self.kittyFlags();
+    var buf: [32]u8 = undefined;
+    const resp = std.fmt.bufPrint(&buf, "\x1b[?{d}u", .{flags}) catch return;
+    self.appendResponse(resp);
+}
+
 pub fn respondDecRequestMode(self: *TerminalState, mode: u16) void {
     // DECRQM response: ESC[?Ps;Pm$y  where Pm = 0 not recognized, 1 set, 2 reset
     const pm: u8 = switch (mode) {
