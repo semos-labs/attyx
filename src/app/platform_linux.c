@@ -80,6 +80,10 @@ volatile int g_detected_url_row = -1;
 volatile int g_detected_url_start_col = 0;
 volatile int g_detected_url_end_col = 0;
 
+AttyxImagePlacement g_image_placements[ATTYX_MAX_IMAGE_PLACEMENTS];
+volatile int      g_image_placement_count = 0;
+volatile uint64_t g_image_gen = 0;
+
 volatile uint64_t g_dirty[4] = {0,0,0,0};
 volatile int g_pending_resize_rows = 0;
 volatile int g_pending_resize_cols = 0;
