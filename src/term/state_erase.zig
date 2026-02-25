@@ -50,7 +50,6 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
                         const start = r * cols;
                         self.scrollback.pushLine(self.grid.cells[start .. start + cols]);
                     }
-                    self.cursor.row = self.grid.rows - 1;
                 }
             }
             @memset(self.grid.cells, Cell{});
