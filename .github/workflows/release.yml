@@ -19,9 +19,11 @@ jobs:
           - target: darwin-arm64
             runner: macos-latest
             artifact: attyx-darwin-arm64.zip
+            zig-target: ""
           - target: darwin-x64
-            runner: macos-13
+            runner: macos-latest
             artifact: attyx-darwin-x64.zip
+            zig-target: "-Dtarget=x86_64-macos"
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -34,7 +36,7 @@ jobs:
           version: 0.15.2
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseFast ${{ matrix.zig-target }}
 
       - name: Create .icns from PNG
         run: |
@@ -64,9 +66,9 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          CERT_FILE=$(mktemp /tmp/cert.XXXXXX.p12)
-          KEYCHAIN_FILE=$(mktemp /tmp/keychain.XXXXXX.keychain-db)
+          CERT_FILE=$(mktemp /tmp/cert.XXXXXX)
           KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          KEYCHAIN_FILE="/tmp/build-$(openssl rand -hex 8).keychain-db"
 
           echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_FILE"
 
