@@ -534,8 +534,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 c.attyx_begin_cell_update();
                 const new_total = nr * nc;
                 fillCells(ctx.cells[0..new_total], ctx.engine, new_total, &ctx.active_theme);
+                const vp_cur = @min(ctx.engine.state.viewport_offset, ctx.engine.state.scrollback.count);
                 c.attyx_set_cursor(
-                    @intCast(ctx.engine.state.cursor.row),
+                    @intCast(ctx.engine.state.cursor.row + vp_cur),
                     @intCast(ctx.engine.state.cursor.col),
                 );
                 c.attyx_set_grid_size(rc, rr);
@@ -605,8 +606,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_begin_cell_update();
             const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
             fillCells(ctx.cells[0..total], ctx.engine, total, &ctx.active_theme);
+            const vp_cur = @min(ctx.engine.state.viewport_offset, ctx.engine.state.scrollback.count);
             c.attyx_set_cursor(
-                @intCast(ctx.engine.state.cursor.row),
+                @intCast(ctx.engine.state.cursor.row + vp_cur),
                 @intCast(ctx.engine.state.cursor.col),
             );
             c.attyx_set_dirty(&ctx.engine.state.dirty.bits);

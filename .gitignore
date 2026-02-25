@@ -5,3 +5,4 @@ bun.lock
 package-lock.json
 .env
 cert
+zig-out/bin
