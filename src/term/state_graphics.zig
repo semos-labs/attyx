@@ -13,24 +13,9 @@ const Placement = graphics_store.Placement;
 // applications detect graphics support via query (a=q) responses.
 const responses_enabled = true;
 
-// Debug logging to file (temporary)
-fn dbgLog(comptime fmt: []const u8, args: anytype) void {
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt ++ "\n", args) catch return;
-    const file = std.posix.open("/tmp/attyx_gfx_debug.log", .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644) catch return;
-    defer std.posix.close(file);
-    _ = std.posix.write(file, msg) catch {};
-}
-
 /// Handle a parsed graphics command dispatched by the parser.
 pub fn handleGraphicsCommand(self: *TerminalState, raw: []const u8) void {
     const cmd = GraphicsCommand.parse(raw);
-
-    dbgLog("[attyx:gfx] action={d} id={d} more={} fmt={d} payload_len={d} cursor=({d},{d})", .{
-        @intFromEnum(cmd.action), cmd.image_id, cmd.more_chunks,
-        @intFromEnum(cmd.format), cmd.payload_len,
-        self.cursor.row, self.cursor.col,
-    });
 
     switch (cmd.action) {
         .query => handleQuery(self, cmd, raw),
@@ -64,10 +49,7 @@ fn handleQuery(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void
 }
 
 fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void {
-    const store = self.graphics_store orelse {
-        dbgLog("[attyx:gfx] T+D: no graphics_store!", .{});
-        return;
-    };
+    const store = self.graphics_store orelse return;
     const alloc = self.grid.allocator;
 
     const effective_cmd = store.chunk_cmd orelse cmd;
@@ -75,30 +57,23 @@ fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []c
 
     // Intermediate chunk — accumulate data, never respond.
     if (cmd.more_chunks) {
-        dbgLog("[attyx:gfx] T+D: chunk accumulate, id={d}, chunk_buf_len={d}", .{ id, store.chunk_buf.items.len });
         startOrContinueChunk(store, cmd, id, raw);
         return;
     }
 
     // Final chunk or single transmission.
     const payload = finalizePayload(store, cmd, raw) orelse {
-        dbgLog("[attyx:gfx] T+D: no payload!", .{});
         if (responses_enabled) respondError(self, effective_cmd, "EINVAL:no payload");
         return;
     };
 
-    dbgLog("[attyx:gfx] T+D: decoding, payload_len={d}, format={d}", .{ payload.len, @intFromEnum(effective_cmd.format) });
-
     var decoded = graphics_decode.decode(alloc, payload, effective_cmd) catch |err| {
-        dbgLog("[attyx:gfx] T+D: decode FAILED: {s}", .{@errorName(err)});
         store.resetChunks();
         if (responses_enabled) respondDecodeError(self, effective_cmd, id, err);
         return;
     };
 
     store.resetChunks();
-
-    dbgLog("[attyx:gfx] T+D: decoded OK, {d}x{d}, {d} bytes", .{ decoded.width, decoded.height, decoded.pixels.len });
 
     const image = ImageData{
         .id = id,
@@ -108,7 +83,6 @@ fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []c
     };
     store.putImage(image) catch {
         decoded.deinit();
-        dbgLog("[attyx:gfx] T+D: putImage FAILED (OOM)", .{});
         if (responses_enabled) respondError(self, effective_cmd, "ENOMEM:store");
         return;
     };
@@ -129,16 +103,9 @@ fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []c
     };
 
     store.addPlacement(placement) catch {
-        dbgLog("[attyx:gfx] T+D: addPlacement FAILED (OOM)", .{});
         if (responses_enabled) respondError(self, effective_cmd, "ENOMEM:placement");
         return;
     };
-
-    dbgLog("[attyx:gfx] T+D: SUCCESS id={d} at ({d},{d}) cols={d} rows={d} total_placements={d}", .{
-        id, self.cursor.row, self.cursor.col,
-        effective_cmd.display_cols, effective_cmd.display_rows,
-        store.placements.items.len,
-    });
 
     if (responses_enabled) respondOk(self, effective_cmd, id);
 }

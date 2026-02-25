@@ -32,31 +32,8 @@ pub const Engine = struct {
         self.state.deinit();
     }
 
-    // Debug: scan for ESC _ (APC introducer) in input bytes
-    fn dbgScanApc(bytes: []const u8) void {
-        var i: usize = 0;
-        while (i + 1 < bytes.len) : (i += 1) {
-            if (bytes[i] == 0x1B and bytes[i + 1] == '_') {
-                dbgLogEngine("[engine] ESC_ found at offset {d}/{d}, next bytes: {x:0>2} {x:0>2}", .{
-                    i, bytes.len,
-                    if (i + 2 < bytes.len) bytes[i + 2] else @as(u8, 0),
-                    if (i + 3 < bytes.len) bytes[i + 3] else @as(u8, 0),
-                });
-            }
-        }
-    }
-
-    fn dbgLogEngine(comptime fmt: []const u8, args: anytype) void {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, fmt ++ "\n", args) catch return;
-        const file = std.posix.open("/tmp/attyx_gfx_debug.log", .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644) catch return;
-        defer std.posix.close(file);
-        _ = std.posix.write(file, msg) catch {};
-    }
-
     /// Feed raw bytes through the parser and apply resulting actions to state.
     pub fn feed(self: *Engine, bytes: []const u8) void {
-        dbgScanApc(bytes);
         for (bytes) |byte| {
             // Only try to match the artifact when we're already
             // mid-match, or when a fresh 'P' arrives while the
