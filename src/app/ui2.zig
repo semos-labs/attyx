@@ -771,6 +771,25 @@ fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.
 }
 
 fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
+    // Kitty Unicode placeholder: suppress all visual attributes.
+    // The fg color encodes image_id and must not be rendered.
+    if (cell.char == 0x10EEEE) {
+        // Emit a space with the cell's actual bg (not fg!) and default-bg opacity flag.
+        const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;
+        const bg = resolveWithTheme(eff_bg, !cell.style.reverse, theme);
+        return .{
+            .character = ' ',
+            .fg_r = 0,
+            .fg_g = 0,
+            .fg_b = 0,
+            .bg_r = bg.r,
+            .bg_g = bg.g,
+            .bg_b = bg.b,
+            .flags = if (!cell.style.reverse and eff_bg == .default) @as(u8, 4) else @as(u8, 0),
+            .link_id = 0,
+        };
+    }
+
     // Swap fg/bg when reverse video is active.
     // Also flip the is_bg hint so .default resolves to the opposite theme color.
     const eff_fg = if (cell.style.reverse) cell.style.bg else cell.style.fg;

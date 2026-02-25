@@ -249,6 +249,67 @@ pub const TerminalState = struct {
 
     // -- Text output -------------------------------------------------------
 
+    /// Returns true for Unicode combining / nonspacing marks (General Category Mn/Mc/Me).
+    /// Covers the major ranges including those used by the Kitty Unicode placement protocol.
+    fn isCombiningMark(cp: u21) bool {
+        return (cp >= 0x0300 and cp <= 0x036F) // Combining Diacritical Marks
+            or (cp >= 0x0483 and cp <= 0x0489) // Combining Cyrillic
+            or (cp >= 0x0591 and cp <= 0x05BD) // Hebrew accents
+            or cp == 0x05BF
+            or (cp >= 0x05C1 and cp <= 0x05C2)
+            or (cp >= 0x05C4 and cp <= 0x05C5)
+            or cp == 0x05C7
+            or (cp >= 0x0610 and cp <= 0x061A) // Arabic combining
+            or (cp >= 0x064B and cp <= 0x065F)
+            or cp == 0x0670
+            or (cp >= 0x06D6 and cp <= 0x06DC)
+            or (cp >= 0x06DF and cp <= 0x06E4)
+            or (cp >= 0x06E7 and cp <= 0x06E8)
+            or (cp >= 0x06EA and cp <= 0x06ED)
+            or cp == 0x0711
+            or (cp >= 0x0730 and cp <= 0x074A) // Syriac
+            or (cp >= 0x07A6 and cp <= 0x07B0) // Thaana
+            or (cp >= 0x07EB and cp <= 0x07F3) // NKo
+            or (cp >= 0x0816 and cp <= 0x0819) // Samaritan
+            or (cp >= 0x081B and cp <= 0x0823)
+            or (cp >= 0x0825 and cp <= 0x0827)
+            or (cp >= 0x0829 and cp <= 0x082D)
+            or (cp >= 0x0859 and cp <= 0x085B)
+            or (cp >= 0x0898 and cp <= 0x089F) // Arabic Extended-A
+            or (cp >= 0x08CA and cp <= 0x08E1)
+            or (cp >= 0x08E3 and cp <= 0x0903) // Devanagari etc.
+            or (cp >= 0x093A and cp <= 0x093C)
+            or (cp >= 0x093E and cp <= 0x094F)
+            or (cp >= 0x0951 and cp <= 0x0957)
+            or (cp >= 0x0962 and cp <= 0x0963)
+            or (cp >= 0x0981 and cp <= 0x0983) // Bengali
+            or cp == 0x09BC or cp == 0x09BE
+            or (cp >= 0x09BF and cp <= 0x09C4)
+            or (cp >= 0x09C7 and cp <= 0x09C8)
+            or (cp >= 0x09CB and cp <= 0x09CD)
+            or cp == 0x09D7
+            or (cp >= 0x09E2 and cp <= 0x09E3)
+            or (cp >= 0x0A01 and cp <= 0x0A03) // Gurmukhi
+            or cp == 0x0A3C
+            or (cp >= 0x0A3E and cp <= 0x0A42)
+            or (cp >= 0x0A47 and cp <= 0x0A48)
+            or (cp >= 0x0A4B and cp <= 0x0A4D)
+            or cp == 0x0A51
+            or (cp >= 0x0A70 and cp <= 0x0A71)
+            or cp == 0x0A75
+            or (cp >= 0x0A81 and cp <= 0x0A83) // Gujarati
+            or cp == 0x0ABC
+            or (cp >= 0x0ABE and cp <= 0x0AC5)
+            or (cp >= 0x0AC7 and cp <= 0x0AC9)
+            or (cp >= 0x0ACB and cp <= 0x0ACD)
+            or (cp >= 0x0AE2 and cp <= 0x0AE3)
+            or (cp >= 0x0AFA and cp <= 0x0AFF)
+            or (cp >= 0x1AB0 and cp <= 0x1ACE) // Combining Diacritical Marks Extended
+            or (cp >= 0x1DC0 and cp <= 0x1DFF) // Combining Diacritical Marks Supplement
+            or (cp >= 0x20D0 and cp <= 0x20F0) // Combining Diacritical Marks for Symbols
+            or (cp >= 0xFE20 and cp <= 0xFE2F); // Combining Half Marks
+    }
+
     /// Returns 2 for Unicode characters with East Asian Width W or F (wide),
     /// 1 for everything else. Mirrors the canBeWide() logic in the glyph caches.
     fn charDisplayWidth(char: u21) u2 {
@@ -310,10 +371,10 @@ pub const TerminalState = struct {
         if (char >= 0xFE00 and char <= 0xFE0E) return; // VS1-15 variation selectors
         if (char >= 0x1F3FB and char <= 0x1F3FF) return; // Fitzpatrick skin-tone modifiers
 
-        // Combining diacritical marks (U+0300-U+036F): zero-width combining
-        // characters. Absorb them since we don't have combining support yet.
-        // (Also used by Kitty Unicode placements for encoding image indices.)
-        if (char >= 0x0300 and char <= 0x036F) return;
+        // Combining / nonspacing marks: absorb since we don't have combining
+        // support yet. These ranges also cover the diacriticals used by the
+        // Kitty Unicode placement protocol for row/column encoding.
+        if (isCombiningMark(char)) return;
 
         if (self.wrap_next) {
             if (self.auto_wrap) {

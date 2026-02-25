@@ -313,6 +313,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             float decoH = fmaxf(2.0f, 1.0f);
             for (int i = 0; i < total; i++) {
                 const AttyxCell* cell = &cells[i];
+                if (cell->character == 0x10EEEE) continue;  // Kitty Unicode placeholder
                 uint8_t fl = cell->flags;
                 int hasUnderline = (fl & 2);
                 int hasStrike = (fl & 32);
