@@ -20,9 +20,11 @@ jobs:
           - target: darwin-arm64
             runner: macos-latest
             artifact: attyx-darwin-arm64.zip
+            dmg: attyx-darwin-arm64.dmg
           - target: darwin-x64
             runner: macos-15-intel
             artifact: attyx-darwin-x64.zip
+            dmg: attyx-darwin-x64.dmg
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -121,6 +123,26 @@ jobs:
           xcrun stapler staple Attyx.app
           ditto -c -k --keepParent Attyx.app ${{ matrix.artifact }}
 
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-staging
+          cp -R Attyx.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "Attyx" -srcfolder dmg-staging -ov -format UDZO ${{ matrix.dmg }}
+
+      - name: Notarize DMG
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          xcrun notarytool submit ${{ matrix.dmg }} \
+            --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple ${{ matrix.dmg }}
+
       - name: Cleanup keychain
         if: always()
         run: |
@@ -131,7 +153,9 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}
+          files: |
+            ${{ matrix.artifact }}
+            ${{ matrix.dmg }}
 
   build-linux:
     runs-on: ubuntu-latest
