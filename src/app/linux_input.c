@@ -89,11 +89,13 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         if (g_kitty_kbd_flags & 2) {
             uint16_t mapped = mapGlfwKey(key);
             uint8_t m = buildGlfwMods(mods);
+            void (*key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
+                g_popup_active ? attyx_popup_handle_key : attyx_handle_key;
             if (mapped != UINT16_MAX) {
-                attyx_handle_key(mapped, m, 3, 0);
+                key_fn(mapped, m, 3, 0);
             } else if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
                 uint32_t cp = 'a' + (key - GLFW_KEY_A);
-                attyx_handle_key(KC_CODEPOINT, m, 3, cp);
+                key_fn(KC_CODEPOINT, m, 3, cp);
             }
         }
         return;
@@ -242,6 +244,34 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
+    // Popup hotkeys (Ctrl+Shift+<letter>)
+    if (ctrl && shift) {
+        for (int i = 0; i < g_popup_hotkey_count; i++) {
+            int glfw_key = GLFW_KEY_A + (g_popup_hotkey_letters[i] - 'a');
+            if (key == glfw_key) {
+                attyx_popup_toggle(i);
+                g_suppress_char = 1;
+                return;
+            }
+        }
+    }
+
+    // When popup is active, route ALL input to popup
+    if (g_popup_active && action != GLFW_RELEASE) {
+        uint16_t mapped = mapGlfwKey(key);
+        uint8_t m = buildGlfwMods(mods);
+        uint8_t et = glfwActionToEventType(action);
+        if (mapped != UINT16_MAX) {
+            attyx_popup_handle_key(mapped, m, et, 0);
+        } else if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+            uint32_t cp = 'a' + (key - GLFW_KEY_A);
+            if (shift) cp -= 32;
+            attyx_popup_handle_key(KC_CODEPOINT, m, et, cp);
+        }
+        g_suppress_char = 1;
+        return;
+    }
+
     snapViewport();
 
     // Shift+PageUp/Down/Home/End for scrollback
@@ -301,6 +331,12 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
                 attyx_mark_all_dirty();
             }
         }
+        return;
+    }
+
+    // When popup is active, route chars to popup
+    if (g_popup_active) {
+        attyx_popup_handle_key(KC_CODEPOINT, 0, 1, codepoint);
         return;
     }
 

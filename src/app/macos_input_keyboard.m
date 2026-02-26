@@ -56,6 +56,41 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     return m;
 }
 
+// Map lowercase letter ('a'-'z') to macOS virtual keycode
+static unsigned short letterToVK(char letter) {
+    // macOS virtual keycodes for A-Z (not alphabetical!)
+    static const unsigned short vk_map[26] = {
+        0x00, // A
+        0x0B, // B
+        0x08, // C
+        0x02, // D
+        0x0E, // E
+        0x03, // F
+        0x05, // G
+        0x04, // H
+        0x22, // I
+        0x26, // J
+        0x28, // K
+        0x25, // L
+        0x2E, // M
+        0x2D, // N
+        0x1F, // O
+        0x23, // P
+        0x0C, // Q
+        0x0F, // R
+        0x01, // S
+        0x11, // T
+        0x20, // U
+        0x09, // V
+        0x0D, // W
+        0x07, // X
+        0x10, // Y
+        0x06, // Z
+    };
+    if (letter >= 'a' && letter <= 'z') return vk_map[letter - 'a'];
+    return UINT16_MAX;
+}
+
 @implementation AttyxView (Keyboard)
 
 - (void)keyUp:(NSEvent *)event {
@@ -66,13 +101,16 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     uint16_t mapped = mapKeyCode(kc);
     uint8_t mods = buildMods(event.modifierFlags);
 
+    void (*handle_key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
+        g_popup_active ? attyx_popup_handle_key : attyx_handle_key;
+
     if (mapped != UINT16_MAX) {
-        attyx_handle_key(mapped, mods, 3, 0);
+        handle_key_fn(mapped, mods, 3, 0);
     } else {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
             uint32_t cp = [chars characterAtIndex:0];
-            attyx_handle_key(KC_CODEPOINT, mods, 3, cp);
+            handle_key_fn(KC_CODEPOINT, mods, 3, cp);
         }
     }
 }
@@ -143,13 +181,29 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
         return YES;
     }
 
+    // Popup hotkeys (Ctrl+Shift+<letter>)
+    if (ctrl && shift) {
+        for (int i = 0; i < g_popup_hotkey_count; i++) {
+            char letter = g_popup_hotkey_letters[i];
+            unsigned short vk = letterToVK(letter);
+            if (vk != UINT16_MAX && event.keyCode == vk) {
+                attyx_popup_toggle(i);
+                return YES;
+            }
+        }
+    }
+
     unsigned short kc = event.keyCode;
     uint16_t mapped = mapKeyCode(kc);
     uint8_t mods = buildMods(flags);
 
+    // Route special keys to popup or main terminal
+    void (*handle_key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
+        g_popup_active ? attyx_popup_handle_key : attyx_handle_key;
+
     // Special keys handled by the encoder
     if (mapped != UINT16_MAX) {
-        attyx_handle_key(mapped, mods, 1, 0);
+        handle_key_fn(mapped, mods, 1, 0);
         return YES;
     }
 
@@ -158,7 +212,7 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
             uint32_t cp = [chars characterAtIndex:0];
-            attyx_handle_key(KC_CODEPOINT, mods, 1, cp);
+            handle_key_fn(KC_CODEPOINT, mods, 1, cp);
             return YES;
         }
         if (ctrl) return YES;
@@ -185,6 +239,14 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
             __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
         }
         attyx_mark_all_dirty();
+        return;
+    }
+
+    // When popup is active, route ALL input to popup (except Cmd and popup hotkeys)
+    if (g_popup_active) {
+        if ([self handleSpecialKey:event]) return;  // hotkeys checked first
+        // Route text input to popup
+        [self interpretKeyEvents:@[event]];
         return;
     }
 

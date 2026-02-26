@@ -240,6 +240,13 @@ void drawOverlays(float offX, float offY, float gw, float gh,
                   float viewport[2]);
 
 // ---------------------------------------------------------------------------
+// Popup rendering (linux_popup.c)
+// ---------------------------------------------------------------------------
+
+void drawPopup(float offX, float offY, float gw, float gh,
+               float viewport[2]);
+
+// ---------------------------------------------------------------------------
 // UTF-8 helper (linux_input.c — also used in linux_render.c via doCopy)
 // ---------------------------------------------------------------------------
 

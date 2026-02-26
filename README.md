@@ -25,6 +25,7 @@
 - **Transparent backgrounds** — window opacity + blur (macOS compositor, Linux compositor-dependent)
 - **Theming** — built-in themes + custom TOML color schemes
 - **Font fallback** — primary font + ordered fallback chain for symbols and emoji
+- **Popups** — floating terminal overlays for tools like lazygit (Ctrl+Shift+key)
 - **Search** — incremental in-terminal search (Ctrl+F)
 - **Scrollback** — configurable buffer with mouse wheel and keyboard navigation
 - **IME** — CJK composition input on macOS
@@ -96,6 +97,39 @@ All config options can be overridden from the command line. Run `attyx --help` f
 ```bash
 attyx --font-size 16 --theme catppuccin-mocha --background-opacity 0.85
 ```
+
+---
+
+## Popups
+
+Popups are floating terminal windows that run a command inside the main Attyx window. Up to 4 popups can be configured, each bound to a **Ctrl+Shift+&lt;letter&gt;** hotkey. Press the hotkey again to close.
+
+```toml
+[[popup]]
+hotkey = "ctrl+shift+g"
+command = "lazygit"
+width = "80%"
+height = "80%"
+border = "rounded"        # "single" (default) | "double" | "rounded" | "heavy" | "none"
+border_color = "#78829a"  # hex color for the border (default: "#78829a")
+
+[[popup]]
+hotkey = "ctrl+shift+t"
+command = "htop"
+width = "60%"
+height = "60%"
+border = "heavy"
+border_color = "#ff6600"
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `hotkey` | *(required)* | `ctrl+shift+<letter>` binding |
+| `command` | *(required)* | Shell command to run |
+| `width` | `"80%"` | Popup width as percentage of terminal |
+| `height` | `"80%"` | Popup height as percentage of terminal |
+| `border` | `"single"` | Border style: `single`, `double`, `rounded`, `heavy`, or `none` |
+| `border_color` | `"#78829a"` | Border foreground color (`#RRGGBB`) |
 
 ---
 

@@ -157,8 +157,10 @@ int drawFrame(void) {
     }
 
     static uint32_t lastOverlayGen = 0;
+    static uint32_t lastPopupGen = 0;
     int overlayChanged = (g_overlay_gen != lastOverlayGen);
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !overlayChanged) return 0;
+    int popupChanged = (g_popup_gen != lastPopupGen);
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !overlayChanged && !popupChanged) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -674,6 +676,10 @@ int drawFrame(void) {
     // Overlay layers (debug card, etc.)
     drawOverlays(offX, offY, gw, gh, viewport);
     lastOverlayGen = g_overlay_gen;
+
+    // Popup terminal
+    drawPopup(offX, offY, gw, gh, viewport);
+    lastPopupGen = g_popup_gen;
 
     // IME preedit overlay
     if (g_ime_composing && g_ime_preedit_len > 0) {

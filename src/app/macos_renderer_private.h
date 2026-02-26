@@ -38,6 +38,7 @@
     CFAbsoluteTime _statsLastPrint;
     uint64_t    _lastImageGen;
     uint32_t    _lastOverlayGen;
+    uint32_t    _lastPopupGen;
 }
 @property (nonatomic, strong) id<MTLDevice>              device;
 @property (nonatomic, strong) id<MTLCommandQueue>        cmdQueue;
@@ -70,6 +71,19 @@ typedef struct {
                        glyphH:(float)gh
                          offX:(float)offX
                          offY:(float)offY;
+@end
+
+// ---------------------------------------------------------------------------
+// Popup rendering (macos_popup.m)
+// ---------------------------------------------------------------------------
+
+@interface AttyxRenderer (Popup)
+- (void)drawPopupWithEncoder:(id<MTLRenderCommandEncoder>)enc
+                    viewport:(float[2])viewport
+                      glyphW:(float)gw
+                      glyphH:(float)gh
+                        offX:(float)offX
+                        offY:(float)offY;
 @end
 
 #endif // ATTYX_MACOS_RENDERER_PRIVATE_H
