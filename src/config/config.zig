@@ -599,7 +599,7 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
     if (root.get("popup")) |popup_val| {
         if (popup_val == .array) {
             const arr = popup_val.array.items;
-            const count = @min(arr.len, @as(usize, 4)); // max 4 popups
+            const count = @min(arr.len, @as(usize, 32)); // max 32 popups
             if (count > 0) {
                 const entries = try allocator.alloc(PopupConfigEntry, count);
                 var valid: usize = 0;

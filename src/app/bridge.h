@@ -289,7 +289,7 @@ void attyx_overlay_enter(void);
 // ---------------------------------------------------------------------------
 
 #define ATTYX_POPUP_MAX_CELLS 16384
-#define ATTYX_POPUP_MAX 4
+#define ATTYX_POPUP_MAX 32
 
 typedef struct {
     int active;
