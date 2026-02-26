@@ -447,17 +447,6 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                     keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
 
-        NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:windowMenuItem];
-        NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
-        [windowMenu addItemWithTitle:@"New Window"
-                              action:@selector(spawnNewWindow:)
-                       keyEquivalent:@"n"];
-        [windowMenu addItemWithTitle:@"Close Window"
-                              action:@selector(performClose:)
-                       keyEquivalent:@"w"];
-        [windowMenuItem setSubmenu:windowMenu];
-
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:editMenuItem];
         NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
@@ -468,6 +457,25 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                             action:@selector(paste:)
                      keyEquivalent:@"v"];
         [editMenuItem setSubmenu:editMenu];
+
+        NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:windowMenuItem];
+        NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+        [windowMenu addItemWithTitle:@"New Window"
+                              action:@selector(spawnNewWindow:)
+                       keyEquivalent:@"n"];
+        [windowMenu addItemWithTitle:@"Close Window"
+                              action:@selector(performClose:)
+                       keyEquivalent:@"w"];
+        [windowMenu addItem:[NSMenuItem separatorItem]];
+        [windowMenu addItemWithTitle:@"Minimize Window"
+                              action:@selector(performMiniaturize:)
+                       keyEquivalent:@"m"];
+        [windowMenu addItemWithTitle:@"Zoom"
+                              action:@selector(performZoom:)
+                       keyEquivalent:@""];
+        [windowMenuItem setSubmenu:windowMenu];
+        [app setWindowsMenu:windowMenu];
 
         [app setMainMenu:menuBar];
         [app run];

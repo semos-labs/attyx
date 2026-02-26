@@ -27,8 +27,9 @@
 - **Transparent backgrounds** — window opacity + blur (macOS compositor, Linux compositor-dependent)
 - **Theming** — built-in themes + custom TOML color schemes
 - **Font fallback** — primary font + ordered fallback chain for symbols and emoji
-- **Popups** — floating terminal overlays for tools like lazygit (Ctrl+Shift+key)
-- **Search** — incremental in-terminal search (Ctrl+F)
+- **Keybindings** — fully rebindable hotkeys + custom escape sequences
+- **Popups** — floating terminal overlays for tools like lazygit
+- **Search** — incremental in-terminal search (Cmd+F / Ctrl+F)
 - **Scrollback** — configurable buffer with mouse wheel and keyboard navigation
 - **IME** — CJK composition input on macOS
 - **Cross-platform** — macOS and Linux from a single codebase
@@ -106,9 +107,57 @@ shell = "/bin/zsh"
 args = ["-l"]
 ```
 
+### Keybindings
+
+All hotkeys can be rebound via the `[keybindings]` table. Bind an action to `"none"` to disable it. Changes apply on hot-reload.
+
+```toml
+[keybindings]
+search_toggle = "ctrl+f"
+search_next = "ctrl+g"
+search_prev = "ctrl+shift+g"
+scroll_page_up = "shift+page_up"
+scroll_page_down = "shift+page_down"
+scroll_to_top = "shift+home"
+scroll_to_bottom = "shift+end"
+config_reload = "ctrl+shift+r"
+new_window = "ctrl+shift+n"
+close_window = "ctrl+shift+w"
+debug_toggle = "none"          # unbind
+```
+
+**Key combo syntax:** `modifier+key` — modifiers: `ctrl`, `shift`, `alt` (`option`), `super` (`cmd`). Keys: `a`–`z`, `0`–`9`, `f1`–`f12`, `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`, `space`, `page_up`, `page_down`, `home`, `end`, `up`, `down`, `left`, `right`.
+
+| Action | macOS default | Linux default |
+|---|---|---|
+| `search_toggle` | `super+f` | `ctrl+f` |
+| `search_next` | `super+g` | `ctrl+g` |
+| `search_prev` | `super+shift+g` | `ctrl+shift+g` |
+| `copy` | *(system menu)* | `ctrl+shift+c` |
+| `paste` | *(system menu)* | `ctrl+shift+v` |
+| `scroll_page_up` | `shift+page_up` | `shift+page_up` |
+| `scroll_page_down` | `shift+page_down` | `shift+page_down` |
+| `scroll_to_top` | `shift+home` | `shift+home` |
+| `scroll_to_bottom` | `shift+end` | `shift+end` |
+| `config_reload` | `ctrl+shift+r` | `ctrl+shift+r` |
+| `new_window` | `ctrl+shift+n` | `ctrl+shift+n` |
+| `close_window` | `ctrl+shift+w` | `ctrl+shift+w` |
+
+### Custom sequences
+
+Bind any key combo to send a raw escape sequence to the terminal:
+
+```toml
+[sequences]
+"ctrl+shift+k" = "\u001b[K"
+"alt+enter" = "\u001b\r"
+```
+
+Values use standard TOML string escapes (`\u001b` for ESC, `\n`, `\r`, `\t`, etc.).
+
 ### Hot-reload
 
-Press **Ctrl+Shift+R** or send `SIGUSR1` to reload config without restarting. Font, cursor, scrollback, and theme changes apply immediately. Background opacity/blur require a restart.
+Press **Ctrl+Shift+R** (or your rebound key) or send `SIGUSR1` to reload config without restarting. Font, cursor, scrollback, theme, and keybinding changes apply immediately. Background opacity/blur require a restart.
 
 ### CLI flags
 
@@ -122,7 +171,7 @@ attyx --font-size 16 --theme catppuccin-mocha --background-opacity 0.85
 
 ## Popups
 
-Popups are floating terminal windows that run a command inside the main Attyx window. Up to 32 popups can be configured, each bound to a **Ctrl+Shift+&lt;letter&gt;** hotkey. Press the hotkey again to close.
+Popups are floating terminal windows that run a command inside the main Attyx window. Up to 32 popups can be configured, each bound to a hotkey. Press the hotkey again to close.
 
 ```toml
 [[popup]]
@@ -144,7 +193,7 @@ border_color = "#ff6600"
 
 | Option | Default | Description |
 |---|---|---|
-| `hotkey` | *(required)* | `ctrl+shift+<letter>` binding |
+| `hotkey` | *(required)* | Key combo to toggle the popup (e.g. `ctrl+shift+g`, `alt+g`) |
 | `command` | *(required)* | Shell command to run |
 | `width` | `"80%"` | Popup width as percentage of terminal |
 | `height` | `"80%"` | Popup height as percentage of terminal |
