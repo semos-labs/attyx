@@ -204,7 +204,7 @@ pub const Grid = struct {
     /// of the call — the callee must copy if it needs to keep the data).
     pub const DropHandler = struct {
         ctx: *anyopaque,
-        save: *const fn (ctx: *anyopaque, row_cells: []const Cell) void,
+        save: *const fn (ctx: *anyopaque, row_cells: []const Cell, wrapped: bool) void,
     };
 
     /// Resize with reflow: re-wraps logical lines at the new column width.
@@ -303,7 +303,7 @@ pub const Grid = struct {
                                     sr[c] = self.cells[old_r * self.cols + old_c];
                                 }
                             }
-                            handler.save(handler.ctx, sr);
+                            handler.save(handler.ctx, sr, pr < rows_needed - 1);
                         }
                     }
                     continue;

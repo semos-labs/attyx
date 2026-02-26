@@ -39,6 +39,8 @@ volatile int g_sel_start_row = -1, g_sel_start_col = -1;
 volatile int g_sel_end_row = -1, g_sel_end_col = -1;
 volatile int g_sel_active = 0;
 
+volatile uint8_t g_row_wrapped[ATTYX_MAX_ROWS] = {0};
+
 volatile int g_cursor_shape   = 0;
 volatile int g_cursor_visible = 1;
 volatile int g_cursor_trail   = 0;

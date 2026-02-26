@@ -13,7 +13,7 @@ test "scrollback: push and get single line" {
         .{ .char = 'B' },
         .{ .char = 'C' },
     };
-    sb.pushLine(&line);
+    sb.pushLine(&line, false);
 
     try std.testing.expectEqual(@as(usize, 1), sb.count);
     const got = sb.getLine(0);
@@ -32,7 +32,7 @@ test "scrollback: ring wrap-around" {
     for (0..5) |i| {
         line[0] = .{ .char = @intCast('a' + i) };
         line[1] = .{ .char = @intCast('A' + i) };
-        sb.pushLine(&line);
+        sb.pushLine(&line, false);
     }
 
     try std.testing.expectEqual(@as(usize, 3), sb.count);
@@ -48,8 +48,8 @@ test "scrollback: clear resets count" {
     defer sb.deinit();
 
     var line = [2]Cell{ .{ .char = 'X' }, .{ .char = 'Y' } };
-    sb.pushLine(&line);
-    sb.pushLine(&line);
+    sb.pushLine(&line, false);
+    sb.pushLine(&line, false);
     try std.testing.expectEqual(@as(usize, 2), sb.count);
 
     sb.clear();
@@ -222,7 +222,7 @@ test "scrollback: removeRecent drops most recent lines" {
     for (0..5) |i| {
         line[0] = .{ .char = @intCast('A' + i) };
         line[1] = .{ .char = ' ' };
-        sb.pushLine(&line);
+        sb.pushLine(&line, false);
     }
     try std.testing.expectEqual(@as(usize, 5), sb.count);
 

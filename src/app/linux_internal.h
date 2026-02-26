@@ -30,6 +30,7 @@ extern AttyxCell* g_cells;
 extern int g_cols;
 extern int g_rows;
 extern volatile uint64_t g_cell_gen;
+extern volatile uint8_t g_row_wrapped[ATTYX_MAX_ROWS];
 extern volatile int g_cursor_row;
 extern volatile int g_cursor_col;
 extern volatile int g_should_quit;

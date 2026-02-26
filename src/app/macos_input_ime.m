@@ -202,7 +202,7 @@
             }
         }
 
-        if (row < er) [result appendString:@"\n"];
+        if (row < er && !g_row_wrapped[row]) [result appendString:@"\n"];
     }
 
     if (result.length > 0) {
