@@ -248,7 +248,7 @@ extern volatile uint64_t g_image_gen; // bumped when image placements change
 // ---------------------------------------------------------------------------
 
 #define ATTYX_OVERLAY_MAX_CELLS  2048
-#define ATTYX_OVERLAY_MAX_LAYERS 4
+#define ATTYX_OVERLAY_MAX_LAYERS 16
 
 typedef struct {
     uint32_t character;

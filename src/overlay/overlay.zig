@@ -35,7 +35,7 @@ pub const OverlayLayer = struct {
     action_bar: ?action_mod.ActionBar = null,
 };
 
-pub const max_layers = 4;
+pub const max_layers = 16;
 
 pub const OverlayManager = struct {
     layers: [max_layers]OverlayLayer,

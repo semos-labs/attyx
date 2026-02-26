@@ -120,7 +120,7 @@ attyx --font-size 16 --theme catppuccin-mocha --background-opacity 0.85
 
 ## Popups
 
-Popups are floating terminal windows that run a command inside the main Attyx window. Up to 4 popups can be configured, each bound to a **Ctrl+Shift+&lt;letter&gt;** hotkey. Press the hotkey again to close.
+Popups are floating terminal windows that run a command inside the main Attyx window. Up to 32 popups can be configured, each bound to a **Ctrl+Shift+&lt;letter&gt;** hotkey. Press the hotkey again to close.
 
 ```toml
 [[popup]]
