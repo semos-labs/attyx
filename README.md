@@ -35,13 +35,31 @@
 
 ## Install
 
+### Homebrew
+
+**macOS:**
+
+```bash
+brew install semos-labs/tap/attyx --cask
+```
+
+**Linux (x86_64):**
+
+```bash
+brew install semos-labs/tap/attyx
+```
+
+Runtime dependencies (glfw, freetype, fontconfig, mesa, libpng, zlib) are installed automatically. Make sure your shell is configured with `eval "$(brew shellenv)"` so that Homebrew's library paths are visible at runtime.
+
+### Build from source
+
 Requires **Zig 0.15.2+**.
 
 ```bash
 zig build run           # build and launch
 ```
 
-**Linux prerequisites:**
+**Linux build prerequisites:**
 
 ```bash
 sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
