@@ -29,6 +29,56 @@ fn getEnvOrHome(allocator: std.mem.Allocator, env_var: []const u8, fallback_suff
     return std.fmt.allocPrint(allocator, "{s}/{s}/attyx", .{ home, fallback_suffix });
 }
 
+// ---------------------------------------------------------------------------
+// Foreground process cwd lookup (Darwin proc_pidinfo)
+// ---------------------------------------------------------------------------
+
+extern "c" fn tcgetpgrp(fd: c_int) std.posix.pid_t;
+
+const PROC_PIDVNODEPATHINFO: c_int = 9;
+const MAXPATHLEN = 1024;
+
+const VnodeInfoPath = extern struct {
+    _pad: [152]u8, // vnode_info (vip_vi)
+    path: [MAXPATHLEN]u8, // vip_path
+};
+
+const ProcVnodePathInfo = extern struct {
+    cdir: VnodeInfoPath, // pvi_cdir
+    rdir: VnodeInfoPath, // pvi_rdir
+};
+
+extern "c" fn proc_pidinfo(
+    pid: c_int,
+    flavor: c_int,
+    arg: u64,
+    buffer: *anyopaque,
+    buffersize: c_int,
+) c_int;
+
+/// Query the foreground process's cwd from the PTY master fd.
+/// Returns an allocator-owned slice, or null on any failure.
+pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
+    const fg_pid = tcgetpgrp(master_fd);
+    if (fg_pid < 0) return null;
+
+    var info: ProcVnodePathInfo = undefined;
+    const ret = proc_pidinfo(
+        @intCast(fg_pid),
+        PROC_PIDVNODEPATHINFO,
+        0,
+        @ptrCast(&info),
+        @intCast(@sizeOf(ProcVnodePathInfo)),
+    );
+    if (ret <= 0) return null;
+
+    const path_bytes = &info.cdir.path;
+    const len = std.mem.indexOfScalar(u8, path_bytes, 0) orelse MAXPATHLEN;
+    if (len == 0) return null;
+
+    return allocator.dupe(u8, path_bytes[0..len]) catch null;
+}
+
 /// XDG-compatible paths. macOS uses the same XDG scheme as Linux.
 pub fn getConfigPaths(allocator: std.mem.Allocator) !ConfigPaths {
     const config_dir = try getEnvOrHome(allocator, "XDG_CONFIG_HOME", ".config");

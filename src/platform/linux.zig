@@ -29,6 +29,31 @@ fn getEnvOrHome(allocator: std.mem.Allocator, env_var: []const u8, fallback_suff
     return std.fmt.allocPrint(allocator, "{s}/{s}/attyx", .{ home, fallback_suffix });
 }
 
+// ---------------------------------------------------------------------------
+// Foreground process cwd lookup (/proc/<pid>/cwd)
+// ---------------------------------------------------------------------------
+
+extern "c" fn tcgetpgrp(fd: c_int) std.posix.pid_t;
+
+/// Query the foreground process's cwd from the PTY master fd.
+/// Returns an allocator-owned slice, or null on any failure.
+pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
+    const fg_pid = tcgetpgrp(master_fd);
+    if (fg_pid < 0) return null;
+
+    var link_path_buf: [64:0]u8 = undefined;
+    const link_path = std.fmt.bufPrintZ(&link_path_buf, "/proc/{d}/cwd", .{fg_pid}) catch return null;
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = std.posix.readlinkZ(
+        link_path,
+        &buf,
+    ) catch return null;
+    if (target.len == 0) return null;
+
+    return allocator.dupe(u8, target) catch null;
+}
+
 /// XDG-compatible paths per the XDG Base Directory spec.
 pub fn getConfigPaths(allocator: std.mem.Allocator) !ConfigPaths {
     const config_dir = try getEnvOrHome(allocator, "XDG_CONFIG_HOME", ".config");

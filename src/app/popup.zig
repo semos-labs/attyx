@@ -55,7 +55,7 @@ pub const PopupState = struct {
     outer_h: u16,
     allocator: std.mem.Allocator,
 
-    pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16) !PopupState {
+    pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
 
         var engine = try allocator.create(Engine);
@@ -75,10 +75,14 @@ pub const PopupState = struct {
 
         const argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
 
+        const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
+        defer if (cwd_z) |z| allocator.free(z);
+
         const pty = try Pty.spawn(.{
             .rows = dims.rows,
             .cols = dims.cols,
             .argv = &argv,
+            .cwd = if (cwd_z) |z| z.ptr else null,
         });
 
         return .{

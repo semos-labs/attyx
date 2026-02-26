@@ -25,6 +25,7 @@ const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
+const platform = @import("../platform/platform.zig");
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -1132,8 +1133,10 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
             const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
             const grid_rows: u16 = @intCast(ctx.engine.state.grid.rows);
+            const fg_cwd = platform.getForegroundCwd(ctx.allocator, ctx.pty.master);
+            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
-            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows) catch |err| {
+            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {
                 logging.err("popup", "spawn failed: {}", .{err});
                 ctx.allocator.destroy(ps);
                 return;

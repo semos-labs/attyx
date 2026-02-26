@@ -12,3 +12,4 @@ pub const O_NONBLOCK = impl.O_NONBLOCK;
 
 pub const ConfigPaths = impl.ConfigPaths;
 pub const getConfigPaths = impl.getConfigPaths;
+pub const getForegroundCwd = impl.getForegroundCwd;
