@@ -239,6 +239,46 @@ extern volatile int      g_image_placement_count;
 extern volatile uint64_t g_image_gen; // bumped when image placements change
 
 // ---------------------------------------------------------------------------
+// Overlay system (written by PTY thread inside seqlock, read by renderer)
+// ---------------------------------------------------------------------------
+
+#define ATTYX_OVERLAY_MAX_CELLS  2048
+#define ATTYX_OVERLAY_MAX_LAYERS 4
+
+typedef struct {
+    uint32_t character;
+    uint8_t fg_r, fg_g, fg_b;
+    uint8_t bg_r, bg_g, bg_b;
+    uint8_t bg_alpha;
+} AttyxOverlayCell;
+
+typedef struct {
+    int visible;
+    int col, row;
+    int width, height;
+    int cell_count;
+    int z_order;
+} AttyxOverlayDesc;
+
+extern AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];
+extern AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY_MAX_CELLS];
+extern volatile int      g_overlay_count;
+extern volatile uint32_t g_overlay_gen;
+
+void attyx_toggle_debug_overlay(void);
+
+extern volatile int g_toggle_anchor_demo;
+void attyx_toggle_anchor_demo(void);
+
+// Overlay interaction (PTY thread -> input thread: read-only signal)
+extern volatile int g_overlay_has_actions;
+
+// Overlay interaction commands (input thread -> PTY thread via Zig functions)
+void attyx_overlay_esc(void);
+void attyx_overlay_tab(void);
+void attyx_overlay_enter(void);
+
+// ---------------------------------------------------------------------------
 // Logging bridge (implemented in ui2.zig / main.zig stub)
 // ---------------------------------------------------------------------------
 

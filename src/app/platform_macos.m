@@ -98,6 +98,12 @@ CGFloat g_cell_pt_h = 0;
 
 AttyxSearchBar* g_nativeSearchBar = nil;
 
+// Overlay system
+AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];
+AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY_MAX_CELLS];
+volatile int      g_overlay_count = 0;
+volatile uint32_t g_overlay_gen   = 0;
+
 // ---------------------------------------------------------------------------
 // Bridge function implementations
 // ---------------------------------------------------------------------------

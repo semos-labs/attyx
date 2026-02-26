@@ -101,7 +101,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         }
 
         BOOL imagesChanged = (g_image_gen != _lastImageGen) || (g_image_placement_count > 0);
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !imagesChanged) {
+        BOOL overlayChanged = (g_overlay_gen != _lastOverlayGen);
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !imagesChanged && !overlayChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -630,6 +631,11 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         // Kitty graphics: draw image placements over text.
         [self drawImagesWithEncoder:enc viewport:viewport
                              glyphW:gw glyphH:gh offX:offX offY:offY];
+
+        // Overlay layers (debug card, etc.)
+        [self drawOverlaysWithEncoder:enc viewport:viewport
+                               glyphW:gw glyphH:gh offX:offX offY:offY];
+        _lastOverlayGen = g_overlay_gen;
 
         if (g_ime_composing && g_ime_preedit_len > 0) {
             int pRow = g_ime_anchor_row;

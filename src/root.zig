@@ -23,6 +23,11 @@ pub const graphics_cmd = @import("term/graphics_cmd.zig");
 pub const graphics_store = @import("term/graphics_store.zig");
 pub const graphics_decode = @import("term/graphics_decode.zig");
 
+pub const overlay_mod = @import("overlay/overlay.zig");
+pub const overlay_layout = @import("overlay/layout.zig");
+pub const overlay_anchor = @import("overlay/anchor.zig");
+pub const overlay_action = @import("overlay/action.zig");
+
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
 pub const Direction = actions.Direction;
@@ -71,4 +76,8 @@ test {
     _ = @import("term/key_encode_test.zig");
     _ = @import("headless/runner.zig");
     _ = @import("headless/tests.zig");
+    _ = @import("overlay/overlay.zig");
+    _ = @import("overlay/layout.zig");
+    _ = @import("overlay/anchor.zig");
+    _ = @import("overlay/action.zig");
 }

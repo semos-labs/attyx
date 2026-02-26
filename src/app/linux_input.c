@@ -114,6 +114,25 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     int alt   = (mods & GLFW_MOD_ALT) != 0;
     int shift = (mods & GLFW_MOD_SHIFT) != 0;
 
+    // Overlay interaction keys (only when overlay has actions)
+    if (g_overlay_has_actions && action != GLFW_RELEASE) {
+        if (key == GLFW_KEY_ESCAPE) {
+            attyx_overlay_esc();
+            g_suppress_char = 1;
+            return;
+        }
+        if (key == GLFW_KEY_TAB && !ctrl && !shift && !alt) {
+            attyx_overlay_tab();
+            g_suppress_char = 1;
+            return;
+        }
+        if (key == GLFW_KEY_ENTER && !ctrl && !shift && !alt) {
+            attyx_overlay_enter();
+            g_suppress_char = 1;
+            return;
+        }
+    }
+
     // Ctrl+F toggles search
     if (ctrl && key == GLFW_KEY_F) {
         if (g_search_active) {
@@ -199,6 +218,16 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     }
     if (ctrl && shift && key == GLFW_KEY_R) {
         attyx_trigger_config_reload();
+        g_suppress_char = 1;
+        return;
+    }
+    if (ctrl && shift && key == GLFW_KEY_D) {
+        attyx_toggle_debug_overlay();
+        g_suppress_char = 1;
+        return;
+    }
+    if (ctrl && shift && key == GLFW_KEY_A) {
+        attyx_toggle_anchor_demo();
         g_suppress_char = 1;
         return;
     }

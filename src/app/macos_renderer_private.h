@@ -37,6 +37,7 @@
     uint64_t    _statsDirtyRows;
     CFAbsoluteTime _statsLastPrint;
     uint64_t    _lastImageGen;
+    uint32_t    _lastOverlayGen;
 }
 @property (nonatomic, strong) id<MTLDevice>              device;
 @property (nonatomic, strong) id<MTLCommandQueue>        cmdQueue;

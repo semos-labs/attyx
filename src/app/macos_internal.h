@@ -176,6 +176,19 @@ extern AttyxSearchBar* g_nativeSearchBar;
 void syncSearchBarCount(void);
 
 // ---------------------------------------------------------------------------
+// Overlay rendering (macos_overlay.m)
+// ---------------------------------------------------------------------------
+
+@interface AttyxRenderer (Overlay)
+- (void)drawOverlaysWithEncoder:(id<MTLRenderCommandEncoder>)enc
+                       viewport:(float[2])viewport
+                         glyphW:(float)gw
+                         glyphH:(float)gh
+                           offX:(float)offX
+                           offY:(float)offY;
+@end
+
+// ---------------------------------------------------------------------------
 // Metal shader source (platform_macos.m)
 // ---------------------------------------------------------------------------
 

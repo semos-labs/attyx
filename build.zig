@@ -112,6 +112,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = macos_flags });
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkFramework("Cocoa", .{});
         exe.root_module.linkFramework("Metal", .{});
@@ -129,6 +130,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render_util.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render.c"),     .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_input.c"),      .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_overlay.c"),  .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkSystemLibrary("glfw3", .{});
         exe.root_module.linkSystemLibrary("gl", .{});
@@ -200,6 +202,7 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input.m"),         .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = app_macos_flags });
         app.root_module.addIncludePath(b.path("src/app"));
         app.root_module.linkFramework("Cocoa", .{});
         app.root_module.linkFramework("Metal", .{});

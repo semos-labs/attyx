@@ -156,7 +156,9 @@ int drawFrame(void) {
         g_full_redraw = 1;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active) return 0;
+    static uint32_t lastOverlayGen = 0;
+    int overlayChanged = (g_overlay_gen != lastOverlayGen);
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !overlayChanged) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -668,6 +670,10 @@ int drawFrame(void) {
         glBindVertexArray(g_vao);
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     }
+
+    // Overlay layers (debug card, etc.)
+    drawOverlays(offX, offY, gw, gh, viewport);
+    lastOverlayGen = g_overlay_gen;
 
     // IME preedit overlay
     if (g_ime_composing && g_ime_preedit_len > 0) {

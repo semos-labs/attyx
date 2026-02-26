@@ -19,6 +19,11 @@ const theme_registry_mod = @import("../theme/registry.zig");
 const ThemeRegistry = theme_registry_mod.ThemeRegistry;
 pub const Theme = theme_registry_mod.Theme;
 
+const overlay_mod = attyx.overlay_mod;
+const overlay_layout = attyx.overlay_layout;
+const overlay_anchor = attyx.overlay_anchor;
+const OverlayManager = overlay_mod.OverlayManager;
+
 const c = @cImport({
     @cInclude("bridge.h");
 });
@@ -47,6 +52,8 @@ const PtyThreadCtx = struct {
     throughput: diag.ThroughputWindow = .{},
     // DEC 2026: timestamp (ns) when synchronized_output became true; 0 = not active.
     sync_start_ns: i128 = 0,
+    // Overlay system
+    overlay_mgr: ?*OverlayManager = null,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -87,6 +94,38 @@ export var g_theme_sel_fg_b: i32 = 0;
 const _icon_bytes = @import("app_icon").data;
 export var g_icon_png: [*]const u8 = _icon_bytes.ptr;
 export var g_icon_png_len: c_int = @intCast(_icon_bytes.len);
+
+// Overlay toggle flag: set to 1 by input thread, read-and-reset by PTY thread.
+export var g_toggle_debug_overlay: i32 = 0;
+
+export fn attyx_toggle_debug_overlay() void {
+    @atomicStore(i32, &g_toggle_debug_overlay, 1, .seq_cst);
+}
+
+// Anchor demo toggle flag: set to 1 by input thread, read-and-reset by PTY thread.
+export var g_toggle_anchor_demo: i32 = 0;
+
+export fn attyx_toggle_anchor_demo() void {
+    @atomicStore(i32, &g_toggle_anchor_demo, 1, .seq_cst);
+}
+
+// Overlay interaction: signal to input thread whether overlay has actionable buttons.
+export var g_overlay_has_actions: i32 = 0;
+
+// Atomic flags: input thread sets to 1, PTY thread reads and resets.
+var g_overlay_dismiss: i32 = 0;
+var g_overlay_cycle_focus: i32 = 0;
+var g_overlay_activate: i32 = 0;
+
+export fn attyx_overlay_esc() void {
+    @atomicStore(i32, &g_overlay_dismiss, 1, .seq_cst);
+}
+export fn attyx_overlay_tab() void {
+    @atomicStore(i32, &g_overlay_cycle_focus, 1, .seq_cst);
+}
+export fn attyx_overlay_enter() void {
+    @atomicStore(i32, &g_overlay_activate, 1, .seq_cst);
+}
 
 export fn attyx_trigger_config_reload() void {
     @atomicStore(i32, &g_needs_reload_config, 1, .seq_cst);
@@ -262,6 +301,9 @@ pub fn run(
     var session = try SessionLog.init(allocator);
     defer session.deinit();
 
+    var overlay_mgr = OverlayManager.init(allocator);
+    defer overlay_mgr.deinit();
+
     var ctx = PtyThreadCtx{
         .engine = &engine,
         .pty = &pty,
@@ -277,6 +319,7 @@ pub fn run(
         .applied_scrollback_lines = @intCast(engine.state.scrollback.max_lines),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
+        .overlay_mgr = &overlay_mgr,
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -423,6 +466,191 @@ fn publishImagePlacements(ctx: *PtyThreadCtx) void {
     }
 }
 
+fn publishOverlays(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    var out_count: c_int = 0;
+
+    for (mgr.layers[0..overlay_mod.max_layers], 0..) |layer, li| {
+        if (!layer.visible) continue;
+        const cells = layer.cells orelse continue;
+        if (out_count >= c.ATTYX_OVERLAY_MAX_LAYERS) break;
+
+        const idx: usize = @intCast(out_count);
+        const cell_count = @min(cells.len, c.ATTYX_OVERLAY_MAX_CELLS);
+
+        for (0..cell_count) |ci| {
+            c.g_overlay_cells[idx][ci] = .{
+                .character = cells[ci].char,
+                .fg_r = cells[ci].fg.r,
+                .fg_g = cells[ci].fg.g,
+                .fg_b = cells[ci].fg.b,
+                .bg_r = cells[ci].bg.r,
+                .bg_g = cells[ci].bg.g,
+                .bg_b = cells[ci].bg.b,
+                .bg_alpha = cells[ci].bg_alpha,
+            };
+        }
+
+        c.g_overlay_descs[idx] = .{
+            .visible = 1,
+            .col = @intCast(layer.col),
+            .row = @intCast(layer.row),
+            .width = @intCast(layer.width),
+            .height = @intCast(layer.height),
+            .cell_count = @intCast(cell_count),
+            .z_order = @intCast(li),
+        };
+
+        out_count += 1;
+    }
+
+    c.g_overlay_count = out_count;
+
+    // Update g_overlay_has_actions so input thread knows whether to intercept keys
+    g_overlay_has_actions = if (mgr.hasActiveActions()) @as(i32, 1) else @as(i32, 0);
+
+    _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_overlay_gen))), .Add, 1, .seq_cst);
+}
+
+fn generateDebugCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    if (!mgr.isVisible(.debug_card)) return;
+
+    const eng = ctx.engine;
+    const cols: u16 = @intCast(eng.state.grid.cols);
+    const rows: u16 = @intCast(eng.state.grid.rows);
+
+    // Format debug info lines
+    var grid_buf: [32]u8 = undefined;
+    var vp_buf: [32]u8 = undefined;
+    var sb_buf: [32]u8 = undefined;
+    var cur_buf: [32]u8 = undefined;
+    var alt_buf: [32]u8 = undefined;
+
+    const grid_line = std.fmt.bufPrint(&grid_buf, "Grid: {d}x{d}", .{ cols, rows }) catch "Grid: ?";
+    const vp_line = std.fmt.bufPrint(&vp_buf, "Viewport: {d}", .{eng.state.viewport_offset}) catch "Viewport: ?";
+    const sb_line = std.fmt.bufPrint(&sb_buf, "Scrollback: {d}", .{eng.state.scrollback.count}) catch "Scrollback: ?";
+    const cur_line = std.fmt.bufPrint(&cur_buf, "Cursor: {d},{d}", .{ eng.state.cursor.row, eng.state.cursor.col }) catch "Cursor: ?";
+    const alt_line = std.fmt.bufPrint(&alt_buf, "Alt screen: {s}", .{if (eng.state.alt_active) "yes" else "no"}) catch "Alt screen: ?";
+
+    const debug_lines = [_][]const u8{
+        grid_line,
+        vp_line,
+        sb_line,
+        cur_line,
+        alt_line,
+    };
+
+    const action_mod = attyx.overlay_action;
+
+    // Build action bar with [Dismiss] button
+    var action_bar = action_mod.ActionBar{};
+    action_bar.add(.dismiss, "Dismiss");
+    // Preserve focus state from existing action_bar if present
+    const layer = &mgr.layers[@intFromEnum(overlay_mod.OverlayId.debug_card)];
+    if (layer.action_bar) |existing| {
+        action_bar.focused = existing.focused;
+    }
+
+    const result = overlay_layout.layoutActionCard(
+        mgr.allocator,
+        "Attyx Debug",
+        &debug_lines,
+        layer.style,
+        action_bar,
+    ) catch return;
+
+    // Position: top-right, 2 cells margin
+    const card_col = if (cols > result.width + 2) cols - result.width - 2 else 0;
+    const card_row: u16 = 2;
+
+    mgr.setContent(.debug_card, card_col, card_row, result.width, result.height, result.cells) catch {
+        mgr.allocator.free(result.cells);
+        return;
+    };
+    // layoutActionCard allocated cells; setContent copies them, so free the original.
+    mgr.allocator.free(result.cells);
+
+    // Store action_bar on the layer for interaction
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.debug_card)].action_bar = action_bar;
+}
+
+fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
+    const eng = ctx.engine;
+    const sel_active_raw: i32 = @bitCast(c.g_sel_active);
+    const sel_end_row_raw: i32 = @bitCast(c.g_sel_end_row);
+    const sel_end_col_raw: i32 = @bitCast(c.g_sel_end_col);
+    return .{
+        .grid_cols = @intCast(eng.state.grid.cols),
+        .grid_rows = @intCast(eng.state.grid.rows),
+        .cursor_row = @intCast(eng.state.cursor.row),
+        .cursor_col = @intCast(eng.state.cursor.col),
+        .sel_active = sel_active_raw != 0,
+        .sel_end_row = if (sel_end_row_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_row_raw))) else 0,
+        .sel_end_col = if (sel_end_col_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_col_raw))) else 0,
+        .alt_active = eng.state.alt_active,
+    };
+}
+
+// Shared anchor demo mode counter (persists across calls).
+var g_anchor_mode_counter: u8 = 0;
+
+fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    if (!mgr.isVisible(.anchor_demo)) return;
+
+    const kinds = [_]overlay_anchor.AnchorKind{
+        .cursor_line,
+        .selection_end,
+        .after_command,
+        .viewport_dock,
+    };
+    const kind_names = [_][]const u8{
+        "cursor_line",
+        "selection_end",
+        "after_command",
+        "viewport_dock",
+    };
+
+    const kind = kinds[g_anchor_mode_counter % 4];
+    const kind_name = kind_names[g_anchor_mode_counter % 4];
+
+    // Build card content
+    var mode_buf: [32]u8 = undefined;
+    const mode_line = std.fmt.bufPrint(&mode_buf, "Mode: {s}", .{kind_name}) catch "Mode: ?";
+
+    const demo_lines = [_][]const u8{
+        mode_line,
+        "Ctrl+Shift+A: cycle",
+    };
+
+    const result = overlay_layout.layoutDebugCard(
+        mgr.allocator,
+        "Anchor Demo",
+        &demo_lines,
+        mgr.layers[@intFromEnum(overlay_mod.OverlayId.anchor_demo)].style,
+    ) catch return;
+
+    // Build anchor based on current mode
+    const vp = viewportInfoFromCtx(ctx);
+    const anchor = overlay_anchor.Anchor{
+        .kind = kind,
+        .command_row_hint = if (vp.cursor_row + 1 < vp.grid_rows) vp.cursor_row + 1 else null,
+        .dock = .bottom_right,
+    };
+
+    const placement = overlay_anchor.placeOverlay(anchor, result.width, result.height, vp, .{});
+
+    mgr.setContent(.anchor_demo, placement.col, placement.row, result.width, result.height, result.cells) catch {
+        mgr.allocator.free(result.cells);
+        return;
+    };
+    mgr.allocator.free(result.cells);
+
+    // Store anchor on the layer for relayout
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.anchor_demo)].anchor = anchor;
+}
+
 fn publishState(ctx: *PtyThreadCtx) void {
     c.attyx_set_mode_flags(
         @intFromBool(ctx.engine.state.bracketed_paste),
@@ -561,6 +789,67 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             doReloadConfig(ctx);
         }
 
+        // Debug overlay toggle check
+        if (@atomicRmw(i32, &g_toggle_debug_overlay, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                mgr.toggle(.debug_card);
+                generateDebugCard(ctx);
+                publishOverlays(ctx);
+            }
+        }
+
+        // Anchor demo toggle check
+        if (@atomicRmw(i32, &g_toggle_anchor_demo, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.isVisible(.anchor_demo)) {
+                    g_anchor_mode_counter +%= 1;
+                    if (g_anchor_mode_counter % 4 == 0) {
+                        // Cycled through all modes — hide overlay
+                        mgr.hide(.anchor_demo);
+                    } else {
+                        generateAnchorDemo(ctx);
+                    }
+                } else {
+                    g_anchor_mode_counter = 0;
+                    mgr.show(.anchor_demo);
+                    generateAnchorDemo(ctx);
+                }
+                publishOverlays(ctx);
+            }
+        }
+
+        // Overlay interaction: dismiss (Esc)
+        if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.dismissActive()) publishOverlays(ctx);
+            }
+        }
+
+        // Overlay interaction: cycle focus (Tab)
+        if (@atomicRmw(i32, &g_overlay_cycle_focus, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.cycleFocus()) {
+                    generateDebugCard(ctx);
+                    publishOverlays(ctx);
+                }
+            }
+        }
+
+        // Overlay interaction: activate focused action (Enter)
+        if (@atomicRmw(i32, &g_overlay_activate, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.activateFocused()) |action_id| {
+                    switch (action_id) {
+                        .dismiss => {
+                            _ = mgr.dismissActive();
+                        },
+                        else => {}, // placeholder for future actions
+                    }
+                    publishOverlays(ctx);
+                }
+            }
+        }
+
         {
             var rr: c_int = 0;
             var rc: c_int = 0;
@@ -594,6 +883,12 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
                 ctx.engine.state.dirty.clear();
                 publishImagePlacements(ctx);
+                if (ctx.overlay_mgr) |mgr| {
+                    mgr.relayoutAnchored(viewportInfoFromCtx(ctx));
+                    generateDebugCard(ctx);
+                    generateAnchorDemo(ctx);
+                }
+                publishOverlays(ctx);
                 c.attyx_end_cell_update();
                 publishState(ctx);
                 last_published_vp = ctx.engine.state.viewport_offset;
@@ -665,6 +960,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
             ctx.engine.state.dirty.clear();
             publishImagePlacements(ctx);
+            generateDebugCard(ctx);
+            generateAnchorDemo(ctx);
+            publishOverlays(ctx);
             c.attyx_end_cell_update();
             publishState(ctx);
             last_published_vp = ctx.engine.state.viewport_offset;

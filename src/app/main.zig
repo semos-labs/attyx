@@ -41,6 +41,14 @@ export var g_theme_sel_fg_b: i32 = 0;
 var _icon_stub: u8 = 0;
 export var g_icon_png: [*]const u8 = @ptrCast(&_icon_stub);
 export var g_icon_png_len: c_int = 0;
+export var g_toggle_debug_overlay: i32 = 0;
+export fn attyx_toggle_debug_overlay() void {}
+export var g_toggle_anchor_demo: i32 = 0;
+export fn attyx_toggle_anchor_demo() void {}
+export var g_overlay_has_actions: i32 = 0;
+export fn attyx_overlay_esc() void {}
+export fn attyx_overlay_tab() void {}
+export fn attyx_overlay_enter() void {}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

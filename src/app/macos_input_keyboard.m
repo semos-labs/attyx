@@ -99,6 +99,23 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
         return YES;
     }
 
+    // Overlay interaction keys (only when overlay has actions)
+    if (g_overlay_has_actions) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_Escape) {
+            attyx_overlay_esc();
+            return YES;
+        }
+        if (kc == kVK_Tab && !ctrl && !shift) {
+            attyx_overlay_tab();
+            return YES;
+        }
+        if (kc == kVK_Return && !ctrl && !shift) {
+            attyx_overlay_enter();
+            return YES;
+        }
+    }
+
     // Shift+PageUp/Down/Home/End for scrollback navigation (UI-level, not sent to PTY)
     if (shift && !g_mouse_tracking && !g_alt_screen) {
         unsigned short kc = event.keyCode;
@@ -111,6 +128,18 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     // Ctrl+Shift+R → reload config (intercept before generic key handling)
     if (ctrl && shift && event.keyCode == 0x0F /* kVK_ANSI_R */) {
         attyx_trigger_config_reload();
+        return YES;
+    }
+
+    // Ctrl+Shift+D → toggle debug overlay
+    if (ctrl && shift && event.keyCode == 0x02 /* kVK_ANSI_D */) {
+        attyx_toggle_debug_overlay();
+        return YES;
+    }
+
+    // Ctrl+Shift+A → toggle anchor demo overlay
+    if (ctrl && shift && event.keyCode == 0x00 /* kVK_ANSI_A */) {
+        attyx_toggle_anchor_demo();
         return YES;
     }
 

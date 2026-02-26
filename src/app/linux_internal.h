@@ -233,6 +233,13 @@ GLuint createProgram(const char* vertSrc, const char* fragSrc);
 void   setupVertexAttribs(void);
 
 // ---------------------------------------------------------------------------
+// Overlay rendering (linux_overlay.c)
+// ---------------------------------------------------------------------------
+
+void drawOverlays(float offX, float offY, float gw, float gh,
+                  float viewport[2]);
+
+// ---------------------------------------------------------------------------
 // UTF-8 helper (linux_input.c — also used in linux_render.c via doCopy)
 // ---------------------------------------------------------------------------
 
