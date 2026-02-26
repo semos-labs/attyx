@@ -470,27 +470,73 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
 
-    // Render base glyph first
+    // 1. Font fallback for base glyph (same chain as regular rasterizer)
     FT_Face face = gc->ft_face;
+    FT_Face fallbackFace = NULL;
     FT_UInt baseIdx = FT_Get_Char_Index(face, base);
-    if (!baseIdx) {
-        // No glyph for base — fall back to single rasterize
-        return glyphCacheRasterize(gc, base);
+
+    if (baseIdx == 0) {
+        // User fallback fonts
+        for (int fi = 0; fi < g_font_fallback_count && baseIdx == 0; fi++) {
+            char* fbPath = findFontPathAny(g_font_fallback[fi]);
+            if (!fbPath) continue;
+            FT_Face candidate;
+            if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
+                FT_Set_Pixel_Sizes(candidate, 0, (int)gc->glyph_h);
+                FT_UInt cgi = FT_Get_Char_Index(candidate, base);
+                if (cgi != 0) {
+                    baseIdx = cgi;
+                    fallbackFace = candidate;
+                    face = fallbackFace;
+                } else {
+                    FT_Done_Face(candidate);
+                }
+            }
+            free(fbPath);
+        }
+        // Fontconfig system fallback
+        if (baseIdx == 0) {
+            FcPattern* pat = FcPatternCreate();
+            FcCharSet* cs = FcCharSetCreate();
+            FcCharSetAddChar(cs, base);
+            FcPatternAddCharSet(pat, FC_CHARSET, cs);
+            FcConfigSubstitute(NULL, pat, FcMatchPattern);
+            FcDefaultSubstitute(pat);
+            FcResult res;
+            FcPattern* match = FcFontMatch(NULL, pat, &res);
+            if (match) {
+                FcChar8* file; int index = 0;
+                FcPatternGetString(match, FC_FILE, 0, &file);
+                FcPatternGetInteger(match, FC_INDEX, 0, &index);
+                if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallbackFace) == 0) {
+                    FT_Set_Pixel_Sizes(fallbackFace, 0, (int)gc->glyph_h);
+                    baseIdx = FT_Get_Char_Index(fallbackFace, base);
+                    if (baseIdx != 0) face = fallbackFace;
+                }
+                FcPatternDestroy(match);
+            }
+            FcCharSetDestroy(cs);
+            FcPatternDestroy(pat);
+        }
     }
 
-    int wide = canBeWide(base);
-    int renderW = wide ? gw * 2 : gw;
-
-    // Allocate atlas slot
-    int slot = gc->next_slot;
-    gc->next_slot += (wide ? 2 : 1);
-    if (gc->next_slot > gc->max_slots) glyphCacheGrow(gc);
+    // 2. Allocate atlas slot (combining chars are never wide)
+    if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
+    int slot = gc->next_slot++;
     int ac = slot % gc->atlas_cols;
     int ar = slot / gc->atlas_cols;
 
-    uint8_t* pixels = (uint8_t*)calloc(renderW * gh, 1);
+    if (baseIdx == 0) {
+        // No glyph found — store blank slot
+        if (fallbackFace) FT_Done_Face(fallbackFace);
+        uint32_t key = combiningKey(base, c1, c2);
+        glyphCacheInsert(gc, key, slot);
+        return slot;
+    }
 
-    // Render base glyph
+    uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
+
+    // 3. Render base glyph (same blit logic as regular rasterizer)
     if (FT_Load_Glyph(face, baseIdx, FT_LOAD_RENDER) == 0) {
         FT_Bitmap* bm = &face->glyph->bitmap;
         int bx = face->glyph->bitmap_left + (int)gc->x_offset;
@@ -500,16 +546,15 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
             if (dy < 0 || dy >= gh) continue;
             for (unsigned cx = 0; cx < bm->width; cx++) {
                 int dx = bx + (int)cx;
-                if (dx < 0 || dx >= renderW) continue;
+                if (dx < 0 || dx >= gw) continue;
                 uint8_t val = bm->buffer[r * bm->pitch + cx];
-                // Alpha-blend: max of base and new
-                if (val > pixels[dy * renderW + dx])
-                    pixels[dy * renderW + dx] = val;
+                if (val > pixels[dy * gw + dx])
+                    pixels[dy * gw + dx] = val;
             }
         }
     }
 
-    // Overlay each combining mark
+    // 4. Overlay each combining mark at the same position
     uint32_t marks[2] = { c1, c2 };
     for (int m = 0; m < 2; m++) {
         if (marks[m] == 0) continue;
@@ -524,25 +569,26 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
             if (dy < 0 || dy >= gh) continue;
             for (unsigned cx = 0; cx < bm->width; cx++) {
                 int dx = bx + (int)cx;
-                if (dx < 0 || dx >= renderW) continue;
+                if (dx < 0 || dx >= gw) continue;
                 uint8_t val = bm->buffer[r * bm->pitch + cx];
-                if (val > pixels[dy * renderW + dx])
-                    pixels[dy * renderW + dx] = val;
+                if (val > pixels[dy * gw + dx])
+                    pixels[dy * gw + dx] = val;
             }
         }
     }
 
-    // Upload to atlas
+    if (fallbackFace) FT_Done_Face(fallbackFace);
+
+    // 5. Upload to atlas
     glBindTexture(GL_TEXTURE_2D, gc->texture);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, renderW, gh,
+    glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, gw, gh,
                     GL_RED, GL_UNSIGNED_BYTE, pixels);
     free(pixels);
 
     uint32_t key = combiningKey(base, c1, c2);
-    int encoded = wide ? (slot | GLYPH_WIDE_BIT) : slot;
-    glyphCacheInsert(gc, key, encoded);
-    return encoded;
+    glyphCacheInsert(gc, key, slot);
+    return slot;
 }
 
 // createGlyphCache() is defined in linux_font.c
