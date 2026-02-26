@@ -81,6 +81,125 @@ static uint8_t glfwActionToEventType(int action) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Keybind dispatch — returns 1 if handled, 0 if the key should pass through
+// ---------------------------------------------------------------------------
+
+static void doPaste(void) {
+    const char* text = glfwGetClipboardString(g_window);
+    if (text && *text) {
+        int len = (int)strlen(text);
+        void (*send_fn)(const uint8_t*, int) =
+            g_popup_active ? attyx_popup_send_input : attyx_send_input;
+        if (g_bracketed_paste) {
+            send_fn((const uint8_t*)"\x1b[200~", 6);
+            send_fn((const uint8_t*)text, len);
+            send_fn((const uint8_t*)"\x1b[201~", 6);
+        } else {
+            send_fn((const uint8_t*)text, len);
+        }
+    }
+}
+
+static int dispatchAction(uint8_t act) {
+    if (act >= ATTYX_ACTION_POPUP_TOGGLE_0 &&
+        act < ATTYX_ACTION_POPUP_TOGGLE_0 + ATTYX_POPUP_MAX) {
+        attyx_popup_toggle(act - ATTYX_ACTION_POPUP_TOGGLE_0);
+        return 1;
+    }
+    switch (act) {
+        case ATTYX_ACTION_COPY:
+            doCopy();
+            return 1;
+        case ATTYX_ACTION_PASTE:
+            doPaste();
+            return 1;
+        case ATTYX_ACTION_SEARCH_TOGGLE:
+            if (g_search_active) {
+                g_search_active = 0;
+                g_search_query_len = 0;
+                g_search_gen++;
+            } else {
+                g_search_active = 1;
+                g_search_query_len = 0;
+                g_search_gen++;
+            }
+            attyx_mark_all_dirty();
+            return 1;
+        case ATTYX_ACTION_SEARCH_NEXT:
+            if (g_search_active) {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+                attyx_mark_all_dirty();
+            }
+            return 1;
+        case ATTYX_ACTION_SEARCH_PREV:
+            if (g_search_active) {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+                attyx_mark_all_dirty();
+            }
+            return 1;
+        case ATTYX_ACTION_SCROLL_PAGE_UP:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            attyx_scroll_viewport(g_rows);
+            return 1;
+        case ATTYX_ACTION_SCROLL_PAGE_DOWN:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            attyx_scroll_viewport(-g_rows);
+            return 1;
+        case ATTYX_ACTION_SCROLL_TO_TOP:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            g_viewport_offset = g_scrollback_count;
+            attyx_mark_all_dirty();
+            return 1;
+        case ATTYX_ACTION_SCROLL_TO_BOTTOM:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            g_viewport_offset = 0;
+            attyx_mark_all_dirty();
+            return 1;
+        case ATTYX_ACTION_CONFIG_RELOAD:
+            attyx_trigger_config_reload();
+            return 1;
+        case ATTYX_ACTION_DEBUG_TOGGLE:
+            attyx_toggle_debug_overlay();
+            return 1;
+        case ATTYX_ACTION_ANCHOR_DEMO:
+            attyx_toggle_anchor_demo();
+            return 1;
+        case ATTYX_ACTION_NEW_WINDOW:
+            attyx_spawn_new_window();
+            return 1;
+        case ATTYX_ACTION_CLOSE_WINDOW:
+            glfwSetWindowShouldClose(g_window, 1);
+            return 1;
+        case ATTYX_ACTION_SEND_SEQUENCE:
+            if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
+                void (*send_fn)(const uint8_t*, int) =
+                    g_popup_active ? attyx_popup_send_input : attyx_send_input;
+                send_fn(g_keybind_matched_seq, g_keybind_matched_seq_len);
+            }
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// Build key + codepoint for keybind matching from a GLFW key event.
+static void glfwToKeyCombo(int key, int mods, uint16_t* outKey, uint32_t* outCp) {
+    uint16_t mapped = mapGlfwKey(key);
+    if (mapped != UINT16_MAX) {
+        *outKey = mapped;
+        *outCp = 0;
+    } else if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+        *outKey = KC_CODEPOINT;
+        uint32_t cp = 'a' + (key - GLFW_KEY_A);
+        if (mods & GLFW_MOD_SHIFT) cp -= 32;
+        *outCp = cp;
+    } else {
+        *outKey = KC_CODEPOINT;
+        *outCp = 0;
+    }
+}
+
 static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mods) {
     (void)w; (void)scancode;
 
@@ -103,7 +222,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
 
     g_suppress_char = 0;
 
-    // Context menu: Escape dismisses it.
+    // Context menu: Escape dismisses it (contextual, not configurable).
     if (g_ctx_menu_open && key == GLFW_KEY_ESCAPE) {
         g_ctx_menu_open = 0;
         g_ctx_menu_hover = -1;
@@ -116,7 +235,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     int alt   = (mods & GLFW_MOD_ALT) != 0;
     int shift = (mods & GLFW_MOD_SHIFT) != 0;
 
-    // Overlay interaction keys (only when overlay has actions)
+    // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions && action != GLFW_RELEASE) {
         if (key == GLFW_KEY_ESCAPE) {
             attyx_overlay_esc();
@@ -135,33 +254,16 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         }
     }
 
-    // Ctrl+F toggles search
-    if (ctrl && key == GLFW_KEY_F) {
-        if (g_search_active) {
-            g_search_active = 0;
-            g_search_query_len = 0;
-            g_search_gen++;
-            attyx_mark_all_dirty();
-        } else {
-            g_search_active = 1;
-            g_search_query_len = 0;
-            g_search_gen++;
-            attyx_mark_all_dirty();
+    // Configurable keybind match (covers search, scroll, copy/paste, popups, etc.)
+    {
+        uint16_t matchKey; uint32_t matchCp;
+        glfwToKeyCombo(key, mods, &matchKey, &matchCp);
+        uint8_t m = buildGlfwMods(mods);
+        uint8_t act = attyx_keybind_match(matchKey, m, matchCp);
+        if (act != ATTYX_ACTION_NONE && dispatchAction(act)) {
+            g_suppress_char = 1;
+            return;
         }
-        g_suppress_char = 1;
-        return;
-    }
-
-    // Ctrl+G / Shift+Ctrl+G — find next/prev
-    if (ctrl && key == GLFW_KEY_G && g_search_active) {
-        if (shift) {
-            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
-        } else {
-            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
-        }
-        attyx_mark_all_dirty();
-        g_suppress_char = 1;
-        return;
     }
 
     // When search bar is open, route keys to search input
@@ -197,65 +299,6 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
-    // Ctrl+Shift+C/V for copy/paste
-    if (ctrl && shift && key == GLFW_KEY_V) {
-        const char* text = glfwGetClipboardString(g_window);
-        if (text && *text) {
-            int len = (int)strlen(text);
-            if (g_bracketed_paste) {
-                attyx_send_input((const uint8_t*)"\x1b[200~", 6);
-                attyx_send_input((const uint8_t*)text, len);
-                attyx_send_input((const uint8_t*)"\x1b[201~", 6);
-            } else {
-                attyx_send_input((const uint8_t*)text, len);
-            }
-        }
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_C) {
-        doCopy();
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_R) {
-        attyx_trigger_config_reload();
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_D) {
-        attyx_toggle_debug_overlay();
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_A) {
-        attyx_toggle_anchor_demo();
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_N) {
-        attyx_spawn_new_window();
-        g_suppress_char = 1;
-        return;
-    }
-    if (ctrl && shift && key == GLFW_KEY_W) {
-        glfwSetWindowShouldClose(g_window, 1);
-        g_suppress_char = 1;
-        return;
-    }
-
-    // Popup hotkeys (Ctrl+Shift+<letter>)
-    if (ctrl && shift) {
-        for (int i = 0; i < g_popup_hotkey_count; i++) {
-            int glfw_key = GLFW_KEY_A + (g_popup_hotkey_letters[i] - 'a');
-            if (key == glfw_key) {
-                attyx_popup_toggle(i);
-                g_suppress_char = 1;
-                return;
-            }
-        }
-    }
-
     // When popup is active, route ALL input to popup
     if (g_popup_active && action != GLFW_RELEASE) {
         uint16_t mapped = mapGlfwKey(key);
@@ -273,14 +316,6 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     }
 
     snapViewport();
-
-    // Shift+PageUp/Down/Home/End for scrollback
-    if (shift && !g_mouse_tracking && !g_alt_screen) {
-        if (key == GLFW_KEY_PAGE_UP)   { attyx_scroll_viewport(g_rows); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_PAGE_DOWN) { attyx_scroll_viewport(-g_rows); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_HOME)      { g_viewport_offset = g_scrollback_count; attyx_mark_all_dirty(); g_suppress_char = 1; return; }
-        if (key == GLFW_KEY_END)       { g_viewport_offset = 0; attyx_mark_all_dirty(); g_suppress_char = 1; return; }
-    }
 
     // Map special keys through the encoder
     uint16_t mapped = mapGlfwKey(key);

@@ -52,11 +52,15 @@ export fn attyx_overlay_enter() void {}
 
 // Popup terminal stubs (ui2.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
-export var g_popup_hotkey_count: i32 = 0;
-export var g_popup_hotkey_letters: [4]u8 = .{ 0, 0, 0, 0 };
 export fn attyx_popup_toggle(_: c_int) void {}
 export fn attyx_popup_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_popup_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
+
+// Keybind stubs (keybinds.zig provides real implementations)
+export fn attyx_keybind_match(_: u16, _: u8, _: u32) u8 { return 0; }
+var _seq_stub: u8 = 0;
+export var g_keybind_matched_seq: [*]const u8 = @ptrCast(&_seq_stub);
+export var g_keybind_matched_seq_len: c_int = 0;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

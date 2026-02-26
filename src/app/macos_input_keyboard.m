@@ -56,39 +56,88 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     return m;
 }
 
-// Map lowercase letter ('a'-'z') to macOS virtual keycode
-static unsigned short letterToVK(char letter) {
-    // macOS virtual keycodes for A-Z (not alphabetical!)
-    static const unsigned short vk_map[26] = {
-        0x00, // A
-        0x0B, // B
-        0x08, // C
-        0x02, // D
-        0x0E, // E
-        0x03, // F
-        0x05, // G
-        0x04, // H
-        0x22, // I
-        0x26, // J
-        0x28, // K
-        0x25, // L
-        0x2E, // M
-        0x2D, // N
-        0x1F, // O
-        0x23, // P
-        0x0C, // Q
-        0x0F, // R
-        0x01, // S
-        0x11, // T
-        0x20, // U
-        0x09, // V
-        0x0D, // W
-        0x07, // X
-        0x10, // Y
-        0x06, // Z
-    };
-    if (letter >= 'a' && letter <= 'z') return vk_map[letter - 'a'];
-    return UINT16_MAX;
+// ---------------------------------------------------------------------------
+// Keybind dispatch — returns 1 if handled, 0 if the key should pass through
+// ---------------------------------------------------------------------------
+
+static int dispatchAction(uint8_t action) {
+    if (action >= ATTYX_ACTION_POPUP_TOGGLE_0 &&
+        action < ATTYX_ACTION_POPUP_TOGGLE_0 + ATTYX_POPUP_MAX) {
+        attyx_popup_toggle(action - ATTYX_ACTION_POPUP_TOGGLE_0);
+        return 1;
+    }
+    switch (action) {
+        case ATTYX_ACTION_SEARCH_TOGGLE:
+            if (g_nativeSearchBar) [g_nativeSearchBar toggle];
+            return 1;
+        case ATTYX_ACTION_SEARCH_NEXT:
+            if (g_search_active) {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
+                attyx_mark_all_dirty();
+            }
+            return 1;
+        case ATTYX_ACTION_SEARCH_PREV:
+            if (g_search_active) {
+                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
+                attyx_mark_all_dirty();
+            }
+            return 1;
+        case ATTYX_ACTION_SCROLL_PAGE_UP:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            attyx_scroll_viewport(g_rows);
+            return 1;
+        case ATTYX_ACTION_SCROLL_PAGE_DOWN:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            attyx_scroll_viewport(-g_rows);
+            return 1;
+        case ATTYX_ACTION_SCROLL_TO_TOP:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            g_viewport_offset = g_scrollback_count;
+            attyx_mark_all_dirty();
+            return 1;
+        case ATTYX_ACTION_SCROLL_TO_BOTTOM:
+            if (g_mouse_tracking || g_alt_screen) return 0;
+            g_viewport_offset = 0;
+            attyx_mark_all_dirty();
+            return 1;
+        case ATTYX_ACTION_CONFIG_RELOAD:
+            attyx_trigger_config_reload();
+            return 1;
+        case ATTYX_ACTION_DEBUG_TOGGLE:
+            attyx_toggle_debug_overlay();
+            return 1;
+        case ATTYX_ACTION_ANCHOR_DEMO:
+            attyx_toggle_anchor_demo();
+            return 1;
+        case ATTYX_ACTION_NEW_WINDOW:
+            attyx_spawn_new_window();
+            return 1;
+        case ATTYX_ACTION_CLOSE_WINDOW:
+            [NSApp.keyWindow close];
+            return 1;
+        case ATTYX_ACTION_SEND_SEQUENCE:
+            if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
+                void (*send_fn)(const uint8_t*, int) =
+                    g_popup_active ? attyx_popup_send_input : attyx_send_input;
+                send_fn(g_keybind_matched_seq, g_keybind_matched_seq_len);
+            }
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// Build key + codepoint for keybind matching from an NSEvent.
+static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
+    uint16_t mapped = mapKeyCode(event.keyCode);
+    if (mapped != UINT16_MAX) {
+        *outKey = mapped;
+        *outCp = 0;
+    } else {
+        NSString* chars = event.charactersIgnoringModifiers;
+        *outKey = KC_CODEPOINT;
+        *outCp = (chars.length > 0) ? [chars characterAtIndex:0] : 0;
+    }
 }
 
 @implementation AttyxView (Keyboard)
@@ -132,12 +181,7 @@ static unsigned short letterToVK(char letter) {
     BOOL shift = (flags & NSEventModifierFlagShift) != 0;
     BOOL cmd   = (flags & NSEventModifierFlagCommand) != 0;
 
-    if (cmd) {
-        [super keyDown:event];
-        return YES;
-    }
-
-    // Overlay interaction keys (only when overlay has actions)
+    // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
         unsigned short kc = event.keyCode;
         if (kc == kVK_Escape) {
@@ -154,43 +198,21 @@ static unsigned short letterToVK(char letter) {
         }
     }
 
-    // Shift+PageUp/Down/Home/End for scrollback navigation (UI-level, not sent to PTY)
-    if (shift && !g_mouse_tracking && !g_alt_screen) {
-        unsigned short kc = event.keyCode;
-        if (kc == kVK_PageUp)   { attyx_scroll_viewport(g_rows); return YES; }
-        if (kc == kVK_PageDown) { attyx_scroll_viewport(-g_rows); return YES; }
-        if (kc == kVK_Home)     { g_viewport_offset = g_scrollback_count; attyx_mark_all_dirty(); return YES; }
-        if (kc == kVK_End)      { g_viewport_offset = 0; attyx_mark_all_dirty(); return YES; }
+    // Configurable keybind match (covers all user-bindable actions:
+    // hotkeys, scrollback, popups, sequences, etc.)
+    {
+        uint16_t matchKey; uint32_t matchCp;
+        eventToKeyCombo(event, &matchKey, &matchCp);
+        uint8_t mods = buildMods(flags);
+        uint8_t action = attyx_keybind_match(matchKey, mods, matchCp);
+        if (action != ATTYX_ACTION_NONE && dispatchAction(action))
+            return YES;
     }
 
-    // Ctrl+Shift+R → reload config (intercept before generic key handling)
-    if (ctrl && shift && event.keyCode == 0x0F /* kVK_ANSI_R */) {
-        attyx_trigger_config_reload();
+    // Cmd with no keybind match: forward to system menu (Cmd+Q, Cmd+H, etc.)
+    if (cmd) {
+        [super keyDown:event];
         return YES;
-    }
-
-    // Ctrl+Shift+D → toggle debug overlay
-    if (ctrl && shift && event.keyCode == 0x02 /* kVK_ANSI_D */) {
-        attyx_toggle_debug_overlay();
-        return YES;
-    }
-
-    // Ctrl+Shift+A → toggle anchor demo overlay
-    if (ctrl && shift && event.keyCode == 0x00 /* kVK_ANSI_A */) {
-        attyx_toggle_anchor_demo();
-        return YES;
-    }
-
-    // Popup hotkeys (Ctrl+Shift+<letter>)
-    if (ctrl && shift) {
-        for (int i = 0; i < g_popup_hotkey_count; i++) {
-            char letter = g_popup_hotkey_letters[i];
-            unsigned short vk = letterToVK(letter);
-            if (vk != UINT16_MAX && event.keyCode == vk) {
-                attyx_popup_toggle(i);
-                return YES;
-            }
-        }
     }
 
     unsigned short kc = event.keyCode;
@@ -222,35 +244,17 @@ static unsigned short letterToVK(char letter) {
 }
 
 - (void)keyDown:(NSEvent *)event {
-    NSEventModifierFlags flags = event.modifierFlags;
-    BOOL cmd   = (flags & NSEventModifierFlagCommand) != 0;
-    BOOL shift = (flags & NSEventModifierFlagShift) != 0;
-    unsigned short kc = event.keyCode;
-
-    if (cmd && kc == 3 /* kVK_F */) {
-        if (g_nativeSearchBar) [g_nativeSearchBar toggle];
-        return;
-    }
-
-    if (cmd && kc == 5 /* kVK_G */ && g_search_active) {
-        if (shift) {
-            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
-        } else {
-            __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
-        }
-        attyx_mark_all_dirty();
-        return;
-    }
-
-    // When popup is active, route ALL input to popup (except Cmd and popup hotkeys)
+    // When popup is active, route ALL input to popup (except keybinds)
     if (g_popup_active) {
-        if ([self handleSpecialKey:event]) return;  // hotkeys checked first
-        // Route text input to popup
+        if ([self handleSpecialKey:event]) return;
         [self interpretKeyEvents:@[event]];
         return;
     }
 
     [self snapViewportAndClearSelection];
+
+    NSEventModifierFlags flags = event.modifierFlags;
+    BOOL cmd = (flags & NSEventModifierFlagCommand) != 0;
 
     if ([self hasMarkedText]) {
         if (cmd) {
