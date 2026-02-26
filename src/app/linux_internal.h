@@ -225,6 +225,14 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 }
 
 // ---------------------------------------------------------------------------
+// GL state (linux_render.c — used by overlay/popup draw passes)
+// ---------------------------------------------------------------------------
+
+extern GLuint g_solid_prog, g_text_prog;
+extern GLint  g_vp_loc_solid, g_vp_loc_text, g_tex_loc;
+extern GLuint g_vao, g_vbo;
+
+// ---------------------------------------------------------------------------
 // GL helpers (linux_render.c)
 // ---------------------------------------------------------------------------
 
