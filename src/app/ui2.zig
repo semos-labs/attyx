@@ -24,6 +24,7 @@ const overlay_layout = attyx.overlay_layout;
 const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
+const keybinds_mod = @import("../config/keybinds.zig");
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -136,9 +137,14 @@ export fn attyx_overlay_enter() void {
 // Popup terminal globals and exports
 // ---------------------------------------------------------------------------
 export var g_popup_active: i32 = 0;
-export var g_popup_hotkey_count: i32 = 0;
-export var g_popup_hotkey_letters: [4]u8 = .{ 0, 0, 0, 0 };
 var g_popup_toggle_request: [4]i32 = .{ 0, 0, 0, 0 };
+
+// Ensure keybind exports (attyx_keybind_match, g_keybind_matched_seq*) are linked
+comptime {
+    _ = &keybinds_mod.attyx_keybind_match;
+    _ = &keybinds_mod.g_keybind_matched_seq;
+    _ = &keybinds_mod.g_keybind_matched_seq_len;
+}
 var g_popup_pty_master: posix.fd_t = -1; // popup PTY fd for input routing
 var g_popup_engine: ?*Engine = null; // popup engine for key encoding
 
@@ -358,30 +364,35 @@ pub fn run(
     var overlay_mgr = OverlayManager.init(allocator);
     defer overlay_mgr.deinit();
 
-    // Parse popup configs
+    // Parse popup configs and build keybind table
     var popup_configs: [4]popup_mod.PopupConfig = undefined;
     var popup_config_count: u8 = 0;
+    var popup_hotkeys: [4]keybinds_mod.PopupHotkey = undefined;
     if (config.popup_configs) |entries| {
         for (entries) |entry| {
             if (popup_config_count >= 4) break;
-            const letter = popup_mod.parseHotkeyLetter(entry.hotkey) orelse continue;
             popup_configs[popup_config_count] = .{
-                .hotkey_letter = letter,
                 .command = entry.command,
                 .width_pct = popup_mod.parsePct(entry.width, 80),
                 .height_pct = popup_mod.parsePct(entry.height, 80),
                 .border_style = popup_mod.parseBorderStyle(entry.border),
                 .border_fg = popup_mod.parseHexColor(entry.border_color, .{ 120, 130, 150 }),
             };
+            popup_hotkeys[popup_config_count] = .{
+                .index = popup_config_count,
+                .hotkey = entry.hotkey,
+            };
             popup_config_count += 1;
         }
     }
-    // Publish hotkey letters to bridge globals
-    g_popup_hotkey_count = @intCast(popup_config_count);
-    for (0..popup_config_count) |i| {
-        g_popup_hotkey_letters[i] = popup_configs[i].hotkey_letter;
-    }
+    const kb_table = keybinds_mod.buildTable(
+        config.keybind_overrides,
+        config.sequence_entries,
+        popup_hotkeys[0..popup_config_count],
+    );
+    keybinds_mod.installTable(&kb_table);
     logging.info("popup", "configured {d} popup(s)", .{popup_config_count});
+    logging.info("keybinds", "installed {d} keybind(s)", .{kb_table.count});
 
     var ctx = PtyThreadCtx{
         .engine = &engine,
@@ -1203,6 +1214,26 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
     // Theme — re-resolve and republish
     ctx.active_theme = ctx.theme_registry.resolve(new_cfg.theme_name);
     publishTheme(&ctx.active_theme);
+
+    // Keybindings — always rebuild (cheap, no diff needed)
+    {
+        var ph: [4]keybinds_mod.PopupHotkey = undefined;
+        var ph_count: u8 = 0;
+        if (new_cfg.popup_configs) |entries| {
+            for (entries) |entry| {
+                if (ph_count >= 4) break;
+                ph[ph_count] = .{ .index = ph_count, .hotkey = entry.hotkey };
+                ph_count += 1;
+            }
+        }
+        const new_table = keybinds_mod.buildTable(
+            new_cfg.keybind_overrides,
+            new_cfg.sequence_entries,
+            ph[0..ph_count],
+        );
+        keybinds_mod.installTable(&new_table);
+        logging.info("keybinds", "reloaded {d} keybind(s)", .{new_table.count});
+    }
 
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});

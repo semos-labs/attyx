@@ -306,9 +306,36 @@ extern AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
 extern volatile uint32_t g_popup_gen;
 extern volatile int      g_popup_active;   // 1 = popup visible, input routed there
 
-// Hotkeys: letters for ctrl+shift+<letter> combos
-extern volatile int  g_popup_hotkey_count;
-extern char          g_popup_hotkey_letters[ATTYX_POPUP_MAX]; // 'a'-'z'
+// ---------------------------------------------------------------------------
+// Configurable keybindings (implemented in Zig keybinds.zig)
+// ---------------------------------------------------------------------------
+
+// Action constants (must match Action enum in keybinds.zig)
+#define ATTYX_ACTION_NONE              0
+#define ATTYX_ACTION_COPY              1
+#define ATTYX_ACTION_PASTE             2
+#define ATTYX_ACTION_SEARCH_TOGGLE     3
+#define ATTYX_ACTION_SEARCH_NEXT       4
+#define ATTYX_ACTION_SEARCH_PREV       5
+#define ATTYX_ACTION_SCROLL_PAGE_UP    6
+#define ATTYX_ACTION_SCROLL_PAGE_DOWN  7
+#define ATTYX_ACTION_SCROLL_TO_TOP     8
+#define ATTYX_ACTION_SCROLL_TO_BOTTOM  9
+#define ATTYX_ACTION_CONFIG_RELOAD    10
+#define ATTYX_ACTION_DEBUG_TOGGLE     11
+#define ATTYX_ACTION_ANCHOR_DEMO      12
+#define ATTYX_ACTION_NEW_WINDOW       13
+#define ATTYX_ACTION_CLOSE_WINDOW     14
+#define ATTYX_ACTION_POPUP_TOGGLE_0   15
+#define ATTYX_ACTION_SEND_SEQUENCE    47
+
+// Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
+// g_keybind_matched_seq/len are set before returning.
+uint8_t attyx_keybind_match(uint16_t key, uint8_t mods, uint32_t codepoint);
+
+// Sequence result (valid after attyx_keybind_match returns SEND_SEQUENCE)
+extern const uint8_t* g_keybind_matched_seq;
+extern volatile int    g_keybind_matched_seq_len;
 
 // Input routing (called from input thread when g_popup_active)
 void attyx_popup_send_input(const uint8_t* bytes, int len);
