@@ -6,3 +6,4 @@ package-lock.json
 .env
 cert
 zig-out/
+*.app

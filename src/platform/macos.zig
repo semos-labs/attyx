@@ -55,8 +55,6 @@ extern "c" fn proc_pidinfo(
     buffersize: c_int,
 ) c_int;
 
-extern "c" fn proc_pidpath(pid: c_int, buffer: *anyopaque, buffersize: u32) c_int;
-
 /// Look up a process's CWD by PID using Darwin proc_pidinfo.
 /// Returns an allocator-owned slice, or null on failure.
 pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const u8 {
@@ -75,16 +73,6 @@ pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const
     if (len == 0) return null;
 
     return allocator.dupe(u8, path_bytes[0..len]) catch null;
-}
-
-/// Look up a process's executable path by PID using Darwin proc_pidpath.
-pub fn getProcessExePath(pid: std.posix.pid_t, buf: []u8) ?[]const u8 {
-    if (buf.len < 2) return null;
-    const ret = proc_pidpath(@intCast(pid), @ptrCast(buf.ptr), @intCast(buf.len));
-    if (ret <= 0) return null;
-    const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
-    if (len == 0) return null;
-    return buf[0..len];
 }
 
 /// Return the foreground process group PID on the given PTY master fd.

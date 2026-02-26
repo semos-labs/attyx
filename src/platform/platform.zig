@@ -15,10 +15,32 @@ pub const O_NONBLOCK = impl.O_NONBLOCK;
 pub const ConfigPaths = impl.ConfigPaths;
 pub const getConfigPaths = impl.getConfigPaths;
 
-/// Query the active pane CWD from a running tmux instance.
-/// `tmux_bin` is the full path to the tmux binary (avoids PATH issues).
-/// Returns allocator-owned path, or null on any failure.
-fn getTmuxClientPaneCwd(allocator: std.mem.Allocator, tmux_bin: [:0]const u8, fg_pid: std.posix.pid_t) ?[]const u8 {
+extern "c" fn tcgetsid(fd: c_int) std.posix.pid_t;
+extern "c" fn getsid(pid: std.posix.pid_t) std.posix.pid_t;
+
+/// Well-known tmux binary locations (Homebrew Apple Silicon, Homebrew Intel,
+/// system, MacPorts). Checked in order so we don't depend on PATH.
+const tmux_search_paths = [_][:0]const u8{
+    "/opt/homebrew/bin/tmux",
+    "/usr/local/bin/tmux",
+    "/usr/bin/tmux",
+    "/opt/local/bin/tmux",
+};
+
+/// Find a tmux binary on disk.
+fn findTmuxBinary() ?[:0]const u8 {
+    for (&tmux_search_paths) |p| {
+        const f = std.fs.openFileAbsolute(p, .{}) catch continue;
+        f.close();
+        return p;
+    }
+    return null;
+}
+
+/// Query tmux for the pane CWD of a client running in our PTY session.
+/// Uses `list-clients` and matches by session ID so we only pick up the
+/// tmux instance running inside Attyx, ignoring unrelated tmux servers.
+fn getTmuxPaneCwdForSession(allocator: std.mem.Allocator, tmux_bin: [:0]const u8, our_sid: std.posix.pid_t) ?[]const u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{ tmux_bin, "list-clients", "-F", "#{client_pid}:#{pane_current_path}" },
@@ -31,16 +53,17 @@ fn getTmuxClientPaneCwd(allocator: std.mem.Allocator, tmux_bin: [:0]const u8, fg
         else => return null,
     }
 
-    // Format: "<pid>:<path>\n" per client. Find the line matching fg_pid.
-    var pid_buf: [20]u8 = undefined;
-    const pid_str = std.fmt.bufPrint(&pid_buf, "{d}:", .{fg_pid}) catch return null;
-
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, pid_str)) {
-            const path = line[pid_str.len..];
-            if (path.len == 0) return null;
-            logging.debug("cwd", "tmux client pid {d} pane cwd: {s}", .{ fg_pid, path });
+        const sep = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const pid_str = line[0..sep];
+        const path = line[sep + 1..];
+        if (path.len == 0) continue;
+
+        const client_pid = std.fmt.parseInt(std.posix.pid_t, pid_str, 10) catch continue;
+        const client_sid = getsid(client_pid);
+        if (client_sid == our_sid) {
+            logging.info("cwd", "tmux client pid {d} in our session, pane cwd: {s}", .{ client_pid, path });
             return allocator.dupe(u8, path) catch null;
         }
     }
@@ -48,21 +71,17 @@ fn getTmuxClientPaneCwd(allocator: std.mem.Allocator, tmux_bin: [:0]const u8, fg
     return null;
 }
 
-/// Query the foreground process's CWD. If the foreground process is a tmux
-/// client, resolves that client's active pane CWD using the tmux binary found
-/// via the process's own exe path (avoids PATH lookup issues when Attyx is
-/// launched as a standalone app). Falls back to a direct pid-to-cwd lookup.
+/// Query the foreground process's CWD. First checks if a tmux client is
+/// running inside our PTY session and resolves the active pane's CWD.
+/// Falls back to a direct pid-to-cwd lookup for plain shells.
 pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
     const fg_pid = impl.getPtyForegroundPid(master_fd) orelse return null;
 
-    // If the foreground process is tmux, use its exe path to run list-clients.
-    var exe_buf: [1024]u8 = undefined;
-    if (impl.getProcessExePath(fg_pid, &exe_buf)) |exe_path| {
-        const basename = std.fs.path.basename(exe_path);
-        if (std.mem.eql(u8, basename, "tmux")) tmux: {
-            const tmux_z = allocator.dupeZ(u8, exe_path) catch break :tmux;
-            defer allocator.free(tmux_z);
-            if (getTmuxClientPaneCwd(allocator, tmux_z, fg_pid)) |cwd| return cwd;
+    // Scope tmux lookup to our PTY session only.
+    const our_sid = tcgetsid(master_fd);
+    if (our_sid > 0) {
+        if (findTmuxBinary()) |tmux_bin| {
+            if (getTmuxPaneCwdForSession(allocator, tmux_bin, our_sid)) |cwd| return cwd;
         }
     }
 

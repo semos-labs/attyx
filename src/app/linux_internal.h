@@ -111,11 +111,18 @@ extern volatile int g_detected_url_end_col;
 // Row-level dirty bitset
 extern volatile uint64_t g_dirty[4];
 
+// Context menu items
+#define CTX_MENU_ITEM_COPY          0
+#define CTX_MENU_ITEM_PASTE         1
+#define CTX_MENU_ITEM_SEPARATOR     2
+#define CTX_MENU_ITEM_RELOAD_CONFIG 3
+#define CTX_MENU_ITEM_COUNT         4
+
 // Context menu state (main thread only; right-click when mouse tracking is off)
 extern int   g_ctx_menu_open;   // 1 = menu is visible
 extern float g_ctx_menu_x;     // pixel X of menu top-left (grid coords)
 extern float g_ctx_menu_y;     // pixel Y of menu top-left (grid coords)
-extern int   g_ctx_menu_hover;  // hovered item index (-1 = none, 0 = "Reload Config")
+extern int   g_ctx_menu_hover;  // hovered item index (-1 = none)
 
 // Pending resize
 extern volatile int g_pending_resize_rows;
@@ -268,6 +275,8 @@ int utf8Encode(uint32_t cp, uint8_t* buf);
 // ---------------------------------------------------------------------------
 
 void doCopy(void);
+void clipboardCopy(const char* text);
+const char* clipboardPaste(void);
 
 // ---------------------------------------------------------------------------
 // Selection helpers (linux_render.c — also needed by input)
