@@ -51,6 +51,17 @@ pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const
     return allocator.dupe(u8, target) catch null;
 }
 
+/// Look up a process's executable path by PID using /proc/<pid>/exe.
+pub fn getProcessExePath(pid: std.posix.pid_t, buf: []u8) ?[]const u8 {
+    var link_buf: [64:0]u8 = undefined;
+    const link = std.fmt.bufPrintZ(&link_buf, "/proc/{d}/exe", .{pid}) catch return null;
+    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = std.posix.readlinkZ(link, &readlink_buf) catch return null;
+    if (target.len == 0 or target.len > buf.len) return null;
+    @memcpy(buf[0..target.len], target);
+    return buf[0..target.len];
+}
+
 /// Return the foreground process group PID on the given PTY master fd.
 pub fn getPtyForegroundPid(master_fd: std.posix.fd_t) ?std.posix.pid_t {
     const pid = tcgetpgrp(master_fd);
