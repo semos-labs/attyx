@@ -1304,11 +1304,15 @@ fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme) 
     const cols = eng.state.grid.cols;
     const rows = eng.state.grid.rows;
     const sb = &eng.state.scrollback;
+    const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
 
     if (vp == 0) {
         const total = rows * cols;
         for (0..total) |i| {
             cells[i] = cellToAttyxCell(eng.state.grid.cells[i], theme);
+        }
+        for (0..rows) |row| {
+            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[row]);
         }
         return;
     }
@@ -1321,11 +1325,13 @@ fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme) 
             for (0..cols) |col| {
                 cells[row * cols + col] = cellToAttyxCell(sb_cells[col], theme);
             }
+            wrapped[row] = @intFromBool(sb.getLineWrapped(sb_line_idx));
         } else {
             const grid_row = row - effective_vp;
             for (0..cols) |col| {
                 cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col], theme);
             }
+            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[grid_row]);
         }
     }
 }
