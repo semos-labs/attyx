@@ -24,7 +24,11 @@
 
     const char* utf8 = [text UTF8String];
     if (utf8 && strlen(utf8) > 0) {
-        attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+        if (g_popup_active) {
+            attyx_popup_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+        } else {
+            attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+        }
     }
 }
 

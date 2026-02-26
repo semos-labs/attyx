@@ -279,6 +279,37 @@ void attyx_overlay_tab(void);
 void attyx_overlay_enter(void);
 
 // ---------------------------------------------------------------------------
+// Popup terminal (written by PTY thread, read by renderer)
+// ---------------------------------------------------------------------------
+
+#define ATTYX_POPUP_MAX_CELLS 16384
+#define ATTYX_POPUP_MAX 4
+
+typedef struct {
+    int active;
+    int col, row;               // grid position (top-left of border)
+    int width, height;          // total dims including border
+    int inner_cols, inner_rows; // terminal grid inside popup
+    int cursor_row, cursor_col;
+    int cursor_visible;
+    int cursor_shape;
+} AttyxPopupDesc;
+
+extern AttyxPopupDesc    g_popup_desc;
+extern AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
+extern volatile uint32_t g_popup_gen;
+extern volatile int      g_popup_active;   // 1 = popup visible, input routed there
+
+// Hotkeys: letters for ctrl+shift+<letter> combos
+extern volatile int  g_popup_hotkey_count;
+extern char          g_popup_hotkey_letters[ATTYX_POPUP_MAX]; // 'a'-'z'
+
+// Input routing (called from input thread when g_popup_active)
+void attyx_popup_send_input(const uint8_t* bytes, int len);
+void attyx_popup_handle_key(uint16_t key, uint8_t mods, uint8_t event_type, uint32_t codepoint);
+void attyx_popup_toggle(int index);
+
+// ---------------------------------------------------------------------------
 // Logging bridge (implemented in ui2.zig / main.zig stub)
 // ---------------------------------------------------------------------------
 

@@ -61,6 +61,15 @@ pub const CellSize = union(enum) {
     }
 };
 
+pub const PopupConfigEntry = struct {
+    hotkey: []const u8, // "ctrl+shift+g"
+    command: []const u8, // "lazygit"
+    width: []const u8, // "80%"
+    height: []const u8, // "80%"
+    border: []const u8, // "single", "double", "rounded", "heavy", "none"
+    border_color: []const u8, // "#RRGGBB" hex string
+};
+
 /// Merged application configuration. Precedence: Defaults < ConfigFile < CLI flags.
 pub const AppConfig = struct {
     // [font]
@@ -103,6 +112,10 @@ pub const AppConfig = struct {
     log_level: ?[]const u8 = null,
     log_file: ?[]const u8 = null,
 
+    // [[popup]]
+    popup_configs: ?[]PopupConfigEntry = null,
+    _owned_popup_configs: ?[]PopupConfigEntry = null,
+
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
     cols: u16 = 80,
@@ -133,6 +146,17 @@ pub const AppConfig = struct {
         }
         if (self._owned_log_level) |s| alloc.free(s);
         if (self._owned_log_file)  |s| alloc.free(s);
+        if (self._owned_popup_configs) |entries| {
+            for (entries) |e| {
+                alloc.free(e.hotkey);
+                alloc.free(e.command);
+                alloc.free(e.width);
+                alloc.free(e.height);
+                alloc.free(e.border);
+                alloc.free(e.border_color);
+            }
+            alloc.free(entries);
+        }
     }
 
     fn formatCellSize(cs: CellSize, buf: *[32]u8) []const u8 {
@@ -571,6 +595,54 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
         }
     }
 
+    // [[popup]]
+    if (root.get("popup")) |popup_val| {
+        if (popup_val == .array) {
+            const arr = popup_val.array.items;
+            const count = @min(arr.len, @as(usize, 4)); // max 4 popups
+            if (count > 0) {
+                const entries = try allocator.alloc(PopupConfigEntry, count);
+                var valid: usize = 0;
+                for (arr[0..count]) |item| {
+                    if (item != .table) continue;
+                    const hotkey_v = item.table.get("hotkey") orelse continue;
+                    const cmd_v = item.table.get("command") orelse continue;
+                    if (hotkey_v != .string or cmd_v != .string) continue;
+                    const width_v = item.table.get("width");
+                    const height_v = item.table.get("height");
+                    const border_v = item.table.get("border");
+                    const border_color_v = item.table.get("border_color");
+                    entries[valid] = .{
+                        .hotkey = try allocator.dupe(u8, hotkey_v.string),
+                        .command = try allocator.dupe(u8, cmd_v.string),
+                        .width = if (width_v != null and width_v.? == .string) try allocator.dupe(u8, width_v.?.string) else try allocator.dupe(u8, "80%"),
+                        .height = if (height_v != null and height_v.? == .string) try allocator.dupe(u8, height_v.?.string) else try allocator.dupe(u8, "80%"),
+                        .border = if (border_v != null and border_v.? == .string) try allocator.dupe(u8, border_v.?.string) else try allocator.dupe(u8, "single"),
+                        .border_color = if (border_color_v != null and border_color_v.? == .string) try allocator.dupe(u8, border_color_v.?.string) else try allocator.dupe(u8, "#78829a"),
+                    };
+                    valid += 1;
+                }
+                if (valid > 0) {
+                    if (config._owned_popup_configs) |old| {
+                        for (old) |e| {
+                            allocator.free(e.hotkey);
+                            allocator.free(e.command);
+                            allocator.free(e.width);
+                            allocator.free(e.height);
+                            allocator.free(e.border);
+                            allocator.free(e.border_color);
+                        }
+                        allocator.free(old);
+                    }
+                    config.popup_configs = entries[0..valid];
+                    config._owned_popup_configs = entries;
+                } else {
+                    allocator.free(entries);
+                }
+            }
+        }
+    }
+
     config._allocator = allocator;
 }
 
@@ -632,4 +704,39 @@ test "invalid cursor.shape rejects" {
     ;
 
     try std.testing.expectError(error.ConfigValidationError, applyToml(alloc, toml_str, "<test>", &cfg));
+}
+
+test "parse popup config" {
+    const alloc = std.testing.allocator;
+    var cfg = AppConfig{};
+    defer cfg.deinit();
+
+    const toml_str =
+        \\[[popup]]
+        \\hotkey = "ctrl+shift+g"
+        \\command = "lazygit"
+        \\width = "80%"
+        \\height = "80%"
+        \\
+        \\[[popup]]
+        \\hotkey = "ctrl+shift+t"
+        \\command = "htop"
+        \\width = "60%"
+        \\height = "60%"
+    ;
+
+    try applyToml(alloc, toml_str, "<test>", &cfg);
+
+    const entries = cfg.popup_configs orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), entries.len);
+    try std.testing.expectEqualStrings("ctrl+shift+g", entries[0].hotkey);
+    try std.testing.expectEqualStrings("lazygit", entries[0].command);
+    try std.testing.expectEqualStrings("80%", entries[0].width);
+    try std.testing.expectEqualStrings("single", entries[0].border);
+    try std.testing.expectEqualStrings("#78829a", entries[0].border_color);
+    try std.testing.expectEqualStrings("ctrl+shift+t", entries[1].hotkey);
+    try std.testing.expectEqualStrings("htop", entries[1].command);
+    try std.testing.expectEqualStrings("60%", entries[1].height);
+    try std.testing.expectEqualStrings("single", entries[1].border);
+    try std.testing.expectEqualStrings("#78829a", entries[1].border_color);
 }

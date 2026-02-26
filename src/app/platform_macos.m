@@ -104,6 +104,11 @@ AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY_MAX_CE
 volatile int      g_overlay_count = 0;
 volatile uint32_t g_overlay_gen   = 0;
 
+// Popup terminal
+AttyxPopupDesc    g_popup_desc;
+AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
+volatile uint32_t g_popup_gen    = 0;
+
 // ---------------------------------------------------------------------------
 // Bridge function implementations
 // ---------------------------------------------------------------------------

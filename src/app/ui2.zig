@@ -23,6 +23,7 @@ const overlay_mod = attyx.overlay_mod;
 const overlay_layout = attyx.overlay_layout;
 const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
+const popup_mod = @import("popup.zig");
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -54,6 +55,10 @@ const PtyThreadCtx = struct {
     sync_start_ns: i128 = 0,
     // Overlay system
     overlay_mgr: ?*OverlayManager = null,
+    // Popup terminal
+    popup_state: ?*popup_mod.PopupState = null,
+    popup_configs: [4]popup_mod.PopupConfig = undefined,
+    popup_config_count: u8 = 0,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -125,6 +130,55 @@ export fn attyx_overlay_tab() void {
 }
 export fn attyx_overlay_enter() void {
     @atomicStore(i32, &g_overlay_activate, 1, .seq_cst);
+}
+
+// ---------------------------------------------------------------------------
+// Popup terminal globals and exports
+// ---------------------------------------------------------------------------
+export var g_popup_active: i32 = 0;
+export var g_popup_hotkey_count: i32 = 0;
+export var g_popup_hotkey_letters: [4]u8 = .{ 0, 0, 0, 0 };
+var g_popup_toggle_request: [4]i32 = .{ 0, 0, 0, 0 };
+var g_popup_pty_master: posix.fd_t = -1; // popup PTY fd for input routing
+var g_popup_engine: ?*Engine = null; // popup engine for key encoding
+
+export fn attyx_popup_toggle(index: c_int) void {
+    if (index < 0 or index >= 4) return;
+    logging.info("popup", "toggle request: index={d}", .{index});
+    @atomicStore(i32, &g_popup_toggle_request[@intCast(@as(c_uint, @bitCast(index)))], 1, .seq_cst);
+}
+
+export fn attyx_popup_send_input(bytes: [*]const u8, len: c_int) void {
+    const fd = g_popup_pty_master;
+    if (fd < 0 or len <= 0) return;
+    const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
+    _ = posix.write(fd, data) catch {};
+}
+
+export fn attyx_popup_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: u32) void {
+    const fd = g_popup_pty_master;
+    if (fd < 0) return;
+    const eng = g_popup_engine orelse return;
+    const key_encode = attyx.key_encode;
+
+    const key: key_encode.KeyCode = std.meta.intToEnum(key_encode.KeyCode, key_raw) catch return;
+    const mods: key_encode.Modifiers = @bitCast(mods_raw);
+    const event_type: key_encode.EventType = std.meta.intToEnum(key_encode.EventType, event_type_raw) catch return;
+    const cp: u21 = if (codepoint_raw <= 0x10FFFF) @intCast(codepoint_raw) else 0;
+
+    const cursor_keys_app = eng.state.cursor_keys_app;
+    const kitty_flags = eng.state.kittyFlags();
+
+    var buf: [128]u8 = undefined;
+    const encoded = key_encode.encodeKey(
+        .{ .key = key, .mods = mods, .event_type = event_type, .codepoint = cp },
+        .{ .cursor_keys_app = cursor_keys_app, .kitty_flags = kitty_flags },
+        &buf,
+    );
+
+    if (encoded.len > 0) {
+        _ = posix.write(fd, encoded) catch {};
+    }
 }
 
 export fn attyx_trigger_config_reload() void {
@@ -304,6 +358,31 @@ pub fn run(
     var overlay_mgr = OverlayManager.init(allocator);
     defer overlay_mgr.deinit();
 
+    // Parse popup configs
+    var popup_configs: [4]popup_mod.PopupConfig = undefined;
+    var popup_config_count: u8 = 0;
+    if (config.popup_configs) |entries| {
+        for (entries) |entry| {
+            if (popup_config_count >= 4) break;
+            const letter = popup_mod.parseHotkeyLetter(entry.hotkey) orelse continue;
+            popup_configs[popup_config_count] = .{
+                .hotkey_letter = letter,
+                .command = entry.command,
+                .width_pct = popup_mod.parsePct(entry.width, 80),
+                .height_pct = popup_mod.parsePct(entry.height, 80),
+                .border_style = popup_mod.parseBorderStyle(entry.border),
+                .border_fg = popup_mod.parseHexColor(entry.border_color, .{ 120, 130, 150 }),
+            };
+            popup_config_count += 1;
+        }
+    }
+    // Publish hotkey letters to bridge globals
+    g_popup_hotkey_count = @intCast(popup_config_count);
+    for (0..popup_config_count) |i| {
+        g_popup_hotkey_letters[i] = popup_configs[i].hotkey_letter;
+    }
+    logging.info("popup", "configured {d} popup(s)", .{popup_config_count});
+
     var ctx = PtyThreadCtx{
         .engine = &engine,
         .pty = &pty,
@@ -320,6 +399,8 @@ pub fn run(
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
         .overlay_mgr = &overlay_mgr,
+        .popup_configs = popup_configs,
+        .popup_config_count = popup_config_count,
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -850,6 +931,16 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Popup toggle handling
+        processPopupToggle(ctx);
+
+        // Check popup child exit
+        if (ctx.popup_state) |ps| {
+            if (ps.pty.childExited()) {
+                closePopup(ctx);
+            }
+        }
+
         {
             var rr: c_int = 0;
             var rc: c_int = 0;
@@ -889,17 +980,28 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     generateAnchorDemo(ctx);
                 }
                 publishOverlays(ctx);
+                // Resize popup if active
+                if (ctx.popup_state) |ps| {
+                    const cfg = ctx.popup_configs[ps.config_index];
+                    ps.resize(cfg, @intCast(nc), @intCast(nr));
+                    ps.publishCells(&ctx.active_theme, cfg);
+                }
                 c.attyx_end_cell_update();
                 publishState(ctx);
                 last_published_vp = ctx.engine.state.viewport_offset;
             }
         }
 
-        var fds = [_]posix.pollfd{
-            .{ .fd = ctx.pty.master, .events = POLLIN, .revents = 0 },
-        };
+        // Build poll fd array — always include main PTY; add popup PTY if active
+        var fds: [2]posix.pollfd = undefined;
+        var nfds: usize = 1;
+        fds[0] = .{ .fd = ctx.pty.master, .events = POLLIN, .revents = 0 };
+        if (ctx.popup_state) |ps| {
+            fds[1] = .{ .fd = ps.pty.master, .events = POLLIN, .revents = 0 };
+            nfds = 2;
+        }
 
-        _ = posix.poll(&fds, 16) catch break;
+        _ = posix.poll(fds[0..nfds], 16) catch break;
 
         // Drain all immediately available PTY data before doing expensive work.
         var got_data = false;
@@ -921,6 +1023,26 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - t0, std.time.ns_per_ms);
                 if (elapsed_ms > 16) logging.debug("pty", "slow drain: {d}ms ({d} bytes)", .{ elapsed_ms, total_read });
                 ctx.throughput.add(total_read);
+            }
+        }
+
+        // Drain popup PTY data if available
+        var popup_got_data = false;
+        if (ctx.popup_state) |ps| {
+            if (nfds > 1 and fds[1].revents & POLLIN != 0) {
+                while (true) {
+                    const n = ps.pty.read(&buf) catch break;
+                    if (n == 0) break;
+                    popup_got_data = true;
+                    ps.feed(buf[0..n]);
+                }
+            }
+            // Check popup child exit (POLLHUP)
+            if (nfds > 1 and fds[1].revents & POLLHUP != 0) {
+                closePopup(ctx);
+            } else if (popup_got_data) {
+                const pcfg = ctx.popup_configs[ps.config_index];
+                ps.publishCells(&ctx.active_theme, pcfg);
             }
         }
 
@@ -978,6 +1100,52 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             break;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Popup lifecycle helpers (called from PTY thread)
+// ---------------------------------------------------------------------------
+
+fn processPopupToggle(ctx: *PtyThreadCtx) void {
+    for (0..ctx.popup_config_count) |i| {
+        if (@atomicRmw(i32, &g_popup_toggle_request[i], .Xchg, 0, .seq_cst) != 0) {
+            logging.info("popup", "processing toggle for index {d}", .{i});
+            if (ctx.popup_state) |ps| {
+                // If same popup → close; if different → close then open new
+                const same = (ps.config_index == i);
+                closePopup(ctx);
+                if (same) return;
+            }
+            // Open popup i
+            const cfg = ctx.popup_configs[i];
+            logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
+            const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
+            const grid_rows: u16 = @intCast(ctx.engine.state.grid.rows);
+            var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
+            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows) catch |err| {
+                logging.err("popup", "spawn failed: {}", .{err});
+                ctx.allocator.destroy(ps);
+                return;
+            };
+            ps.config_index = @intCast(i);
+            ctx.popup_state = ps;
+            g_popup_pty_master = ps.pty.master;
+            g_popup_engine = ps.engine;
+            @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
+            ps.publishCells(&ctx.active_theme, cfg);
+            return; // handle one toggle per tick
+        }
+    }
+}
+
+fn closePopup(ctx: *PtyThreadCtx) void {
+    const ps = ctx.popup_state orelse return;
+    g_popup_pty_master = -1;
+    g_popup_engine = null;
+    ps.deinit();
+    ctx.allocator.destroy(ps);
+    ctx.popup_state = null;
+    popup_mod.clearBridgeState();
 }
 
 fn doReloadConfig(ctx: *PtyThreadCtx) void {
