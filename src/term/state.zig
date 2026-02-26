@@ -334,7 +334,7 @@ pub const TerminalState = struct {
         if (self.alt_active) return;
         if (self.scroll_top != 0) return;
         const row_cells = self.grid.cells[0..self.grid.cols];
-        self.scrollback.pushLine(row_cells);
+        self.scrollback.pushLine(row_cells, self.grid.row_wrapped[0]);
         if (self.viewport_offset > 0) self.viewport_offset += 1;
     }
 
