@@ -303,14 +303,28 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
-    if (!g_mouse_tracking || !g_mouse_sgr) return;
-    int col, row;
-    mouseCell(event, self, &col, &row);
-    int btn = 2 | mouseModifiers(event.modifierFlags);
-    sendSgrMouse(btn, col, row, YES);
-    _rightDown = YES;
-    _lastMouseCol = col;
-    _lastMouseRow = row;
+    if (g_mouse_tracking && g_mouse_sgr) {
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        int btn = 2 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        _rightDown = YES;
+        _lastMouseCol = col;
+        _lastMouseRow = row;
+        return;
+    }
+
+    // Show native context menu
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@""];
+    [menu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Reload Config" action:@selector(reloadConfig:) keyEquivalent:@""];
+    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+}
+
+- (void)reloadConfig:(id)sender {
+    attyx_trigger_config_reload();
 }
 
 - (void)rightMouseUp:(NSEvent *)event {
