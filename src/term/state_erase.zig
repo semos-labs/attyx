@@ -48,7 +48,7 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
                 if (has_content) {
                     for (0..last_content_row + 1) |r| {
                         const start = r * cols;
-                        self.scrollback.pushLine(self.grid.cells[start .. start + cols]);
+                        self.scrollback.pushLine(self.grid.cells[start .. start + cols], self.grid.row_wrapped[r]);
                     }
                 }
             }

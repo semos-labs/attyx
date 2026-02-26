@@ -326,7 +326,7 @@ test "search: scrollback matches" {
     @memset(&line, Cell{});
     const err_text = "error";
     for (err_text, 0..) |ch, i| line[i] = .{ .char = ch };
-    sb.pushLine(&line);
+    sb.pushLine(&line, false);
 
     s.update("error", &sb, &g);
     try testing.expectEqual(@as(usize, 1), s.matchCount());

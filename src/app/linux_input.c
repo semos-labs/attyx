@@ -794,7 +794,7 @@ void doCopy(void) {
                 }
             }
         }
-        if (row < er) buf[pos++] = '\n';
+        if (row < er && !g_row_wrapped[row]) buf[pos++] = '\n';
     }
 
     buf[pos] = '\0';

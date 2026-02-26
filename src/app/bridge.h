@@ -83,6 +83,10 @@ extern volatile int g_sel_start_row, g_sel_start_col;
 extern volatile int g_sel_end_row, g_sel_end_col;
 extern volatile int g_sel_active;
 
+// Per-row soft-wrap flag (viewport-relative, updated inside seqlock).
+// 1 = row was soft-wrapped (auto-wrap at right edge), 0 = hard newline.
+extern volatile uint8_t g_row_wrapped[ATTYX_MAX_ROWS];
+
 // Kitty keyboard protocol flags (written by PTY thread, read by main thread).
 extern volatile int g_kitty_kbd_flags;
 

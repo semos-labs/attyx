@@ -5,9 +5,9 @@ const scrollback_mod = @import("scrollback.zig");
 const TerminalState = @import("state.zig").TerminalState;
 
 /// Grid.DropHandler callback: pushes a dropped reflow row into scrollback.
-fn onDropRow(ctx_raw: *anyopaque, row_cells: []const grid_mod.Cell) void {
+fn onDropRow(ctx_raw: *anyopaque, row_cells: []const grid_mod.Cell, wrapped: bool) void {
     const self: *TerminalState = @ptrCast(@alignCast(ctx_raw));
-    self.scrollback.pushLine(row_cells);
+    self.scrollback.pushLine(row_cells, wrapped);
 }
 
 fn clampState(self: *TerminalState, rows: usize, cols: usize) void {
@@ -104,7 +104,7 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
         );
         for (0..self.scrollback.count) |i| {
             const old_line = self.scrollback.getLine(i);
-            new_sb.pushLine(old_line);
+            new_sb.pushLine(old_line, self.scrollback.getLineWrapped(i));
         }
         self.scrollback.deinit();
         self.scrollback = new_sb;
