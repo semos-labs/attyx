@@ -61,6 +61,10 @@ pub const CellSize = union(enum) {
     }
 };
 
+const keybinds = @import("keybinds.zig");
+pub const KeybindOverride = keybinds.KeybindOverride;
+pub const SequenceEntry = keybinds.SequenceEntry;
+
 pub const PopupConfigEntry = struct {
     hotkey: []const u8, // "ctrl+shift+g"
     command: []const u8, // "lazygit"
@@ -116,6 +120,14 @@ pub const AppConfig = struct {
     popup_configs: ?[]PopupConfigEntry = null,
     _owned_popup_configs: ?[]PopupConfigEntry = null,
 
+    // [keybindings]
+    keybind_overrides: ?[]KeybindOverride = null,
+    _owned_keybind_overrides: ?[]KeybindOverride = null,
+
+    // [sequences]
+    sequence_entries: ?[]SequenceEntry = null,
+    _owned_sequence_entries: ?[]SequenceEntry = null,
+
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
     cols: u16 = 80,
@@ -154,6 +166,20 @@ pub const AppConfig = struct {
                 alloc.free(e.height);
                 alloc.free(e.border);
                 alloc.free(e.border_color);
+            }
+            alloc.free(entries);
+        }
+        if (self._owned_keybind_overrides) |entries| {
+            for (entries) |e| {
+                alloc.free(e.action_name);
+                alloc.free(e.key_combo);
+            }
+            alloc.free(entries);
+        }
+        if (self._owned_sequence_entries) |entries| {
+            for (entries) |e| {
+                alloc.free(e.key_combo);
+                alloc.free(e.data);
             }
             alloc.free(entries);
         }
@@ -639,6 +665,67 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                 } else {
                     allocator.free(entries);
                 }
+            }
+        }
+    }
+
+    // [keybindings] — table of action_name = "key+combo" pairs
+    if (root.get("keybindings")) |kb_val| {
+        if (kb_val == .table) {
+            var it = kb_val.table.table.iterator();
+            var kb_count: usize = 0;
+            // First pass: count valid entries
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* == .string) kb_count += 1;
+            }
+            if (kb_count > 0) {
+                const entries = try allocator.alloc(KeybindOverride, kb_count);
+                var idx: usize = 0;
+                var it2 = kb_val.table.table.iterator();
+                while (it2.next()) |entry| {
+                    if (entry.value_ptr.* != .string) continue;
+                    entries[idx] = .{
+                        .action_name = try allocator.dupe(u8, entry.key_ptr.*),
+                        .key_combo = try allocator.dupe(u8, entry.value_ptr.string),
+                    };
+                    idx += 1;
+                }
+                if (config._owned_keybind_overrides) |old| {
+                    for (old) |e| { allocator.free(e.action_name); allocator.free(e.key_combo); }
+                    allocator.free(old);
+                }
+                config.keybind_overrides = entries[0..idx];
+                config._owned_keybind_overrides = entries;
+            }
+        }
+    }
+
+    // [sequences] — table of "key+combo" = "escape sequence bytes" pairs
+    if (root.get("sequences")) |seq_val| {
+        if (seq_val == .table) {
+            var it = seq_val.table.table.iterator();
+            var seq_count: usize = 0;
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* == .string) seq_count += 1;
+            }
+            if (seq_count > 0) {
+                const entries = try allocator.alloc(SequenceEntry, seq_count);
+                var idx: usize = 0;
+                var it2 = seq_val.table.table.iterator();
+                while (it2.next()) |entry| {
+                    if (entry.value_ptr.* != .string) continue;
+                    entries[idx] = .{
+                        .key_combo = try allocator.dupe(u8, entry.key_ptr.*),
+                        .data = try allocator.dupe(u8, entry.value_ptr.string),
+                    };
+                    idx += 1;
+                }
+                if (config._owned_sequence_entries) |old| {
+                    for (old) |e| { allocator.free(e.key_combo); allocator.free(e.data); }
+                    allocator.free(old);
+                }
+                config.sequence_entries = entries[0..idx];
+                config._owned_sequence_entries = entries;
             }
         }
     }

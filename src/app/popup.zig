@@ -36,7 +36,6 @@ pub const BorderStyle = enum {
 };
 
 pub const PopupConfig = struct {
-    hotkey_letter: u8, // 'a'-'z'
     command: []const u8, // e.g. "lazygit"
     width_pct: u8, // 1-100
     height_pct: u8, // 1-100
@@ -85,7 +84,7 @@ pub const PopupState = struct {
         return .{
             .engine = engine,
             .pty = pty,
-            .config_index = @intCast(cfg.hotkey_letter),
+            .config_index = 0, // overwritten by caller
             .cols = dims.cols,
             .rows = dims.rows,
             .outer_col = dims.outer_col,
@@ -314,18 +313,6 @@ pub fn parseHexColor(s: []const u8, default: [3]u8) [3]u8 {
     const g = std.fmt.parseInt(u8, s[3..5], 16) catch return default;
     const b = std.fmt.parseInt(u8, s[5..7], 16) catch return default;
     return .{ r, g, b };
-}
-
-/// Parse a hotkey string like "ctrl+shift+g" and return the letter, or null.
-pub fn parseHotkeyLetter(hotkey: []const u8) ?u8 {
-    // Expected format: "ctrl+shift+<letter>"
-    const prefix = "ctrl+shift+";
-    if (hotkey.len != prefix.len + 1) return null;
-    if (!std.mem.eql(u8, hotkey[0..prefix.len], prefix)) return null;
-    const letter = hotkey[prefix.len];
-    if (letter >= 'a' and letter <= 'z') return letter;
-    if (letter >= 'A' and letter <= 'Z') return letter | 0x20; // lowercase
-    return null;
 }
 
 /// Parse a percentage string like "80%" into a u8 (1-100), or return default.
