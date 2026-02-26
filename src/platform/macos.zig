@@ -1,7 +1,6 @@
 // macOS-specific constants and platform behavior.
 
 const std = @import("std");
-
 pub const TIOCSWINSZ: c_ulong = 0x80087467;
 pub const TIOCSCTTY: c_ulong = 0x20007461;
 pub const O_NONBLOCK: usize = 0x0004;
@@ -56,15 +55,12 @@ extern "c" fn proc_pidinfo(
     buffersize: c_int,
 ) c_int;
 
-/// Query the foreground process's cwd from the PTY master fd.
-/// Returns an allocator-owned slice, or null on any failure.
-pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
-    const fg_pid = tcgetpgrp(master_fd);
-    if (fg_pid < 0) return null;
-
+/// Look up a process's CWD by PID using Darwin proc_pidinfo.
+/// Returns an allocator-owned slice, or null on failure.
+pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const u8 {
     var info: ProcVnodePathInfo = undefined;
     const ret = proc_pidinfo(
-        @intCast(fg_pid),
+        @intCast(pid),
         PROC_PIDVNODEPATHINFO,
         0,
         @ptrCast(&info),
@@ -77,6 +73,13 @@ pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t)
     if (len == 0) return null;
 
     return allocator.dupe(u8, path_bytes[0..len]) catch null;
+}
+
+/// Return the foreground process group PID on the given PTY master fd.
+pub fn getPtyForegroundPid(master_fd: std.posix.fd_t) ?std.posix.pid_t {
+    const pid = tcgetpgrp(master_fd);
+    if (pid < 0) return null;
+    return pid;
 }
 
 /// XDG-compatible paths. macOS uses the same XDG scheme as Linux.
