@@ -379,6 +379,15 @@ pub fn run(
                 .height_pct = popup_mod.parsePct(entry.height, 80),
                 .border_style = popup_mod.parseBorderStyle(entry.border),
                 .border_fg = popup_mod.parseHexColor(entry.border_color, .{ 120, 130, 150 }),
+                .pad = popup_mod.parsePadding(
+                    entry.padding,
+                    entry.padding_x,
+                    entry.padding_y,
+                    entry.padding_top,
+                    entry.padding_bottom,
+                    entry.padding_left,
+                    entry.padding_right,
+                ),
             };
             popup_hotkeys[popup_config_count] = .{
                 .index = popup_config_count,
