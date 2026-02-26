@@ -103,6 +103,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .macos) {
         const macos_flags = &.{"-fobjc-arc"};
         exe.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_font.m"),      .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = macos_flags });
@@ -127,6 +128,7 @@ pub fn build(b: *std.Build) void {
     // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
     if (target.result.os.tag == .linux) {
         exe.addCSourceFile(.{ .file = b.path("src/app/platform_linux.c"),    .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_font.c"),       .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_glyph.c"),      .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render_util.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render.c"),     .flags = &.{} });
@@ -195,6 +197,7 @@ pub fn build(b: *std.Build) void {
 
         const app_macos_flags = &.{"-fobjc-arc"};
         app.addCSourceFile(.{ .file = b.path("src/app/platform_macos.m"),  .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_font.m"),      .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_glyph.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_boxdraw.m"),   .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_renderer.m"),       .flags = app_macos_flags });

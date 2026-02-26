@@ -183,16 +183,22 @@
             if (ch == 0 || ch == ' ') {
                 [result appendString:@" "];
             } else {
-                unichar u = (unichar)ch;
-                if (ch > 0xFFFF) {
-                    uint32_t cp = ch - 0x10000;
-                    unichar hi = (unichar)(0xD800 + (cp >> 10));
-                    unichar lo = (unichar)(0xDC00 + (cp & 0x3FF));
-                    unichar pair[2] = {hi, lo};
-                    [result appendString:[NSString stringWithCharacters:pair length:2]];
-                } else {
-                    [result appendString:[NSString stringWithCharacters:&u length:1]];
+                // Build codepoint sequence: base + up to 2 combining marks
+                uint32_t cps[3] = { ch, g_cells[idx].combining[0], g_cells[idx].combining[1] };
+                unichar utf16[6];
+                int utf16Len = 0;
+                for (int k = 0; k < 3; k++) {
+                    uint32_t cp = cps[k];
+                    if (cp == 0) continue;
+                    if (cp > 0xFFFF) {
+                        uint32_t u = cp - 0x10000;
+                        utf16[utf16Len++] = (unichar)(0xD800 + (u >> 10));
+                        utf16[utf16Len++] = (unichar)(0xDC00 + (u & 0x3FF));
+                    } else {
+                        utf16[utf16Len++] = (unichar)cp;
+                    }
                 }
+                [result appendString:[NSString stringWithCharacters:utf16 length:utf16Len]];
             }
         }
 

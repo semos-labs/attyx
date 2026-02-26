@@ -1282,6 +1282,7 @@ fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
     const fg_b = if (cell.style.dim) fg.b / 2 else fg.b;
     return .{
         .character = cell.char,
+        .combining = .{ cell.combining[0], cell.combining[1] },
         .fg_r = fg_r,
         .fg_g = fg_g,
         .fg_b = fg_b,

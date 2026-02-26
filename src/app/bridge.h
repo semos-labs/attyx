@@ -8,6 +8,7 @@
 
 typedef struct {
     uint32_t character;
+    uint32_t combining[2]; // combining marks (0 = none)
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
     uint8_t flags; // bit 0 = bold, bit 1 = underline, bit 2 = default bg (apply opacity), bit 3 = dim, bit 4 = italic, bit 5 = strikethrough
@@ -247,6 +248,7 @@ extern volatile uint64_t g_image_gen; // bumped when image placements change
 
 typedef struct {
     uint32_t character;
+    uint32_t combining[2]; // combining marks (0 = none)
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
     uint8_t bg_alpha;

@@ -78,6 +78,7 @@ pub fn main() !void {
         const bg = color_mod.resolve(cell.style.bg, true);
         render_cells[i] = .{
             .character = cell.char,
+            .combining = .{ cell.combining[0], cell.combining[1] },
             .fg_r = fg.r,
             .fg_g = fg.g,
             .fg_b = fg.b,

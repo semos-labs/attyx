@@ -1,0 +1,129 @@
+// Attyx — Linux font discovery + glyph cache creation
+// Extracted from linux_glyph.c to keep files under the 600-line limit.
+
+#ifdef __linux__
+
+#include "linux_internal.h"
+
+// Fixed reference cell dimensions (in logical points) captured on the first
+// createGlyphCache call. Percent-mode cell sizes are anchored to these values
+// so that changing the font size does not affect the configured cell height/width.
+static float s_ref_h_pt = 0.0f;
+static float s_ref_w_pt = 0.0f;
+
+GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
+    // Font family: prefer config (g_font_family), fall back to env, then defaults.
+    char* fontPath = NULL;
+    if (g_font_family_len > 0)
+        fontPath = findFontPath(g_font_family);
+    if (!fontPath) {
+        const char* fontEnv = getenv("ATTYX_FONT");
+        if (fontEnv && fontEnv[0])
+            fontPath = findFontPath(fontEnv);
+    }
+    if (!fontPath) fontPath = findFontPath("Monospace");
+    if (!fontPath) fontPath = findFontPath("DejaVu Sans Mono");
+    if (!fontPath) fontPath = findFontPath("Courier");
+    if (!fontPath) {
+        ATTYX_LOG_ERR("glyph", "no monospace font found");
+        exit(1);
+    }
+
+    FT_Face face;
+    if (FT_New_Face(ft_lib, fontPath, 0, &face) != 0) {
+        ATTYX_LOG_ERR("glyph", "failed to load font: %s", fontPath);
+        free(fontPath);
+        exit(1);
+    }
+    free(fontPath);
+
+    // Font size: prefer config (g_font_size), in points.
+    float basePt = (g_font_size > 0) ? (float)g_font_size : 14.0f;
+    int fontSize = (int)(basePt * contentScale);
+    FT_Set_Pixel_Sizes(face, 0, fontSize);
+
+    float ascender = (float)(face->size->metrics.ascender >> 6);
+    float naturalH = (float)(face->size->metrics.height >> 6);
+
+    // Measure actual monospace cell width from a reference ASCII glyph.
+    float naturalW;
+    if (FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0) {
+        naturalW = (float)(face->glyph->advance.x >> 6);
+    } else {
+        naturalW = (float)(face->size->metrics.max_advance >> 6);
+    }
+    float gh = naturalH;
+    float gw = naturalW;
+
+    // Capture fixed reference dimensions (in logical points) on first call.
+    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / contentScale;
+    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / contentScale;
+
+    if (g_cell_width > 0)
+        gw = roundf((float)g_cell_width * contentScale);
+    else if (g_cell_width < 0)
+        gw = roundf(s_ref_w_pt * contentScale * (float)(-g_cell_width) / 100.0f);
+    if (g_cell_height > 0)
+        gh = roundf((float)g_cell_height * contentScale);
+    else if (g_cell_height < 0)
+        gh = roundf(s_ref_h_pt * contentScale * (float)(-g_cell_height) / 100.0f);
+
+    float baseline_y_offset = (gh - naturalH) / 2.0f;
+    float x_offset = (gw - naturalW) / 2.0f;
+
+    int cols = 32;
+    int initRows = 32;
+    int atlasW = (int)(gw * cols);
+    int atlasH = (int)(gh * initRows);
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    uint8_t* zeroes = (uint8_t*)calloc(atlasW * atlasH, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, atlasW, atlasH, 0,
+                 GL_RED, GL_UNSIGNED_BYTE, zeroes);
+    free(zeroes);
+
+    GLuint colorTex;
+    glGenTextures(1, &colorTex);
+    glBindTexture(GL_TEXTURE_2D, colorTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    GlyphCache gc;
+    memset(&gc, 0, sizeof(gc));
+    gc.texture       = tex;
+    gc.color_texture = colorTex;
+    gc.ft_lib     = ft_lib;
+    gc.ft_face    = face;
+    gc.glyph_w    = gw;
+    gc.glyph_h    = gh;
+    gc.scale      = contentScale;
+    gc.ascender   = ascender;
+    gc.baseline_y_offset = baseline_y_offset;
+    gc.x_offset   = x_offset;
+    gc.atlas_cols = cols;
+    gc.atlas_w    = atlasW;
+    gc.atlas_h    = atlasH;
+    gc.next_slot  = 0;
+    gc.max_slots  = cols * initRows;
+
+    for (int i = 0; i < GLYPH_CACHE_CAP; i++) gc.map[i].slot = -1;
+
+    for (uint32_t ch = 32; ch < 127; ch++)
+        glyphCacheRasterize(&gc, ch);
+
+    return gc;
+}
+
+#endif // __linux__

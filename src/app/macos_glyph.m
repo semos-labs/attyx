@@ -8,15 +8,11 @@
 #include <stdlib.h>
 #include "macos_internal.h"
 
-// Forward declarations (defined later in this file)
-static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize);
-static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize);
+// Font matching helpers (defined in macos_font.m)
+extern CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize);
+extern CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize);
 
-// Fixed reference cell dimensions (in logical points) captured on the first
-// createGlyphCache call. Percent-mode cell sizes are anchored to these values
-// so that changing the font size does not affect the configured cell height/width.
-static float s_ref_h_pt = 0.0f;
-static float s_ref_w_pt = 0.0f;
+// createGlyphCache() and reference cell statics are in macos_font.m.
 
 /// Returns true if `cp` belongs to a Unicode range whose East Asian Width
 /// property is W (Wide) or F (Fullwidth) — i.e. it occupies 2 terminal cells.
@@ -440,186 +436,134 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     return encoded;
 }
 
-static CTFontRef createVerifiedFont(CFStringRef reqName, CGFloat fontSize) {
-    CTFontRef candidate = CTFontCreateWithName(reqName, fontSize, NULL);
-    if (!candidate) return NULL;
+// ---------------------------------------------------------------------------
+// Combining mark support
+// ---------------------------------------------------------------------------
 
-    CFStringRef resolvedFamily = CTFontCopyFamilyName(candidate);
-    if (!resolvedFamily) { CFRelease(candidate); return NULL; }
-
-    bool matches = (CFStringCompare(resolvedFamily, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
-
-    if (!matches) {
-        CFStringRef resolvedFull = CTFontCopyFullName(candidate);
-        if (resolvedFull) {
-            matches = (CFStringCompare(resolvedFull, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
-            CFRelease(resolvedFull);
-        }
-    }
-    if (!matches) {
-        CFStringRef resolvedPS = CTFontCopyPostScriptName(candidate);
-        if (resolvedPS) {
-            matches = (CFStringCompare(resolvedPS, reqName, kCFCompareCaseInsensitive) == kCFCompareEqualTo);
-            CFRelease(resolvedPS);
-        }
-    }
-
-    CFRelease(resolvedFamily);
-    if (matches) return candidate;
-    CFRelease(candidate);
-    return NULL;
+uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2) {
+    uint32_t h = base ^ (c1 * 0x9e3779b9) ^ (c2 * 0x517cc1b7);
+    return (h & 0x7FFFFFFF) | 0x80000000; // high bit distinguishes from plain codepoints
 }
 
-static CFStringRef createNormalizedName(CFStringRef name) {
-    CFMutableStringRef mut = CFStringCreateMutableCopy(NULL, 0, name);
-    CFStringLowercase(mut, NULL);
-    CFStringFindAndReplace(mut, CFSTR(" "), CFSTR(""), CFRangeMake(0, CFStringGetLength(mut)), 0);
-    return mut;
+/// Encode a codepoint as UTF-16 into buf. Returns number of UniChar units written.
+static int cpToUtf16(uint32_t cp, UniChar buf[2]) {
+    if (cp <= 0xFFFF) { buf[0] = (UniChar)cp; return 1; }
+    uint32_t u = cp - 0x10000;
+    buf[0] = (UniChar)(0xD800 + (u >> 10));
+    buf[1] = (UniChar)(0xDC00 + (u & 0x3FF));
+    return 2;
 }
 
-static CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize) {
-    CFStringRef normReq = createNormalizedName(reqName);
-    CTFontRef result = NULL;
+int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2) {
+    int gw = (int)gc->glyph_w;
+    int gh = (int)gc->glyph_h;
 
-    CFArrayRef families = CTFontManagerCopyAvailableFontFamilyNames();
-    if (families) {
-        CFIndex count = CFArrayGetCount(families);
-        for (CFIndex i = 0; i < count; i++) {
-            CFStringRef family = (CFStringRef)CFArrayGetValueAtIndex(families, i);
-            CFStringRef normFamily = createNormalizedName(family);
-            // Exact normalized match, or prefix match in either direction.
-            // This lets "JetBrains Mono Nerd" find "JetBrainsMono Nerd Font Mono".
-            NSString* nsFamily = (__bridge NSString*)normFamily;
-            NSString* nsReq    = (__bridge NSString*)normReq;
-            BOOL matches = [nsFamily isEqualToString:nsReq]
-                        || [nsFamily hasPrefix:nsReq]
-                        || [nsReq hasPrefix:nsFamily];
-            if (matches) {
-                result = CTFontCreateWithName(family, fontSize, NULL);
-                CFRelease(normFamily);
-                break;
+    // 1. Font fallback for the base character (same chain as regular rasterizer)
+    UniChar baseUtf16[2];
+    int baseLen = cpToUtf16(base, baseUtf16);
+
+    CTFontRef drawFont = gc->font;
+    bool ownFont = false;
+    CGGlyph baseGlyph = 0;
+    bool haveGlyph = CTFontGetGlyphsForCharacters(gc->font, baseUtf16, &baseGlyph, baseLen)
+                  && baseGlyph != 0;
+    if (!haveGlyph) {
+        CGFloat fontSize = CTFontGetSize(gc->font);
+        CTFontRef found = NULL;
+        for (int fi = 0; fi < g_font_fallback_count; fi++) {
+            CFStringRef name = CFStringCreateWithCString(NULL, g_font_fallback[fi],
+                                                         kCFStringEncodingUTF8);
+            CTFontRef candidate = createVerifiedFont(name, fontSize);
+            if (!candidate) candidate = createFuzzyMatchFont(name, fontSize);
+            CFRelease(name);
+            if (candidate) {
+                if (CTFontGetGlyphsForCharacters(candidate, baseUtf16, &baseGlyph, baseLen)) {
+                    found = candidate;
+                    haveGlyph = true;
+                    break;
+                }
+                CFRelease(candidate);
             }
-            CFRelease(normFamily);
         }
-        CFRelease(families);
-    }
-    CFRelease(normReq);
-    return result;
-}
-
-GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
-    CGFloat basePt = (g_font_size > 0) ? (CGFloat)g_font_size : 14.0;
-    CGFloat fontSize = basePt * scale;
-
-    CTFontRef font = NULL;
-
-    if (g_font_family_len > 0) {
-        CFStringRef reqName = CFStringCreateWithCString(NULL, g_font_family, kCFStringEncodingUTF8);
-        font = createVerifiedFont(reqName, fontSize);
-        if (!font) font = createFuzzyMatchFont(reqName, fontSize);
-        if (!font) NSLog(@"[attyx] warning: font \"%s\" not found, trying fallbacks", g_font_family);
-        CFRelease(reqName);
-    }
-
-    if (!font) {
-        const char* fontEnv = getenv("ATTYX_FONT");
-        if (fontEnv && fontEnv[0]) {
-            CFStringRef reqName = CFStringCreateWithCString(NULL, fontEnv, kCFStringEncodingUTF8);
-            font = createVerifiedFont(reqName, fontSize);
-            if (!font) font = createFuzzyMatchFont(reqName, fontSize);
-            CFRelease(reqName);
+        if (found) {
+            drawFont = found;
+            ownFont = true;
+        } else {
+            // System fallback via full string
+            UniChar fullUtf16[6];
+            int fullLen = 0;
+            uint32_t cps[3] = { base, c1, c2 };
+            for (int i = 0; i < 3; i++) {
+                if (cps[i] == 0) continue;
+                fullLen += cpToUtf16(cps[i], &fullUtf16[fullLen]);
+            }
+            NSString* fullStr = [[NSString alloc] initWithCharacters:fullUtf16 length:fullLen];
+            CTFontRef fallback = CTFontCreateForString(gc->font, (__bridge CFStringRef)fullStr,
+                                                        CFRangeMake(0, fullStr.length));
+            if (fallback) {
+                if (CTFontGetGlyphsForCharacters(fallback, baseUtf16, &baseGlyph, baseLen))
+                    haveGlyph = true;
+                drawFont = fallback;
+                ownFont = true;
+            }
         }
     }
 
-    if (!font) font = CTFontCreateWithName(CFSTR("Menlo-Regular"), fontSize, NULL);
-    if (!font) font = CTFontCreateWithName(CFSTR("Monaco"), fontSize, NULL);
-    if (!font) font = CTFontCreateWithName(CFSTR("Courier"), fontSize, NULL);
+    // 2. Allocate atlas slot (Thai is never wide)
+    if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
+    int slot = gc->next_slot++;
+    int ac = slot % gc->atlas_cols;
+    int ar = slot / gc->atlas_cols;
 
-    CGFloat ascent  = CTFontGetAscent(font);
-    CGFloat descent = CTFontGetDescent(font);
-    CGFloat leading = CTFontGetLeading(font);
-
-    UniChar ascii[95];
-    CGGlyph glyphs[95];
-    for (int i = 0; i < 95; i++) ascii[i] = (UniChar)(32 + i);
-    CTFontGetGlyphsForCharacters(font, ascii, glyphs, 95);
-    CGSize advances[95];
-    CTFontGetAdvancesForGlyphs(font, kCTFontOrientationDefault, glyphs, advances, 95);
-    float maxAdv = 0;
-    for (int i = 0; i < 95; i++)
-        if (advances[i].width > maxAdv) maxAdv = (float)advances[i].width;
-
-    float naturalW = roundf(maxAdv);
-    float naturalH = roundf((float)(ascent + descent + leading));
-    float gw = naturalW;
-    float gh = naturalH;
-
-    // Capture fixed reference dimensions (in logical points) on first call.
-    // Percent mode uses these so that cell size is independent of font size.
-    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / (float)scale;
-    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / (float)scale;
-
-    if (g_cell_width > 0)
-        gw = roundf((float)g_cell_width * (float)scale);
-    else if (g_cell_width < 0)
-        gw = roundf(s_ref_w_pt * (float)scale * (float)(-g_cell_width) / 100.0f);
-    if (g_cell_height > 0)
-        gh = roundf((float)g_cell_height * (float)scale);
-    else if (g_cell_height < 0)
-        gh = roundf(s_ref_h_pt * (float)scale * (float)(-g_cell_height) / 100.0f);
-
-    float baseline_y = (float)descent + (gh - naturalH) / 2.0f;
-    float x_offset = (gw - naturalW) / 2.0f;
-
-    int cols = 32;
-    int initRows = 32;
-    int atlasW = (int)(gw * cols);
-    int atlasH = (int)(gh * initRows);
-
-    MTLTextureDescriptor* desc =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
-                                                           width:atlasW
-                                                          height:atlasH
-                                                       mipmapped:NO];
-    id<MTLTexture> tex = [device newTextureWithDescriptor:desc];
-
-    uint8_t* zeroes = (uint8_t*)calloc(atlasW * atlasH, 1);
-    [tex replaceRegion:MTLRegionMake2D(0, 0, atlasW, atlasH)
-           mipmapLevel:0
-             withBytes:zeroes
-           bytesPerRow:atlasW];
-    free(zeroes);
-
-    MTLTextureDescriptor* cd =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                           width:atlasW height:atlasH
-                                                       mipmapped:NO];
-    id<MTLTexture> colorTex = [device newTextureWithDescriptor:cd];
-
-    GlyphCache gc;
-    memset((void*)&gc, 0, sizeof(gc));
-    gc.texture       = tex;
-    gc.color_texture = colorTex;
-    gc.font       = (CTFontRef)CFRetain(font);
-    gc.glyph_w    = gw;
-    gc.glyph_h    = gh;
-    gc.scale      = (float)scale;
-    gc.descent    = descent;
-    gc.baseline_y = baseline_y;
-    gc.x_offset   = x_offset;
-    gc.atlas_cols = cols;
-    gc.atlas_w    = atlasW;
-    gc.atlas_h    = atlasH;
-    gc.next_slot  = 0;
-    gc.max_slots  = cols * initRows;
-    gc.device     = device;
-
-    for (int i = 0; i < GLYPH_CACHE_CAP; i++) gc.map[i].slot = -1;
-
-    for (uint32_t ch = 32; ch < 127; ch++) {
-        glyphCacheRasterize(&gc, ch);
+    if (!haveGlyph) {
+        // No glyph found — store blank slot
+        if (ownFont) CFRelease(drawFont);
+        uint32_t key = combiningKey(base, c1, c2);
+        glyphCacheInsert(gc, key, slot);
+        return slot;
     }
 
-    CFRelease(font);
-    return gc;
+    // 3. Create bitmap context (same setup as regular rasterizer)
+    uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceGray();
+    CGContextRef ctx = CGBitmapContextCreate(pixels, gw, gh, 8, gw, cs, kCGImageAlphaNone);
+    CGColorSpaceRelease(cs);
+    CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+    CGContextSetShouldSmoothFonts(ctx, NO);
+    CGContextSetAllowsFontSmoothing(ctx, NO);
+
+    // 4. Draw base glyph at cell origin — identical to regular rasterizer path.
+    //    This is proven to work for Thai characters.
+    CGPoint pos = CGPointMake(gc->x_offset, gc->baseline_y);
+    CTFontDrawGlyphs(drawFont, &baseGlyph, &pos, 1, ctx);
+
+    // 5. Overlay combining marks at the same position.
+    //    The font's glyph metrics handle vertical placement (above/below base).
+    uint32_t marks[2] = { c1, c2 };
+    for (int m = 0; m < 2; m++) {
+        if (marks[m] == 0) continue;
+        UniChar markUtf16[2];
+        int markLen = cpToUtf16(marks[m], markUtf16);
+        CGGlyph markGlyph = 0;
+        if (CTFontGetGlyphsForCharacters(drawFont, markUtf16, &markGlyph, markLen)
+            && markGlyph != 0) {
+            CTFontDrawGlyphs(drawFont, &markGlyph, &pos, 1, ctx);
+        }
+    }
+
+    CGContextRelease(ctx);
+    if (ownFont) CFRelease(drawFont);
+
+    // 6. Upload to atlas
+    [gc->texture replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, gw, gh)
+                   mipmapLevel:0
+                     withBytes:pixels
+                   bytesPerRow:gw];
+    free(pixels);
+
+    uint32_t key = combiningKey(base, c1, c2);
+    glyphCacheInsert(gc, key, slot);
+    return slot;
 }
+
+// createGlyphCache() is defined in macos_font.m

@@ -366,9 +366,15 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 float x1 = x0 + gw;
                 float y1 = y0 + gh;
 
-                int rawSlot = glyphCacheLookup(&_glyphCache, ch);
+                uint32_t key = ch;
+                bool hasCombining = (cell->combining[0] != 0);
+                if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
+
+                int rawSlot = glyphCacheLookup(&_glyphCache, key);
                 if (rawSlot < 0) {
-                    rawSlot = glyphCacheRasterize(&_glyphCache, ch);
+                    rawSlot = hasCombining
+                        ? glyphCacheRasterizeCombined(&_glyphCache, ch, cell->combining[0], cell->combining[1])
+                        : glyphCacheRasterize(&_glyphCache, ch);
                     atlasW = (float)_glyphCache.atlas_w;
                 }
 
