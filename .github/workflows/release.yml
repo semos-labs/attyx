@@ -172,7 +172,7 @@ jobs:
           version: 0.15.2
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
 
       - name: Strip binary
         run: strip zig-out/bin/attyx
