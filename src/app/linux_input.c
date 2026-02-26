@@ -86,19 +86,22 @@ static uint8_t glfwActionToEventType(int action) {
 // ---------------------------------------------------------------------------
 
 static void doPaste(void) {
-    const char* text = glfwGetClipboardString(g_window);
-    if (text && *text) {
-        int len = (int)strlen(text);
-        void (*send_fn)(const uint8_t*, int) =
-            g_popup_active ? attyx_popup_send_input : attyx_send_input;
-        if (g_bracketed_paste) {
-            send_fn((const uint8_t*)"\x1b[200~", 6);
-            send_fn((const uint8_t*)text, len);
-            send_fn((const uint8_t*)"\x1b[201~", 6);
-        } else {
-            send_fn((const uint8_t*)text, len);
-        }
+    const char* text = clipboardPaste();
+    if (!text || !*text) {
+        ATTYX_LOG_DEBUG("clipboard", "paste: clipboard is empty");
+        return;
     }
+    int len = (int)strlen(text);
+    void (*send_fn)(const uint8_t*, int) =
+        g_popup_active ? attyx_popup_send_input : attyx_send_input;
+    if (g_bracketed_paste) {
+        send_fn((const uint8_t*)"\x1b[200~", 6);
+        send_fn((const uint8_t*)text, len);
+        send_fn((const uint8_t*)"\x1b[201~", 6);
+    } else {
+        send_fn((const uint8_t*)text, len);
+    }
+    ATTYX_LOG_DEBUG("clipboard", "paste: sent %d bytes to PTY", len);
 }
 
 static int dispatchAction(uint8_t act) {
@@ -446,14 +449,25 @@ static int mouseModifiers(int mods) {
     return m;
 }
 
-// Helper: context menu hit-test (returns 1 if pixel (px,py) is inside the menu).
+// Helper: context menu hit-test.
+// Returns item index (CTX_MENU_ITEM_*) or -1 if outside the menu.
 static int ctxMenuHitItem(float px, float py) {
     float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
     float padX = gw * 0.5f, padY = gh * 0.25f;
     float itemH = gh + padY * 2.0f;
+    float sepH  = padY * 2.0f;
     float menuW = padX * 2.0f + 13.0f * gw; // 13 = len("Reload Config")
-    return (px >= g_ctx_menu_x && px <= g_ctx_menu_x + menuW &&
-            py >= g_ctx_menu_y && py <= g_ctx_menu_y + itemH);
+    float menuH = itemH * 3.0f + sepH;       // Copy, Paste, sep, Reload Config
+
+    if (px < g_ctx_menu_x || px > g_ctx_menu_x + menuW ||
+        py < g_ctx_menu_y || py > g_ctx_menu_y + menuH)
+        return -1;
+
+    float relY = py - g_ctx_menu_y;
+    if (relY < itemH)              return CTX_MENU_ITEM_COPY;
+    if (relY < itemH * 2.0f)      return CTX_MENU_ITEM_PASTE;
+    if (relY < itemH * 2.0f + sepH) return CTX_MENU_ITEM_SEPARATOR;
+    return CTX_MENU_ITEM_RELOAD_CONFIG;
 }
 
 static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods) {
@@ -464,8 +478,15 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
     if (g_ctx_menu_open && action == GLFW_PRESS) {
         float px = (float)(mx * g_content_scale);
         float py = (float)(my * g_content_scale);
-        if (button == GLFW_MOUSE_BUTTON_LEFT && ctxMenuHitItem(px, py))
-            attyx_trigger_config_reload();
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            int item = ctxMenuHitItem(px, py);
+            switch (item) {
+                case CTX_MENU_ITEM_COPY:          doCopy(); break;
+                case CTX_MENU_ITEM_PASTE:         doPaste(); break;
+                case CTX_MENU_ITEM_RELOAD_CONFIG: attyx_trigger_config_reload(); break;
+                default: break;
+            }
+        }
         g_ctx_menu_open = 0;
         g_ctx_menu_hover = -1;
         g_full_redraw = 1;
@@ -565,7 +586,9 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
             float padX = gw * 0.5f, padY = gh * 0.25f;
             float itemH = gh + padY * 2.0f;
+            float sepH  = padY * 2.0f;
             float menuW = padX * 2.0f + 13.0f * gw;
+            float menuH = itemH * 3.0f + sepH;  // Copy, Paste, sep, Reload Config
             float px = (float)(mx * g_content_scale);
             float py = (float)(my * g_content_scale);
             int fb_w2, fb_h2;
@@ -583,7 +606,7 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             float offXpx = padLpx + cxp;
             float offYpx = padTpx + cyp;
             if (px + menuW > offXpx + g_cols * gw) px = offXpx + g_cols * gw - menuW;
-            if (py + itemH > offYpx + g_rows * gh) py = offYpx + g_rows * gh - itemH;
+            if (py + menuH > offYpx + g_rows * gh) py = offYpx + g_rows * gh - menuH;
             if (px < offXpx) px = offXpx;
             if (py < offYpx) py = offYpx;
             g_ctx_menu_x = px;
@@ -743,7 +766,9 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     if (g_ctx_menu_open) {
         float px = (float)(mx * g_content_scale);
         float py = (float)(my * g_content_scale);
-        int newHover = ctxMenuHitItem(px, py) ? 0 : -1;
+        int newHover = ctxMenuHitItem(px, py);
+        // Don't highlight the separator
+        if (newHover == CTX_MENU_ITEM_SEPARATOR) newHover = -1;
         if (newHover != g_ctx_menu_hover) {
             g_ctx_menu_hover = newHover;
             g_full_redraw = 1;
@@ -833,7 +858,12 @@ void doCopy(void) {
     }
 
     buf[pos] = '\0';
-    if (pos > 0) glfwSetClipboardString(g_window, buf);
+    if (pos > 0) {
+        clipboardCopy(buf);
+        ATTYX_LOG_DEBUG("clipboard", "copy: %d bytes from selection", pos);
+    } else {
+        ATTYX_LOG_DEBUG("clipboard", "copy: selection was empty");
+    }
     free(buf);
 }
 

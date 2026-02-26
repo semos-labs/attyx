@@ -133,6 +133,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render_util.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_render.c"),     .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_input.c"),      .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_clipboard.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_overlay.c"),  .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_popup.c"),   .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));

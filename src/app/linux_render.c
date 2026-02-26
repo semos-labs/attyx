@@ -902,46 +902,66 @@ int drawFrame(void) {
         }
     }
 
-    // Context menu overlay (right-click menu)
+    // Context menu overlay (right-click menu: Copy, Paste, ---, Reload Config)
     if (g_ctx_menu_open) {
-        float gw = g_gc.glyph_w, gh = g_gc.glyph_h;
-        float padX = gw * 0.5f, padY = gh * 0.25f;
-        float itemH = gh + padY * 2.0f;
-        const char* label = "Reload Config";
-        int labelLen = 13;
-        float menuW = padX * 2.0f + (float)labelLen * gw;
+        float cmGw = g_gc.glyph_w, cmGh = g_gc.glyph_h;
+        float padX = cmGw * 0.5f, padY = cmGh * 0.25f;
+        float itemH = cmGh + padY * 2.0f;
+        float sepH  = padY * 2.0f;
+        float menuW = padX * 2.0f + 13.0f * cmGw; // 13 = len("Reload Config")
+        float menuH = itemH * 3.0f + sepH;
 
         // Clamp to content area (centered grid bounds).
-        float vpW = offX + cols * gw, vpH = offY + rows * gh;
+        float vpW = offX + cols * cmGw, vpH = offY + rows * cmGh;
         float menuX = g_ctx_menu_x, menuY = g_ctx_menu_y;
         if (menuX + menuW > vpW) menuX = vpW - menuW;
-        if (menuY + itemH > vpH) menuY = vpH - itemH;
+        if (menuY + menuH > vpH) menuY = vpH - menuH;
         if (menuX < offX) menuX = offX;
         if (menuY < offY) menuY = offY;
 
-        // Solid pass: background + optional hover highlight.
-        Vertex cmBg[12];
-        int ci = 0;
-        ci = emitRect(cmBg, ci, menuX, menuY, menuW, itemH,
-                      0.12f, 0.12f, 0.16f, 0.97f);
-        if (g_ctx_menu_hover == 0) {
-            ci = emitRect(cmBg, ci, menuX, menuY, menuW, itemH,
-                          0.20f, 0.35f, 0.60f, 1.0f);
+        // Item labels and Y offsets
+        const char* labels[CTX_MENU_ITEM_COUNT] = { "Copy", "Paste", NULL, "Reload Config" };
+        int labelLens[CTX_MENU_ITEM_COUNT]      = {  4,      5,      0,    13 };
+        float itemY[CTX_MENU_ITEM_COUNT];
+        itemY[CTX_MENU_ITEM_COPY]          = 0;
+        itemY[CTX_MENU_ITEM_PASTE]         = itemH;
+        itemY[CTX_MENU_ITEM_SEPARATOR]     = itemH * 2.0f;
+        itemY[CTX_MENU_ITEM_RELOAD_CONFIG] = itemH * 2.0f + sepH;
+
+        // Solid pass: background rect + hover highlight + separator line.
+        // bg(6) + hover(6) + separator(6) = 18 max
+        Vertex cmBg[18];
+        int cmi = 0;
+        cmi = emitRect(cmBg, cmi, menuX, menuY, menuW, menuH,
+                       0.12f, 0.12f, 0.16f, 0.97f);
+        if (g_ctx_menu_hover >= 0 && g_ctx_menu_hover != CTX_MENU_ITEM_SEPARATOR) {
+            cmi = emitRect(cmBg, cmi, menuX, menuY + itemY[g_ctx_menu_hover],
+                           menuW, itemH, 0.20f, 0.35f, 0.60f, 1.0f);
         }
+        // Separator line
+        float sepLineH = fmaxf(1.0f, 1.0f);
+        float sepLineY = menuY + itemY[CTX_MENU_ITEM_SEPARATOR] + (sepH - sepLineH) * 0.5f;
+        cmi = emitRect(cmBg, cmi, menuX + padX, sepLineY, menuW - padX * 2.0f, sepLineH,
+                       0.30f, 0.30f, 0.35f, 1.0f);
+
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glUseProgram(g_solid_prog);
         glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * ci, cmBg, GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * cmi, cmBg, GL_DYNAMIC_DRAW);
         setupVertexAttribs();
-        glDrawArrays(GL_TRIANGLES, 0, ci);
+        glDrawArrays(GL_TRIANGLES, 0, cmi);
         glDisable(GL_BLEND);
 
-        // Text pass: menu item label.
-        Vertex cmTv[13 * 6];
-        int cti = emitString(cmTv, 0, &g_gc, label, labelLen,
-                             menuX + padX, menuY + padY,
-                             gw, gh, 0.90f, 0.90f, 0.95f);
+        // Text pass: item labels (skip separator).
+        Vertex cmTv[22 * 6]; // 4+5+13 = 22 chars max
+        int cti = 0;
+        for (int mi = 0; mi < CTX_MENU_ITEM_COUNT; mi++) {
+            if (mi == CTX_MENU_ITEM_SEPARATOR) continue;
+            cti = emitString(cmTv, cti, &g_gc, labels[mi], labelLens[mi],
+                             menuX + padX, menuY + itemY[mi] + padY,
+                             cmGw, cmGh, 0.90f, 0.90f, 0.95f);
+        }
         if (cti > 0) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
