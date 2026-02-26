@@ -35,12 +35,39 @@ pub const BorderStyle = enum {
     }
 };
 
+pub const Padding = struct {
+    top: u16 = 0,
+    bottom: u16 = 0,
+    left: u16 = 0,
+    right: u16 = 0,
+};
+
+/// Resolve CSS-like padding cascade: specific > axis > shorthand.
+pub fn parsePadding(
+    all: ?u16,
+    x: ?u16,
+    y: ?u16,
+    top: ?u16,
+    bottom: ?u16,
+    left: ?u16,
+    right: ?u16,
+) Padding {
+    const base = all orelse 0;
+    return .{
+        .top = top orelse y orelse base,
+        .bottom = bottom orelse y orelse base,
+        .left = left orelse x orelse base,
+        .right = right orelse x orelse base,
+    };
+}
+
 pub const PopupConfig = struct {
     command: []const u8, // e.g. "lazygit"
     width_pct: u8, // 1-100
     height_pct: u8, // 1-100
     border_style: BorderStyle,
     border_fg: [3]u8, // r, g, b
+    pad: Padding = .{},
 };
 
 pub const PopupState = struct {
@@ -55,7 +82,7 @@ pub const PopupState = struct {
     outer_h: u16,
     allocator: std.mem.Allocator,
 
-    pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16) !PopupState {
+    pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
 
         var engine = try allocator.create(Engine);
@@ -75,10 +102,14 @@ pub const PopupState = struct {
 
         const argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
 
+        const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
+        defer if (cwd_z) |z| allocator.free(z);
+
         const pty = try Pty.spawn(.{
             .rows = dims.rows,
             .cols = dims.cols,
             .argv = &argv,
+            .cwd = if (cwd_z) |z| z.ptr else null,
         });
 
         return .{
@@ -129,9 +160,13 @@ pub const PopupState = struct {
         if (total > c.ATTYX_POPUP_MAX_CELLS) return;
 
         const has_border = cfg.border_style != .none;
-        const offset: usize = if (has_border) 1 else 0;
+        const border_off: usize = if (has_border) 1 else 0;
+        const col_off: usize = border_off + cfg.pad.left;
+        const row_off: usize = border_off + cfg.pad.top;
+        const content_end_col: usize = col_off + self.cols;
+        const content_end_row: usize = row_off + self.rows;
 
-        // Fill border + inner cells
+        // Fill border + padding + inner cells
         var ci: usize = 0;
         for (0..oh) |r| {
             for (0..ow) |col| {
@@ -139,10 +174,10 @@ pub const PopupState = struct {
                 if (has_border and (r == 0 or r == oh - 1 or col == 0 or col == ow - 1)) {
                     // Border cell
                     c.g_popup_cells[ci] = borderCell(r, col, ow, oh, cfg.border_style, cfg.border_fg);
-                } else {
-                    // Inner cell — map from engine grid
-                    const inner_r = r - offset;
-                    const inner_c = col - offset;
+                } else if (r >= row_off and r < content_end_row and col >= col_off and col < content_end_col) {
+                    // Content cell — map from engine grid
+                    const inner_r = r - row_off;
+                    const inner_c = col - col_off;
                     const grid_idx = inner_r * self.cols + inner_c;
                     if (inner_r < self.rows and inner_c < self.cols and
                         grid_idx < self.engine.state.grid.cells.len)
@@ -152,6 +187,9 @@ pub const PopupState = struct {
                     } else {
                         c.g_popup_cells[ci] = defaultCell(theme);
                     }
+                } else {
+                    // Padding zone — empty cell with theme background
+                    c.g_popup_cells[ci] = defaultCell(theme);
                 }
                 ci += 1;
             }
@@ -167,8 +205,8 @@ pub const PopupState = struct {
             .height = @intCast(self.outer_h),
             .inner_cols = @intCast(self.cols),
             .inner_rows = @intCast(self.rows),
-            .cursor_row = @intCast(self.engine.state.cursor.row),
-            .cursor_col = @intCast(self.engine.state.cursor.col),
+            .cursor_row = @intCast(self.engine.state.cursor.row + row_off),
+            .cursor_col = @intCast(self.engine.state.cursor.col + col_off),
             .cursor_visible = if (cursor_vis) 1 else 0,
             .cursor_shape = @intCast(@intFromEnum(self.engine.state.cursor_shape)),
         };
@@ -201,11 +239,17 @@ fn calcDims(cfg: PopupConfig, grid_cols: u16, grid_rows: u16) Dims {
     )));
     const has_border = cfg.border_style != .none;
     const border: u16 = if (has_border) 2 else 0;
-    const min_size: u16 = if (has_border) 4 else 1;
-    const outer_w = @max(raw_w, min_size);
-    const outer_h = @max(raw_h, min_size);
-    const inner_cols = outer_w - border;
-    const inner_rows = outer_h - border;
+    const pad_h = cfg.pad.left + cfg.pad.right;
+    const pad_v = cfg.pad.top + cfg.pad.bottom;
+    const chrome_h = border + pad_h;
+    const chrome_v = border + pad_v;
+    // Minimum outer size: chrome + at least 1 cell of content
+    const min_w = chrome_h + 1;
+    const min_h = chrome_v + 1;
+    const outer_w = @max(raw_w, min_w);
+    const outer_h = @max(raw_h, min_h);
+    const inner_cols = outer_w - chrome_h;
+    const inner_rows = outer_h - chrome_v;
     // Center on grid
     const outer_col = if (grid_cols > outer_w) (grid_cols - outer_w) / 2 else 0;
     const outer_row = if (grid_rows > outer_h) (grid_rows - outer_h) / 2 else 0;

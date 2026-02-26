@@ -25,6 +25,7 @@ const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
+const platform = @import("../platform/platform.zig");
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -137,6 +138,7 @@ export fn attyx_overlay_enter() void {
 // Popup terminal globals and exports
 // ---------------------------------------------------------------------------
 export var g_popup_active: i32 = 0;
+export var g_popup_trail_active: i32 = 0;
 var g_popup_toggle_request: [4]i32 = .{ 0, 0, 0, 0 };
 
 // Ensure keybind exports (attyx_keybind_match, g_keybind_matched_seq*) are linked
@@ -377,6 +379,15 @@ pub fn run(
                 .height_pct = popup_mod.parsePct(entry.height, 80),
                 .border_style = popup_mod.parseBorderStyle(entry.border),
                 .border_fg = popup_mod.parseHexColor(entry.border_color, .{ 120, 130, 150 }),
+                .pad = popup_mod.parsePadding(
+                    entry.padding,
+                    entry.padding_x,
+                    entry.padding_y,
+                    entry.padding_top,
+                    entry.padding_bottom,
+                    entry.padding_left,
+                    entry.padding_right,
+                ),
             };
             popup_hotkeys[popup_config_count] = .{
                 .index = popup_config_count,
@@ -1132,8 +1143,10 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
             const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
             const grid_rows: u16 = @intCast(ctx.engine.state.grid.rows);
+            const fg_cwd = platform.getForegroundCwd(ctx.allocator, ctx.pty.master);
+            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
-            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows) catch |err| {
+            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {
                 logging.err("popup", "spawn failed: {}", .{err});
                 ctx.allocator.destroy(ps);
                 return;

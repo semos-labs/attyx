@@ -52,6 +52,7 @@ export fn attyx_overlay_enter() void {}
 
 // Popup terminal stubs (ui2.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
+export var g_popup_trail_active: i32 = 0;
 export fn attyx_popup_toggle(_: c_int) void {}
 export fn attyx_popup_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_popup_handle_key(_: u16, _: u8, _: u8, _: u32) void {}

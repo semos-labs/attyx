@@ -72,6 +72,13 @@ pub const PopupConfigEntry = struct {
     height: []const u8, // "80%"
     border: []const u8, // "single", "double", "rounded", "heavy", "none"
     border_color: []const u8, // "#RRGGBB" hex string
+    padding: ?u16 = null,
+    padding_x: ?u16 = null,
+    padding_y: ?u16 = null,
+    padding_top: ?u16 = null,
+    padding_bottom: ?u16 = null,
+    padding_left: ?u16 = null,
+    padding_right: ?u16 = null,
 };
 
 /// Merged application configuration. Precedence: Defaults < ConfigFile < CLI flags.
@@ -302,6 +309,13 @@ fn parseCellSize(v: toml.TomlValue, path: []const u8, field: []const u8) ?CellSi
     }
     std.debug.print("error: {s}: {s} must be an integer or a percentage string\n", .{ path, field });
     return null;
+}
+
+fn tomlOptU16(v: ?toml.TomlValue) ?u16 {
+    const val = v orelse return null;
+    if (val != .int) return null;
+    if (val.int < 0) return null;
+    return @intCast(@min(val.int, std.math.maxInt(u16)));
 }
 
 fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8, config: *AppConfig) !void {
@@ -645,6 +659,13 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                         .height = if (height_v != null and height_v.? == .string) try allocator.dupe(u8, height_v.?.string) else try allocator.dupe(u8, "80%"),
                         .border = if (border_v != null and border_v.? == .string) try allocator.dupe(u8, border_v.?.string) else try allocator.dupe(u8, "single"),
                         .border_color = if (border_color_v != null and border_color_v.? == .string) try allocator.dupe(u8, border_color_v.?.string) else try allocator.dupe(u8, "#78829a"),
+                        .padding = tomlOptU16(item.table.get("padding")),
+                        .padding_x = tomlOptU16(item.table.get("padding_x")),
+                        .padding_y = tomlOptU16(item.table.get("padding_y")),
+                        .padding_top = tomlOptU16(item.table.get("padding_top")),
+                        .padding_bottom = tomlOptU16(item.table.get("padding_bottom")),
+                        .padding_left = tomlOptU16(item.table.get("padding_left")),
+                        .padding_right = tomlOptU16(item.table.get("padding_right")),
                     };
                     valid += 1;
                 }

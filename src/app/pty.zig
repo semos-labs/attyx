@@ -22,6 +22,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+extern "c" fn chdir(path: [*:0]const u8) c_int;
 
 pub const Pty = struct {
     master: posix.fd_t,
@@ -31,6 +32,7 @@ pub const Pty = struct {
         rows: u16 = 24,
         cols: u16 = 80,
         argv: ?[]const [:0]const u8 = null,
+        cwd: ?[*:0]const u8 = null,
     };
 
     pub fn spawn(opts: SpawnOpts) !Pty {
@@ -60,6 +62,8 @@ pub const Pty = struct {
             posix.dup2(slave, 1) catch posix.abort();
             posix.dup2(slave, 2) catch posix.abort();
             if (slave > 2) posix.close(slave);
+
+            if (opts.cwd) |dir| _ = chdir(dir);
 
             _ = setenv("TERM", "xterm-256color", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);

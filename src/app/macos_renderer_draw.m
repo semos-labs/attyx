@@ -103,7 +103,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         BOOL imagesChanged = (g_image_gen != _lastImageGen) || (g_image_placement_count > 0);
         BOOL overlayChanged = (g_overlay_gen != _lastOverlayGen);
         BOOL popupChanged = (g_popup_gen != _lastPopupGen);
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !imagesChanged && !overlayChanged && !popupChanged) {
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !g_popup_trail_active && !imagesChanged && !overlayChanged && !popupChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];
@@ -535,7 +535,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         _prevCursorCol     = curCol;
         _prevCursorShape   = curShape;
         _prevCursorVisible = curVisible;
-        if (!_trailActive) _fullRedrawNeeded = NO;
+        if (!_trailActive && !g_popup_trail_active) _fullRedrawNeeded = NO;
 
         if (g_title_changed) {
             int tlen = g_title_len;
