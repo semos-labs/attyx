@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://semos.sh/docs/attyx">Documentation</a>
   &middot;
-  <a href="https://github.com/semos-labs/attyx/releases/latest">Download</a>
+  <a href="https://semos.sh/attyx">Download</a>
   &middot;
   <a href="https://github.com/semos-labs/attyx/issues">Issues</a>
 </p>
