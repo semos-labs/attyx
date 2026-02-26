@@ -304,7 +304,8 @@ typedef struct {
 extern AttyxPopupDesc    g_popup_desc;
 extern AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
 extern volatile uint32_t g_popup_gen;
-extern volatile int      g_popup_active;   // 1 = popup visible, input routed there
+extern volatile int      g_popup_active;        // 1 = popup visible, input routed there
+extern volatile int      g_popup_trail_active;  // 1 = popup cursor trail animating
 
 // ---------------------------------------------------------------------------
 // Configurable keybindings (implemented in Zig keybinds.zig)

@@ -138,6 +138,7 @@ export fn attyx_overlay_enter() void {
 // Popup terminal globals and exports
 // ---------------------------------------------------------------------------
 export var g_popup_active: i32 = 0;
+export var g_popup_trail_active: i32 = 0;
 var g_popup_toggle_request: [4]i32 = .{ 0, 0, 0, 0 };
 
 // Ensure keybind exports (attyx_keybind_match, g_keybind_matched_seq*) are linked

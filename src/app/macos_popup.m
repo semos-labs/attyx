@@ -103,7 +103,6 @@
     // 3. Draw popup cursor (shape-aware + themed color + trail)
     {
         static float _popupTrailX, _popupTrailY;
-        static int   _popupTrailActive;
         static double _popupTrailLastTime;
         static int   _popupPrevRow = -1, _popupPrevCol = -1;
 
@@ -166,12 +165,12 @@
             if (cellDist > 1) {
                 _popupTrailX = offX + (desc.col + _popupPrevCol) * gw;
                 _popupTrailY = offY + (desc.row + _popupPrevRow) * gh;
-                _popupTrailActive = 1;
+                g_popup_trail_active = 1;
                 _popupTrailLastTime = now;
             }
         }
-        if (_popupTrailActive && !desc.cursor_visible) _popupTrailActive = 0;
-        if (_popupTrailActive && g_cursor_trail && desc.cursor_visible) {
+        if (g_popup_trail_active && !desc.cursor_visible) g_popup_trail_active = 0;
+        if (g_popup_trail_active && g_cursor_trail && desc.cursor_visible) {
             float targetX = cx;
             float targetY = cy;
             float dt = (float)(now - _popupTrailLastTime);
@@ -184,7 +183,7 @@
             float dy = targetY - _popupTrailY;
             float dist = sqrtf(dx * dx + dy * dy);
             if (dist < 0.5f) {
-                _popupTrailActive = 0;
+                g_popup_trail_active = 0;
             } else {
                 float cw = gw, ch = gh;
                 float cyOff = 0, cxOff = 0;

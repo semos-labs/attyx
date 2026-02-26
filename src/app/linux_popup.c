@@ -104,7 +104,6 @@ void drawPopup(float offX, float offY, float gw, float gh,
     // 3. Draw popup cursor (shape-aware + themed color + trail)
     {
         static float s_popupTrailX, s_popupTrailY;
-        static int   s_popupTrailActive;
         static double s_popupTrailLastTime;
         static int   s_popupPrevRow = -1, s_popupPrevCol = -1;
 
@@ -173,12 +172,12 @@ void drawPopup(float offX, float offY, float gw, float gh,
             if (cellDist > 1) {
                 s_popupTrailX = offX + (desc.col + s_popupPrevCol) * gw;
                 s_popupTrailY = offY + (desc.row + s_popupPrevRow) * gh;
-                s_popupTrailActive = 1;
+                g_popup_trail_active = 1;
                 s_popupTrailLastTime = now;
             }
         }
-        if (s_popupTrailActive && !desc.cursor_visible) s_popupTrailActive = 0;
-        if (s_popupTrailActive && g_cursor_trail && desc.cursor_visible) {
+        if (g_popup_trail_active && !desc.cursor_visible) g_popup_trail_active = 0;
+        if (g_popup_trail_active && g_cursor_trail && desc.cursor_visible) {
             float targetX = cx;
             float targetY = cy;
             float dt = (float)(now - s_popupTrailLastTime);
@@ -191,7 +190,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
             float dy = targetY - s_popupTrailY;
             float dist = sqrtf(dx * dx + dy * dy);
             if (dist < 0.5f) {
-                s_popupTrailActive = 0;
+                g_popup_trail_active = 0;
             } else {
                 float cw = gw, ch = gh;
                 float cyOff = 0, cxOff = 0;

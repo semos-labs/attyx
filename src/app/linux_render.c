@@ -160,7 +160,7 @@ int drawFrame(void) {
     static uint32_t lastPopupGen = 0;
     int overlayChanged = (g_overlay_gen != lastOverlayGen);
     int popupChanged = (g_popup_gen != lastPopupGen);
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !overlayChanged && !popupChanged) return 0;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !g_popup_trail_active && !overlayChanged && !popupChanged) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);
@@ -574,7 +574,7 @@ int drawFrame(void) {
     g_prev_cursor_col   = curCol;
     g_prev_cursor_shape = curShape;
     g_prev_cursor_vis   = curVis;
-    if (!g_trail_active) g_full_redraw = 0;
+    if (!g_trail_active && !g_popup_trail_active) g_full_redraw = 0;
 
     // Window title update
     if (g_title_changed && g_window) {
