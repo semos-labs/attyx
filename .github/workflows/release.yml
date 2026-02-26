@@ -158,7 +158,17 @@ jobs:
             ${{ matrix.dmg }}
 
   build-linux:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            artifact: attyx-linux-x64.tar.zst
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            artifact: attyx-linux-arm64.tar.zst
+
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,12 +192,12 @@ jobs:
           mkdir -p staging
           cp zig-out/bin/attyx staging/attyx
           cd staging
-          tar --zstd -cf ../attyx-linux-x64.tar.zst attyx
+          tar --zstd -cf ../${{ matrix.artifact }} attyx
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: attyx-linux-x64.tar.zst
+          files: ${{ matrix.artifact }}
 
   homebrew:
     needs: [build-macos, build-linux]
@@ -216,6 +226,7 @@ jobs:
           echo "darwin_arm64=$(sha256sum attyx-darwin-arm64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "darwin_x64=$(sha256sum attyx-darwin-x64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "linux_x64=$(sha256sum attyx-linux-x64.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum attyx-linux-arm64.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch Homebrew tap update
         uses: peter-evans/repository-dispatch@v3
@@ -229,7 +240,8 @@ jobs:
               "tag": "${{ github.ref_name }}",
               "darwin_arm64_sha256": "${{ steps.checksums.outputs.darwin_arm64 }}",
               "darwin_x64_sha256": "${{ steps.checksums.outputs.darwin_x64 }}",
-              "linux_x64_sha256": "${{ steps.checksums.outputs.linux_x64 }}"
+              "linux_x64_sha256": "${{ steps.checksums.outputs.linux_x64 }}",
+              "linux_arm64_sha256": "${{ steps.checksums.outputs.linux_arm64 }}"
             }
 
       - name: Step summary
@@ -242,4 +254,5 @@ jobs:
           | darwin-arm64 | \`${{ steps.checksums.outputs.darwin_arm64 }}\` |
           | darwin-x64 | \`${{ steps.checksums.outputs.darwin_x64 }}\` |
           | linux-x64 | \`${{ steps.checksums.outputs.linux_x64 }}\` |
+          | linux-arm64 | \`${{ steps.checksums.outputs.linux_arm64 }}\` |
           EOF
