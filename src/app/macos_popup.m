@@ -100,22 +100,141 @@
         }
     }
 
-    // 3. Draw popup cursor
-    // 6 vertices * 32 bytes = 192 bytes — fits setVertexBytes 4KB limit
-    if (desc.cursor_visible) {
-        int curGridCol = desc.col + 1 + desc.cursor_col;  // +1 for border
-        int curGridRow = desc.row + 1 + desc.cursor_row;
+    // 3. Draw popup cursor (shape-aware + themed color + trail)
+    {
+        static float _popupTrailX, _popupTrailY;
+        static int   _popupTrailActive;
+        static double _popupTrailLastTime;
+        static int   _popupPrevRow = -1, _popupPrevCol = -1;
+
+        int curCol = desc.cursor_col;
+        int curRow = desc.cursor_row;
+        int curShape = desc.cursor_shape;
+        int curGridCol = desc.col + curCol;
+        int curGridRow = desc.row + curRow;
         float cx = offX + curGridCol * gw;
         float cy = offY + curGridRow * gh;
 
-        Vertex curVerts[6];
-        // Block cursor: solid white rect
-        emitRect(curVerts, 0, cx, cy, gw, gh, 0.8f, 0.8f, 0.8f, 0.8f);
+        int cursorChanged = (curRow != _popupPrevRow || curCol != _popupPrevCol);
 
-        [enc setRenderPipelineState:self.bgPipeline];
-        [enc setVertexBytes:curVerts length:sizeof(curVerts) atIndex:0];
-        [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+        // Cursor color from theme
+        float cr, cg_c, cb;
+        if (g_theme_cursor_r >= 0) {
+            cr = g_theme_cursor_r / 255.0f;
+            cg_c = g_theme_cursor_g / 255.0f;
+            cb = g_theme_cursor_b / 255.0f;
+        } else {
+            cr = 0.86f; cg_c = 0.86f; cb = 0.86f;
+        }
+
+        if (desc.cursor_visible) {
+            // Shape-aware cursor rect
+            float rx0 = cx, ry0 = cy, rx1 = cx + gw, ry1 = cy + gh;
+            switch (curShape) {
+                case 0: case 1: break; // block
+                case 2: case 3: { // underline
+                    float th = fmaxf(2.0f, 1.0f);
+                    ry0 = ry1 - th;
+                    break;
+                }
+                case 4: case 5: { // bar
+                    float th = fmaxf(2.0f, 1.0f);
+                    rx1 = rx0 + th;
+                    break;
+                }
+                default: break;
+            }
+
+            Vertex curVerts[6];
+            curVerts[0] = (Vertex){ rx0,ry0, 0,0, cr,cg_c,cb,1 };
+            curVerts[1] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+            curVerts[2] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+            curVerts[3] = (Vertex){ rx1,ry0, 0,0, cr,cg_c,cb,1 };
+            curVerts[4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
+            curVerts[5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
+
+            [enc setRenderPipelineState:self.bgPipeline];
+            [enc setVertexBytes:curVerts length:sizeof(curVerts) atIndex:0];
+            [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+        }
+
+        // Cursor trail (Neovide-style exponential-decay comet)
+        CFAbsoluteTime now = CACurrentMediaTime();
+        if (g_cursor_trail && desc.cursor_visible && cursorChanged && _popupPrevRow >= 0) {
+            int cellDist = abs(curRow - _popupPrevRow) + abs(curCol - _popupPrevCol);
+            if (cellDist > 1) {
+                _popupTrailX = offX + (desc.col + _popupPrevCol) * gw;
+                _popupTrailY = offY + (desc.row + _popupPrevRow) * gh;
+                _popupTrailActive = 1;
+                _popupTrailLastTime = now;
+            }
+        }
+        if (_popupTrailActive && !desc.cursor_visible) _popupTrailActive = 0;
+        if (_popupTrailActive && g_cursor_trail && desc.cursor_visible) {
+            float targetX = cx;
+            float targetY = cy;
+            float dt = (float)(now - _popupTrailLastTime);
+            _popupTrailLastTime = now;
+            float speed = 14.0f;
+            float t = 1.0f - expf(-speed * dt);
+            _popupTrailX += (targetX - _popupTrailX) * t;
+            _popupTrailY += (targetY - _popupTrailY) * t;
+            float dx = targetX - _popupTrailX;
+            float dy = targetY - _popupTrailY;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist < 0.5f) {
+                _popupTrailActive = 0;
+            } else {
+                float cw = gw, ch = gh;
+                float cyOff = 0, cxOff = 0;
+                switch (curShape) {
+                    case 2: case 3: { float th = fmaxf(2.0f, 1.0f); cyOff = gh - th; ch = th; break; }
+                    case 4: case 5: { cw = fmaxf(2.0f, 1.0f); break; }
+                    default: break;
+                }
+
+                float tx0 = _popupTrailX + cxOff, ty0 = _popupTrailY + cyOff;
+                float tx1 = tx0 + cw,              ty1 = ty0 + ch;
+                float cx0 = targetX + cxOff,        cy0 = targetY + cyOff;
+                float cx1 = cx0 + cw,               cy1 = cy0 + ch;
+
+                float hex[6][2];
+                if (dx >= 0 && dy >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty0; hex[1][0]=tx1; hex[1][1]=ty0;
+                    hex[2][0]=cx1; hex[2][1]=cy0; hex[3][0]=cx1; hex[3][1]=cy1;
+                    hex[4][0]=cx0; hex[4][1]=cy1; hex[5][0]=tx0; hex[5][1]=ty1;
+                } else if (dx >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty1; hex[1][0]=tx1; hex[1][1]=ty1;
+                    hex[2][0]=cx1; hex[2][1]=cy1; hex[3][0]=cx1; hex[3][1]=cy0;
+                    hex[4][0]=cx0; hex[4][1]=cy0; hex[5][0]=tx0; hex[5][1]=ty0;
+                } else if (dy >= 0) {
+                    hex[0][0]=tx1; hex[0][1]=ty0; hex[1][0]=tx0; hex[1][1]=ty0;
+                    hex[2][0]=cx0; hex[2][1]=cy0; hex[3][0]=cx0; hex[3][1]=cy1;
+                    hex[4][0]=cx1; hex[4][1]=cy1; hex[5][0]=tx1; hex[5][1]=ty1;
+                } else {
+                    hex[0][0]=tx1; hex[0][1]=ty1; hex[1][0]=tx0; hex[1][1]=ty1;
+                    hex[2][0]=cx0; hex[2][1]=cy1; hex[3][0]=cx0; hex[3][1]=cy0;
+                    hex[4][0]=cx1; hex[4][1]=cy0; hex[5][0]=tx1; hex[5][1]=ty0;
+                }
+
+                // 4 triangles = 12 verts for hexagon fan
+                Vertex trailVerts[12];
+                for (int ti = 0; ti < 4; ti++) {
+                    trailVerts[ti*3+0] = (Vertex){ hex[0][0],hex[0][1], 0,0, cr,cg_c,cb,1 };
+                    trailVerts[ti*3+1] = (Vertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr,cg_c,cb,1 };
+                    trailVerts[ti*3+2] = (Vertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr,cg_c,cb,1 };
+                }
+
+                [enc setRenderPipelineState:self.bgPipeline];
+                [enc setVertexBytes:trailVerts length:sizeof(trailVerts) atIndex:0];
+                [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:12];
+            }
+        }
+
+        _popupPrevRow = curRow;
+        _popupPrevCol = curCol;
     }
 }
 
