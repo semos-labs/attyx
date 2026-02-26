@@ -171,8 +171,8 @@ pub const PopupState = struct {
             .height = @intCast(self.outer_h),
             .inner_cols = @intCast(self.cols),
             .inner_rows = @intCast(self.rows),
-            .cursor_row = @intCast(self.engine.state.cursor.row),
-            .cursor_col = @intCast(self.engine.state.cursor.col),
+            .cursor_row = @intCast(self.engine.state.cursor.row + offset),
+            .cursor_col = @intCast(self.engine.state.cursor.col + offset),
             .cursor_visible = if (cursor_vis) 1 else 0,
             .cursor_shape = @intCast(@intFromEnum(self.engine.state.cursor_shape)),
         };
