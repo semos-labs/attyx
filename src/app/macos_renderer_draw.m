@@ -427,6 +427,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             }
             _totalTextVerts  = ti;
             _totalColorVerts = ci;
+            if (ci > 0) NSLog(@"[attyx-dbg] drawFrame: ci=%d color verts generated", ci);
         } else {
             ti = _totalTextVerts;
             ci = _totalColorVerts;

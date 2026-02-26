@@ -247,6 +247,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         CFStringRef familyName = CTFontCopyFamilyName(drawFont);
         bool isColorEmoji = (CFStringCompare(familyName, CFSTR("Apple Color Emoji"), 0)
                              == kCFCompareEqualTo);
+        NSLog(@"[attyx-dbg] cp=U+%04X familyName=%@ isColorEmoji=%d wide=%d haveGlyph=%d slot=%d",
+              cp, (__bridge NSString*)familyName, isColorEmoji, wide, haveGlyph, slot);
         CFRelease(familyName);
 
         if (isColorEmoji) {
@@ -270,6 +272,12 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             CFRelease(line);
             CGContextRelease(ctx);
 
+            // Debug: count non-zero pixels
+            int nonZero = 0;
+            for (int pi = 0; pi < renderW * gh * 4; pi++) if (pixels[pi] != 0) nonZero++;
+            NSLog(@"[attyx-dbg] color emoji U+%04X: renderW=%d gh=%d nonZeroBytes=%d/%d posX=%.1f baseline=%.1f",
+                  cp, renderW, gh, nonZero, renderW * gh * 4, posX, gc->baseline_y);
+
             [gc->color_texture
                 replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, renderW, gh)
                   mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)(renderW * 4)];
@@ -277,6 +285,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
 
             if (drawFont != gc->font) CFRelease(drawFont);
             int encoded = (wide ? GLYPH_WIDE_BIT : 0) | GLYPH_COLOR_BIT | slot;
+            NSLog(@"[attyx-dbg] color emoji U+%04X: encoded=0x%X (COLOR=%d WIDE=%d slot=%d)",
+                  cp, encoded, (encoded & GLYPH_COLOR_BIT) != 0, (encoded & GLYPH_WIDE_BIT) != 0, slot);
             glyphCacheInsert(gc, cp, encoded);
             return encoded;
         }
