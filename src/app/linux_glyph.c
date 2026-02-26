@@ -25,6 +25,7 @@ char* findFontPath(const char* family) {
         FcPatternDestroy(match);
     }
     FcPatternDestroy(pat);
+    FcConfigDestroy(config);
     return path;
 }
 
@@ -108,6 +109,7 @@ static char* findFontPathAny(const char* family) {
         FcPatternDestroy(match);
     }
     FcPatternDestroy(pat);
+    FcConfigDestroy(config);
     return path;
 }
 

@@ -32,6 +32,9 @@ pub const ThemeRegistry = struct {
             result.value_ptr.* = theme;
         } else {
             // Own a copy of the key — the source slice may be temporary.
+            // If dupe fails, remove the stale entry so deinit() doesn't
+            // try to free the non-owned original slice.
+            errdefer self.themes.removeByPtr(result.key_ptr);
             result.key_ptr.* = try self.allocator.dupe(u8, name);
             result.value_ptr.* = theme;
         }
