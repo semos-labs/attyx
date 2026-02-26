@@ -332,7 +332,7 @@ pub fn run(
     else
         null;
     defer if (program_argv) |pa| {
-        for (pa) |s| allocator.free(@as([]const u8, s));
+        for (pa) |s| allocator.free(s);
         allocator.free(pa);
     };
 
