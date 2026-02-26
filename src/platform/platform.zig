@@ -48,16 +48,14 @@ fn getTmuxClientPaneCwd(allocator: std.mem.Allocator, fg_pid: std.posix.pid_t) ?
     return null;
 }
 
-/// Query the foreground process's CWD. When inside tmux, checks whether the
-/// PTY foreground process is itself a tmux client and resolves that client's
-/// active pane CWD. Otherwise falls back to a direct pid-to-cwd lookup.
+/// Query the foreground process's CWD. First checks whether the PTY foreground
+/// process is a tmux client and resolves that client's active pane CWD.
+/// Falls back to a direct pid-to-cwd lookup if not a tmux client.
 pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
     const fg_pid = impl.getPtyForegroundPid(master_fd) orelse return null;
 
-    // If inside tmux, check whether fg_pid is a tmux client.
-    if (std.posix.getenv("TMUX") != null) {
-        if (getTmuxClientPaneCwd(allocator, fg_pid)) |cwd| return cwd;
-    }
+    // Check whether fg_pid is a tmux client (user may run tmux inside Attyx).
+    if (getTmuxClientPaneCwd(allocator, fg_pid)) |cwd| return cwd;
 
     // Direct lookup — works when the fg process is a plain shell.
     return impl.getCwdForPid(allocator, fg_pid);
