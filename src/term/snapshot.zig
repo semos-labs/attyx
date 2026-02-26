@@ -11,16 +11,22 @@ const grid_mod = @import("grid.zig");
 ///
 /// Caller owns the returned slice and must free it with `allocator`.
 pub fn dumpToString(allocator: std.mem.Allocator, grid: *const grid_mod.Grid) ![]u8 {
-    // Worst case: every cell is a 4-byte codepoint + newlines.
-    const max_len = grid.rows * (grid.cols * 4 + 1);
+    // Worst case: every cell is a 4-byte base + 2×4-byte combining + newlines.
+    const max_len = grid.rows * (grid.cols * 12 + 1);
     const buf = try allocator.alloc(u8, max_len);
 
     var pos: usize = 0;
     for (0..grid.rows) |row| {
         for (0..grid.cols) |col| {
-            const cp = grid.getCell(row, col).char;
-            const n = std.unicode.utf8Encode(cp, buf[pos..]) catch 1;
+            const cell = grid.getCell(row, col);
+            const n = std.unicode.utf8Encode(cell.char, buf[pos..]) catch 1;
             pos += n;
+            // Emit combining marks
+            for (cell.combining) |cm| {
+                if (cm == 0) break;
+                const cn = std.unicode.utf8Encode(cm, buf[pos..]) catch 1;
+                pos += cn;
+            }
         }
         buf[pos] = '\n';
         pos += 1;

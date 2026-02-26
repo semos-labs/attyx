@@ -107,6 +107,8 @@ typedef struct {
 GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale);
 int  glyphCacheLookup(GlyphCache* gc, uint32_t cp);
 int  glyphCacheRasterize(GlyphCache* gc, uint32_t cp);
+uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2);
+int  glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2);
 int  renderBoxDraw(CGContextRef ctx, uint32_t cp, int gw, int gh, float scale);
 
 // ---------------------------------------------------------------------------

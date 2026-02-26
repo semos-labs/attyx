@@ -757,7 +757,7 @@ void doCopy(void) {
     if (sr < 0) { sr = 0; sc = 0; }
     if (er >= rows) { er = rows - 1; ec = cols - 1; }
 
-    int maxlen = (er - sr + 1) * (cols * 4 + 1) + 1;
+    int maxlen = (er - sr + 1) * (cols * 12 + 1) + 1;
     char* buf = (char*)malloc(maxlen);
     if (!buf) return;
     int pos = 0;
@@ -775,7 +775,8 @@ void doCopy(void) {
         }
 
         for (int c = cStart; c <= lastNonSpace; c++) {
-            uint32_t ch = g_cells[row * cols + c].character;
+            int idx = row * cols + c;
+            uint32_t ch = g_cells[idx].character;
             if (ch == 0 || ch == ' ') {
                 buf[pos++] = ' ';
             } else {
@@ -783,6 +784,14 @@ void doCopy(void) {
                 int n = utf8Encode(ch, utf8);
                 memcpy(buf + pos, utf8, n);
                 pos += n;
+                // Append combining marks
+                for (int k = 0; k < 2; k++) {
+                    uint32_t cm = g_cells[idx].combining[k];
+                    if (cm == 0) break;
+                    n = utf8Encode(cm, utf8);
+                    memcpy(buf + pos, utf8, n);
+                    pos += n;
+                }
             }
         }
         if (row < er) buf[pos++] = '\n';

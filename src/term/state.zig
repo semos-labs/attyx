@@ -5,6 +5,7 @@ const sgr_mod = @import("sgr.zig");
 const dirty_mod = @import("dirty.zig");
 const scrollback_mod = @import("scrollback.zig");
 const graphics_store_mod = @import("graphics_store.zig");
+const unicode = @import("unicode.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const Cell = grid_mod.Cell;
@@ -249,94 +250,25 @@ pub const TerminalState = struct {
 
     // -- Text output -------------------------------------------------------
 
-    /// Returns true for Unicode combining / nonspacing marks. Covers all major BMP
-    /// ranges including those used by Kitty Unicode placements for row/column encoding.
-    fn isCombiningMark(cp: u21) bool {
-        if (cp < 0x0300 or cp > 0xFE2F) return false;
-        return (cp <= 0x036F) // Combining Diacritical Marks
-            or (cp >= 0x0483 and cp <= 0x0489) // Cyrillic
-            or (cp >= 0x0591 and cp <= 0x05C7) // Hebrew
-            or (cp >= 0x0610 and cp <= 0x061A) or (cp >= 0x064B and cp <= 0x065F) // Arabic
-            or cp == 0x0670 or (cp >= 0x06D6 and cp <= 0x06ED) or cp == 0x0711
-            or (cp >= 0x0730 and cp <= 0x074A) // Syriac
-            or (cp >= 0x07A6 and cp <= 0x07B0) or (cp >= 0x07EB and cp <= 0x07F3) // Thaana/NKo
-            or (cp >= 0x0816 and cp <= 0x082D) or (cp >= 0x0859 and cp <= 0x085B) // Samaritan
-            or (cp >= 0x0898 and cp <= 0x08E1) or (cp >= 0x08E3 and cp <= 0x0963) // Arabic Ext/Indic
-            or (cp >= 0x0981 and cp <= 0x0983) or (cp >= 0x09BC and cp <= 0x09CD) // Bengali
-            or cp == 0x09D7 or (cp >= 0x09E2 and cp <= 0x09E3)
-            or (cp >= 0x0A01 and cp <= 0x0A75) // Gurmukhi (sparse but safe to absorb range)
-            or (cp >= 0x0A81 and cp <= 0x0AFF) // Gujarati + extensions
-            or (cp >= 0x1AB0 and cp <= 0x1ACE) // Combining Diacritical Marks Extended
-            or (cp >= 0x1DC0 and cp <= 0x1DFF) // Combining Diacritical Marks Supplement
-            or (cp >= 0x20D0 and cp <= 0x20F0) // Combining Marks for Symbols
-            or (cp >= 0xFE20 and cp <= 0xFE2F); // Combining Half Marks
-    }
-
-    /// Returns 2 for Unicode characters with East Asian Width W or F (wide),
-    /// 1 for everything else. Mirrors the canBeWide() logic in the glyph caches.
-    fn charDisplayWidth(char: u21) u2 {
-        const cp: u32 = char;
-        if (cp < 0x1100) return 1;
-        if (cp <= 0x115F) return 2;  // Hangul Jamo
-        if (cp == 0x2329 or cp == 0x232A) return 2;
-        if (cp >= 0x2E80 and cp <= 0x303E) return 2;
-        if (cp >= 0x3041 and cp <= 0x33FF) return 2;
-        if (cp >= 0x3400 and cp <= 0x4DBF) return 2;
-        if (cp >= 0x4E00 and cp <= 0x9FFF) return 2;
-        if (cp >= 0xA000 and cp <= 0xA4CF) return 2;
-        if (cp >= 0xA960 and cp <= 0xA97F) return 2;
-        if (cp >= 0xAC00 and cp <= 0xD7AF) return 2;
-        if (cp >= 0xF900 and cp <= 0xFAFF) return 2;
-        if (cp >= 0xFE10 and cp <= 0xFE6F) return 2;
-        if (cp >= 0xFF01 and cp <= 0xFF60) return 2;
-        if (cp >= 0xFFE0 and cp <= 0xFFE6) return 2;
-        if (cp >= 0x1B000 and cp <= 0x1B2FF) return 2;
-        if (cp >= 0x1F300 and cp <= 0x1F64F) return 2;
-        if (cp >= 0x1F680 and cp <= 0x1F6FF) return 2; // Transport & Map Symbols
-        if (cp >= 0x1F7E0 and cp <= 0x1F7FF) return 2; // Coloured circles/squares
-        if (cp >= 0x1F900 and cp <= 0x1FAFF) return 2;
-        if (cp >= 0x20000 and cp <= 0x2FFFD) return 2;
-        if (cp >= 0x30000 and cp <= 0x3FFFD) return 2;
-        // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
-        if (cp == 0x231A or cp == 0x231B) return 2;
-        if (cp >= 0x23E9 and cp <= 0x23F3) return 2;
-        if (cp >= 0x25FD and cp <= 0x25FE) return 2;
-        if (cp == 0x2614 or cp == 0x2615) return 2;
-        if (cp >= 0x2648 and cp <= 0x2653) return 2;
-        if (cp == 0x267F or cp == 0x2693 or cp == 0x26A1) return 2;
-        if (cp == 0x26CE or cp == 0x26D4 or cp == 0x26EA) return 2;
-        if (cp == 0x26F2 or cp == 0x26F3 or cp == 0x26F5) return 2;
-        if (cp == 0x26FA or cp == 0x26FD) return 2;
-        if (cp == 0x2702 or cp == 0x2705) return 2;
-        if (cp == 0x2708) return 2;                                    // ✈ airplane
-        if (cp >= 0x270A and cp <= 0x270B) return 2;                  // ✊✋ fists
-        if (cp == 0x270D) return 2;                                    // ✍ writing hand
-        if (cp == 0x2728) return 2;
-        if (cp == 0x2744 or cp == 0x2747) return 2;
-        if (cp == 0x274C or cp == 0x274E) return 2;
-        if (cp >= 0x2753 and cp <= 0x2755) return 2;
-        if (cp == 0x2757) return 2;
-        if (cp == 0x2763 or cp == 0x2764) return 2;
-        if (cp >= 0x2795 and cp <= 0x2797) return 2;
-        if (cp == 0x27A1 or cp == 0x27B0 or cp == 0x27BF) return 2;
-        if (cp == 0x2934 or cp == 0x2935) return 2;
-        if (cp >= 0x2B05 and cp <= 0x2B07) return 2;
-        if (cp == 0x2B1B or cp == 0x2B1C or cp == 0x2B50 or cp == 0x2B55) return 2;
-        return 1;
-    }
+    const isCombiningMark = unicode.isCombiningMark;
+    const isZeroWidth = unicode.isZeroWidth;
+    const charDisplayWidth = unicode.charDisplayWidth;
 
     fn printChar(self: *TerminalState, char: u21) void {
-        // Silently absorb zero-width / combining codepoints that must not occupy a cell.
-        if (char == 0xFE0F) return; // VS16 — emoji presentation selector
-        if (char == 0x200D) return; // ZWJ — zero width joiner
-        if (char == 0x20E3) return; // combining enclosing keycap
-        if (char >= 0xFE00 and char <= 0xFE0E) return; // VS1-15 variation selectors
-        if (char >= 0x1F3FB and char <= 0x1F3FF) return; // Fitzpatrick skin-tone modifiers
-
-        // Combining / nonspacing marks: absorb since we don't have combining
-        // support yet. These ranges also cover the diacriticals used by the
-        // Kitty Unicode placement protocol for row/column encoding.
-        if (isCombiningMark(char)) return;
+        // Zero-width characters: absorb into the previous cell as combining marks.
+        if (isZeroWidth(char) or isCombiningMark(char)) {
+            if (self.cursor.col > 0) {
+                const prev_col = self.cursor.col - 1;
+                const idx = self.cursor.row * self.grid.cols + prev_col;
+                if (self.grid.cells[idx].combining[0] == 0) {
+                    self.grid.cells[idx].combining[0] = char;
+                } else if (self.grid.cells[idx].combining[1] == 0) {
+                    self.grid.cells[idx].combining[1] = char;
+                }
+                self.dirty.mark(self.cursor.row);
+            }
+            return;
+        }
 
         if (self.wrap_next) {
             if (self.auto_wrap) {

@@ -499,9 +499,15 @@ int drawFrame(void) {
             float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
 
-            int rawSlot = glyphCacheLookup(&g_gc, ch);
+            uint32_t key = ch;
+            bool hasCombining = (cell->combining[0] != 0);
+            if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
+
+            int rawSlot = glyphCacheLookup(&g_gc, key);
             if (rawSlot < 0) {
-                rawSlot = glyphCacheRasterize(&g_gc, ch);
+                rawSlot = hasCombining
+                    ? glyphCacheRasterizeCombined(&g_gc, ch, cell->combining[0], cell->combining[1])
+                    : glyphCacheRasterize(&g_gc, ch);
                 atlasW = (float)g_gc.atlas_w;
             }
 

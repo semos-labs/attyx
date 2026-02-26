@@ -41,6 +41,9 @@ pub const Style = struct {
 /// A single cell in the terminal grid.
 pub const Cell = struct {
     char: u21 = ' ',
+    /// Combining marks attached to the base character (e.g. diacriticals, Thai
+    /// tone marks). 2 slots cover virtually all real-world grapheme clusters.
+    combining: [2]u21 = .{ 0, 0 },
     style: Style = .{},
     /// Hyperlink association (0 = none). Maps to TerminalState's link table.
     link_id: u32 = 0,

@@ -28,11 +28,7 @@ char* findFontPath(const char* family) {
     return path;
 }
 
-// Fixed reference cell dimensions (in logical points) captured on the first
-// createGlyphCache call. Percent-mode cell sizes are anchored to these values
-// so that changing the font size does not affect the configured cell height/width.
-static float s_ref_h_pt = 0.0f;
-static float s_ref_w_pt = 0.0f;
+// createGlyphCache() and reference cell statics are in linux_font.c.
 
 /// Returns true if `cp` belongs to a Unicode range whose East Asian Width
 /// property is W (Wide) or F (Fullwidth) — i.e. it occupies 2 terminal cells.
@@ -462,126 +458,91 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
 }
 
 // ---------------------------------------------------------------------------
-// Initialize glyph cache: discover font, set up atlas texture
+// Combining mark support
 // ---------------------------------------------------------------------------
 
-GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
-    // Font family: prefer config (g_font_family), fall back to env, then defaults.
-    char* fontPath = NULL;
-    if (g_font_family_len > 0)
-        fontPath = findFontPath(g_font_family);
-    if (!fontPath) {
-        const char* fontEnv = getenv("ATTYX_FONT");
-        if (fontEnv && fontEnv[0])
-            fontPath = findFontPath(fontEnv);
-    }
-    if (!fontPath) fontPath = findFontPath("Monospace");
-    if (!fontPath) fontPath = findFontPath("DejaVu Sans Mono");
-    if (!fontPath) fontPath = findFontPath("Courier");
-    if (!fontPath) {
-        ATTYX_LOG_ERR("glyph", "no monospace font found");
-        exit(1);
-    }
-
-    FT_Face face;
-    if (FT_New_Face(ft_lib, fontPath, 0, &face) != 0) {
-        ATTYX_LOG_ERR("glyph", "failed to load font: %s", fontPath);
-        free(fontPath);
-        exit(1);
-    }
-    free(fontPath);
-
-    // Font size: prefer config (g_font_size), in points.
-    float basePt = (g_font_size > 0) ? (float)g_font_size : 14.0f;
-    int fontSize = (int)(basePt * contentScale);
-    FT_Set_Pixel_Sizes(face, 0, fontSize);
-
-    float ascender = (float)(face->size->metrics.ascender >> 6);
-    float naturalH = (float)(face->size->metrics.height >> 6);
-
-    // Measure actual monospace cell width from a reference ASCII glyph.
-    // max_advance includes double-width CJK glyphs and can be 2x too wide.
-    float naturalW;
-    if (FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0) {
-        naturalW = (float)(face->glyph->advance.x >> 6);
-    } else {
-        naturalW = (float)(face->size->metrics.max_advance >> 6);
-    }
-    float gh = naturalH;
-    float gw = naturalW;
-
-    // Capture fixed reference dimensions (in logical points) on first call.
-    // Percent mode uses these so that cell size is independent of font size.
-    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / contentScale;
-    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / contentScale;
-
-    // Apply cell size from config:
-    //   0   → auto
-    //   > 0 → fixed absolute pixel value
-    //   < 0 → percent: base × abs(value) / 100
-    if (g_cell_width > 0)
-        gw = roundf((float)g_cell_width * contentScale);
-    else if (g_cell_width < 0)
-        gw = roundf(s_ref_w_pt * contentScale * (float)(-g_cell_width) / 100.0f);
-    if (g_cell_height > 0)
-        gh = roundf((float)g_cell_height * contentScale);
-    else if (g_cell_height < 0)
-        gh = roundf(s_ref_h_pt * contentScale * (float)(-g_cell_height) / 100.0f);
-
-    float baseline_y_offset = (gh - naturalH) / 2.0f;
-    float x_offset = (gw - naturalW) / 2.0f;
-
-    int cols = 32;
-    int initRows = 32;
-    int atlasW = (int)(gw * cols);
-    int atlasH = (int)(gh * initRows);
-
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    uint8_t* zeroes = (uint8_t*)calloc(atlasW * atlasH, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, atlasW, atlasH, 0,
-                 GL_RED, GL_UNSIGNED_BYTE, zeroes);
-    free(zeroes);
-
-    GLuint colorTex;
-    glGenTextures(1, &colorTex);
-    glBindTexture(GL_TEXTURE_2D, colorTex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-
-    GlyphCache gc;
-    memset(&gc, 0, sizeof(gc));
-    gc.texture       = tex;
-    gc.color_texture = colorTex;
-    gc.ft_lib     = ft_lib;
-    gc.ft_face    = face;
-    gc.glyph_w    = gw;
-    gc.glyph_h    = gh;
-    gc.scale      = contentScale;
-    gc.ascender   = ascender;
-    gc.baseline_y_offset = baseline_y_offset;
-    gc.x_offset   = x_offset;
-    gc.atlas_cols = cols;
-    gc.atlas_w    = atlasW;
-    gc.atlas_h    = atlasH;
-    gc.next_slot  = 0;
-    gc.max_slots  = cols * initRows;
-
-    for (int i = 0; i < GLYPH_CACHE_CAP; i++) gc.map[i].slot = -1;
-
-    for (uint32_t ch = 32; ch < 127; ch++)
-        glyphCacheRasterize(&gc, ch);
-
-    return gc;
+uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2) {
+    uint32_t h = base ^ (c1 * 0x9e3779b9) ^ (c2 * 0x517cc1b7);
+    return (h & 0x7FFFFFFF) | 0x80000000;
 }
+
+int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2) {
+    int gw = (int)gc->glyph_w;
+    int gh = (int)gc->glyph_h;
+
+    // Render base glyph first
+    FT_Face face = gc->ft_face;
+    FT_UInt baseIdx = FT_Get_Char_Index(face, base);
+    if (!baseIdx) {
+        // No glyph for base — fall back to single rasterize
+        return glyphCacheRasterize(gc, base);
+    }
+
+    int wide = canBeWide(base);
+    int renderW = wide ? gw * 2 : gw;
+
+    // Allocate atlas slot
+    int slot = gc->next_slot;
+    gc->next_slot += (wide ? 2 : 1);
+    if (gc->next_slot > gc->max_slots) glyphCacheGrow(gc);
+    int ac = slot % gc->atlas_cols;
+    int ar = slot / gc->atlas_cols;
+
+    uint8_t* pixels = (uint8_t*)calloc(renderW * gh, 1);
+
+    // Render base glyph
+    if (FT_Load_Glyph(face, baseIdx, FT_LOAD_RENDER) == 0) {
+        FT_Bitmap* bm = &face->glyph->bitmap;
+        int bx = face->glyph->bitmap_left + (int)gc->x_offset;
+        int by = (int)gc->ascender - face->glyph->bitmap_top + (int)gc->baseline_y_offset;
+        for (unsigned r = 0; r < bm->rows; r++) {
+            int dy = by + (int)r;
+            if (dy < 0 || dy >= gh) continue;
+            for (unsigned cx = 0; cx < bm->width; cx++) {
+                int dx = bx + (int)cx;
+                if (dx < 0 || dx >= renderW) continue;
+                uint8_t val = bm->buffer[r * bm->pitch + cx];
+                // Alpha-blend: max of base and new
+                if (val > pixels[dy * renderW + dx])
+                    pixels[dy * renderW + dx] = val;
+            }
+        }
+    }
+
+    // Overlay each combining mark
+    uint32_t marks[2] = { c1, c2 };
+    for (int m = 0; m < 2; m++) {
+        if (marks[m] == 0) continue;
+        FT_UInt mIdx = FT_Get_Char_Index(face, marks[m]);
+        if (!mIdx) continue;
+        if (FT_Load_Glyph(face, mIdx, FT_LOAD_RENDER) != 0) continue;
+        FT_Bitmap* bm = &face->glyph->bitmap;
+        int bx = face->glyph->bitmap_left + (int)gc->x_offset;
+        int by = (int)gc->ascender - face->glyph->bitmap_top + (int)gc->baseline_y_offset;
+        for (unsigned r = 0; r < bm->rows; r++) {
+            int dy = by + (int)r;
+            if (dy < 0 || dy >= gh) continue;
+            for (unsigned cx = 0; cx < bm->width; cx++) {
+                int dx = bx + (int)cx;
+                if (dx < 0 || dx >= renderW) continue;
+                uint8_t val = bm->buffer[r * bm->pitch + cx];
+                if (val > pixels[dy * renderW + dx])
+                    pixels[dy * renderW + dx] = val;
+            }
+        }
+    }
+
+    // Upload to atlas
+    glBindTexture(GL_TEXTURE_2D, gc->texture);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, renderW, gh,
+                    GL_RED, GL_UNSIGNED_BYTE, pixels);
+    free(pixels);
+
+    uint32_t key = combiningKey(base, c1, c2);
+    int encoded = wide ? (slot | GLYPH_WIDE_BIT) : slot;
+    glyphCacheInsert(gc, key, encoded);
+    return encoded;
+}
+
+// createGlyphCache() is defined in linux_font.c
