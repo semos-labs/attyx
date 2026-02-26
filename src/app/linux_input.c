@@ -318,6 +318,15 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
+    // Modifier-only keys must not clear selection or snap viewport.
+    // Without this, pressing Shift (part of Ctrl+Shift+C) clears the
+    // selection before the full chord arrives.
+    if (key == GLFW_KEY_LEFT_SHIFT   || key == GLFW_KEY_RIGHT_SHIFT   ||
+        key == GLFW_KEY_LEFT_CONTROL || key == GLFW_KEY_RIGHT_CONTROL ||
+        key == GLFW_KEY_LEFT_ALT     || key == GLFW_KEY_RIGHT_ALT     ||
+        key == GLFW_KEY_LEFT_SUPER   || key == GLFW_KEY_RIGHT_SUPER)
+        return;
+
     snapViewport();
 
     // Map special keys through the encoder
