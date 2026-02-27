@@ -74,6 +74,22 @@ pub const SearchBarState = struct {
         self.cursor_pos = self.query_len;
     }
 
+    pub fn deleteWord(self: *SearchBarState) void {
+        if (self.cursor_pos == 0) return;
+        const q = self.query[0..self.query_len];
+        var p = self.cursor_pos;
+        // Skip trailing whitespace
+        while (p > 0 and q[p - 1] == ' ') p -= 1;
+        // Skip word chars
+        while (p > 0 and q[p - 1] != ' ') p -= 1;
+        // Delete from p to cursor_pos
+        const del_len = self.cursor_pos - p;
+        const qlen: usize = self.query_len;
+        std.mem.copyForwards(u8, self.query[p .. qlen - del_len], self.query[self.cursor_pos..qlen]);
+        self.query_len -= del_len;
+        self.cursor_pos = p;
+    }
+
     pub fn clear(self: *SearchBarState) void {
         self.query_len = 0;
         self.cursor_pos = 0;
@@ -180,7 +196,7 @@ pub fn layoutSearchBar(
             cells[ci] = .{ .char = ch, .fg = style.placeholder_fg, .bg = style.input_bg, .bg_alpha = style.bg_alpha };
             pi += 1;
         }
-        // Cursor at position 0 (beginning of input)
+        // Cursor at position 0: opaque with cursor colors
         if (input_start < input_end) {
             cells[input_start] = .{
                 .char = ' ',
@@ -203,6 +219,7 @@ pub fn layoutSearchBar(
 
             const is_cursor = (byte_pos == search.cursor_pos);
             if (is_cursor) {
+                // Opaque cursor cell (overlay draws on top of terminal cursor quad)
                 cells[ci] = .{
                     .char = cp,
                     .fg = style.cursor_fg,
@@ -225,6 +242,7 @@ pub fn layoutSearchBar(
         if (search.cursor_pos >= search.query_len) {
             const ci = input_start + char_col;
             if (ci < input_end) {
+                // Opaque cursor cell
                 cells[ci] = .{
                     .char = ' ',
                     .fg = style.cursor_fg,
@@ -361,6 +379,20 @@ test "SearchBarState: clear" {
     try std.testing.expectEqual(@as(u16, 0), s.cursor_pos);
 }
 
+test "SearchBarState: deleteWord" {
+    var s = SearchBarState{};
+    for ("hello world foo") |ch| s.insertChar(ch);
+    try std.testing.expectEqualSlices(u8, "hello world foo", s.querySlice());
+    s.deleteWord(); // deletes "foo"
+    try std.testing.expectEqualSlices(u8, "hello world ", s.querySlice());
+    s.deleteWord(); // deletes "world "  (trailing space then word)
+    try std.testing.expectEqualSlices(u8, "hello ", s.querySlice());
+    s.deleteWord(); // deletes "hello "
+    try std.testing.expectEqualSlices(u8, "", s.querySlice());
+    s.deleteWord(); // no-op on empty
+    try std.testing.expectEqual(@as(u16, 0), s.cursor_pos);
+}
+
 test "layoutSearchBar: dimensions" {
     var s = SearchBarState{};
     const result = try layoutSearchBar(std.testing.allocator, 80, &s, .{});
@@ -375,12 +407,14 @@ test "layoutSearchBar: placeholder when empty" {
     const sty = SearchBarStyle{};
     const result = try layoutSearchBar(std.testing.allocator, 80, &s, sty);
     defer std.testing.allocator.free(result.cells);
-    // Col 7 is cursor cell (overwrites first placeholder char), col 8 has 'y'
+    // Col 7 is cursor cell (opaque with cursor_bg color)
+    try std.testing.expectEqual(sty.bg_alpha, result.cells[7].bg_alpha);
     try std.testing.expectEqual(sty.cursor_bg.r, result.cells[7].bg.r);
+    // Col 8 has 'y' from placeholder "type to search..."
     try std.testing.expectEqual(@as(u21, 'y'), result.cells[8].char);
 }
 
-test "layoutSearchBar: cursor cell inverted" {
+test "layoutSearchBar: cursor cell uses cursor_bg" {
     var s = SearchBarState{};
     s.insertChar('a');
     s.insertChar('b');
@@ -388,10 +422,12 @@ test "layoutSearchBar: cursor cell inverted" {
     const result = try layoutSearchBar(std.testing.allocator, 80, &s, sty);
     defer std.testing.allocator.free(result.cells);
     // Cursor is at pos 2 (end), which maps to input_start + 2 = col 9
-    // The cursor cell should have cursor_bg as background
+    // Cursor cell should be opaque with cursor_bg color
+    try std.testing.expectEqual(sty.bg_alpha, result.cells[9].bg_alpha);
     try std.testing.expectEqual(sty.cursor_bg.r, result.cells[9].bg.r);
-    try std.testing.expectEqual(sty.cursor_bg.g, result.cells[9].bg.g);
-    try std.testing.expectEqual(sty.cursor_bg.b, result.cells[9].bg.b);
+    // Non-cursor cells should also have full alpha
+    try std.testing.expectEqual(sty.bg_alpha, result.cells[7].bg_alpha);
+    try std.testing.expectEqual(sty.bg_alpha, result.cells[8].bg_alpha);
 }
 
 test "layoutSearchBar: match counter" {

@@ -206,6 +206,7 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_End)                      { attyx_search_cmd(6); return YES; }
         if (kc == kVK_UpArrow)                  { attyx_search_cmd(9); return YES; }
         if (kc == kVK_DownArrow)                { attyx_search_cmd(8); return YES; }
+        if (ctrl && kc == kVK_ANSI_W)          { attyx_search_cmd(10); return YES; }
     }
 
     // Overlay interaction keys (contextual, not user-configurable)

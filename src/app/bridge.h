@@ -20,6 +20,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows);
 
 // Update cursor position (called from PTY thread).
 void attyx_set_cursor(int row, int col);
+extern volatile int g_cursor_row;
+extern volatile int g_cursor_col;
+
+// Number of grid rows to shift terminal content down (for search bar padding).
+// Overlays are NOT shifted — they render at the original offY.
+extern volatile int g_grid_top_offset;
 
 // Spawn a new attyx process (new window with fresh shell session).
 void attyx_spawn_new_window(void);
@@ -159,10 +165,6 @@ extern volatile int  g_search_vis_count;    // matches visible in viewport
 extern volatile int  g_search_cur_vis_row;  // viewport-row of current match (-1 = off-screen)
 extern volatile int  g_search_cur_vis_cs;   // current match col_start (viewport)
 extern volatile int  g_search_cur_vis_ce;   // current match col_end (viewport)
-
-// Grid-based search bar: PTY thread -> renderer
-extern volatile int  g_search_cursor_pos;       // byte offset in query (PTY -> renderer)
-extern volatile int  g_search_suppress_cursor;  // 1 when search active (PTY -> renderer)
 
 // Grid-based search input: input thread -> PTY thread (Zig-side)
 void attyx_search_insert_char(uint32_t codepoint);

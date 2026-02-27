@@ -200,7 +200,8 @@ int drawFrame(void) {
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     float offX = padL + cx;
-    float offY = padT + cy;
+    float baseOffY = padT + cy;
+    float offY = baseOffY + g_grid_top_offset * gh;
     float viewport[2] = { (float)fb_w, (float)fb_h };
     float atlasW = (float)g_gc.atlas_w;
     float glyphW = g_gc.glyph_w;
@@ -245,10 +246,10 @@ int drawFrame(void) {
     int cursorSlot = total * 6;
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
-    int drawCursor = curVis && g_blink_on && !g_search_suppress_cursor
+    int drawCursor = curVis && g_blink_on
                      && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
     if (drawCursor) {
-        float cx0 = offX + curCol * gw, cy0 = offY + curRow * gh;
+        float cx0 = offX + curCol * gw, cy0 = baseOffY + curRow * gh;
         float cr, cg_c, cb;
         if (g_theme_cursor_r >= 0) {
             cr = g_theme_cursor_r / 255.0f;
@@ -288,7 +289,7 @@ int drawFrame(void) {
         int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);
         if (cellDist > 1) {
             g_trail_x = offX + g_prev_cursor_col * gw;
-            g_trail_y = offY + g_prev_cursor_row * gh;
+            g_trail_y = baseOffY + g_prev_cursor_row * gh;
             g_trail_active = 1;
             g_trail_last_time = now;
         }
@@ -296,7 +297,7 @@ int drawFrame(void) {
     if (g_trail_active && !g_cursor_visible) g_trail_active = 0;
     if (g_trail_active && g_cursor_trail && g_cursor_visible) {
         float targetX = offX + curCol * gw;
-        float targetY = offY + curRow * gh;
+        float targetY = baseOffY + curRow * gh;
         float dt = (float)(now - g_trail_last_time);
         g_trail_last_time = now;
         float speed = 14.0f;
@@ -680,8 +681,8 @@ int drawFrame(void) {
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     }
 
-    // Overlay layers (debug card, etc.)
-    drawOverlays(offX, offY, gw, gh, viewport);
+    // Overlay layers (debug card, etc.) — use baseOffY so overlays are NOT shifted
+    drawOverlays(offX, baseOffY, gw, gh, viewport);
     lastOverlayGen = g_overlay_gen;
 
     // Popup terminal

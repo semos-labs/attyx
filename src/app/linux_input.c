@@ -282,6 +282,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         if (key == GLFW_KEY_END)          { attyx_search_cmd(6); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_UP)           { attyx_search_cmd(9); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_DOWN)         { attyx_search_cmd(8); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_W)   { attyx_search_cmd(10); g_suppress_char = 1; return; }
         g_suppress_char = 0;
         return;
     }

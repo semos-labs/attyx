@@ -42,6 +42,7 @@ export var g_theme_sel_fg_b: i32 = 0;
 var _icon_stub: u8 = 0;
 export var g_icon_png: [*]const u8 = @ptrCast(&_icon_stub);
 export var g_icon_png_len: c_int = 0;
+export var g_grid_top_offset: i32 = 0;
 export var g_toggle_debug_overlay: i32 = 0;
 export fn attyx_toggle_debug_overlay() void {}
 export var g_toggle_anchor_demo: i32 = 0;
@@ -56,8 +57,6 @@ export fn attyx_overlay_click(_: c_int, _: c_int) c_int { return 0; }
 export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }
 
 // Grid-based search bar stubs (ui2.zig provides real implementations)
-export var g_search_cursor_pos: i32 = 0;
-export var g_search_suppress_cursor: i32 = 0;
 export fn attyx_search_insert_char(_: u32) void {}
 export fn attyx_search_cmd(_: c_int) void {}
 

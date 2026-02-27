@@ -154,16 +154,20 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         if (cx < 0) cx = 0;
         if (cy < 0) cy = 0;
         float offX = padL + cx;
-        float offY = padT + cy;
+        float baseOffY = padT + cy;
+        float offY = baseOffY + g_grid_top_offset * gh;
         float viewport[2] = { dW, dH };
 
         float atlasW = (float)_glyphCache.atlas_w;
         float glyphW = _glyphCache.glyph_w;
         float glyphH = _glyphCache.glyph_h;
         int atlasCols = _glyphCache.atlas_cols;
+        int visibleRows = rows - g_grid_top_offset;
+        if (visibleRows < 0) visibleRows = 0;
+        int visibleTotal = visibleRows * cols;
 
         int dirtyRowCount = 0;
-        for (int row = 0; row < rows; row++) {
+        for (int row = 0; row < visibleRows; row++) {
             if (!_fullRedrawNeeded && !dirtyBitTest(dirty, row)) continue;
             dirtyRowCount++;
 
@@ -206,11 +210,11 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         memset(&_bgVerts[cursorSlot], 0, sizeof(Vertex) * 6);
 
         int bgVertCount = total * 6;
-        BOOL drawCursor = curVisible && _blinkOn && !g_search_suppress_cursor
+        BOOL drawCursor = curVisible && _blinkOn
                           && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
         if (drawCursor) {
             float cx0 = offX + curCol * gw;
-            float cy0 = offY + curRow * gh;
+            float cy0 = baseOffY + curRow * gh;
             float cr, cg_c, cb;
             if (g_theme_cursor_r >= 0) {
                 cr = g_theme_cursor_r / 255.0f;
@@ -249,7 +253,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             uint32_t hoverLid = g_hover_link_id;
             float ulH = fmaxf(2.0f, 1.0f);
 
-            for (int i = 0; i < total; i++) {
+            for (int i = 0; i < visibleTotal; i++) {
                 uint32_t lid = cells[i].link_id;
                 if (lid == 0) continue;
                 if (bgVertCount + 6 > _metalBufCapBg) break;
@@ -461,7 +465,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             int cellDist = abs(curRow - _prevCursorRow) + abs(curCol - _prevCursorCol);
             if (cellDist > 1) {
                 _trailX = offX + _prevCursorCol * gw;
-                _trailY = offY + _prevCursorRow * gh;
+                _trailY = baseOffY + _prevCursorRow * gh;
                 _trailActive = YES;
                 _trailLastTime = now;
             }
@@ -469,7 +473,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         if (_trailActive && !g_cursor_visible) _trailActive = NO;
         if (_trailActive && g_cursor_trail && g_cursor_visible) {
             float targetX = offX + curCol * gw;
-            float targetY = offY + curRow * gh;
+            float targetY = baseOffY + curRow * gh;
             float dt = (float)(now - _trailLastTime);
             _trailLastTime = now;
             float speed = 14.0f;
@@ -641,9 +645,9 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         [self drawImagesWithEncoder:enc viewport:viewport
                              glyphW:gw glyphH:gh offX:offX offY:offY];
 
-        // Overlay layers (debug card, etc.)
+        // Overlay layers (debug card, etc.) — use baseOffY so overlays are NOT shifted
         [self drawOverlaysWithEncoder:enc viewport:viewport
-                               glyphW:gw glyphH:gh offX:offX offY:offY];
+                               glyphW:gw glyphH:gh offX:offX offY:baseOffY];
         _lastOverlayGen = g_overlay_gen;
 
         // Popup terminal (drawn after overlays, before IME)

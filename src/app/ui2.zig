@@ -105,6 +105,9 @@ const _icon_bytes = @import("app_icon").data;
 export var g_icon_png: [*]const u8 = _icon_bytes.ptr;
 export var g_icon_png_len: c_int = @intCast(_icon_bytes.len);
 
+// Grid top offset: number of rows to shift terminal content down (search bar padding).
+export var g_grid_top_offset: i32 = 0;
+
 // Overlay toggle flag: set to 1 by input thread, read-and-reset by PTY thread.
 export var g_toggle_debug_overlay: i32 = 0;
 
@@ -196,9 +199,6 @@ export fn attyx_overlay_scroll(col: c_int, row: c_int, delta: c_int) c_int {
 // ---------------------------------------------------------------------------
 // Grid-based search bar globals and exports
 // ---------------------------------------------------------------------------
-
-export var g_search_cursor_pos: i32 = 0;
-export var g_search_suppress_cursor: i32 = 0;
 
 // Atomic command ring: input thread writes, PTY thread reads and processes.
 // Char ring: up to 32 codepoints buffered.
@@ -981,6 +981,9 @@ fn publishState(ctx: *PtyThreadCtx) void {
 
 var g_search: ?SearchState = null;
 var g_search_bar = overlay_search.SearchBarState{};
+var g_saved_cursor_shape: i32 = -1; // -1 = not saved
+var g_saved_cursor_row: c_int = 0;
+var g_saved_cursor_col: c_int = 0;
 
 /// Consume search input commands from the atomic rings, apply to SearchBarState,
 /// and sync the query into g_search_query/g_search_gen for processSearch.
@@ -1015,13 +1018,13 @@ fn consumeSearchInput() bool {
             4 => g_search_bar.cursorRight(),
             5 => g_search_bar.cursorHome(),
             6 => g_search_bar.cursorEnd(),
+            10 => g_search_bar.deleteWord(),
             7 => {
                 // Dismiss search
                 g_search_bar.clear();
                 c.g_search_active = 0;
                 c.g_search_query_len = 0;
                 c.g_search_gen += 1;
-                g_search_suppress_cursor = 0;
                 c.attyx_mark_all_dirty();
             },
             8 => {
@@ -1042,7 +1045,6 @@ fn consumeSearchInput() bool {
         @memcpy(c.g_search_query[0..qlen], g_search_bar.query[0..qlen]);
         c.g_search_query_len = @intCast(qlen);
         c.g_search_gen += 1;
-        g_search_cursor_pos = @intCast(g_search_bar.cursor_pos);
         c.attyx_mark_all_dirty();
     }
 
@@ -1056,8 +1058,14 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
     if (active == 0) {
         if (mgr.isVisible(.search_bar)) {
             mgr.hide(.search_bar);
-            g_search_suppress_cursor = 0;
             g_search_bar.clear();
+            // Restore original cursor shape and position
+            if (g_saved_cursor_shape >= 0) {
+                c.g_cursor_shape = g_saved_cursor_shape;
+                g_saved_cursor_shape = -1;
+            }
+            c.attyx_set_cursor(g_saved_cursor_row, g_saved_cursor_col);
+            g_grid_top_offset = 0;
             publishOverlays(ctx);
         }
         return;
@@ -1066,6 +1074,12 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
     // Detect fresh activation: search_bar not yet visible but g_search_active is 1
     if (!mgr.isVisible(.search_bar)) {
         g_search_bar.clear();
+        // Save current cursor shape/position and switch to blinking block
+        g_saved_cursor_shape = c.g_cursor_shape;
+        g_saved_cursor_row = c.g_cursor_row;
+        g_saved_cursor_col = c.g_cursor_col;
+        c.g_cursor_shape = 0; // blinking_block
+        g_grid_top_offset = 1;
     }
 
     // Sync match counts from processSearch results
@@ -1091,7 +1105,20 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
         mgr.show(.search_bar);
     }
 
-    g_search_suppress_cursor = 1;
+    // Move the terminal cursor into the search bar input area so the
+    // renderer draws it there (blink / shape / trail all work as normal).
+    // input_start = 7 (" Find: "), then count display chars to cursor_pos.
+    const input_start: u16 = 7;
+    var cursor_char_col: u16 = 0;
+    var bp: u16 = 0;
+    const q = g_search_bar.query[0..g_search_bar.query_len];
+    while (bp < g_search_bar.cursor_pos and bp < q.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(q[bp]) catch 1;
+        bp += @intCast(cp_len);
+        cursor_char_col += 1;
+    }
+    c.attyx_set_cursor(0, @intCast(input_start + cursor_char_col));
+
     publishOverlays(ctx);
 }
 
