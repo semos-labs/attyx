@@ -69,14 +69,13 @@ var g_pty_master: posix.fd_t = -1;
 // Global engine pointer for attyx_get_link_uri (set before attyx_run, read by renderer thread)
 var g_engine: ?*Engine = null;
 
-// Track last-published title pointer to avoid redundant g_title_changed updates.
-var g_last_title_ptr: ?[*]const u8 = null;
 
 // Atomic flag: set to 1 to request a config reload on the next PTY thread tick.
 // Written by SIGUSR1 handler or attyx_trigger_config_reload(); read-and-reset by PTY thread.
 export var g_needs_reload_config: i32 = 0;
 export var g_kitty_kbd_flags: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
+export var g_needs_window_update: i32 = 0;
 export var g_background_opacity: f32 = 1.0;
 export var g_background_blur: i32 = 30;
 export var g_window_decorations: i32 = 1;
@@ -281,6 +280,9 @@ pub fn run(
     // Apply config: default cursor shape
     engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
 
+    // Apply config: reflow
+    engine.state.reflow_on_resize = config.reflow_enabled;
+
     // Apply config: scrollback limit
     if (config.scrollback_lines != 20_000) {
         engine.state.scrollback.max_lines = config.scrollback_lines;
@@ -316,7 +318,8 @@ pub fn run(
         theme_registry.loadDir(themes_dir);
     } else |_| {}
     logging.info("theme", "registry: {d} theme(s) loaded", .{theme_registry.count()});
-    const initial_theme = theme_registry.resolve(config.theme_name);
+    var initial_theme = theme_registry.resolve(config.theme_name);
+    if (config.theme_background) |bg| initial_theme.background = bg;
     publishTheme(&initial_theme);
 
     // Install SIGUSR1 → config reload handler.
@@ -771,17 +774,29 @@ fn publishState(ctx: *PtyThreadCtx) void {
     c.g_cursor_visible = @intFromBool(ctx.engine.state.cursor_visible);
     g_kitty_kbd_flags = @intCast(ctx.engine.state.kittyFlags());
 
+    // Window title: prefer OSC 0/2 title from the shell; fall back to the
+    // foreground process name (e.g. "zsh", "vim") so the title bar is useful
+    // even when the shell doesn't send title sequences.
     if (ctx.engine.state.title) |title| {
-        if (g_last_title_ptr != title.ptr) {
-            const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
-            @memcpy(c.g_title_buf[0..len], title[0..len]);
-            c.g_title_buf[len] = 0;
-            c.g_title_len = @intCast(len);
-            c.g_title_changed = 1;
-            g_last_title_ptr = title.ptr;
+        const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
+        @memcpy(c.g_title_buf[0..len], title[0..len]);
+        c.g_title_buf[len] = 0;
+        c.g_title_len = @intCast(len);
+        c.g_title_changed = 1;
+    } else {
+        var name_buf: [256]u8 = undefined;
+        if (platform.getForegroundProcessName(ctx.pty.master, &name_buf)) |name| {
+            const len: usize = @min(name.len, c.ATTYX_TITLE_MAX - 1);
+            // Only update if the name actually changed.
+            const cur_len: usize = @intCast(c.g_title_len);
+            const same = (len == cur_len) and std.mem.eql(u8, c.g_title_buf[0..cur_len], name[0..len]);
+            if (!same) {
+                @memcpy(c.g_title_buf[0..len], name[0..len]);
+                c.g_title_buf[len] = 0;
+                c.g_title_len = @intCast(len);
+                c.g_title_changed = 1;
+            }
         }
-    } else if (g_last_title_ptr != null) {
-        g_last_title_ptr = null;
     }
 }
 
@@ -1229,7 +1244,57 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
 
     // Theme — re-resolve and republish
     ctx.active_theme = ctx.theme_registry.resolve(new_cfg.theme_name);
+    if (new_cfg.theme_background) |bg| ctx.active_theme.background = bg;
     publishTheme(&ctx.active_theme);
+
+    // Window properties — update bridge globals, signal render thread
+    {
+        var needs_window_update = false;
+
+        // Background opacity
+        if (new_cfg.background_opacity != c.g_background_opacity) {
+            c.g_background_opacity = new_cfg.background_opacity;
+            needs_window_update = true;
+        }
+
+        // Background blur
+        const new_blur: i32 = @intCast(new_cfg.background_blur);
+        if (new_blur != c.g_background_blur) {
+            c.g_background_blur = new_blur;
+            needs_window_update = true;
+        }
+
+        // Window decorations
+        const new_deco: i32 = if (new_cfg.window_decorations) 1 else 0;
+        if (new_deco != c.g_window_decorations) {
+            c.g_window_decorations = new_deco;
+            needs_window_update = true;
+        }
+
+        // Window padding
+        const new_pl: i32 = @intCast(new_cfg.window_padding_left);
+        const new_pr: i32 = @intCast(new_cfg.window_padding_right);
+        const new_pt: i32 = @intCast(new_cfg.window_padding_top);
+        const new_pb: i32 = @intCast(new_cfg.window_padding_bottom);
+        if (new_pl != c.g_padding_left or new_pr != c.g_padding_right or
+            new_pt != c.g_padding_top or new_pb != c.g_padding_bottom)
+        {
+            c.g_padding_left = new_pl;
+            c.g_padding_right = new_pr;
+            c.g_padding_top = new_pt;
+            c.g_padding_bottom = new_pb;
+            needs_window_update = true;
+        }
+
+        if (needs_window_update) {
+            c.g_needs_window_update = 1;
+        }
+    }
+
+    // Reflow
+    if (new_cfg.reflow_enabled != ctx.engine.state.reflow_on_resize) {
+        ctx.engine.state.reflow_on_resize = new_cfg.reflow_enabled;
+    }
 
     // Keybindings — always rebuild (cheap, no diff needed)
     {

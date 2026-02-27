@@ -35,6 +35,21 @@ fn getEnvOrHome(allocator: std.mem.Allocator, env_var: []const u8, fallback_suff
 
 extern "c" fn tcgetpgrp(fd: c_int) std.posix.pid_t;
 
+/// Look up a process's name by PID using /proc/<pid>/comm.
+/// Returns a slice into `buf`, or null on failure.
+pub fn getProcessName(pid: std.posix.pid_t, buf: *[256]u8) ?[]const u8 {
+    var path_buf: [64:0]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+    const file = std.fs.openFileAbsoluteZ(path, .{}) catch return null;
+    defer file.close();
+    const n = file.read(buf) catch return null;
+    if (n == 0) return null;
+    // /proc/pid/comm has a trailing newline
+    const len = if (n > 0 and buf[n - 1] == '\n') n - 1 else n;
+    if (len == 0) return null;
+    return buf[0..len];
+}
+
 /// Look up a process's CWD by PID using /proc/<pid>/cwd.
 /// Returns an allocator-owned slice, or null on failure.
 pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const u8 {

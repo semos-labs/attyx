@@ -1,6 +1,8 @@
 const std = @import("std");
 const toml = @import("toml");
 const platform = @import("../platform/platform.zig");
+const theme_mod = @import("../theme/theme.zig");
+pub const Rgb = theme_mod.Rgb;
 
 /// Abstract cursor shape (config-level). Maps to CursorShape enum with blink.
 pub const CursorShapeConfig = enum {
@@ -92,6 +94,7 @@ pub const AppConfig = struct {
 
     // [theme]
     theme_name: []const u8 = "default",
+    theme_background: ?Rgb = null,
 
     // [scrollback]
     scrollback_lines: u32 = 20_000,
@@ -413,6 +416,17 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
             config._owned_theme_name = dupe;
         } else {
             std.debug.print("error: {s}: theme.name must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "theme", "background")) |v| {
+        if (v == .string) {
+            config.theme_background = Rgb.fromHex(v.string) orelse {
+                std.debug.print("error: {s}: theme.background is not a valid hex color\n", .{path});
+                return error.ConfigValidationError;
+            };
+        } else {
+            std.debug.print("error: {s}: theme.background must be a string\n", .{path});
             return error.ConfigValidationError;
         }
     }

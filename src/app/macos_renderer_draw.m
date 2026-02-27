@@ -103,6 +103,22 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         BOOL imagesChanged = (g_image_gen != _lastImageGen) || (g_image_placement_count > 0);
         BOOL overlayChanged = (g_overlay_gen != _lastOverlayGen);
         BOOL popupChanged = (g_popup_gen != _lastPopupGen);
+        // Title updates must be checked before the early-return so they aren't
+        // skipped when the grid is idle (no dirty rows / cursor changes).
+        if (g_title_changed) {
+            int tlen = g_title_len;
+            if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+                NSString* title = [[NSString alloc] initWithBytes:g_title_buf
+                                                           length:tlen
+                                                         encoding:NSUTF8StringEncoding];
+                if (title) {
+                    NSWindow* win = [(MTKView*)view window];
+                    if (win) [win setTitle:title];
+                }
+            }
+            g_title_changed = 0;
+        }
+
         if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !g_popup_trail_active && !imagesChanged && !overlayChanged && !popupChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
@@ -536,20 +552,6 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         _prevCursorShape   = curShape;
         _prevCursorVisible = curVisible;
         if (!_trailActive && !g_popup_trail_active) _fullRedrawNeeded = NO;
-
-        if (g_title_changed) {
-            int tlen = g_title_len;
-            if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
-                NSString* title = [[NSString alloc] initWithBytes:g_title_buf
-                                                           length:tlen
-                                                         encoding:NSUTF8StringEncoding];
-                if (title) {
-                    NSWindow* win = [(MTKView*)view window];
-                    if (win) [win setTitle:title];
-                }
-            }
-            g_title_changed = 0;
-        }
 
         memcpy(_bgMetalBuf.contents, _bgVerts, sizeof(Vertex) * bgVertCount);
         [_bgMetalBuf didModifyRange:NSMakeRange(0, sizeof(Vertex) * bgVertCount)];

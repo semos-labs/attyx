@@ -254,6 +254,48 @@ void attyx_spawn_new_window(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Hot-reload: apply window property changes (decorations, padding, opacity)
+// Called from main loop when g_needs_window_update is set.
+// ---------------------------------------------------------------------------
+
+void attyx_apply_window_update(void) {
+    if (!g_window) return;
+
+    // Decorations — GLFW supports toggling at runtime
+    glfwSetWindowAttrib(g_window, GLFW_DECORATED, g_window_decorations ? GLFW_TRUE : GLFW_FALSE);
+
+    // Opacity — GLFW can't toggle framebuffer transparency at runtime
+    // (GLFW_TRANSPARENT_FRAMEBUFFER is a creation hint, not a window attribute).
+    // Log a note if the user changed it.
+    static float last_opacity = -1.0f;
+    if (last_opacity < 0.0f) last_opacity = g_background_opacity;
+    int was_transparent = (last_opacity < 1.0f);
+    int now_transparent = (g_background_opacity < 1.0f);
+    if (was_transparent != now_transparent) {
+        ATTYX_LOG_WARN("config", "background.opacity transparency change requires restart on Linux");
+    }
+    last_opacity = g_background_opacity;
+
+    // Padding — trigger resize recalculation using current framebuffer size
+    int fb_w, fb_h;
+    glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+    if (g_cell_px_w > 0 && g_cell_px_h > 0) {
+        float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+        float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
+        int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.01f);
+        int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.01f);
+        if (new_cols < 1) new_cols = 1;
+        if (new_rows < 1) new_rows = 1;
+        if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
+        if (new_rows > ATTYX_MAX_ROWS) new_rows = ATTYX_MAX_ROWS;
+        g_pending_resize_rows = new_rows;
+        g_pending_resize_cols = new_cols;
+    }
+    g_full_redraw = 1;
+    attyx_mark_all_dirty();
+}
+
+// ---------------------------------------------------------------------------
 // C entry point called from Zig
 // ---------------------------------------------------------------------------
 
@@ -359,6 +401,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         if (g_needs_font_rebuild) {
             g_needs_font_rebuild = 0;
             linux_rebuild_font();
+        }
+        if (g_needs_window_update) {
+            g_needs_window_update = 0;
+            attyx_apply_window_update();
         }
         if (drawFrame())
             glfwSwapBuffers(g_window);

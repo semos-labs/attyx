@@ -419,6 +419,131 @@ void attyx_spawn_new_window(void) {
 @end
 
 // ---------------------------------------------------------------------------
+// Hot-reload: apply window property changes (opacity, blur, decorations, padding)
+// Called from render thread when g_needs_window_update is set.
+// ---------------------------------------------------------------------------
+
+void attyx_apply_window_update(void) {
+    AttyxAppDelegate* del = (AttyxAppDelegate*)[NSApp delegate];
+    NSWindow* window = del.window;
+    AttyxRenderer* renderer = del.renderer;
+    if (!window || !renderer) return;
+
+    // Find the MTKView (termView) — either direct contentView or subview of blur view
+    MTKView* termView = nil;
+    NSView* content = [window contentView];
+    if ([content isKindOfClass:[MTKView class]]) {
+        termView = (MTKView*)content;
+    } else {
+        // Content is blur view; termView is its first MTKView subview
+        for (NSView* sub in [content subviews]) {
+            if ([sub isKindOfClass:[MTKView class]]) {
+                termView = (MTKView*)sub;
+                break;
+            }
+        }
+    }
+    if (!termView) return;
+
+    static BOOL was_transparent = NO;
+    static BOOL had_blur = NO;
+    static BOOL had_decorations = YES;
+    static BOOL first_call = YES;
+
+    if (first_call) {
+        was_transparent = (g_background_opacity < 1.0f);
+        had_blur = was_transparent && (g_background_blur > 0);
+        had_decorations = (g_window_decorations != 0);
+        first_call = NO;
+    }
+
+    BOOL now_transparent = (g_background_opacity < 1.0f);
+    BOOL now_blur = now_transparent && (g_background_blur > 0);
+    BOOL now_decorations = (g_window_decorations != 0);
+
+    // --- Opacity ---
+    if (now_transparent != was_transparent) {
+        if (now_transparent) {
+            [window setOpaque:NO];
+            [window setBackgroundColor:[NSColor clearColor]];
+            ((CAMetalLayer*)termView.layer).opaque = NO;
+            termView.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+        } else {
+            [window setOpaque:YES];
+            [window setBackgroundColor:[NSColor windowBackgroundColor]];
+            ((CAMetalLayer*)termView.layer).opaque = YES;
+            termView.clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);
+        }
+        // Force the window server to rebuild the backing store for the new opacity state.
+        // invalidateShadow alone isn't enough — toggling hasShadow forces a full
+        // teardown and rebuild of the compositing surface.
+        BOOL shadow = [window hasShadow];
+        [window setHasShadow:NO];
+        [window setHasShadow:shadow];
+        was_transparent = now_transparent;
+    }
+
+    // --- Blur ---
+    if (now_blur != had_blur) {
+        if (now_blur) {
+            NSVisualEffectView* blurView = [[NSVisualEffectView alloc]
+                initWithFrame:[window.contentView bounds]];
+            blurView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+            blurView.material     = NSVisualEffectMaterialDark;
+            blurView.state        = NSVisualEffectStateActive;
+            blurView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+            [termView removeFromSuperview];
+            termView.frame = blurView.bounds;
+            termView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            [blurView addSubview:termView];
+            [window setContentView:blurView];
+            [window makeFirstResponder:termView];
+        } else {
+            [termView removeFromSuperview];
+            termView.frame = [window.contentView bounds];
+            [window setContentView:termView];
+            [window makeFirstResponder:termView];
+        }
+        had_blur = now_blur;
+    }
+
+    // --- Decorations ---
+    if (now_decorations != had_decorations) {
+        NSUInteger mask = [window styleMask];
+        if (!now_decorations) {
+            mask |= NSWindowStyleMaskFullSizeContentView;
+            [window setStyleMask:mask];
+            [window setTitlebarAppearsTransparent:YES];
+            [window setTitleVisibility:NSWindowTitleHidden];
+            [[window standardWindowButton:NSWindowCloseButton] setHidden:YES];
+            [[window standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
+            [[window standardWindowButton:NSWindowZoomButton] setHidden:YES];
+        } else {
+            mask &= ~NSWindowStyleMaskFullSizeContentView;
+            [window setStyleMask:mask];
+            [window setTitlebarAppearsTransparent:NO];
+            [window setTitleVisibility:NSWindowTitleVisible];
+            [[window standardWindowButton:NSWindowCloseButton] setHidden:NO];
+            [[window standardWindowButton:NSWindowMiniaturizeButton] setHidden:NO];
+            [[window standardWindowButton:NSWindowZoomButton] setHidden:NO];
+        }
+        // setStyleMask: can reset the displayed title — re-apply from bridge.
+        int tlen = g_title_len;
+        if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+            NSString* title = [[NSString alloc] initWithBytes:g_title_buf
+                                                       length:tlen
+                                                     encoding:NSUTF8StringEncoding];
+            if (title) [window setTitle:title];
+        }
+        had_decorations = now_decorations;
+    }
+
+    // --- Padding (always trigger resize recalculation) ---
+    [renderer mtkView:termView drawableSizeWillChange:termView.drawableSize];
+}
+
+// ---------------------------------------------------------------------------
 // C entry point called from Zig
 // ---------------------------------------------------------------------------
 

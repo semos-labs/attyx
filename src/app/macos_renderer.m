@@ -186,6 +186,10 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
         g_needs_font_rebuild = 0;
         [self rebuildFont:view];
     }
+    if (g_needs_window_update) {
+        g_needs_window_update = 0;
+        attyx_apply_window_update();
+    }
     [self drawFrameImpl:view];
 }
 

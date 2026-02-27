@@ -176,6 +176,11 @@ void attyx_trigger_config_reload(void);
 // Main render thread reads, rebuilds the glyph cache + resizes window, then clears.
 extern volatile int g_needs_font_rebuild;
 
+// Set to 1 by PTY thread when window properties change (opacity, blur, decorations, padding).
+// Main render thread reads, applies updates via attyx_apply_window_update(), then clears.
+extern volatile int g_needs_window_update;
+void attyx_apply_window_update(void);
+
 // ---------------------------------------------------------------------------
 // App icon (PNG bytes embedded at build time via @embedFile)
 // ---------------------------------------------------------------------------

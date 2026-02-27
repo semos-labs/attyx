@@ -113,11 +113,12 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
     const old_rows = self.grid.rows;
     const old_cursor_row = self.cursor.row;
 
-    const drop: ?grid_mod.Grid.DropHandler = if (!self.alt_active)
-        .{ .ctx = @ptrCast(self), .save = onDropRow }
-    else
-        null;
-    try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col, drop);
+    if (self.reflow_on_resize and !self.alt_active) {
+        const drop: ?grid_mod.Grid.DropHandler = .{ .ctx = @ptrCast(self), .save = onDropRow };
+        try self.grid.resize(new_rows, new_cols, &self.cursor.row, &self.cursor.col, drop);
+    } else {
+        try self.grid.resizeNoReflow(new_rows, new_cols);
+    }
     try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
 
     if (!self.alt_active) {

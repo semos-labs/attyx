@@ -18,6 +18,7 @@ export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 export var g_needs_reload_config: i32 = 0;
 export var g_kitty_kbd_flags: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
+export var g_needs_window_update: i32 = 0;
 export fn attyx_trigger_config_reload() void {}
 export fn attyx_log(_: c_int, _: [*:0]const u8, _: [*:0]const u8) void {}
 export var g_background_opacity: f32 = 1.0;

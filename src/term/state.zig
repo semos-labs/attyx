@@ -83,6 +83,9 @@ pub const TerminalState = struct {
     /// When true the renderer should defer painting until the mode is reset.
     synchronized_output: bool = false,
 
+    /// Whether to reflow content on resize (configurable, default true).
+    reflow_on_resize: bool = true,
+
     /// Kitty keyboard protocol flags stack (max 16 entries).
     kitty_kbd_flags: [16]u5 = .{0} ** 16,
     kitty_kbd_stack_len: u4 = 0,

@@ -160,6 +160,19 @@ int drawFrame(void) {
     static uint32_t lastPopupGen = 0;
     int overlayChanged = (g_overlay_gen != lastOverlayGen);
     int popupChanged = (g_popup_gen != lastPopupGen);
+    // Title updates must be checked before the early-return so they aren't
+    // skipped when the grid is idle (no dirty rows / cursor changes).
+    if (g_title_changed && g_window) {
+        int tlen = g_title_len;
+        if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
+            char tbuf[ATTYX_TITLE_MAX];
+            memcpy(tbuf, g_title_buf, tlen);
+            tbuf[tlen] = 0;
+            glfwSetWindowTitle(g_window, tbuf);
+        }
+        g_title_changed = 0;
+    }
+
     if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !g_popup_trail_active && !overlayChanged && !popupChanged) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
@@ -575,18 +588,6 @@ int drawFrame(void) {
     g_prev_cursor_shape = curShape;
     g_prev_cursor_vis   = curVis;
     if (!g_trail_active && !g_popup_trail_active) g_full_redraw = 0;
-
-    // Window title update
-    if (g_title_changed && g_window) {
-        int tlen = g_title_len;
-        if (tlen > 0 && tlen < ATTYX_TITLE_MAX) {
-            char tbuf[ATTYX_TITLE_MAX];
-            memcpy(tbuf, g_title_buf, tlen);
-            tbuf[tlen] = 0;
-            glfwSetWindowTitle(g_window, tbuf);
-        }
-        g_title_changed = 0;
-    }
 
     // --- GL draw ---
     // Gap quads fill all areas outside the centered grid, so clear to transparent.

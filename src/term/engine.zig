@@ -130,3 +130,25 @@ test "partial Ptmux match flushes on mismatch" {
     try std.testing.expectEqual(@as(u21, 'm'), e.state.grid.getCell(0, 2).char);
     try std.testing.expectEqual(@as(u21, '!'), e.state.grid.getCell(0, 3).char);
 }
+
+test "OSC 0 sets window title" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 20);
+    defer e.deinit();
+
+    // OSC 0 ; title BEL
+    e.feed("\x1b]0;hello world\x07");
+    try std.testing.expect(e.state.title != null);
+    try std.testing.expectEqualStrings("hello world", e.state.title.?);
+}
+
+test "OSC 2 sets window title" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 20);
+    defer e.deinit();
+
+    // OSC 2 ; title ST (ESC \)
+    e.feed("\x1b]2;my title\x1b\\");
+    try std.testing.expect(e.state.title != null);
+    try std.testing.expectEqualStrings("my title", e.state.title.?);
+}

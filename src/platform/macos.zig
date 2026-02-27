@@ -55,6 +55,17 @@ extern "c" fn proc_pidinfo(
     buffersize: c_int,
 ) c_int;
 
+extern "c" fn proc_name(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
+
+/// Look up a process's name by PID using Darwin proc_name().
+/// Returns a stack-local slice (valid until next call), or null on failure.
+pub fn getProcessName(pid: std.posix.pid_t, buf: *[256]u8) ?[]const u8 {
+    const ret = proc_name(@intCast(pid), buf, 256);
+    if (ret <= 0) return null;
+    const len = std.mem.indexOfScalar(u8, buf, 0) orelse return buf[0..@intCast(ret)];
+    return buf[0..len];
+}
+
 /// Look up a process's CWD by PID using Darwin proc_pidinfo.
 /// Returns an allocator-owned slice, or null on failure.
 pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const u8 {

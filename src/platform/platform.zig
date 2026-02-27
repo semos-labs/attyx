@@ -71,6 +71,13 @@ fn getTmuxPaneCwdForSession(allocator: std.mem.Allocator, tmux_bin: [:0]const u8
     return null;
 }
 
+/// Return the foreground process name on the given PTY (e.g. "zsh", "vim").
+/// Writes into a caller-provided buffer; returns a slice or null.
+pub fn getForegroundProcessName(master_fd: std.posix.fd_t, buf: *[256]u8) ?[]const u8 {
+    const fg_pid = impl.getPtyForegroundPid(master_fd) orelse return null;
+    return impl.getProcessName(fg_pid, buf);
+}
+
 /// Query the foreground process's CWD. First checks if a tmux client is
 /// running inside our PTY session and resolves the active pane's CWD.
 /// Falls back to a direct pid-to-cwd lookup for plain shells.
