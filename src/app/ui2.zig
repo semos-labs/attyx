@@ -788,7 +788,7 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
         bar,
     ) catch return;
 
-    // Compute placement (viewport dock bottom-right)
+    // Compute placement (viewport dock bottom-right, using full card size for position)
     const vp = viewportInfoFromCtx(ctx);
     const anchor = overlay_anchor.Anchor{
         .kind = .viewport_dock,
@@ -796,12 +796,18 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
     };
     const placement = overlay_anchor.placeOverlay(anchor, result.width, result.height, vp, .{});
 
+    // Bottom-anchored: the bottom edge stays at placement.row + result.height - 1
+    const bottom_row = placement.row + result.height - 1;
+
+    // Max visible height: leave 2-row margin at top of viewport
+    const max_vis: u16 = if (vp.grid_rows > 4) vp.grid_rows - 2 else vp.grid_rows;
+
     // Initialize streaming (takes ownership of result.cells)
     if (g_streaming == null) {
         g_streaming = overlay_streaming.StreamingOverlay{ .allocator = mgr.allocator };
     }
     var so = &(g_streaming.?);
-    so.start(result.cells, result.width, result.height, placement.col, placement.row, std.time.nanoTimestamp());
+    so.start(result.cells, result.width, result.height, placement.col, bottom_row, max_vis, std.time.nanoTimestamp());
 
     // Set action bar on the layer
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
@@ -819,7 +825,9 @@ fn publishAiStreamingFrame(ctx: *PtyThreadCtx) void {
     var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
     const vis = so.buildVisibleCells(&scratch) orelse return;
 
-    mgr.setContent(.ai_demo, so.col, so.row, vis.width, vis.height, scratch[0 .. @as(usize, vis.width) * vis.height]) catch return;
+    // Bottom-anchored: row computed from anchor_bottom_row - visible_height + 1
+    const top_row = so.topRow();
+    mgr.setContent(.ai_demo, so.col, top_row, vis.width, vis.height, scratch[0 .. @as(usize, vis.width) * vis.height]) catch return;
     publishOverlays(ctx);
 }
 

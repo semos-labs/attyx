@@ -14,22 +14,25 @@ pub const StreamingOverlay = struct {
     full_width: u16 = 0,
     full_height: u16 = 0,
     revealed_height: u16 = 0,
+    max_visible_height: u16 = 0, // 0 = no cap (use revealed_height as-is)
     min_height: u16 = 3, // top border + action bar + bottom border
     rows_per_tick: u16 = 2,
     tick_interval_ns: i128 = 40_000_000, // 40ms
     last_tick_ns: i128 = 0,
     col: u16 = 0,
-    row: u16 = 0,
+    anchor_bottom_row: u16 = 0, // bottom edge stays fixed here
     allocator: std.mem.Allocator,
 
     /// Begin streaming a pre-laid-out card. Takes ownership of `cells`.
+    /// `bottom_row` is the grid row where the bottom border should stay anchored.
     pub fn start(
         self: *StreamingOverlay,
         cells: []OverlayCell,
         w: u16,
         h: u16,
         col: u16,
-        row_pos: u16,
+        bottom_row: u16,
+        max_vis_h: u16,
         now_ns: i128,
     ) void {
         self.cancel(); // clean up any prior state
@@ -37,7 +40,8 @@ pub const StreamingOverlay = struct {
         self.full_width = w;
         self.full_height = h;
         self.col = col;
-        self.row = row_pos;
+        self.anchor_bottom_row = bottom_row;
+        self.max_visible_height = max_vis_h;
         self.revealed_height = self.min_height;
         self.last_tick_ns = now_ns;
         self.state = .active;
@@ -69,31 +73,51 @@ pub const StreamingOverlay = struct {
         return true;
     }
 
+    /// Compute the top-left row for the overlay (bottom-anchored).
+    pub fn topRow(self: *const StreamingOverlay) u16 {
+        const vh = self.visibleHeight();
+        return if (self.anchor_bottom_row + 1 >= vh)
+            self.anchor_bottom_row + 1 - vh
+        else
+            0;
+    }
+
+    /// Effective visible height (capped by max_visible_height).
+    fn visibleHeight(self: *const StreamingOverlay) u16 {
+        const rh = @min(self.revealed_height, self.full_height);
+        if (self.max_visible_height > 0 and rh > self.max_visible_height)
+            return self.max_visible_height;
+        return rh;
+    }
+
     /// Assemble the currently visible view into `scratch`.
-    /// Layout: [top border row] + [content rows 0..n] + [action bar row] + [bottom border row]
-    /// The action bar and bottom border are always the last two rows of `full_cells`.
-    /// Returns the visible {width, height} or null if not active.
+    /// Layout: [top border] + [content rows, possibly scrolled] + [action bar] + [bottom border]
+    /// When revealed content exceeds max_visible_height, earlier rows scroll out of view.
     pub fn buildVisibleCells(self: *const StreamingOverlay, scratch: []OverlayCell) ?struct { width: u16, height: u16 } {
         const fc = self.full_cells orelse return null;
         if (self.state == .idle) return null;
 
         const w: usize = self.full_width;
         const fh: usize = self.full_height;
-        const vh: usize = @min(self.revealed_height, self.full_height);
+        const vh: usize = self.visibleHeight();
 
         if (vh < 3 or w == 0) return null;
         const needed = vh * w;
         if (needed > scratch.len) return null;
 
+        // How many content rows are revealed vs how many fit in the visible window
+        const revealed_content = @as(usize, @min(self.revealed_height, self.full_height)) -| 3;
+        const visible_content = vh -| 3; // rows available for content in the output
+        const scroll_offset = revealed_content -| visible_content;
+
         // Top border: row 0 of full_cells
         @memcpy(scratch[0..w], fc[0..w]);
 
-        // Content rows: rows 1..(vh-2) from full_cells
-        if (vh > 3) {
-            const content_rows = vh - 3; // exclude top border, action bar, bottom border
-            const src_start = w; // row 1 in full_cells
+        // Content rows (scrolled window from full_cells)
+        if (visible_content > 0) {
+            const src_start = (1 + scroll_offset) * w; // row 1 + scroll_offset in full_cells
             const dst_start = w; // row 1 in scratch
-            const count = content_rows * w;
+            const count = visible_content * w;
             @memcpy(scratch[dst_start .. dst_start + count], fc[src_start .. src_start + count]);
         }
 
@@ -122,6 +146,7 @@ pub const StreamingOverlay = struct {
         self.full_cells = null;
         self.state = .idle;
         self.revealed_height = 0;
+        self.max_visible_height = 0;
         self.full_width = 0;
         self.full_height = 0;
     }
@@ -141,7 +166,7 @@ test "StreamingOverlay: start sets active state" {
     defer so.cancel();
 
     const cells = try allocator.alloc(OverlayCell, 30); // 10w x 3h
-    so.start(cells, 10, 3, 5, 5, 1000);
+    so.start(cells, 10, 3, 5, 7, 0, 1000); // bottom_row=7, max_vis=0 (no cap)
 
     try std.testing.expectEqual(StreamState.active, so.state);
     try std.testing.expectEqual(@as(u16, 3), so.revealed_height); // min_height
@@ -158,7 +183,7 @@ test "StreamingOverlay: tick advances revealed_height" {
     const w: u16 = 5;
     const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
     for (cells) |*cell| cell.* = .{};
-    so.start(cells, w, h, 0, 0, 0);
+    so.start(cells, w, h, 0, h - 1, 0, 0);
 
     // First tick — too early
     try std.testing.expect(!so.tick(10));
@@ -182,7 +207,7 @@ test "StreamingOverlay: cancel resets to idle" {
     var so = StreamingOverlay{ .allocator = allocator };
 
     const cells = try allocator.alloc(OverlayCell, 20);
-    so.start(cells, 5, 4, 0, 0, 0);
+    so.start(cells, 5, 4, 0, 3, 0, 0);
     try std.testing.expectEqual(StreamState.active, so.state);
 
     so.cancel();
@@ -213,7 +238,7 @@ test "StreamingOverlay: buildVisibleCells correctness" {
         }
     }
 
-    so.start(cells, w, h, 0, 0, 0);
+    so.start(cells, w, h, 0, h - 1, 0, 0); // bottom_row = 5, no cap
 
     var scratch: [128]OverlayCell = undefined;
 
@@ -243,6 +268,74 @@ test "StreamingOverlay: buildVisibleCells correctness" {
     try std.testing.expectEqual(@as(u21, 'F'), scratch[3 * w].char);
 }
 
+test "StreamingOverlay: bottom-anchored topRow" {
+    const allocator = std.testing.allocator;
+    var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 1 };
+    defer so.cancel();
+
+    const w: u16 = 4;
+    const h: u16 = 8;
+    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+    for (cells) |*cell| cell.* = .{};
+
+    // Anchor bottom at row 20, no height cap
+    so.start(cells, w, h, 0, 20, 0, 0);
+
+    // Initially visible = 3 (min_height), so top = 20 - 3 + 1 = 18
+    try std.testing.expectEqual(@as(u16, 18), so.topRow());
+
+    // After ticks, visible grows, top moves up
+    _ = so.tick(50_000_000);
+    try std.testing.expectEqual(@as(u16, 17), so.topRow()); // vis=4, top=17
+    _ = so.tick(100_000_000);
+    try std.testing.expectEqual(@as(u16, 16), so.topRow()); // vis=5, top=16
+}
+
+test "StreamingOverlay: max_visible_height caps and scrolls" {
+    const allocator = std.testing.allocator;
+    var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 2 };
+    defer so.cancel();
+
+    const w: u16 = 4;
+    const h: u16 = 10; // 10 rows total: border + 7 content + action + border
+    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+
+    // Mark each row distinctly
+    for (0..h) |r| {
+        for (0..w) |cc| {
+            cells[r * w + cc] = .{ .char = @intCast(r + 'A') };
+        }
+    }
+
+    // Cap at 6 rows visible
+    so.start(cells, w, h, 0, 20, 6, 0);
+
+    var scratch: [128]OverlayCell = undefined;
+
+    // Tick until revealed > max_visible_height
+    _ = so.tick(50_000_000); // revealed: 3 -> 5
+    _ = so.tick(100_000_000); // revealed: 5 -> 7
+    _ = so.tick(150_000_000); // revealed: 7 -> 9
+
+    // revealed=9, but visible capped at 6
+    const vis = so.buildVisibleCells(&scratch);
+    try std.testing.expect(vis != null);
+    try std.testing.expectEqual(@as(u16, 6), vis.?.height);
+
+    // Top row stays anchored: 20 - 6 + 1 = 15
+    try std.testing.expectEqual(@as(u16, 15), so.topRow());
+
+    // Content should be scrolled: revealed_content=6, visible_content=3, scroll_offset=3
+    // So content rows are from full_cells rows 4,5,6 (E,F,G)
+    // scratch: [A] [E] [F] [G] [I] [J]
+    try std.testing.expectEqual(@as(u21, 'A'), scratch[0].char); // top border
+    try std.testing.expectEqual(@as(u21, 'E'), scratch[1 * w].char); // scrolled content
+    try std.testing.expectEqual(@as(u21, 'F'), scratch[2 * w].char);
+    try std.testing.expectEqual(@as(u21, 'G'), scratch[3 * w].char);
+    try std.testing.expectEqual(@as(u21, 'I'), scratch[4 * w].char); // action bar
+    try std.testing.expectEqual(@as(u21, 'J'), scratch[5 * w].char); // bottom border
+}
+
 test "StreamingOverlay: timing interval respected" {
     const allocator = std.testing.allocator;
     var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 1, .tick_interval_ns = 100 };
@@ -250,7 +343,7 @@ test "StreamingOverlay: timing interval respected" {
 
     const cells = try allocator.alloc(OverlayCell, 50);
     for (cells) |*cell| cell.* = .{};
-    so.start(cells, 5, 10, 0, 0, 0);
+    so.start(cells, 5, 10, 0, 9, 0, 0);
 
     // At t=50, too early
     try std.testing.expect(!so.tick(50));

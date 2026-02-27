@@ -25,8 +25,8 @@
     if (count <= 0) return;
     if (count > ATTYX_OVERLAY_MAX_LAYERS) count = ATTYX_OVERLAY_MAX_LAYERS;
 
-    // Stack-allocate vertex buffers (small overlays ≈300 cells = ~3600 verts = ~115KB).
-    // For the demo card this fits comfortably within Metal's setVertexBytes limit (4KB * 32 = ~128KB).
+    // Stack-allocate vertex buffers, then upload via MTLBuffer (not setVertexBytes
+    // which has a hard 4KB limit — overlays can easily exceed that).
     Vertex bgVerts[OVERLAY_MAX_BG_VERTS];
     Vertex textVerts[OVERLAY_MAX_TEXT_VERTS];
     int bi = 0, ti = 0;
@@ -74,18 +74,24 @@
         }
     }
 
-    // Draw background quads
+    // Draw background quads (use MTLBuffer — setVertexBytes has a 4KB limit)
     if (bi > 0) {
+        id<MTLBuffer> bgBuf = [self.device newBufferWithBytes:bgVerts
+                                                       length:sizeof(Vertex) * bi
+                                                      options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:self.bgPipeline];
-        [enc setVertexBytes:bgVerts length:sizeof(Vertex) * bi atIndex:0];
+        [enc setVertexBuffer:bgBuf offset:0 atIndex:0];
         [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:bi];
     }
 
-    // Draw text glyphs
+    // Draw text glyphs (use MTLBuffer — setVertexBytes has a 4KB limit)
     if (ti > 0) {
+        id<MTLBuffer> textBuf = [self.device newBufferWithBytes:textVerts
+                                                        length:sizeof(Vertex) * ti
+                                                       options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:self.textPipeline];
-        [enc setVertexBytes:textVerts length:sizeof(Vertex) * ti atIndex:0];
+        [enc setVertexBuffer:textBuf offset:0 atIndex:0];
         [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
         [enc setFragmentTexture:_glyphCache.texture atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:ti];
