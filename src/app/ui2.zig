@@ -1760,7 +1760,12 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 @intCast(ctx.engine.state.cursor.row + vp_cur),
                 @intCast(ctx.engine.state.cursor.col),
             );
-            c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
+            if (viewport_changed or search_vp_changed) {
+                // Viewport scroll: all rows have new content, force full redraw.
+                c.attyx_mark_all_dirty();
+            } else {
+                c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
+            }
             ctx.engine.state.dirty.clear();
             publishImagePlacements(ctx);
             generateDebugCard(ctx);

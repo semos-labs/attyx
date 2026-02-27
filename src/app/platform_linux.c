@@ -147,7 +147,9 @@ void attyx_scroll_viewport(int delta) {
     if (nv < 0) nv = 0;
     if (nv > sb) nv = sb;
     g_viewport_offset = nv;
-    attyx_mark_all_dirty();
+    // Dirty bits are set by the PTY thread after it updates the cell buffer
+    // for the new viewport offset.  Setting them here would cause the renderer
+    // to draw stale cells (old viewport content), producing artifacts.
 }
 
 void attyx_set_dirty(const uint64_t dirty[4]) {
