@@ -77,6 +77,69 @@ pub const ContextBundle = struct {
 
         return buf[0..stream.pos];
     }
+
+    /// Serialize the context bundle into a human-readable diagnostics string.
+    /// Caller owns the returned slice and must free it with `self.allocator`.
+    pub fn serializeDiagnostics(self: *const ContextBundle) ![]u8 {
+        var list: std.ArrayList(u8) = .{};
+        errdefer list.deinit(self.allocator);
+        const w = list.writer(self.allocator);
+
+        try w.writeAll("=== Attyx Context Diagnostics ===\n");
+
+        // Invocation type
+        try w.writeAll("Invocation: ");
+        try w.writeAll(switch (self.invocation) {
+            .error_explain => "error_explain",
+            .selection_explain => "selection_explain",
+            .command_generate => "command_generate",
+            .general => "general",
+        });
+        try w.writeByte('\n');
+
+        // Grid dimensions
+        try w.print("Grid: {d}x{d}", .{ self.grid_cols, self.grid_rows });
+        if (self.alt_active) try w.writeAll(" (alt screen)");
+        try w.writeByte('\n');
+
+        // Title
+        if (self.title) |t| {
+            if (t.len > 0) {
+                try w.writeAll("Title: ");
+                try w.writeAll(t);
+                try w.writeByte('\n');
+            }
+        }
+
+        // Cursor line
+        try w.writeAll("\n--- Cursor Line ---\n");
+        if (self.cursor_line) |cl| {
+            try w.writeAll(cl);
+            try w.writeByte('\n');
+        } else {
+            try w.writeAll("(none)\n");
+        }
+
+        // Selection
+        try w.writeAll("\n--- Selection ---\n");
+        if (self.selection_text) |sel| {
+            try w.writeAll(sel);
+            try w.writeByte('\n');
+        } else {
+            try w.writeAll("(none)\n");
+        }
+
+        // Scrollback
+        try w.print("\n--- Scrollback ({d} lines) ---\n", .{self.scrollback_line_count});
+        if (self.scrollback_excerpt) |exc| {
+            try w.writeAll(exc);
+            if (exc.len > 0 and exc[exc.len - 1] != '\n') try w.writeByte('\n');
+        } else {
+            try w.writeAll("(none)\n");
+        }
+
+        return try list.toOwnedSlice(self.allocator);
+    }
 };
 
 /// Capture a context bundle from terminal state. Called from the PTY thread.
@@ -243,6 +306,33 @@ test "ContextBundle: summaryLine formatting" {
     try std.testing.expect(std.mem.startsWith(u8, summary, "Context:"));
     try std.testing.expect(std.mem.indexOf(u8, summary, "bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "lines") != null);
+}
+
+test "ContextBundle: serializeDiagnostics" {
+    const alloc = std.testing.allocator;
+    var bundle = ContextBundle{
+        .invocation = .general,
+        .title = "bash",
+        .selection_text = null,
+        .scrollback_excerpt = "line1\nline2",
+        .scrollback_line_count = 80,
+        .cursor_line = "$ ls -la",
+        .grid_cols = 80,
+        .grid_rows = 24,
+        .alt_active = false,
+        .allocator = alloc,
+    };
+
+    const diag_text = try bundle.serializeDiagnostics();
+    defer alloc.free(diag_text);
+
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "=== Attyx Context Diagnostics ===") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "Invocation: general") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "Grid: 80x24") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "Title: bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "$ ls -la") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "line1\nline2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag_text, "80 lines") != null);
 }
 
 test "ContextBundle: deinit frees correctly" {

@@ -909,6 +909,7 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
     const action_bar_mod = attyx.overlay_action;
     var bar = action_bar_mod.ActionBar{};
     bar.add(.dismiss, "Dismiss");
+    bar.add(.insert, "Insert");
     bar.add(.copy, "Copy");
     bar.add(.context, "Context");
 
@@ -1089,6 +1090,33 @@ fn toggleContextPreview(ctx: *PtyThreadCtx) void {
     mgr.hide(.ai_demo);
     mgr.show(.context_preview);
     publishOverlays(ctx);
+}
+
+fn handleInsertAction(ctx: *PtyThreadCtx) void {
+    const code = overlay_content.firstCodeBlock(&overlay_demo.mock_blocks) orelse return;
+    if (ctx.engine.state.bracketed_paste) {
+        c.attyx_send_input("\x1b[200~", 6);
+    }
+    c.attyx_send_input(code.ptr, @intCast(code.len));
+    if (ctx.engine.state.bracketed_paste) {
+        c.attyx_send_input("\x1b[201~", 6);
+    }
+}
+
+fn handleCopyAction(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    if (mgr.isVisible(.context_preview)) {
+        // Copy diagnostics text
+        if (g_context_bundle) |*bundle| {
+            const diag_text = bundle.serializeDiagnostics() catch return;
+            defer bundle.allocator.free(diag_text);
+            c.attyx_clipboard_copy(diag_text.ptr, @intCast(diag_text.len));
+        }
+    } else {
+        // Copy first code block
+        const code = overlay_content.firstCodeBlock(&overlay_demo.mock_blocks) orelse return;
+        c.attyx_clipboard_copy(code.ptr, @intCast(code.len));
+    }
 }
 
 fn cancelAiDemo(ctx: *PtyThreadCtx) void {
@@ -1520,6 +1548,8 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             }
                         },
                         .context => toggleContextPreview(ctx),
+                        .insert => handleInsertAction(ctx),
+                        .copy => handleCopyAction(ctx),
                         else => {},
                     }
                     publishOverlays(ctx);
@@ -1547,6 +1577,8 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 }
                             },
                             .context => toggleContextPreview(ctx),
+                            .insert => handleInsertAction(ctx),
+                            .copy => handleCopyAction(ctx),
                             else => {},
                         }
                     }

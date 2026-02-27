@@ -156,4 +156,18 @@ const char* clipboardPaste(void) {
     return g_paste_buf;
 }
 
+// ---------------------------------------------------------------------------
+// Programmatic clipboard copy (callable from any thread)
+// ---------------------------------------------------------------------------
+
+void attyx_clipboard_copy(const char* text, int len) {
+    if (!text || len <= 0) return;
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) return;
+    memcpy(buf, text, len);
+    buf[len] = '\0';
+    clipboardCopy(buf);
+    free(buf);
+}
+
 #endif // __linux__

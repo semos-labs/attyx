@@ -114,9 +114,10 @@ pub fn layoutContextPreview(
         }
     }
 
-    // Action bar: Back button
+    // Action bar: Back + Copy buttons
     var bar = action_mod.ActionBar{};
     bar.add(.dismiss, "Back");
+    bar.add(.copy, "Copy");
 
     return content.layoutStructuredCard(
         allocator,

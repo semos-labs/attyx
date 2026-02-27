@@ -77,6 +77,14 @@ pub const ContentBlock = struct {
     items: []const []const u8 = &.{}, // for bullet_list
 };
 
+/// Return the text of the first code_block with non-empty text, or null.
+pub fn firstCodeBlock(blocks: []const ContentBlock) ?[]const u8 {
+    for (blocks) |block| {
+        if (block.tag == .code_block and block.text.len > 0) return block.text;
+    }
+    return null;
+}
+
 pub const ContentStyle = struct {
     base: OverlayStyle = .{},
     code_bg: Rgb = .{ .r = 20, .g = 20, .b = 30 },
@@ -577,4 +585,22 @@ test "layoutStructuredCard: with action bar" {
         }
     }
     try std.testing.expect(found_bracket);
+}
+
+test "firstCodeBlock: returns first code block text" {
+    const blocks = [_]ContentBlock{
+        .{ .tag = .paragraph, .text = "intro" },
+        .{ .tag = .code_block, .text = "fn foo() void {}" },
+        .{ .tag = .code_block, .text = "fn bar() void {}" },
+    };
+    const result = firstCodeBlock(&blocks);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("fn foo() void {}", result.?);
+}
+
+test "firstCodeBlock: returns null when no code blocks" {
+    const blocks = [_]ContentBlock{
+        .{ .tag = .paragraph, .text = "just text" },
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), firstCodeBlock(&blocks));
 }

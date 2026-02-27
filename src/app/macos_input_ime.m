@@ -230,3 +230,18 @@
 }
 
 @end
+
+// ---------------------------------------------------------------------------
+// Programmatic clipboard copy (callable from any thread)
+// ---------------------------------------------------------------------------
+
+void attyx_clipboard_copy(const char* text, int len) {
+    if (!text || len <= 0) return;
+    NSString* str = [[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding];
+    if (!str) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSPasteboard* pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        [pb setString:str forType:NSPasteboardTypeString];
+    });
+}

@@ -40,6 +40,9 @@ int attyx_should_quit(void);
 // Implemented in Zig (ui2.zig).
 void attyx_send_input(const uint8_t* bytes, int len);
 
+// Copy text to system clipboard (callable from any thread).
+void attyx_clipboard_copy(const char* text, int len);
+
 // Handle a key event from the platform layer. Encodes using xterm or Kitty
 // protocol depending on terminal state, then writes to PTY.
 // key: KeyCode enum value, mods: modifier bitmask (bit0=shift,1=alt,2=ctrl,3=super),
