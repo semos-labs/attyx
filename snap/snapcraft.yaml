@@ -1,12 +1,12 @@
 name: attyx
 base: core24
-version: '0.0.0'
+version: "0.0.0"
 summary: GPU-accelerated terminal emulator
 description: |
   Attyx is a fast, GPU-accelerated VT-compatible terminal emulator
   built with Zig. Features OpenGL rendering on Linux with support for
   256 colors, Unicode, and GPU-accelerated drawing.
-grade: stable
+grade: edge
 confinement: classic
 
 platforms:
