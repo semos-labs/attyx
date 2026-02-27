@@ -227,7 +227,9 @@ jobs:
         run: tar --zstd -xf ${{ matrix.artifact }}
 
       - name: Set snap version from tag
-        run: sed -i "s/^version: .*/version: '${GITHUB_REF_NAME#v}'/" snap/snapcraft.yaml
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version: .*/version: '$VERSION'/" snap/snapcraft.yaml
 
       - name: Build snap
         uses: snapcore/action-build@v1
