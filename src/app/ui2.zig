@@ -29,6 +29,11 @@ const overlay_search = attyx.overlay_search;
 const overlay_context = attyx.overlay_context;
 const overlay_context_extract = attyx.overlay_context_extract;
 const overlay_context_ui = attyx.overlay_context_ui;
+const overlay_ai_config = attyx.overlay_ai_config;
+const overlay_ai_auth = attyx.overlay_ai_auth;
+const overlay_ai_stream = attyx.overlay_ai_stream;
+const overlay_ai_content = attyx.overlay_ai_content;
+const overlay_ai_error = attyx.overlay_ai_error;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
@@ -166,41 +171,41 @@ var g_overlay_scroll_pending: i32 = 0;
 /// Hit-test click against visible overlay descs. Returns 1 if consumed.
 /// Called from input thread; signals PTY thread with coordinates.
 export fn attyx_overlay_click(col: c_int, row: c_int) c_int {
-    const count = @atomicLoad(i32, &c.g_overlay_count, .seq_cst);
-    if (count <= 0) return 0;
-    const n: usize = @intCast(@min(count, c.ATTYX_OVERLAY_MAX_LAYERS));
-    for (0..n) |i| {
-        const desc = c.g_overlay_descs[i];
-        if (desc.visible != 0 and
-            col >= desc.col and col < desc.col + desc.width and
-            row >= desc.row and row < desc.row + desc.height)
-        {
-            @atomicStore(i32, &g_overlay_click_col, col, .seq_cst);
-            @atomicStore(i32, &g_overlay_click_row, row, .seq_cst);
-            @atomicStore(i32, &g_overlay_click_pending, 1, .seq_cst);
-            return 1;
-        }
+    if (overlayHitTest(col, row)) {
+        @atomicStore(i32, &g_overlay_click_col, col, .seq_cst);
+        @atomicStore(i32, &g_overlay_click_row, row, .seq_cst);
+        @atomicStore(i32, &g_overlay_click_pending, 1, .seq_cst);
+        return 1;
     }
     return 0;
 }
 
 /// Hit-test scroll against visible overlay descs. Returns 1 if consumed.
 export fn attyx_overlay_scroll(col: c_int, row: c_int, delta: c_int) c_int {
+    if (overlayHitTest(col, row)) {
+        @atomicStore(i32, &g_overlay_scroll_delta, delta, .seq_cst);
+        @atomicStore(i32, &g_overlay_scroll_pending, 1, .seq_cst);
+        return 1;
+    }
+    return 0;
+}
+
+/// Shared hit-test logic extracted to non-export fn to work around
+/// Zig 0.15.2 MIR codegen bug on Linux x86_64 Debug builds.
+fn overlayHitTest(col: c_int, row: c_int) bool {
     const count = @atomicLoad(i32, &c.g_overlay_count, .seq_cst);
-    if (count <= 0) return 0;
+    if (count <= 0) return false;
     const n: usize = @intCast(@min(count, c.ATTYX_OVERLAY_MAX_LAYERS));
     for (0..n) |i| {
         const desc = c.g_overlay_descs[i];
-        if (desc.visible != 0 and
-            col >= desc.col and col < desc.col + desc.width and
-            row >= desc.row and row < desc.row + desc.height)
-        {
-            @atomicStore(i32, &g_overlay_scroll_delta, delta, .seq_cst);
-            @atomicStore(i32, &g_overlay_scroll_pending, 1, .seq_cst);
-            return 1;
-        }
+        if (desc.visible == 0) continue;
+        const dc: i32 = desc.col;
+        const dr: i32 = desc.row;
+        const dw: i32 = desc.width;
+        const dh: i32 = desc.height;
+        if (col >= dc and col < dc + dw and row >= dr and row < dr + dh) return true;
     }
-    return 0;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +536,9 @@ pub fn run(
         .popup_config_count = popup_config_count,
     };
 
+    // Set AI base URL from config
+    g_ai_base_url = config.ai_base_url;
+
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
     defer thread.join();
 
@@ -810,6 +818,14 @@ var g_streaming: ?overlay_streaming.StreamingOverlay = null;
 // Context bundle captured when the AI demo is started.
 var g_context_bundle: ?overlay_context.ContextBundle = null;
 
+// AI backend integration state
+var g_token_store: ?overlay_ai_auth.TokenStore = null;
+var g_auth_thread: ?overlay_ai_auth.AuthThread = null;
+var g_sse_thread: ?overlay_ai_stream.SseThread = null;
+var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
+var g_ai_request_body: ?[]u8 = null;
+var g_ai_base_url: []const u8 = "http://localhost:8080";
+
 fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (!mgr.isVisible(.anchor_demo)) return;
@@ -866,11 +882,10 @@ fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.anchor_demo)].anchor = anchor;
 }
 
-fn startAiDemo(ctx: *PtyThreadCtx) void {
+fn captureAiContext(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const eng = ctx.engine;
 
-    // Capture terminal context before building the overlay
     if (g_context_bundle) |*old| old.deinit();
     g_context_bundle = null;
 
@@ -904,53 +919,129 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
         80,
         eng.state.alt_active,
     ) catch null;
+}
 
-    // Layout full structured card
-    const action_bar_mod = attyx.overlay_action;
-    var bar = action_bar_mod.ActionBar{};
-    bar.add(.dismiss, "Dismiss");
-    bar.add(.insert, "Insert");
-    bar.add(.copy, "Copy");
-    bar.add(.context, "Context");
-
-    const result = overlay_content.layoutStructuredCard(
-        mgr.allocator,
-        overlay_demo.mock_title,
-        &overlay_demo.mock_blocks,
-        48, // max_content_width
-        .{},
-        bar,
-    ) catch return;
-
-    // Compute placement (viewport dock bottom-right)
+fn showAiOverlayCard(ctx: *PtyThreadCtx, cells: []overlay_mod.OverlayCell, width: u16, height: u16, bar: attyx.overlay_action.ActionBar) void {
+    const mgr = ctx.overlay_mgr orelse return;
     const vp = viewportInfoFromCtx(ctx);
-    const anchor = overlay_anchor.Anchor{
-        .kind = .viewport_dock,
-        .dock = .bottom_right,
-    };
-    const placement = overlay_anchor.placeOverlay(anchor, result.width, result.height, vp, .{});
+    const anchor = overlay_anchor.Anchor{ .kind = .viewport_dock, .dock = .bottom_right };
+    const placement = overlay_anchor.placeOverlay(anchor, width, height, vp, .{});
 
-    // Bottom-anchored: pin bottom edge to viewport bottom with 1-row margin
     const margin: u16 = 1;
     const bottom_row: u16 = if (vp.grid_rows > margin + 1) vp.grid_rows - 1 - margin else vp.grid_rows -| 1;
-
-    // Max visible height: leave margin at top and bottom
     const max_vis: u16 = if (vp.grid_rows > margin * 2) vp.grid_rows - margin * 2 else 3;
 
-    // Initialize streaming (takes ownership of result.cells)
     if (g_streaming == null) {
         g_streaming = overlay_streaming.StreamingOverlay{ .allocator = mgr.allocator };
     }
     var so = &(g_streaming.?);
-    so.start(result.cells, result.width, result.height, placement.col, bottom_row, max_vis, std.time.nanoTimestamp());
+    so.start(cells, width, height, placement.col, bottom_row, max_vis, std.time.nanoTimestamp());
 
-    // Set action bar on the layer
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].anchor = anchor;
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].z_order = 2;
 
-    // Publish initial frame
     publishAiStreamingFrame(ctx);
+}
+
+fn spawnSseStream(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const bundle = &(g_context_bundle orelse return);
+    const store = &(g_token_store orelse return);
+    const token = store.access_token orelse return;
+
+    // Serialize request body
+    if (g_ai_request_body) |old| mgr.allocator.free(old);
+    g_ai_request_body = overlay_ai_config.serializeRequest(mgr.allocator, bundle) catch null;
+    const body = g_ai_request_body orelse return;
+
+    // Build URL
+    var url_buf: [512]u8 = undefined;
+    const url = std.fmt.bufPrint(&url_buf, "{s}/v1/ai/execute/stream", .{g_ai_base_url}) catch return;
+
+    // Initialize SSE thread
+    if (g_sse_thread == null) g_sse_thread = overlay_ai_stream.SseThread.init();
+    var sse = &(g_sse_thread.?);
+
+    // Initialize accumulator
+    if (g_ai_accumulator == null) {
+        g_ai_accumulator = overlay_ai_content.AiContentAccumulator.init(mgr.allocator);
+    } else {
+        g_ai_accumulator.?.reset();
+    }
+
+    // Show connecting card
+    const connecting_result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48) catch return;
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Cancel");
+    showAiOverlayCard(ctx, connecting_result.cells, connecting_result.width, connecting_result.height, bar);
+
+    // Start SSE thread
+    sse.start(mgr.allocator, url, token, body) catch {
+        showAiErrorCard(ctx, "connection", "Failed to start SSE connection");
+        return;
+    };
+}
+
+fn startAiInvocation(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    // Capture terminal context
+    captureAiContext(ctx);
+
+    // Load token store if not yet loaded
+    if (g_token_store == null) {
+        g_token_store = overlay_ai_auth.TokenStore.load(mgr.allocator) catch
+            overlay_ai_auth.TokenStore.init(mgr.allocator);
+    }
+    var store = &(g_token_store.?);
+
+    if (store.hasAccessToken()) {
+        // Have access token — go straight to SSE
+        spawnSseStream(ctx);
+    } else if (store.hasRefreshToken()) {
+        // Have refresh token — try refresh first
+        startAuthFlow(ctx, store.refresh_token);
+    } else {
+        // No tokens — device flow
+        startAuthFlow(ctx, null);
+    }
+}
+
+fn startAuthFlow(ctx: *PtyThreadCtx, refresh_token: ?[]const u8) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    if (g_auth_thread == null) g_auth_thread = overlay_ai_auth.AuthThread.init();
+    var auth = &(g_auth_thread.?);
+
+    auth.startAuth(mgr.allocator, g_ai_base_url, refresh_token) catch {
+        showAiErrorCard(ctx, "auth", "Failed to start authentication");
+        return;
+    };
+
+    // Show connecting/refreshing card
+    const result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48) catch return;
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Cancel");
+    showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
+}
+
+fn showAiErrorCard(ctx: *PtyThreadCtx, code: []const u8, msg: []const u8) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const result = overlay_ai_error.layoutErrorCard(mgr.allocator, code, msg, 48) catch return;
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.retry, "Retry");
+    bar.add(.copy, "Copy diagnostics");
+    bar.add(.dismiss, "Dismiss");
+    showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
+}
+
+fn showDeviceCodeCard(ctx: *PtyThreadCtx, user_code: []const u8) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const result = overlay_ai_error.layoutDeviceCodeCard(mgr.allocator, user_code, 48) catch return;
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Cancel");
+    showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
 }
 
 fn publishAiStreamingFrame(ctx: *PtyThreadCtx) void {
@@ -966,12 +1057,154 @@ fn publishAiStreamingFrame(ctx: *PtyThreadCtx) void {
     publishOverlays(ctx);
 }
 
-fn tickAiStreaming(ctx: *PtyThreadCtx) void {
-    var so = &(g_streaming orelse return);
-    if (so.state != .active) return;
+fn tickAi(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
 
-    if (so.tick(std.time.nanoTimestamp())) {
+    // --- Check auth thread status ---
+    if (g_auth_thread) |*auth| {
+        const auth_status = auth.getStatus();
+        switch (auth_status) {
+            .device_show_code => {
+                // Show device code overlay
+                const user_code = auth.getUserCode();
+                if (user_code.len > 0) {
+                    showDeviceCodeCard(ctx, user_code);
+                    publishOverlays(ctx);
+                }
+            },
+            .authenticated => {
+                // Store tokens and spawn SSE
+                const at = auth.getAccessToken();
+                const rt = auth.getRefreshToken();
+                if (at.len > 0) {
+                    if (g_token_store) |*store| {
+                        store.update(at, rt) catch {};
+                        store.save() catch {};
+                    }
+                }
+                _ = auth.tryJoin();
+                spawnSseStream(ctx);
+                publishOverlays(ctx);
+            },
+            .failed => {
+                const err_msg = auth.getErrorMsg();
+                showAiErrorCard(ctx, "auth", if (err_msg.len > 0) err_msg else "Authentication failed");
+                _ = auth.tryJoin();
+                publishOverlays(ctx);
+            },
+            else => {},
+        }
+    }
+
+    // --- Check SSE thread status ---
+    if (g_sse_thread) |*sse| {
+        const sse_status = sse.getStatus();
+        switch (sse_status) {
+            .streaming => {
+                // Drain delta ring → accumulator → reparse → relayout
+                var drain_buf: [4096]u8 = undefined;
+                const drained = sse.delta_ring.drain(&drain_buf);
+                if (drained.len > 0) {
+                    if (g_ai_accumulator) |*acc| {
+                        acc.appendDelta(drained) catch {};
+                        const blocks = acc.reparse() catch &.{};
+                        if (blocks.len > 0) {
+                            relayoutAiStreamContent(ctx, blocks);
+                        }
+                    }
+                }
+            },
+            .done => {
+                // Final drain
+                var drain_buf: [4096]u8 = undefined;
+                const drained = sse.delta_ring.drain(&drain_buf);
+                if (drained.len > 0) {
+                    if (g_ai_accumulator) |*acc| {
+                        acc.appendDelta(drained) catch {};
+                    }
+                }
+                // Final reparse and relayout with completion action bar
+                if (g_ai_accumulator) |*acc| {
+                    const blocks = acc.reparse() catch &.{};
+                    if (blocks.len > 0) {
+                        relayoutAiStreamContent(ctx, blocks);
+                    }
+                }
+                // Update action bar to show Insert/Copy/Context/Dismiss
+                var bar = attyx.overlay_action.ActionBar{};
+                bar.add(.dismiss, "Dismiss");
+                bar.add(.insert, "Insert");
+                bar.add(.copy, "Copy");
+                bar.add(.context, "Context");
+                mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
+
+                _ = sse.tryJoin();
+                publishOverlays(ctx);
+            },
+            .errored => {
+                const http_code = sse.getHttpStatus();
+                _ = sse.tryJoin();
+
+                if (http_code == 401) {
+                    // Token expired — try refresh
+                    if (g_token_store) |*store| {
+                        // Clear expired access token
+                        if (store.access_token) |at| store.allocator.free(at);
+                        store.access_token = null;
+                        startAuthFlow(ctx, store.refresh_token);
+                    }
+                } else {
+                    const code = sse.getErrorCode();
+                    const msg = sse.getErrorMsg();
+                    showAiErrorCard(ctx, code, if (msg.len > 0) msg else "Request failed");
+                }
+                publishOverlays(ctx);
+            },
+            .canceled => {
+                _ = sse.tryJoin();
+            },
+            else => {},
+        }
+    }
+
+    // --- Tick streaming reveal animation ---
+    if (g_streaming) |*so| {
+        if (so.state != .active) return;
+        if (so.tick(std.time.nanoTimestamp())) {
+            publishAiStreamingFrame(ctx);
+        }
+    }
+}
+
+/// Relayout the streaming overlay with new content blocks from the accumulator.
+fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_content.ContentBlock) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    // Build title from invocation type
+    const title = if (g_context_bundle) |*bundle| switch (bundle.invocation) {
+        .error_explain => "Error Explanation",
+        .selection_explain => "Selection Explanation",
+        .command_generate => "Generate Command",
+        .general => "AI Response",
+    } else "AI Response";
+
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Cancel");
+
+    const result = overlay_content.layoutStructuredCard(
+        mgr.allocator,
+        title,
+        blocks,
+        48,
+        .{},
+        bar,
+    ) catch return;
+
+    if (g_streaming) |*so| {
+        so.replaceContent(result.cells, result.width, result.height);
         publishAiStreamingFrame(ctx);
+    } else {
+        showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
     }
 }
 
@@ -1093,7 +1326,15 @@ fn toggleContextPreview(ctx: *PtyThreadCtx) void {
 }
 
 fn handleInsertAction(ctx: *PtyThreadCtx) void {
-    const code = overlay_content.firstCodeBlock(&overlay_demo.mock_blocks) orelse return;
+    // Try real accumulator blocks first, fall back to demo
+    const code = blk: {
+        if (g_ai_accumulator) |*acc| {
+            const blocks = acc.reparse() catch break :blk @as(?[]const u8, null);
+            if (overlay_content.firstCodeBlock(blocks)) |cb| break :blk @as(?[]const u8, cb);
+        }
+        break :blk overlay_content.firstCodeBlock(&overlay_demo.mock_blocks);
+    } orelse return;
+
     if (ctx.engine.state.bracketed_paste) {
         c.attyx_send_input("\x1b[200~", 6);
     }
@@ -1113,13 +1354,47 @@ fn handleCopyAction(ctx: *PtyThreadCtx) void {
             c.attyx_clipboard_copy(diag_text.ptr, @intCast(diag_text.len));
         }
     } else {
-        // Copy first code block
-        const code = overlay_content.firstCodeBlock(&overlay_demo.mock_blocks) orelse return;
+        // Copy first code block from accumulator, fallback to demo
+        const code = blk: {
+            if (g_ai_accumulator) |*acc| {
+                const blocks = acc.reparse() catch break :blk @as(?[]const u8, null);
+                if (overlay_content.firstCodeBlock(blocks)) |cb| break :blk @as(?[]const u8, cb);
+            }
+            break :blk overlay_content.firstCodeBlock(&overlay_demo.mock_blocks);
+        } orelse return;
         c.attyx_clipboard_copy(code.ptr, @intCast(code.len));
     }
 }
 
-fn cancelAiDemo(ctx: *PtyThreadCtx) void {
+fn handleRetryAction(ctx: *PtyThreadCtx) void {
+    // Cancel current operations
+    if (g_sse_thread) |*sse| {
+        sse.requestCancel();
+        _ = sse.tryJoin();
+    }
+    if (g_auth_thread) |*auth| {
+        auth.requestCancel();
+        _ = auth.tryJoin();
+    }
+    if (g_streaming) |*so| so.cancel();
+    if (g_ai_accumulator) |*acc| acc.reset();
+
+    // Re-invoke
+    startAiInvocation(ctx);
+}
+
+fn cancelAi(ctx: *PtyThreadCtx) void {
+    // Cancel SSE thread
+    if (g_sse_thread) |*sse| {
+        sse.requestCancel();
+        _ = sse.tryJoin();
+    }
+    // Cancel auth thread
+    if (g_auth_thread) |*auth| {
+        auth.requestCancel();
+        _ = auth.tryJoin();
+    }
+    // Cancel streaming overlay
     if (g_streaming) |*so| {
         so.cancel();
     }
@@ -1127,6 +1402,17 @@ fn cancelAiDemo(ctx: *PtyThreadCtx) void {
         mgr.hide(.ai_demo);
         mgr.hide(.context_preview);
     }
+    // Free request body
+    if (g_ai_request_body) |body| {
+        if (ctx.overlay_mgr) |mgr| mgr.allocator.free(body);
+        g_ai_request_body = null;
+    }
+    // Free accumulator
+    if (g_ai_accumulator) |*acc| {
+        acc.deinit();
+        g_ai_accumulator = null;
+    }
+    // Free context
     if (g_context_bundle) |*bundle| {
         bundle.deinit();
         g_context_bundle = null;
@@ -1478,17 +1764,17 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (@atomicRmw(i32, &g_toggle_ai_demo, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
                 if (mgr.isVisible(.ai_demo)) {
-                    cancelAiDemo(ctx);
+                    cancelAi(ctx);
                 } else {
                     mgr.show(.ai_demo);
-                    startAiDemo(ctx);
+                    startAiInvocation(ctx);
                 }
                 publishOverlays(ctx);
             }
         }
 
-        // Tick AI streaming (advance reveal each iteration)
-        tickAiStreaming(ctx);
+        // Tick AI (auth/SSE state + streaming reveal)
+        tickAi(ctx);
 
         // Overlay interaction: dismiss (Esc)
         if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
@@ -1500,9 +1786,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
                         mgr.show(.ai_demo);
                     }
-                    // If AI demo was just dismissed, cancel streaming
+                    // If AI demo was just dismissed, cancel all AI operations
                     if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                        if (g_streaming) |*so| so.cancel();
+                        cancelAi(ctx);
                     }
                     publishOverlays(ctx);
                 }
@@ -1538,18 +1824,17 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     switch (action_id) {
                         .dismiss => {
                             _ = mgr.dismissActive();
-                            // Context preview dismissed → restore AI demo
                             if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
                                 mgr.show(.ai_demo);
                             }
-                            // Cancel streaming if AI demo was dismissed
                             if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                                if (g_streaming) |*so| so.cancel();
+                                cancelAi(ctx);
                             }
                         },
                         .context => toggleContextPreview(ctx),
                         .insert => handleInsertAction(ctx),
                         .copy => handleCopyAction(ctx),
+                        .retry => handleRetryAction(ctx),
                         else => {},
                     }
                     publishOverlays(ctx);
@@ -1573,12 +1858,13 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                     mgr.show(.ai_demo);
                                 }
                                 if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                                    if (g_streaming) |*so| so.cancel();
+                                    cancelAi(ctx);
                                 }
                             },
                             .context => toggleContextPreview(ctx),
                             .insert => handleInsertAction(ctx),
                             .copy => handleCopyAction(ctx),
+                            .retry => handleRetryAction(ctx),
                             else => {},
                         }
                     }

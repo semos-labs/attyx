@@ -175,6 +175,29 @@ pub const StreamingOverlay = struct {
     pub fn isActive(self: *const StreamingOverlay) bool {
         return self.state == .active or self.state == .complete;
     }
+
+    /// Replace the pre-rendered card content. Frees old cells, installs new ones.
+    /// Clamps revealed_height if the new card is shorter. If the new card is taller
+    /// and state is .active, reveal continues from current position.
+    /// Takes ownership of `new_cells`.
+    pub fn replaceContent(self: *StreamingOverlay, new_cells: []OverlayCell, new_w: u16, new_h: u16) void {
+        if (self.full_cells) |old| {
+            self.allocator.free(old);
+        }
+        self.full_cells = new_cells;
+        self.full_width = new_w;
+        self.full_height = new_h;
+
+        // Clamp revealed height to new card height
+        if (self.revealed_height > new_h) {
+            self.revealed_height = new_h;
+        }
+
+        // If we were complete but new card is taller, re-activate streaming
+        if (self.state == .complete and self.revealed_height < new_h) {
+            self.state = .active;
+        }
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -373,4 +396,49 @@ test "StreamingOverlay: timing interval respected" {
     // At t=100, should advance
     try std.testing.expect(so.tick(100));
     try std.testing.expectEqual(@as(u16, 4), so.revealed_height);
+}
+
+test "StreamingOverlay: replaceContent preserves reveal" {
+    const allocator = std.testing.allocator;
+    var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 2 };
+    defer so.cancel();
+
+    const cells = try allocator.alloc(OverlayCell, 30); // 5w x 6h
+    for (cells) |*cell| cell.* = .{};
+    so.start(cells, 5, 6, 0, 10, 0, 0);
+
+    // Advance reveal
+    _ = so.tick(50_000_000);
+    try std.testing.expectEqual(@as(u16, 5), so.revealed_height); // 3 + 2
+
+    // Replace with taller card — should re-activate
+    const new_cells = try allocator.alloc(OverlayCell, 50); // 5w x 10h
+    for (new_cells) |*cell| cell.* = .{};
+    so.replaceContent(new_cells, 5, 10);
+
+    try std.testing.expectEqual(@as(u16, 5), so.revealed_height); // preserved
+    try std.testing.expectEqual(StreamState.active, so.state); // re-activated
+    try std.testing.expectEqual(@as(u16, 10), so.full_height);
+}
+
+test "StreamingOverlay: replaceContent clamps on shorter card" {
+    const allocator = std.testing.allocator;
+    var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 10 };
+    defer so.cancel();
+
+    const cells = try allocator.alloc(OverlayCell, 50); // 5w x 10h
+    for (cells) |*cell| cell.* = .{};
+    so.start(cells, 5, 10, 0, 10, 0, 0);
+
+    // Reveal everything
+    _ = so.tick(50_000_000);
+    try std.testing.expectEqual(StreamState.complete, so.state);
+
+    // Replace with shorter card
+    const new_cells = try allocator.alloc(OverlayCell, 20); // 5w x 4h
+    for (new_cells) |*cell| cell.* = .{};
+    so.replaceContent(new_cells, 5, 4);
+
+    try std.testing.expectEqual(@as(u16, 4), so.revealed_height); // clamped
+    try std.testing.expectEqual(@as(u16, 4), so.full_height);
 }

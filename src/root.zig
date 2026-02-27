@@ -34,6 +34,11 @@ pub const overlay_search = @import("overlay/search.zig");
 pub const overlay_context_extract = @import("overlay/context_extract.zig");
 pub const overlay_context = @import("overlay/context.zig");
 pub const overlay_context_ui = @import("overlay/context_ui.zig");
+pub const overlay_ai_config = @import("overlay/ai_config.zig");
+pub const overlay_ai_auth = @import("overlay/ai_auth.zig");
+pub const overlay_ai_stream = @import("overlay/ai_stream.zig");
+pub const overlay_ai_content = @import("overlay/ai_content.zig");
+pub const overlay_ai_error = @import("overlay/ai_error.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -94,4 +99,9 @@ test {
     _ = @import("overlay/context_extract.zig");
     _ = @import("overlay/context.zig");
     _ = @import("overlay/context_ui.zig");
+    _ = @import("overlay/ai_config.zig");
+    _ = @import("overlay/ai_auth.zig");
+    _ = @import("overlay/ai_stream.zig");
+    _ = @import("overlay/ai_content.zig");
+    _ = @import("overlay/ai_error.zig");
 }

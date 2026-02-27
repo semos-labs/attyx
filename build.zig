@@ -28,6 +28,12 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
+    // Environment: "development" (default) or "production".
+    // Controls the default AI backend URL. Override with [ai] base_url in TOML.
+    const env = b.option([]const u8, "env", "Build environment (development/production)") orelse "development";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "env", env);
+
     const mod = b.addModule("attyx", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
@@ -40,6 +46,7 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
     });
+    mod.addOptions("build_options", build_options);
 
     // Vendored stb_image for image decoding (Kitty graphics protocol).
     // Pure computation — no platform dependencies.
@@ -90,6 +97,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "toml", .module = toml_mod },
                 .{ .name = "app_icon", .module = icon_mod },
                 .{ .name = "builtin_themes", .module = themes_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const toml = @import("toml");
 const platform = @import("../platform/platform.zig");
 const theme_mod = @import("../theme/theme.zig");
@@ -122,6 +123,14 @@ pub const AppConfig = struct {
     program: ?[]const u8 = null,
     program_args: ?[]const []const u8 = null,
 
+    // [ai]
+    ai_base_url: []const u8 = if (std.mem.eql(u8, build_options.env, "production"))
+        "https://app.semos.sh"
+    else
+        "http://localhost:8080",
+    ai_connect_timeout: u32 = 5000,
+    ai_read_timeout: u32 = 60000,
+
     // [logging]
     log_level: ?[]const u8 = null,
     log_file: ?[]const u8 = null,
@@ -145,6 +154,7 @@ pub const AppConfig = struct {
 
     // Allocated strings that we own (for cleanup)
     _allocator: ?std.mem.Allocator = null,
+    _owned_ai_base_url: ?[]const u8 = null,
     _owned_font_family: ?[]const u8 = null,
     _owned_theme_name: ?[]const u8 = null,
     _owned_fallback_items: ?[]const []const u8 = null,
@@ -155,6 +165,7 @@ pub const AppConfig = struct {
 
     pub fn deinit(self: *AppConfig) void {
         const alloc = self._allocator orelse return;
+        if (self._owned_ai_base_url) |s| alloc.free(s);
         if (self._owned_font_family) |s| alloc.free(s);
         if (self._owned_theme_name) |s| alloc.free(s);
         if (self._owned_fallback_items) |items| {
@@ -649,6 +660,43 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
         }
     }
 
+    // [ai]
+    if (Lookup.get(root, "ai", "base_url")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_ai_base_url) |old| allocator.free(old);
+            config.ai_base_url = dupe;
+            config._owned_ai_base_url = dupe;
+        } else {
+            std.debug.print("error: {s}: ai.base_url must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "ai", "connect_timeout")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: ai.connect_timeout must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.ai_connect_timeout = @intCast(v.int);
+        } else {
+            std.debug.print("error: {s}: ai.connect_timeout must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "ai", "read_timeout")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: ai.read_timeout must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.ai_read_timeout = @intCast(v.int);
+        } else {
+            std.debug.print("error: {s}: ai.read_timeout must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [[popup]]
     if (root.get("popup")) |popup_val| {
         if (popup_val == .array) {
@@ -861,4 +909,23 @@ test "parse popup config" {
     try std.testing.expectEqualStrings("60%", entries[1].height);
     try std.testing.expectEqualStrings("single", entries[1].border);
     try std.testing.expectEqualStrings("#78829a", entries[1].border_color);
+}
+
+test "parse ai config" {
+    const alloc = std.testing.allocator;
+    var cfg = AppConfig{};
+    defer cfg.deinit();
+
+    const toml_str =
+        \\[ai]
+        \\base_url = "https://api.semos.ai"
+        \\connect_timeout = 10000
+        \\read_timeout = 30000
+    ;
+
+    try applyToml(alloc, toml_str, "<test>", &cfg);
+
+    try std.testing.expectEqualStrings("https://api.semos.ai", cfg.ai_base_url);
+    try std.testing.expectEqual(@as(u32, 10000), cfg.ai_connect_timeout);
+    try std.testing.expectEqual(@as(u32, 30000), cfg.ai_read_timeout);
 }
