@@ -52,6 +52,7 @@ export fn attyx_toggle_ai_demo() void {}
 export var g_overlay_has_actions: i32 = 0;
 export fn attyx_overlay_esc() void {}
 export fn attyx_overlay_tab() void {}
+export fn attyx_overlay_shift_tab() void {}
 export fn attyx_overlay_enter() void {}
 export fn attyx_overlay_click(_: c_int, _: c_int) c_int { return 0; }
 export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }

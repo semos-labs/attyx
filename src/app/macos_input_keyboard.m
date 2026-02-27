@@ -220,6 +220,10 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             attyx_overlay_tab();
             return YES;
         }
+        if (kc == kVK_Tab && shift && !ctrl) {
+            attyx_overlay_shift_tab();
+            return YES;
+        }
         if (kc == kVK_Return && !ctrl && !shift) {
             attyx_overlay_enter();
             return YES;

@@ -1,0 +1,269 @@
+const std = @import("std");
+const grid_mod = @import("../term/grid.zig");
+const scrollback_mod = @import("../term/scrollback.zig");
+const extract = @import("context_extract.zig");
+
+const Grid = grid_mod.Grid;
+const Scrollback = scrollback_mod.Scrollback;
+
+/// Why the AI overlay was invoked. Determines which context fields are
+/// populated and how the backend (future) interprets them.
+pub const InvocationType = enum(u8) {
+    error_explain,
+    selection_explain,
+    command_generate,
+    general,
+};
+
+/// Immutable snapshot of terminal context captured at AI invocation time.
+/// All string fields are owned by the allocator passed to `captureContext`;
+/// call `deinit()` to free them.
+pub const ContextBundle = struct {
+    invocation: InvocationType,
+    title: ?[]const u8,
+    selection_text: ?[]const u8,
+    scrollback_excerpt: ?[]const u8,
+    scrollback_line_count: u16,
+    cursor_line: ?[]const u8,
+    grid_cols: u16,
+    grid_rows: u16,
+    alt_active: bool,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *ContextBundle) void {
+        if (self.title) |t| self.allocator.free(t);
+        if (self.selection_text) |s| self.allocator.free(s);
+        if (self.scrollback_excerpt) |e| self.allocator.free(e);
+        if (self.cursor_line) |cl| self.allocator.free(cl);
+        self.* = undefined;
+    }
+
+    /// Format a one-line summary into `buf`. Returns the populated slice.
+    /// Example: "Context: vim + selection + last 80 lines"
+    pub fn summaryLine(self: *const ContextBundle, buf: []u8) []const u8 {
+        var stream = std.io.fixedBufferStream(buf);
+        const w = stream.writer();
+        w.writeAll("Context:") catch return buf[0..0];
+        var parts: u8 = 0;
+
+        if (self.title) |t| {
+            if (t.len > 0) {
+                if (parts > 0) w.writeAll(" +") catch {};
+                w.writeAll(" ") catch {};
+                const max_title = @min(t.len, 20);
+                w.writeAll(t[0..max_title]) catch {};
+                if (t.len > 20) w.writeAll("...") catch {};
+                parts += 1;
+            }
+        }
+
+        if (self.selection_text != null) {
+            if (parts > 0) w.writeAll(" +") catch {};
+            w.writeAll(" selection") catch {};
+            parts += 1;
+        }
+
+        if (self.scrollback_line_count > 0) {
+            if (parts > 0) w.writeAll(" +") catch {};
+            w.writeAll(" last ") catch {};
+            w.print("{d}", .{self.scrollback_line_count}) catch {};
+            w.writeAll(" lines") catch {};
+            parts += 1;
+        }
+
+        if (parts == 0) {
+            w.writeAll(" (empty)") catch {};
+        }
+
+        return buf[0..stream.pos];
+    }
+};
+
+/// Capture a context bundle from terminal state. Called from the PTY thread.
+///
+/// `title_buf` / `title_len`: the terminal's current OSC 2 title.
+/// `sel_bounds`: non-null when a selection is active.
+/// `excerpt_lines`: how many recent lines to include (scrollback + grid).
+pub fn captureContext(
+    allocator: std.mem.Allocator,
+    grid: *const Grid,
+    sb: *const Scrollback,
+    cursor_row: usize,
+    title_buf: ?[*]const u8,
+    title_len: usize,
+    sel_bounds: ?extract.SelBounds,
+    excerpt_lines: u16,
+    alt_active: bool,
+) !ContextBundle {
+    // Title (copy from C buffer)
+    var title: ?[]u8 = null;
+    if (title_buf) |tbuf| {
+        if (title_len > 0) {
+            title = try allocator.alloc(u8, title_len);
+            @memcpy(title.?, tbuf[0..title_len]);
+        }
+    }
+    errdefer if (title) |t| allocator.free(t);
+
+    // Selection text
+    var selection_text: ?[]u8 = null;
+    if (sel_bounds) |sel| {
+        selection_text = try extract.extractSelectionText(allocator, grid, sel);
+        if (selection_text.?.len == 0) {
+            allocator.free(selection_text.?);
+            selection_text = null;
+        }
+    }
+    errdefer if (selection_text) |s| allocator.free(s);
+
+    // Scrollback excerpt
+    var scrollback_excerpt: ?[]u8 = null;
+    var scrollback_line_count: u16 = 0;
+    if (!alt_active and excerpt_lines > 0) {
+        const result = try extract.extractScrollbackExcerpt(allocator, grid, sb, excerpt_lines);
+        scrollback_line_count = result.line_count;
+        if (result.text.len > 0) {
+            scrollback_excerpt = result.text;
+        } else {
+            allocator.free(result.text);
+        }
+    }
+    errdefer if (scrollback_excerpt) |e| allocator.free(e);
+
+    // Cursor line
+    var cursor_line: ?[]u8 = null;
+    if (cursor_row < grid.rows) {
+        cursor_line = try extract.extractLineFromGrid(allocator, grid, cursor_row);
+        if (cursor_line.?.len == 0) {
+            allocator.free(cursor_line.?);
+            cursor_line = null;
+        }
+    }
+
+    return .{
+        .invocation = if (sel_bounds != null) .selection_explain else .general,
+        .title = title,
+        .selection_text = selection_text,
+        .scrollback_excerpt = scrollback_excerpt,
+        .scrollback_line_count = scrollback_line_count,
+        .cursor_line = cursor_line,
+        .grid_cols = @intCast(grid.cols),
+        .grid_rows = @intCast(grid.rows),
+        .alt_active = alt_active,
+        .allocator = allocator,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "captureContext: basic bundle" {
+    var g = try Grid.init(std.testing.allocator, 3, 10);
+    defer g.deinit();
+    var sb = try Scrollback.init(std.testing.allocator, 10, 10);
+    defer sb.deinit();
+
+    g.setCell(1, 0, .{ .char = '$' });
+    g.setCell(1, 1, .{ .char = ' ' });
+
+    var bundle = try captureContext(
+        std.testing.allocator,
+        &g,
+        &sb,
+        1, // cursor on row 1
+        null,
+        0,
+        null,
+        10,
+        false,
+    );
+    defer bundle.deinit();
+
+    try std.testing.expectEqual(InvocationType.general, bundle.invocation);
+    try std.testing.expectEqual(@as(?[]const u8, null), bundle.title);
+    try std.testing.expectEqual(@as(?[]const u8, null), bundle.selection_text);
+    try std.testing.expect(bundle.cursor_line != null);
+    try std.testing.expectEqualStrings("$", bundle.cursor_line.?);
+    try std.testing.expectEqual(@as(u16, 10), bundle.grid_cols);
+}
+
+test "captureContext: with title and selection" {
+    var g = try Grid.init(std.testing.allocator, 3, 10);
+    defer g.deinit();
+    var sb = try Scrollback.init(std.testing.allocator, 10, 10);
+    defer sb.deinit();
+
+    g.setCell(0, 0, .{ .char = 'H' });
+    g.setCell(0, 1, .{ .char = 'i' });
+
+    const title_str = "vim";
+    var bundle = try captureContext(
+        std.testing.allocator,
+        &g,
+        &sb,
+        0,
+        title_str.ptr,
+        title_str.len,
+        .{ .start_row = 0, .start_col = 0, .end_row = 0, .end_col = 1 },
+        10,
+        false,
+    );
+    defer bundle.deinit();
+
+    try std.testing.expectEqual(InvocationType.selection_explain, bundle.invocation);
+    try std.testing.expectEqualStrings("vim", bundle.title.?);
+    try std.testing.expectEqualStrings("Hi", bundle.selection_text.?);
+}
+
+test "ContextBundle: summaryLine formatting" {
+    var g = try Grid.init(std.testing.allocator, 2, 5);
+    defer g.deinit();
+    var sb = try Scrollback.init(std.testing.allocator, 10, 5);
+    defer sb.deinit();
+
+    g.setCell(0, 0, .{ .char = 'X' });
+
+    const title_str = "bash";
+    var bundle = try captureContext(
+        std.testing.allocator,
+        &g,
+        &sb,
+        0,
+        title_str.ptr,
+        title_str.len,
+        null,
+        5,
+        false,
+    );
+    defer bundle.deinit();
+
+    var buf: [128]u8 = undefined;
+    const summary = bundle.summaryLine(&buf);
+    try std.testing.expect(std.mem.startsWith(u8, summary, "Context:"));
+    try std.testing.expect(std.mem.indexOf(u8, summary, "bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "lines") != null);
+}
+
+test "ContextBundle: deinit frees correctly" {
+    var g = try Grid.init(std.testing.allocator, 2, 5);
+    defer g.deinit();
+    var sb = try Scrollback.init(std.testing.allocator, 10, 5);
+    defer sb.deinit();
+
+    g.setCell(0, 0, .{ .char = 'A' });
+
+    var bundle = try captureContext(
+        std.testing.allocator,
+        &g,
+        &sb,
+        0,
+        null,
+        0,
+        null,
+        2,
+        false,
+    );
+    // Explicit deinit — testing allocator will catch leaks
+    bundle.deinit();
+}

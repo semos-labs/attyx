@@ -207,9 +207,12 @@ int drawFrame(void) {
     float glyphW = g_gc.glyph_w;
     float glyphH = g_gc.glyph_h;
     int atlasCols = g_gc.atlas_cols;
+    int visibleRows = rows - g_grid_top_offset;
+    if (visibleRows < 0) visibleRows = 0;
+    int visibleTotal = visibleRows * cols;
 
     // Update bg vertices for dirty rows
-    for (int row = 0; row < rows; row++) {
+    for (int row = 0; row < visibleRows; row++) {
         if (!g_full_redraw && !dirtyBitTest(dirty, row)) continue;
         for (int col = 0; col < cols; col++) {
             int i = row * cols + col;
@@ -242,12 +245,17 @@ int drawFrame(void) {
         }
     }
 
+    // Zero out stale BG vertices for hidden rows (below visibleRows)
+    if (visibleTotal < total) {
+        memset(&g_bg_verts[visibleTotal * 6], 0, sizeof(Vertex) * 6 * (total - visibleTotal));
+    }
+
     // Cursor quad (shape-aware)
     int cursorSlot = total * 6;
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
     int drawCursor = curVis && g_blink_on
-                     && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
+                     && curRow >= 0 && curRow < visibleRows && curCol >= 0 && curCol < cols;
     if (drawCursor) {
         float cx0 = offX + curCol * gw, cy0 = baseOffY + curRow * gh;
         float cr, cg_c, cb;
@@ -381,7 +389,7 @@ int drawFrame(void) {
         float ulH = fmaxf(2.0f, 1.0f);
 
         // OSC 8 links: always show underline
-        for (int i = 0; i < total; i++) {
+        for (int i = 0; i < visibleTotal; i++) {
             uint32_t lid = cells[i].link_id;
             if (lid == 0) continue;
             if (bgVertCount + 6 > g_bg_vert_cap) break;
@@ -436,7 +444,7 @@ int drawFrame(void) {
         int srchCe = g_search_cur_vis_ce;
         for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
             AttyxSearchVis m = g_search_vis[vi];
-            if (m.row < 0 || m.row >= rows) continue;
+            if (m.row < 0 || m.row >= visibleRows) continue;
             int isCurrent = (m.row == srchRow && m.col_start == srchCs && m.col_end == srchCe);
             float hr, hg, hb, ha;
             if (isCurrent) {
@@ -462,7 +470,7 @@ int drawFrame(void) {
     // Underline + strikethrough decorations
     {
         float decoH = fmaxf(2.0f, 1.0f);
-        for (int i = 0; i < total; i++) {
+        for (int i = 0; i < visibleTotal; i++) {
             const AttyxCell* cell = &cells[i];
             if (cell->character == 0x10EEEE) continue;  // Kitty Unicode placeholder
             uint8_t fl = cell->flags;
@@ -503,7 +511,7 @@ int drawFrame(void) {
     int ti = 0;
     int ci = 0;
     if (g_full_redraw || dirtyAny(dirty)) {
-        for (int i = 0; i < total; i++) {
+        for (int i = 0; i < visibleTotal; i++) {
             const AttyxCell* cell = &cells[i];
             uint32_t ch = cell->character;
             if (ch <= 32) continue;
@@ -606,7 +614,7 @@ int drawFrame(void) {
         float defB = cells[0].bg_b / 255.0f;
         float ba   = g_background_opacity;
         float gridRight  = offX + cols * gw;
-        float gridBottom = offY + rows * gh;
+        float gridBottom = offY + visibleRows * gh;
         Vertex gapVerts[24];
         int gvc = 0;
         if (offY > 0.5f)
@@ -614,9 +622,9 @@ int drawFrame(void) {
         if (gridBottom + 0.5f < (float)fb_h)
             gvc = emitRect(gapVerts, gvc, 0, gridBottom, (float)fb_w, (float)fb_h - gridBottom, defR, defG, defB, ba);
         if (offX > 0.5f)
-            gvc = emitRect(gapVerts, gvc, 0, offY, offX, (float)rows * gh, defR, defG, defB, ba);
+            gvc = emitRect(gapVerts, gvc, 0, offY, offX, (float)visibleRows * gh, defR, defG, defB, ba);
         if (gridRight + 0.5f < (float)fb_w)
-            gvc = emitRect(gapVerts, gvc, gridRight, offY, (float)fb_w - gridRight, (float)rows * gh, defR, defG, defB, ba);
+            gvc = emitRect(gapVerts, gvc, gridRight, offY, (float)fb_w - gridRight, (float)visibleRows * gh, defR, defG, defB, ba);
         if (gvc > 0) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

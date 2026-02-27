@@ -9,6 +9,7 @@ pub const ActionId = enum(u8) {
     prev,
     custom_0,
     custom_1,
+    context,
 };
 
 pub const OverlayAction = struct {

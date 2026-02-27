@@ -1,8 +1,9 @@
 const std = @import("std");
 const anchor_mod = @import("anchor.zig");
 const action_mod = @import("action.zig");
+const layout_mod = @import("layout.zig");
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4 };
 
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
@@ -184,6 +185,21 @@ pub const OverlayManager = struct {
         return false;
     }
 
+    /// Reverse focus on topmost visible layer with actions. Returns true if focus changed.
+    pub fn cycleFocusReverse(self: *OverlayManager) bool {
+        var i: usize = max_layers;
+        while (i > 0) {
+            i -= 1;
+            const layer = &self.layers[i];
+            if (layer.visible and layer.action_bar != null and layer.action_bar.?.hasActions()) {
+                layer.action_bar.?.focusPrev();
+                self.gen +%= 1;
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Return the focused action's ID on topmost active layer.
     pub fn activateFocused(self: *OverlayManager) ?action_mod.ActionId {
         var i: usize = max_layers;
@@ -262,6 +278,34 @@ pub const OverlayManager = struct {
             return bar.actions[idx].id;
         }
         return null;
+    }
+
+    /// Repaint the action bar row of the topmost visible layer to reflect
+    /// the current focused state. Call after cycleFocus/cycleFocusReverse.
+    pub fn repaintActiveActionBar(self: *OverlayManager) void {
+        var i: usize = max_layers;
+        while (i > 0) {
+            i -= 1;
+            const layer = &self.layers[i];
+            if (!layer.visible or layer.cells == null) continue;
+            const bar = layer.action_bar orelse continue;
+            if (!bar.hasActions()) continue;
+            if (layer.height < 3) return;
+            const action_row = layer.height - 2;
+            layout_mod.fillActionBar(
+                layer.cells.?,
+                layer.width,
+                action_row,
+                1,
+                layer.width - 1,
+                bar.actions[0..bar.count],
+                bar.focused,
+                .{},
+                layer.style,
+            );
+            self.gen +%= 1;
+            return;
+        }
     }
 
     /// Returns true if any visible layer has a non-empty action_bar.

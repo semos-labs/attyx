@@ -15,10 +15,11 @@ pub const Direction = enum {
 };
 
 /// Mode argument for erase operations (ED / EL).
-pub const EraseMode = enum(u2) {
+pub const EraseMode = enum(u3) {
     to_end = 0,
     to_start = 1,
     all = 2,
+    scrollback = 3,
 };
 
 /// Absolute cursor positioning (CUP). Values are 0-based.

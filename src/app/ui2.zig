@@ -26,6 +26,9 @@ const overlay_content = attyx.overlay_content;
 const overlay_streaming = attyx.overlay_streaming;
 const overlay_demo = attyx.overlay_demo;
 const overlay_search = attyx.overlay_search;
+const overlay_context = attyx.overlay_context;
+const overlay_context_extract = attyx.overlay_context_extract;
+const overlay_context_ui = attyx.overlay_context_ui;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
@@ -135,6 +138,7 @@ export var g_overlay_has_actions: i32 = 0;
 // Atomic flags: input thread sets to 1, PTY thread reads and resets.
 var g_overlay_dismiss: i32 = 0;
 var g_overlay_cycle_focus: i32 = 0;
+var g_overlay_cycle_focus_rev: i32 = 0;
 var g_overlay_activate: i32 = 0;
 
 export fn attyx_overlay_esc() void {
@@ -142,6 +146,9 @@ export fn attyx_overlay_esc() void {
 }
 export fn attyx_overlay_tab() void {
     @atomicStore(i32, &g_overlay_cycle_focus, 1, .seq_cst);
+}
+export fn attyx_overlay_shift_tab() void {
+    @atomicStore(i32, &g_overlay_cycle_focus_rev, 1, .seq_cst);
 }
 export fn attyx_overlay_enter() void {
     @atomicStore(i32, &g_overlay_activate, 1, .seq_cst);
@@ -800,6 +807,9 @@ var g_anchor_mode_counter: u8 = 0;
 // AI demo streaming state (persists across PTY loop iterations).
 var g_streaming: ?overlay_streaming.StreamingOverlay = null;
 
+// Context bundle captured when the AI demo is started.
+var g_context_bundle: ?overlay_context.ContextBundle = null;
+
 fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (!mgr.isVisible(.anchor_demo)) return;
@@ -858,12 +868,49 @@ fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
 
 fn startAiDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
+    const eng = ctx.engine;
+
+    // Capture terminal context before building the overlay
+    if (g_context_bundle) |*old| old.deinit();
+    g_context_bundle = null;
+
+    const sel_active_raw: i32 = @bitCast(c.g_sel_active);
+    const sel_start_row_raw: i32 = @bitCast(c.g_sel_start_row);
+    const sel_start_col_raw: i32 = @bitCast(c.g_sel_start_col);
+    const sel_end_row_raw: i32 = @bitCast(c.g_sel_end_row);
+    const sel_end_col_raw: i32 = @bitCast(c.g_sel_end_col);
+    const sel_bounds: ?overlay_context_extract.SelBounds = if (sel_active_raw != 0)
+        .{
+            .start_row = if (sel_start_row_raw >= 0) @intCast(@as(u32, @bitCast(sel_start_row_raw))) else 0,
+            .start_col = if (sel_start_col_raw >= 0) @intCast(@as(u32, @bitCast(sel_start_col_raw))) else 0,
+            .end_row = if (sel_end_row_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_row_raw))) else 0,
+            .end_col = if (sel_end_col_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_col_raw))) else 0,
+        }
+    else
+        null;
+
+    const title_len_raw: i32 = @bitCast(c.g_title_len);
+    const title_len: usize = if (title_len_raw > 0) @intCast(@as(u32, @bitCast(title_len_raw))) else 0;
+    const title_ptr: ?[*]const u8 = if (title_len > 0) @ptrCast(&c.g_title_buf) else null;
+
+    g_context_bundle = overlay_context.captureContext(
+        mgr.allocator,
+        &eng.state.grid,
+        &eng.state.scrollback,
+        eng.state.cursor.row,
+        title_ptr,
+        title_len,
+        sel_bounds,
+        80,
+        eng.state.alt_active,
+    ) catch null;
 
     // Layout full structured card
     const action_bar_mod = attyx.overlay_action;
     var bar = action_bar_mod.ActionBar{};
     bar.add(.dismiss, "Dismiss");
     bar.add(.copy, "Copy");
+    bar.add(.context, "Context");
 
     const result = overlay_content.layoutStructuredCard(
         mgr.allocator,
@@ -927,12 +974,134 @@ fn tickAiStreaming(ctx: *PtyThreadCtx) void {
     }
 }
 
+/// Reposition the AI demo streaming overlay after a window resize.
+/// Updates bottom_row, col, and max_visible_height from the new viewport,
+/// then republishes the visible frame.
+fn relayoutAiDemo(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    if (!mgr.isVisible(.ai_demo)) return;
+    var so = &(g_streaming orelse return);
+
+    const vp = viewportInfoFromCtx(ctx);
+    const margin: u16 = 1;
+    const bottom_row: u16 = if (vp.grid_rows > margin + 1) vp.grid_rows - 1 - margin else vp.grid_rows -| 1;
+    const max_vis: u16 = if (vp.grid_rows > margin * 2) vp.grid_rows - margin * 2 else 3;
+
+    // Recompute horizontal placement
+    const anchor = overlay_anchor.Anchor{ .kind = .viewport_dock, .dock = .bottom_right };
+    const placement = overlay_anchor.placeOverlay(anchor, so.full_width, so.full_height, vp, .{});
+
+    so.anchor_bottom_row = bottom_row;
+    so.max_visible_height = max_vis;
+    so.col = placement.col;
+
+    publishAiStreamingFrame(ctx);
+}
+
+/// Layout and place the context preview card into the overlay manager.
+/// Handles bottom-anchored placement and viewport height capping.
+/// Does NOT change visibility — caller is responsible for show/hide.
+fn placeContextPreviewCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const bundle = &(g_context_bundle orelse return);
+    const vp = viewportInfoFromCtx(ctx);
+
+    const result = overlay_context_ui.layoutContextPreview(
+        mgr.allocator,
+        bundle,
+        @min(vp.grid_cols, 50),
+        .{},
+    ) catch return;
+    defer mgr.allocator.free(result.cells);
+
+    // Bottom-anchored placement with viewport capping (same pattern as AI demo)
+    const margin: u16 = 1;
+    const bottom_row: u16 = if (vp.grid_rows > margin + 1) vp.grid_rows - 1 - margin else vp.grid_rows -| 1;
+    const max_vis: u16 = if (vp.grid_rows > margin * 2) vp.grid_rows - margin * 2 else 3;
+    const vis_h: u16 = @min(result.height, max_vis);
+    const top_row: u16 = if (bottom_row + 1 >= vis_h) bottom_row + 1 - vis_h else 0;
+    const col: u16 = if (vp.grid_cols > result.width + margin) vp.grid_cols - result.width - margin else 0;
+
+    if (vis_h >= result.height) {
+        mgr.setContent(.context_preview, col, top_row, result.width, result.height, result.cells) catch return;
+    } else {
+        // Build a height-capped view: top border + content window + action bar + bottom border
+        const w: usize = result.width;
+        const fh: usize = result.height;
+        const vh: usize = vis_h;
+        if (vh < 3 or w == 0) return;
+        const needed = vh * w;
+        var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
+        if (needed > scratch.len) return;
+
+        @memcpy(scratch[0..w], result.cells[0..w]);
+        const visible_content = vh -| 3;
+        if (visible_content > 0) {
+            const src_start = 1 * w;
+            const dst_start = 1 * w;
+            const count = visible_content * w;
+            if (src_start + count <= result.cells.len) {
+                @memcpy(scratch[dst_start .. dst_start + count], result.cells[src_start .. src_start + count]);
+            }
+        }
+        {
+            const src_row = fh - 2;
+            const dst_row = vh - 2;
+            @memcpy(scratch[dst_row * w .. (dst_row + 1) * w], result.cells[src_row * w .. (src_row + 1) * w]);
+        }
+        {
+            const src_row = fh - 1;
+            const dst_row = vh - 1;
+            @memcpy(scratch[dst_row * w .. (dst_row + 1) * w], result.cells[src_row * w .. (src_row + 1) * w]);
+        }
+        mgr.setContent(.context_preview, col, top_row, result.width, @intCast(vh), scratch[0..needed]) catch return;
+    }
+
+    // Action bar for Back button
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Back");
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.context_preview)].action_bar = bar;
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.context_preview)].z_order = 3;
+}
+
+/// Rebuild the context preview overlay after a window resize.
+fn relayoutContextPreview(ctx: *PtyThreadCtx) void {
+    if (ctx.overlay_mgr) |mgr| {
+        if (!mgr.isVisible(.context_preview)) return;
+    } else return;
+    placeContextPreviewCard(ctx);
+}
+
+fn toggleContextPreview(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    if (mgr.isVisible(.context_preview)) {
+        mgr.hide(.context_preview);
+        // Restore AI demo visibility
+        mgr.show(.ai_demo);
+        publishOverlays(ctx);
+        return;
+    }
+
+    placeContextPreviewCard(ctx);
+
+    // Hide AI demo while context preview is shown (prevents overlap)
+    mgr.hide(.ai_demo);
+    mgr.show(.context_preview);
+    publishOverlays(ctx);
+}
+
 fn cancelAiDemo(ctx: *PtyThreadCtx) void {
     if (g_streaming) |*so| {
         so.cancel();
     }
     if (ctx.overlay_mgr) |mgr| {
         mgr.hide(.ai_demo);
+        mgr.hide(.context_preview);
+    }
+    if (g_context_bundle) |*bundle| {
+        bundle.deinit();
+        g_context_bundle = null;
     }
 }
 
@@ -984,12 +1153,15 @@ var g_search_bar = overlay_search.SearchBarState{};
 var g_saved_cursor_shape: i32 = -1; // -1 = not saved
 var g_saved_cursor_row: c_int = 0;
 var g_saved_cursor_col: c_int = 0;
+var g_saved_viewport_offset: usize = 0;
+var g_viewport_compensated: bool = false;
 
 /// Consume search input commands from the atomic rings, apply to SearchBarState,
 /// and sync the query into g_search_query/g_search_gen for processSearch.
 /// Returns true if any input was consumed.
 fn consumeSearchInput() bool {
     var consumed = false;
+    var query_changed = false;
 
     // Process character insertions
     while (true) {
@@ -1000,6 +1172,7 @@ fn consumeSearchInput() bool {
         g_search_bar.insertChar(cp);
         @atomicStore(u32, &g_search_char_read, r +% 1, .seq_cst);
         consumed = true;
+        query_changed = true;
     }
 
     // Process commands
@@ -1012,13 +1185,13 @@ fn consumeSearchInput() bool {
         consumed = true;
 
         switch (cmd) {
-            1 => g_search_bar.deleteBack(),
-            2 => g_search_bar.deleteFwd(),
+            1 => { g_search_bar.deleteBack(); query_changed = true; },
+            2 => { g_search_bar.deleteFwd(); query_changed = true; },
             3 => g_search_bar.cursorLeft(),
             4 => g_search_bar.cursorRight(),
             5 => g_search_bar.cursorHome(),
             6 => g_search_bar.cursorEnd(),
-            10 => g_search_bar.deleteWord(),
+            10 => { g_search_bar.deleteWord(); query_changed = true; },
             7 => {
                 // Dismiss search
                 g_search_bar.clear();
@@ -1040,7 +1213,7 @@ fn consumeSearchInput() bool {
     }
 
     // Sync query bytes into bridge globals so processSearch sees them
-    if (consumed) {
+    if (query_changed) {
         const qlen: usize = g_search_bar.query_len;
         @memcpy(c.g_search_query[0..qlen], g_search_bar.query[0..qlen]);
         c.g_search_query_len = @intCast(qlen);
@@ -1066,6 +1239,13 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
             }
             c.attyx_set_cursor(g_saved_cursor_row, g_saved_cursor_col);
             g_grid_top_offset = 0;
+            // Restore viewport scroll compensation
+            if (g_viewport_compensated) {
+                ctx.engine.state.viewport_offset = g_saved_viewport_offset;
+                c.g_viewport_offset = @intCast(g_saved_viewport_offset);
+                g_viewport_compensated = false;
+                c.attyx_mark_all_dirty();
+            }
             publishOverlays(ctx);
         }
         return;
@@ -1080,6 +1260,16 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
         g_saved_cursor_col = c.g_cursor_col;
         c.g_cursor_shape = 0; // blinking_block
         g_grid_top_offset = 1;
+        // Compensate viewport: scroll down 1 row so content stays visually stable
+        g_saved_viewport_offset = ctx.engine.state.viewport_offset;
+        if (ctx.engine.state.viewport_offset > 0) {
+            ctx.engine.state.viewport_offset -= 1;
+            c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+            g_viewport_compensated = true;
+            c.attyx_mark_all_dirty();
+        } else {
+            g_viewport_compensated = false;
+        }
     }
 
     // Sync match counts from processSearch results
@@ -1276,7 +1466,12 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
                 const was_ai_visible = mgr.isVisible(.ai_demo);
+                const was_ctx_visible = mgr.isVisible(.context_preview);
                 if (mgr.dismissActive()) {
+                    // Context preview dismissed → restore AI demo
+                    if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
+                        mgr.show(.ai_demo);
+                    }
                     // If AI demo was just dismissed, cancel streaming
                     if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
                         if (g_streaming) |*so| so.cancel();
@@ -1286,10 +1481,20 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Overlay interaction: cycle focus (Tab)
+        // Overlay interaction: cycle focus (Tab / Shift-Tab)
         if (@atomicRmw(i32, &g_overlay_cycle_focus, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
                 if (mgr.cycleFocus()) {
+                    mgr.repaintActiveActionBar();
+                    generateDebugCard(ctx);
+                    publishOverlays(ctx);
+                }
+            }
+        }
+        if (@atomicRmw(i32, &g_overlay_cycle_focus_rev, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.cycleFocusReverse()) {
+                    mgr.repaintActiveActionBar();
                     generateDebugCard(ctx);
                     publishOverlays(ctx);
                 }
@@ -1300,15 +1505,21 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (@atomicRmw(i32, &g_overlay_activate, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
                 const was_ai_visible = mgr.isVisible(.ai_demo);
+                const was_ctx_visible = mgr.isVisible(.context_preview);
                 if (mgr.activateFocused()) |action_id| {
                     switch (action_id) {
                         .dismiss => {
                             _ = mgr.dismissActive();
+                            // Context preview dismissed → restore AI demo
+                            if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
+                                mgr.show(.ai_demo);
+                            }
                             // Cancel streaming if AI demo was dismissed
                             if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
                                 if (g_streaming) |*so| so.cancel();
                             }
                         },
+                        .context => toggleContextPreview(ctx),
                         else => {},
                     }
                     publishOverlays(ctx);
@@ -1323,14 +1534,19 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const click_row: u16 = @intCast(@max(0, @atomicLoad(i32, &g_overlay_click_row, .seq_cst)));
                 if (mgr.hitTest(click_col, click_row)) |hit| {
                     const was_ai_visible = mgr.isVisible(.ai_demo);
+                    const was_ctx_visible = mgr.isVisible(.context_preview);
                     if (mgr.clickAction(hit)) |action_id| {
                         switch (action_id) {
                             .dismiss => {
                                 _ = mgr.dismissActive();
+                                if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
+                                    mgr.show(.ai_demo);
+                                }
                                 if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
                                     if (g_streaming) |*so| so.cancel();
                                 }
                             },
+                            .context => toggleContextPreview(ctx),
                             else => {},
                         }
                     }
@@ -1398,6 +1614,8 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     mgr.relayoutAnchored(viewportInfoFromCtx(ctx));
                     generateDebugCard(ctx);
                     generateAnchorDemo(ctx);
+                    relayoutAiDemo(ctx);
+                    relayoutContextPreview(ctx);
                 }
                 publishOverlays(ctx);
                 // Resize popup if active

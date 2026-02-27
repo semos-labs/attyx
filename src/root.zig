@@ -31,6 +31,9 @@ pub const overlay_content = @import("overlay/content.zig");
 pub const overlay_streaming = @import("overlay/streaming.zig");
 pub const overlay_demo = @import("overlay/demo.zig");
 pub const overlay_search = @import("overlay/search.zig");
+pub const overlay_context_extract = @import("overlay/context_extract.zig");
+pub const overlay_context = @import("overlay/context.zig");
+pub const overlay_context_ui = @import("overlay/context_ui.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -88,4 +91,7 @@ test {
     _ = @import("overlay/streaming.zig");
     _ = @import("overlay/demo.zig");
     _ = @import("overlay/search.zig");
+    _ = @import("overlay/context_extract.zig");
+    _ = @import("overlay/context.zig");
+    _ = @import("overlay/context_ui.zig");
 }

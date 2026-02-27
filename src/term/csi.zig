@@ -67,6 +67,7 @@ pub fn makeEraseDisplay(params: CsiParams) Action {
         0 => .{ .erase_display = .to_end },
         1 => .{ .erase_display = .to_start },
         2 => .{ .erase_display = .all },
+        3 => .{ .erase_display = .scrollback },
         else => .nop,
     };
 }

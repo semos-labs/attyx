@@ -251,6 +251,11 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
             g_suppress_char = 1;
             return;
         }
+        if (key == GLFW_KEY_TAB && shift && !ctrl && !alt) {
+            attyx_overlay_shift_tab();
+            g_suppress_char = 1;
+            return;
+        }
         if (key == GLFW_KEY_ENTER && !ctrl && !shift && !alt) {
             attyx_overlay_enter();
             g_suppress_char = 1;

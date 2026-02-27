@@ -10,6 +10,62 @@ const CardResult = layout.CardResult;
 const ActionBarStyle = layout.ActionBarStyle;
 
 // ---------------------------------------------------------------------------
+// UTF-8 helpers
+// ---------------------------------------------------------------------------
+
+/// Write UTF-8 decoded codepoints from `text` into overlay cells starting at
+/// (row, start_col). Advances one cell per codepoint (assumes all are width 1).
+/// Stops after `max_cells` cells or end of text. Returns cells written.
+fn fillCellsUtf8(
+    cells: []OverlayCell,
+    stride: usize,
+    row: usize,
+    start_col: usize,
+    text: []const u8,
+    max_cells: usize,
+    fg: Rgb,
+    bg: Rgb,
+    bg_alpha: u8,
+) usize {
+    var ci: usize = 0;
+    var pos: usize = 0;
+    while (pos < text.len and ci < max_cells) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
+            pos += 1;
+            continue;
+        };
+        if (pos + cp_len > text.len) break;
+        const cp = std.unicode.utf8Decode(text[pos .. pos + cp_len]) catch {
+            pos += 1;
+            continue;
+        };
+        const col = start_col + ci;
+        const idx = row * stride + col;
+        if (idx >= cells.len) break;
+        cells[idx] = .{ .char = cp, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
+        ci += 1;
+        pos += cp_len;
+    }
+    return ci;
+}
+
+/// Count display-width codepoints in a UTF-8 byte slice (1 cell per codepoint).
+fn utf8CharCount(text: []const u8) usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (pos < text.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
+            pos += 1;
+            continue;
+        };
+        if (pos + cp_len > text.len) break;
+        count += 1;
+        pos += cp_len;
+    }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
 // Content model
 // ---------------------------------------------------------------------------
 
@@ -193,17 +249,7 @@ fn fillHeader(
     for (buf[0..lines], 0..) |lr, li| {
         const row = @as(usize, start_row) + li;
         const line_text = text[lr.start..lr.end];
-        for (line_text, 0..) |ch, ci| {
-            const col = @as(usize, start_col) + ci;
-            const idx = row * @as(usize, stride) + col;
-            if (idx >= cells.len) break;
-            cells[idx] = .{
-                .char = ch,
-                .fg = style.header_fg,
-                .bg = style.base.bg,
-                .bg_alpha = style.base.bg_alpha,
-            };
-        }
+        _ = fillCellsUtf8(cells, stride, row, start_col, line_text, inner_w, style.header_fg, style.base.bg, style.base.bg_alpha);
     }
 
     // Underline row of ─
@@ -239,17 +285,7 @@ fn fillParagraph(
     for (buf[0..@min(n, lines)], 0..) |lr, li| {
         const row = @as(usize, start_row) + li;
         const line_text = text[lr.start..lr.end];
-        for (line_text, 0..) |ch, ci| {
-            const col = @as(usize, start_col) + ci;
-            const idx = row * @as(usize, stride) + col;
-            if (idx >= cells.len) break;
-            cells[idx] = .{
-                .char = ch,
-                .fg = style.base.fg,
-                .bg = style.base.bg,
-                .bg_alpha = style.base.bg_alpha,
-            };
-        }
+        _ = fillCellsUtf8(cells, stride, row, start_col, line_text, inner_w, style.base.fg, style.base.bg, style.base.bg_alpha);
     }
 
     return start_row + lines;
@@ -307,13 +343,8 @@ fn fillCodeBlock(
         const line_text = text[pos..end];
         // Offset by 1 for the │ left border
         const code_start_col = @as(usize, start_col) + 1;
-        const max_chars = if (inner_w > 1) inner_w - 1 else 1;
-        for (line_text[0..@min(line_text.len, max_chars)], 0..) |ch, ci| {
-            const col = code_start_col + ci;
-            const idx = row * @as(usize, stride) + col;
-            if (idx >= cells.len) break;
-            cells[idx].char = ch;
-        }
+        const max_chars: usize = if (inner_w > 1) inner_w - 1 else 1;
+        _ = fillCellsUtf8(cells, stride, row, code_start_col, line_text, max_chars, style.code_fg, style.code_bg, style.base.bg_alpha);
 
         line_idx += 1;
         pos = if (end < text.len) end + 1 else end + 1;
@@ -361,17 +392,7 @@ fn fillBulletList(
             const row = @as(usize, cur_row) + li;
             const line_text = item[lr.start..lr.end];
             const text_start = @as(usize, start_col) + bullet_prefix_len;
-            for (line_text, 0..) |ch, ci| {
-                const col = text_start + ci;
-                const idx = row * @as(usize, stride) + col;
-                if (idx >= cells.len) break;
-                cells[idx] = .{
-                    .char = ch,
-                    .fg = style.base.fg,
-                    .bg = style.base.bg,
-                    .bg_alpha = style.base.bg_alpha,
-                };
-            }
+            _ = fillCellsUtf8(cells, stride, row, text_start, line_text, wrap_w, style.base.fg, style.base.bg, style.base.bg_alpha);
         }
 
         cur_row += lines;
@@ -421,14 +442,11 @@ fn placeTitle(cells: []OverlayCell, width: u16, title: []const u8, style: Overla
 
     // Space before title
     setCellAt(cells, 0, title_start, w, ' ', style.border_color, style);
-    // Title text
-    for (title, 0..) |ch, i| {
-        const col = title_start + 1 + i;
-        if (col >= w - 1) break;
-        setCellAt(cells, 0, col, w, ch, style.fg, style);
-    }
+    // Title text (UTF-8 aware)
+    const max_title_cells = if (w > title_start + 2) w - title_start - 2 else 1;
+    const title_cells = fillCellsUtf8(cells, w, 0, title_start + 1, title, max_title_cells, style.fg, style.bg, style.bg_alpha);
     // Space after title
-    const after = title_start + 1 + title.len;
+    const after = title_start + 1 + title_cells;
     if (after < w - 1) {
         setCellAt(cells, 0, after, w, ' ', style.border_color, style);
     }

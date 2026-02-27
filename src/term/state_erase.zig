@@ -56,6 +56,14 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
             @memset(self.grid.row_wrapped[0..self.grid.rows], false);
             self.dirty.markAll(self.grid.rows);
         },
+        .scrollback => {
+            // CSI 3 J — Erase Saved Lines: clear scrollback buffer.
+            if (!self.alt_active) {
+                self.scrollback.clear();
+                self.viewport_offset = 0;
+            }
+            self.dirty.markAll(self.grid.rows);
+        },
     }
 }
 
@@ -73,5 +81,6 @@ pub fn eraseInLine(self: *TerminalState, mode: actions_mod.EraseMode) void {
         .all => {
             self.grid.clearRow(self.cursor.row);
         },
+        .scrollback => {},
     }
 }

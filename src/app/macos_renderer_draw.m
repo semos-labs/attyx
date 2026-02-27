@@ -206,12 +206,17 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             }
         }
 
+        // Zero out stale BG vertices for hidden rows (below visibleRows)
+        if (visibleTotal < total) {
+            memset(&_bgVerts[visibleTotal * 6], 0, sizeof(Vertex) * 6 * (total - visibleTotal));
+        }
+
         int cursorSlot = total * 6;
         memset(&_bgVerts[cursorSlot], 0, sizeof(Vertex) * 6);
 
         int bgVertCount = total * 6;
         BOOL drawCursor = curVisible && _blinkOn
-                          && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
+                          && curRow >= 0 && curRow < visibleRows && curCol >= 0 && curCol < cols;
         if (drawCursor) {
             float cx0 = offX + curCol * gw;
             float cy0 = baseOffY + curRow * gh;
@@ -307,7 +312,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             float ulH = gh;
             for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
                 AttyxSearchVis m = g_search_vis[vi];
-                if (m.row < 0 || m.row >= rows) continue;
+                if (m.row < 0 || m.row >= visibleRows) continue;
                 BOOL isCurrent = (m.row == sCurRow && m.col_start == curCs && m.col_end == curCe);
                 float hr, hg, hb, ha;
                 if (isCurrent) {
@@ -333,7 +338,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         // Underline + strikethrough decorations
         {
             float decoH = fmaxf(2.0f, 1.0f);
-            for (int i = 0; i < total; i++) {
+            for (int i = 0; i < visibleTotal; i++) {
                 const AttyxCell* cell = &cells[i];
                 if (cell->character == 0x10EEEE) continue;  // Kitty Unicode placeholder
                 uint8_t fl = cell->flags;
@@ -373,7 +378,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         int ti = 0;
         int ci = 0;
         if (_fullRedrawNeeded || dirtyAny(dirty)) {
-            for (int i = 0; i < total; i++) {
+            for (int i = 0; i < visibleTotal; i++) {
                 const AttyxCell* cell = &cells[i];
                 uint32_t ch = cell->character;
                 if (ch <= 32) continue;
@@ -599,7 +604,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             float defB = cells[0].bg_b / 255.0f;
             float ba   = g_background_opacity;
             float gridRight  = offX + cols * gw;
-            float gridBottom = offY + rows * gh;
+            float gridBottom = offY + visibleRows * gh;
             Vertex gapVerts[24];
             int gvc = 0;
             if (offY > 0.5f)
@@ -607,9 +612,9 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             if (gridBottom + 0.5f < dH)
                 gvc = emitRectV(gapVerts, gvc, 0, gridBottom, dW, dH - gridBottom, defR, defG, defB, ba);
             if (offX > 0.5f)
-                gvc = emitRectV(gapVerts, gvc, 0, offY, offX, (float)rows * gh, defR, defG, defB, ba);
+                gvc = emitRectV(gapVerts, gvc, 0, offY, offX, (float)visibleRows * gh, defR, defG, defB, ba);
             if (gridRight + 0.5f < dW)
-                gvc = emitRectV(gapVerts, gvc, gridRight, offY, dW - gridRight, (float)rows * gh, defR, defG, defB, ba);
+                gvc = emitRectV(gapVerts, gvc, gridRight, offY, dW - gridRight, (float)visibleRows * gh, defR, defG, defB, ba);
             if (gvc > 0) {
                 [enc setRenderPipelineState:self.bgPipeline];
                 [enc setVertexBytes:gapVerts length:sizeof(Vertex) * gvc atIndex:0];

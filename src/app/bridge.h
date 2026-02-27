@@ -300,6 +300,7 @@ extern volatile int g_overlay_has_actions;
 // Overlay interaction commands (input thread -> PTY thread via Zig functions)
 void attyx_overlay_esc(void);
 void attyx_overlay_tab(void);
+void attyx_overlay_shift_tab(void);
 void attyx_overlay_enter(void);
 
 // Overlay mouse interaction: returns 1 if click/scroll was consumed by an overlay.
