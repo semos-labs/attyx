@@ -25,6 +25,7 @@ const overlay_anchor = attyx.overlay_anchor;
 const overlay_content = attyx.overlay_content;
 const overlay_streaming = attyx.overlay_streaming;
 const overlay_demo = attyx.overlay_demo;
+const overlay_search = attyx.overlay_search;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
@@ -141,6 +142,91 @@ export fn attyx_overlay_tab() void {
 }
 export fn attyx_overlay_enter() void {
     @atomicStore(i32, &g_overlay_activate, 1, .seq_cst);
+}
+
+// Overlay mouse click: input thread sets coords, PTY thread processes.
+var g_overlay_click_col: i32 = -1;
+var g_overlay_click_row: i32 = -1;
+var g_overlay_click_pending: i32 = 0;
+
+// Overlay scroll: input thread sets delta, PTY thread processes.
+var g_overlay_scroll_delta: i32 = 0;
+var g_overlay_scroll_pending: i32 = 0;
+
+/// Hit-test click against visible overlay descs. Returns 1 if consumed.
+/// Called from input thread; signals PTY thread with coordinates.
+export fn attyx_overlay_click(col: c_int, row: c_int) c_int {
+    const count = @atomicLoad(i32, &c.g_overlay_count, .seq_cst);
+    if (count <= 0) return 0;
+    const n: usize = @intCast(@min(count, c.ATTYX_OVERLAY_MAX_LAYERS));
+    for (0..n) |i| {
+        const desc = c.g_overlay_descs[i];
+        if (desc.visible != 0 and
+            col >= desc.col and col < desc.col + desc.width and
+            row >= desc.row and row < desc.row + desc.height)
+        {
+            @atomicStore(i32, &g_overlay_click_col, col, .seq_cst);
+            @atomicStore(i32, &g_overlay_click_row, row, .seq_cst);
+            @atomicStore(i32, &g_overlay_click_pending, 1, .seq_cst);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/// Hit-test scroll against visible overlay descs. Returns 1 if consumed.
+export fn attyx_overlay_scroll(col: c_int, row: c_int, delta: c_int) c_int {
+    const count = @atomicLoad(i32, &c.g_overlay_count, .seq_cst);
+    if (count <= 0) return 0;
+    const n: usize = @intCast(@min(count, c.ATTYX_OVERLAY_MAX_LAYERS));
+    for (0..n) |i| {
+        const desc = c.g_overlay_descs[i];
+        if (desc.visible != 0 and
+            col >= desc.col and col < desc.col + desc.width and
+            row >= desc.row and row < desc.row + desc.height)
+        {
+            @atomicStore(i32, &g_overlay_scroll_delta, delta, .seq_cst);
+            @atomicStore(i32, &g_overlay_scroll_pending, 1, .seq_cst);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Grid-based search bar globals and exports
+// ---------------------------------------------------------------------------
+
+export var g_search_cursor_pos: i32 = 0;
+export var g_search_suppress_cursor: i32 = 0;
+
+// Atomic command ring: input thread writes, PTY thread reads and processes.
+// Char ring: up to 32 codepoints buffered.
+var g_search_char_ring: [32]u32 = .{0} ** 32;
+var g_search_char_write: u32 = 0; // written by input thread (atomic)
+var g_search_char_read: u32 = 0; // read by PTY thread
+
+// Command ring: up to 16 commands buffered.
+var g_search_cmd_ring: [16]i32 = .{0} ** 16;
+var g_search_cmd_write: u32 = 0;
+var g_search_cmd_read: u32 = 0;
+
+export fn attyx_search_insert_char(codepoint: u32) void {
+    const w = @atomicLoad(u32, &g_search_char_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_search_char_read, .seq_cst);
+    if (w -% r >= 32) return; // ring full
+    g_search_char_ring[w % 32] = codepoint;
+    @atomicStore(u32, &g_search_char_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
+}
+
+export fn attyx_search_cmd(cmd: c_int) void {
+    const w = @atomicLoad(u32, &g_search_cmd_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_search_cmd_read, .seq_cst);
+    if (w -% r >= 16) return; // ring full
+    g_search_cmd_ring[w % 16] = cmd;
+    @atomicStore(u32, &g_search_cmd_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
 }
 
 // ---------------------------------------------------------------------------
@@ -788,7 +874,7 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
         bar,
     ) catch return;
 
-    // Compute placement (viewport dock bottom-right, using full card size for position)
+    // Compute placement (viewport dock bottom-right)
     const vp = viewportInfoFromCtx(ctx);
     const anchor = overlay_anchor.Anchor{
         .kind = .viewport_dock,
@@ -796,11 +882,12 @@ fn startAiDemo(ctx: *PtyThreadCtx) void {
     };
     const placement = overlay_anchor.placeOverlay(anchor, result.width, result.height, vp, .{});
 
-    // Bottom-anchored: the bottom edge stays at placement.row + result.height - 1
-    const bottom_row = placement.row + result.height - 1;
+    // Bottom-anchored: pin bottom edge to viewport bottom with 1-row margin
+    const margin: u16 = 1;
+    const bottom_row: u16 = if (vp.grid_rows > margin + 1) vp.grid_rows - 1 - margin else vp.grid_rows -| 1;
 
-    // Max visible height: leave 2-row margin at top of viewport
-    const max_vis: u16 = if (vp.grid_rows > 4) vp.grid_rows - 2 else vp.grid_rows;
+    // Max visible height: leave margin at top and bottom
+    const max_vis: u16 = if (vp.grid_rows > margin * 2) vp.grid_rows - margin * 2 else 3;
 
     // Initialize streaming (takes ownership of result.cells)
     if (g_streaming == null) {
@@ -893,6 +980,120 @@ fn publishState(ctx: *PtyThreadCtx) void {
 }
 
 var g_search: ?SearchState = null;
+var g_search_bar = overlay_search.SearchBarState{};
+
+/// Consume search input commands from the atomic rings, apply to SearchBarState,
+/// and sync the query into g_search_query/g_search_gen for processSearch.
+/// Returns true if any input was consumed.
+fn consumeSearchInput() bool {
+    var consumed = false;
+
+    // Process character insertions
+    while (true) {
+        const r = @atomicLoad(u32, &g_search_char_read, .seq_cst);
+        const w = @atomicLoad(u32, &g_search_char_write, .seq_cst);
+        if (r == w) break;
+        const cp: u21 = @intCast(g_search_char_ring[r % 32]);
+        g_search_bar.insertChar(cp);
+        @atomicStore(u32, &g_search_char_read, r +% 1, .seq_cst);
+        consumed = true;
+    }
+
+    // Process commands
+    while (true) {
+        const r = @atomicLoad(u32, &g_search_cmd_read, .seq_cst);
+        const w = @atomicLoad(u32, &g_search_cmd_write, .seq_cst);
+        if (r == w) break;
+        const cmd = g_search_cmd_ring[r % 16];
+        @atomicStore(u32, &g_search_cmd_read, r +% 1, .seq_cst);
+        consumed = true;
+
+        switch (cmd) {
+            1 => g_search_bar.deleteBack(),
+            2 => g_search_bar.deleteFwd(),
+            3 => g_search_bar.cursorLeft(),
+            4 => g_search_bar.cursorRight(),
+            5 => g_search_bar.cursorHome(),
+            6 => g_search_bar.cursorEnd(),
+            7 => {
+                // Dismiss search
+                g_search_bar.clear();
+                c.g_search_active = 0;
+                c.g_search_query_len = 0;
+                c.g_search_gen += 1;
+                g_search_suppress_cursor = 0;
+                c.attyx_mark_all_dirty();
+            },
+            8 => {
+                // Next match
+                _ = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_search_nav_delta))), .Add, 1, .seq_cst);
+            },
+            9 => {
+                // Prev match
+                _ = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_search_nav_delta))), .Add, -1, .seq_cst);
+            },
+            else => {},
+        }
+    }
+
+    // Sync query bytes into bridge globals so processSearch sees them
+    if (consumed) {
+        const qlen: usize = g_search_bar.query_len;
+        @memcpy(c.g_search_query[0..qlen], g_search_bar.query[0..qlen]);
+        c.g_search_query_len = @intCast(qlen);
+        c.g_search_gen += 1;
+        g_search_cursor_pos = @intCast(g_search_bar.cursor_pos);
+        c.attyx_mark_all_dirty();
+    }
+
+    return consumed;
+}
+
+fn generateSearchBar(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const active: i32 = @bitCast(c.g_search_active);
+
+    if (active == 0) {
+        if (mgr.isVisible(.search_bar)) {
+            mgr.hide(.search_bar);
+            g_search_suppress_cursor = 0;
+            g_search_bar.clear();
+            publishOverlays(ctx);
+        }
+        return;
+    }
+
+    // Detect fresh activation: search_bar not yet visible but g_search_active is 1
+    if (!mgr.isVisible(.search_bar)) {
+        g_search_bar.clear();
+    }
+
+    // Sync match counts from processSearch results
+    g_search_bar.total_matches = @intCast(@as(c_uint, @bitCast(c.g_search_total)));
+    g_search_bar.current_match = @intCast(@as(c_uint, @bitCast(c.g_search_current)));
+
+    const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
+
+    const result = overlay_search.layoutSearchBar(
+        mgr.allocator,
+        grid_cols,
+        &g_search_bar,
+        .{},
+    ) catch return;
+
+    mgr.setContent(.search_bar, 0, 0, result.width, result.height, result.cells) catch {
+        mgr.allocator.free(result.cells);
+        return;
+    };
+    mgr.allocator.free(result.cells);
+
+    if (!mgr.isVisible(.search_bar)) {
+        mgr.show(.search_bar);
+    }
+
+    g_search_suppress_cursor = 1;
+    publishOverlays(ctx);
+}
 
 fn processSearch(state: *attyx.TerminalState) void {
     const active: i32 = @bitCast(c.g_search_active);
@@ -1088,6 +1289,41 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Overlay interaction: mouse click
+        if (@atomicRmw(i32, &g_overlay_click_pending, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                const click_col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_overlay_click_col, .seq_cst)));
+                const click_row: u16 = @intCast(@max(0, @atomicLoad(i32, &g_overlay_click_row, .seq_cst)));
+                if (mgr.hitTest(click_col, click_row)) |hit| {
+                    const was_ai_visible = mgr.isVisible(.ai_demo);
+                    if (mgr.clickAction(hit)) |action_id| {
+                        switch (action_id) {
+                            .dismiss => {
+                                _ = mgr.dismissActive();
+                                if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
+                                    if (g_streaming) |*so| so.cancel();
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    publishOverlays(ctx);
+                }
+            }
+        }
+
+        // Overlay interaction: mouse scroll
+        if (@atomicRmw(i32, &g_overlay_scroll_pending, .Xchg, 0, .seq_cst) != 0) {
+            const delta = @atomicRmw(i32, &g_overlay_scroll_delta, .Xchg, 0, .seq_cst);
+            if (g_streaming) |*so| {
+                // Positive delta = scroll up (back), negative = scroll down (forward)
+                const d: i16 = @intCast(std.math.clamp(delta, -100, 100));
+                if (so.scroll(d)) {
+                    publishAiStreamingFrame(ctx);
+                }
+            }
+        }
+
         // Popup toggle handling
         processPopupToggle(ctx);
 
@@ -1212,8 +1448,17 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const viewport_changed = (ctx.engine.state.viewport_offset != last_published_vp);
         const need_update = got_data or viewport_changed;
 
+        // Consume search input from the grid-based search bar
+        const search_input_changed = consumeSearchInput();
+
         // Process search even when no PTY data arrived (navigation / query changes)
         processSearch(&ctx.engine.state);
+
+        // Update search bar overlay after processSearch has published match counts
+        if (search_input_changed or got_data or @as(i32, @bitCast(c.g_search_active)) != 0) {
+            generateSearchBar(ctx);
+        }
+
         const search_vp_changed = (ctx.engine.state.viewport_offset != last_published_vp);
         const need_update_final = need_update or search_vp_changed;
 

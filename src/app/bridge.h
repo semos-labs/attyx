@@ -160,6 +160,14 @@ extern volatile int  g_search_cur_vis_row;  // viewport-row of current match (-1
 extern volatile int  g_search_cur_vis_cs;   // current match col_start (viewport)
 extern volatile int  g_search_cur_vis_ce;   // current match col_end (viewport)
 
+// Grid-based search bar: PTY thread -> renderer
+extern volatile int  g_search_cursor_pos;       // byte offset in query (PTY -> renderer)
+extern volatile int  g_search_suppress_cursor;  // 1 when search active (PTY -> renderer)
+
+// Grid-based search input: input thread -> PTY thread (Zig-side)
+void attyx_search_insert_char(uint32_t codepoint);
+void attyx_search_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=home 6=end 7=dismiss 8=next 9=prev
+
 // ---------------------------------------------------------------------------
 // Config reload
 // ---------------------------------------------------------------------------
@@ -291,6 +299,10 @@ extern volatile int g_overlay_has_actions;
 void attyx_overlay_esc(void);
 void attyx_overlay_tab(void);
 void attyx_overlay_enter(void);
+
+// Overlay mouse interaction: returns 1 if click/scroll was consumed by an overlay.
+int attyx_overlay_click(int col, int row);
+int attyx_overlay_scroll(int col, int row, int delta);
 
 // ---------------------------------------------------------------------------
 // Popup terminal (written by PTY thread, read by renderer)

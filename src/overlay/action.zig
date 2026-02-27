@@ -51,6 +51,22 @@ pub const ActionBar = struct {
     pub fn hasActions(self: *const ActionBar) bool {
         return self.count > 0;
     }
+
+    /// Given a column within the action bar row (relative to left border),
+    /// return the index of the action button at that column, or null.
+    /// Layout mirrors fillActionBar: 1-cell left margin, then per button:
+    /// "[ " + label + " ]" + 1-cell gap.
+    pub fn hitAction(self: *const ActionBar, col: u16) ?u8 {
+        if (self.count == 0) return null;
+        var pos: u16 = 2; // 1 cell left border + 1 cell margin
+        for (0..self.count) |i| {
+            const label_len: u16 = @intCast(@min(self.actions[i].label.len, std.math.maxInt(u16)));
+            const btn_width = 4 + label_len; // "[ " + label + " ]"
+            if (col >= pos and col < pos + btn_width) return @intCast(i);
+            pos += btn_width + 1; // button + gap
+        }
+        return null;
+    }
 };
 
 // -------------------------------------------------------------------------

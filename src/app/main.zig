@@ -52,6 +52,14 @@ export var g_overlay_has_actions: i32 = 0;
 export fn attyx_overlay_esc() void {}
 export fn attyx_overlay_tab() void {}
 export fn attyx_overlay_enter() void {}
+export fn attyx_overlay_click(_: c_int, _: c_int) c_int { return 0; }
+export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }
+
+// Grid-based search bar stubs (ui2.zig provides real implementations)
+export var g_search_cursor_pos: i32 = 0;
+export var g_search_suppress_cursor: i32 = 0;
+export fn attyx_search_insert_char(_: u32) void {}
+export fn attyx_search_cmd(_: c_int) void {}
 
 // Popup terminal stubs (ui2.zig provides the real implementations)
 export var g_popup_active: i32 = 0;

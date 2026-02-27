@@ -119,15 +119,13 @@ static int dispatchAction(uint8_t act) {
             return 1;
         case ATTYX_ACTION_SEARCH_TOGGLE:
             if (g_search_active) {
-                g_search_active = 0;
-                g_search_query_len = 0;
-                g_search_gen++;
+                attyx_search_cmd(7); // dismiss
             } else {
                 g_search_active = 1;
                 g_search_query_len = 0;
                 g_search_gen++;
+                attyx_mark_all_dirty();
             }
-            attyx_mark_all_dirty();
             return 1;
         case ATTYX_ACTION_SEARCH_NEXT:
             if (g_search_active) {
@@ -272,35 +270,18 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         }
     }
 
-    // When search bar is open, route keys to search input
+    // When search bar is open, route keys to search commands
     if (g_search_active) {
-        if (key == GLFW_KEY_ESCAPE) {
-            g_search_active = 0;
-            g_search_query_len = 0;
-            g_search_gen++;
-            attyx_mark_all_dirty();
-            g_suppress_char = 1;
-            return;
-        }
-        if (key == GLFW_KEY_ENTER) {
-            if (shift) {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
-            } else {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
-            }
-            attyx_mark_all_dirty();
-            g_suppress_char = 1;
-            return;
-        }
-        if (key == GLFW_KEY_BACKSPACE) {
-            if (g_search_query_len > 0) {
-                g_search_query_len--;
-                g_search_gen++;
-                attyx_mark_all_dirty();
-            }
-            g_suppress_char = 1;
-            return;
-        }
+        if (key == GLFW_KEY_ESCAPE)       { attyx_search_cmd(7); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_ENTER)        { attyx_search_cmd(shift ? 9 : 8); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_BACKSPACE)    { attyx_search_cmd(1); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DELETE)       { attyx_search_cmd(2); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_LEFT)         { attyx_search_cmd(3); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_RIGHT)        { attyx_search_cmd(4); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_HOME)         { attyx_search_cmd(5); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_END)          { attyx_search_cmd(6); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_UP)           { attyx_search_cmd(9); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DOWN)         { attyx_search_cmd(8); g_suppress_char = 1; return; }
         g_suppress_char = 0;
         return;
     }
@@ -372,15 +353,9 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     (void)w;
     if (g_suppress_char) { g_suppress_char = 0; return; }
 
-    // When search bar is open, route printable chars into search query
+    // When search bar is open, route chars to search overlay
     if (g_search_active) {
-        if (codepoint >= 32 && codepoint < 127) {
-            if (g_search_query_len < ATTYX_SEARCH_QUERY_MAX - 1) {
-                g_search_query[g_search_query_len++] = (char)codepoint;
-                g_search_gen++;
-                attyx_mark_all_dirty();
-            }
-        }
+        if (codepoint >= 0x20) attyx_search_insert_char(codepoint);
         return;
     }
 
@@ -516,6 +491,9 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             }
             int col, row;
             mouseToCell(mx, my, &col, &row);
+
+            // Overlay click: consume if hit
+            if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
             // Ctrl+click opens hyperlink
             if (mods & GLFW_MOD_CONTROL) {
@@ -803,6 +781,14 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
     if (g_alt_screen) return;
     int lines = (int)yoff;
     if (lines == 0) lines = (yoff > 0) ? 1 : -1;
+    // Overlay scroll: consume if hit
+    if (g_overlay_has_actions) {
+        double mx, my;
+        glfwGetCursorPos(w, &mx, &my);
+        int col, row;
+        mouseToCell(mx, my, &col, &row);
+        if (attyx_overlay_scroll(col, row, lines)) return;
+    }
     attyx_scroll_viewport(lines);
     if (g_sel_active) { g_sel_active = 0; attyx_mark_all_dirty(); }
 }

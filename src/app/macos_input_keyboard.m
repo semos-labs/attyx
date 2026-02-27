@@ -68,7 +68,14 @@ static int dispatchAction(uint8_t action) {
     }
     switch (action) {
         case ATTYX_ACTION_SEARCH_TOGGLE:
-            if (g_nativeSearchBar) [g_nativeSearchBar toggle];
+            if (g_search_active) {
+                attyx_search_cmd(7); // dismiss
+            } else {
+                g_search_active = 1;
+                g_search_query_len = 0;
+                g_search_gen++;
+                attyx_mark_all_dirty();
+            }
             return 1;
         case ATTYX_ACTION_SEARCH_NEXT:
             if (g_search_active) {
@@ -183,6 +190,23 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     BOOL ctrl  = (flags & NSEventModifierFlagControl) != 0;
     BOOL shift = (flags & NSEventModifierFlagShift) != 0;
     BOOL cmd   = (flags & NSEventModifierFlagCommand) != 0;
+
+    // Search bar key routing (before overlay actions, since search bar is an overlay)
+    if (g_search_active) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_Escape)                   { attyx_search_cmd(7); return YES; }
+        if (kc == kVK_Return)                   { attyx_search_cmd(shift ? 9 : 8); return YES; }
+        if (kc == kVK_Delete)                   { attyx_search_cmd(1); return YES; }
+        if (kc == kVK_ForwardDelete)            { attyx_search_cmd(2); return YES; }
+        if (kc == kVK_LeftArrow && !cmd)        { attyx_search_cmd(3); return YES; }
+        if (kc == kVK_RightArrow && !cmd)       { attyx_search_cmd(4); return YES; }
+        if (kc == kVK_LeftArrow && cmd)         { attyx_search_cmd(5); return YES; }
+        if (kc == kVK_RightArrow && cmd)        { attyx_search_cmd(6); return YES; }
+        if (kc == kVK_Home)                     { attyx_search_cmd(5); return YES; }
+        if (kc == kVK_End)                      { attyx_search_cmd(6); return YES; }
+        if (kc == kVK_UpArrow)                  { attyx_search_cmd(9); return YES; }
+        if (kc == kVK_DownArrow)                { attyx_search_cmd(8); return YES; }
+    }
 
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {

@@ -21,6 +21,7 @@ pub const StreamingOverlay = struct {
     last_tick_ns: i128 = 0,
     col: u16 = 0,
     anchor_bottom_row: u16 = 0, // bottom edge stays fixed here
+    user_scroll_back: u16 = 0, // rows scrolled back from latest (0 = follow)
     allocator: std.mem.Allocator,
 
     /// Begin streaming a pre-laid-out card. Takes ownership of `cells`.
@@ -108,7 +109,8 @@ pub const StreamingOverlay = struct {
         // How many content rows are revealed vs how many fit in the visible window
         const revealed_content = @as(usize, @min(self.revealed_height, self.full_height)) -| 3;
         const visible_content = vh -| 3; // rows available for content in the output
-        const scroll_offset = revealed_content -| visible_content;
+        const auto_scroll = revealed_content -| visible_content;
+        const scroll_offset = auto_scroll -| @as(usize, @min(self.user_scroll_back, auto_scroll));
 
         // Top border: row 0 of full_cells
         @memcpy(scratch[0..w], fc[0..w]);
@@ -147,8 +149,27 @@ pub const StreamingOverlay = struct {
         self.state = .idle;
         self.revealed_height = 0;
         self.max_visible_height = 0;
+        self.user_scroll_back = 0;
         self.full_width = 0;
         self.full_height = 0;
+    }
+
+    /// Adjust scroll position. Positive delta = scroll back (earlier content),
+    /// negative = scroll forward (later content). Returns true if position changed.
+    pub fn scroll(self: *StreamingOverlay, delta: i16) bool {
+        if (self.state == .idle) return false;
+        const revealed_content = @as(u16, @min(self.revealed_height, self.full_height)) -| 3;
+        const visible_content = self.visibleHeight() -| 3;
+        const max_back = revealed_content -| visible_content;
+
+        const old = self.user_scroll_back;
+        if (delta > 0) {
+            self.user_scroll_back = @min(self.user_scroll_back +| @as(u16, @intCast(delta)), max_back);
+        } else if (delta < 0) {
+            const abs: u16 = @intCast(-delta);
+            self.user_scroll_back = self.user_scroll_back -| abs;
+        }
+        return self.user_scroll_back != old;
     }
 
     pub fn isActive(self: *const StreamingOverlay) bool {

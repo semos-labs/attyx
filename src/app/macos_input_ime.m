@@ -24,7 +24,21 @@
 
     const char* utf8 = [text UTF8String];
     if (utf8 && strlen(utf8) > 0) {
-        if (g_popup_active) {
+        if (g_search_active) {
+            // Decode UTF-8 and route codepoints to search bar
+            const uint8_t* p = (const uint8_t*)utf8;
+            const uint8_t* end = p + strlen(utf8);
+            while (p < end) {
+                uint32_t cp = 0;
+                int len = 1;
+                if (*p < 0x80) { cp = *p; }
+                else if ((*p & 0xE0) == 0xC0 && p+1 < end) { cp = (*p & 0x1F) << 6 | (p[1] & 0x3F); len = 2; }
+                else if ((*p & 0xF0) == 0xE0 && p+2 < end) { cp = (*p & 0x0F) << 12 | (p[1] & 0x3F) << 6 | (p[2] & 0x3F); len = 3; }
+                else if ((*p & 0xF8) == 0xF0 && p+3 < end) { cp = (*p & 0x07) << 18 | (p[1] & 0x3F) << 12 | (p[2] & 0x3F) << 6 | (p[3] & 0x3F); len = 4; }
+                p += len;
+                if (cp >= 0x20) attyx_search_insert_char(cp);
+            }
+        } else if (g_popup_active) {
             attyx_popup_send_input((const uint8_t*)utf8, (int)strlen(utf8));
         } else {
             attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
@@ -106,6 +120,9 @@
 - (NSUInteger)characterIndexForPoint:(NSPoint)point { return NSNotFound; }
 
 - (void)doCommandBySelector:(SEL)selector {
+    // When search is active, these are handled by handleSpecialKey
+    if (g_search_active) return;
+
     if (selector == @selector(insertNewline:)) {
         attyx_send_input((const uint8_t*)"\r", 1);
     } else if (selector == @selector(insertTab:)) {

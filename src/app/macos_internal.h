@@ -156,27 +156,7 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 - (instancetype)initWithFrame:(NSRect)frameRect device:(id<MTLDevice>)device;
 @end
 
-// ---------------------------------------------------------------------------
-// Search bar (macos_search.m) — interface exposed so callers can message it
-// ---------------------------------------------------------------------------
-
-@interface AttyxSearchBar : NSVisualEffectView <NSTextFieldDelegate>
-@property (strong) NSView      *inputBox;
-@property (strong) NSTextField *inputField;
-@property (strong) NSTextField *countLabel;
-@property (strong) NSButton    *prevButton;
-@property (strong) NSButton    *nextButton;
-@property (strong) NSButton    *closeButton;
-@property (weak)   NSView      *termView;
-- (instancetype)initForTermView:(NSView*)parent;
-- (void)show;
-- (void)dismiss;
-- (void)toggle;
-- (void)syncCountLabel;
-@end
-
-extern AttyxSearchBar* g_nativeSearchBar;
-void syncSearchBarCount(void);
+// Search bar is now grid-based (overlay system). No native UI needed.
 
 // ---------------------------------------------------------------------------
 // Overlay rendering (macos_overlay.m)

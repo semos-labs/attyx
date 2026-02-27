@@ -2,7 +2,7 @@ const std = @import("std");
 const anchor_mod = @import("anchor.zig");
 const action_mod = @import("action.zig");
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3 };
 
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
@@ -211,6 +211,57 @@ pub const OverlayManager = struct {
             }
         }
         return false;
+    }
+
+    pub const HitResult = struct {
+        layer_idx: u8,
+        local_col: u16,
+        local_row: u16,
+    };
+
+    /// Hit-test: given grid (col, row), return the topmost visible layer hit.
+    /// Layers with higher z_order are checked first; ties broken by index (highest first).
+    pub fn hitTest(self: *const OverlayManager, col: u16, row: u16) ?HitResult {
+        // Collect visible layers, check highest z_order first
+        var best: ?HitResult = null;
+        var best_z: u8 = 0;
+        for (self.layers, 0..) |layer, i| {
+            if (!layer.visible or layer.cells == null) continue;
+            if (col >= layer.col and col < layer.col + layer.width and
+                row >= layer.row and row < layer.row + layer.height)
+            {
+                if (best == null or layer.z_order > best_z or
+                    (layer.z_order == best_z and i > best.?.layer_idx))
+                {
+                    best = .{
+                        .layer_idx = @intCast(i),
+                        .local_col = col - layer.col,
+                        .local_row = row - layer.row,
+                    };
+                    best_z = layer.z_order;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// Click an action button on a layer by local coordinates.
+    /// Returns the ActionId if a button was hit.
+    pub fn clickAction(self: *OverlayManager, hit: HitResult) ?action_mod.ActionId {
+        const layer = &self.layers[hit.layer_idx];
+        const bar = &(layer.action_bar orelse return null);
+        if (!bar.hasActions()) return null;
+
+        // Action bar is at the second-to-last row (height - 2)
+        if (layer.height < 3) return null;
+        if (hit.local_row != layer.height - 2) return null;
+
+        if (bar.hitAction(hit.local_col)) |idx| {
+            bar.focused = idx;
+            self.gen +%= 1;
+            return bar.actions[idx].id;
+        }
+        return null;
     }
 
     /// Returns true if any visible layer has a non-empty action_bar.

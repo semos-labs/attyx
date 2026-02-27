@@ -30,6 +30,7 @@ pub const overlay_action = @import("overlay/action.zig");
 pub const overlay_content = @import("overlay/content.zig");
 pub const overlay_streaming = @import("overlay/streaming.zig");
 pub const overlay_demo = @import("overlay/demo.zig");
+pub const overlay_search = @import("overlay/search.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -86,4 +87,5 @@ test {
     _ = @import("overlay/content.zig");
     _ = @import("overlay/streaming.zig");
     _ = @import("overlay/demo.zig");
+    _ = @import("overlay/search.zig");
 }

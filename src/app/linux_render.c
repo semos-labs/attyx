@@ -245,7 +245,7 @@ int drawFrame(void) {
     int cursorSlot = total * 6;
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
-    int drawCursor = curVis && g_blink_on
+    int drawCursor = curVis && g_blink_on && !g_search_suppress_cursor
                      && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
     if (drawCursor) {
         float cx0 = offX + curCol * gw, cy0 = offY + curRow * gh;
@@ -785,123 +785,7 @@ int drawFrame(void) {
         }
     }
 
-    // Search bar overlay
-    if (g_search_active) {
-        char queryCopy[ATTYX_SEARCH_QUERY_MAX + 1];
-        int qLen = g_search_query_len;
-        if (qLen > ATTYX_SEARCH_QUERY_MAX) qLen = ATTYX_SEARCH_QUERY_MAX;
-        memcpy(queryCopy, g_search_query, qLen);
-        queryCopy[qLen] = '\0';
-
-        char countLabel[64];
-        int sTotal = g_search_total;
-        int sCurrent = g_search_current;
-        int countLen = 0;
-        if (sTotal > 0) {
-            countLen = snprintf(countLabel, sizeof(countLabel), "%d of %d", sCurrent + 1, sTotal);
-        } else if (qLen > 0) {
-            countLen = snprintf(countLabel, sizeof(countLabel), "no results");
-        }
-
-        float barH = gh + 12.0f;
-        float totalW = cols * gw;
-        float padX = gw * 0.5f;
-        float textY = (barH - gh) / 2.0f;
-
-        float labelChars = 5;
-        float inputX = padX + (labelChars + 1) * gw;
-        float inputPad = gw * 0.4f;
-        float inputInner = fmaxf(20 * gw, (qLen + 2) * gw);
-        float inputW = inputPad * 2 + inputInner;
-        if (inputX + inputW > totalW * 0.55f)
-            inputW = totalW * 0.55f - inputX;
-        float inputH = gh + 4.0f;
-        float inputY = (barH - inputH) / 2.0f;
-
-        float rx = totalW - padX;
-        float closeX = rx - gw;
-        float downCx = closeX - gw * 1.3f;
-        float upCx = downCx - gw * 1.3f;
-        float countX = upCx - gw * 0.5f - countLen * gw;
-
-        // --- Solid pass: bar bg + input field bg + arrows ---
-        Vertex sBg[6 + 6 + 3 + 3];
-        int si = 0;
-
-        si = emitRect(sBg, si, offX, offY, totalW, barH,
-                      0.10f, 0.10f, 0.13f, 0.95f);
-        si = emitRect(sBg, si, offX + inputX, offY + inputY, inputW, inputH,
-                      0.18f, 0.18f, 0.22f, 1.0f);
-
-        float aw2 = gw * 0.40f, ah2 = gh * 0.40f;
-        float acy = barH / 2.0f;
-        si = emitTri(sBg, si,
-                     offX + upCx,          offY + acy - ah2/2,
-                     offX + upCx - aw2/2,  offY + acy + ah2/2,
-                     offX + upCx + aw2/2,  offY + acy + ah2/2,
-                     0.50f, 0.55f, 0.65f, 1.0f);
-        si = emitTri(sBg, si,
-                     offX + downCx,          offY + acy + ah2/2,
-                     offX + downCx - aw2/2,  offY + acy - ah2/2,
-                     offX + downCx + aw2/2,  offY + acy - ah2/2,
-                     0.50f, 0.55f, 0.65f, 1.0f);
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glUseProgram(g_solid_prog);
-        glUniform2f(g_vp_loc_solid, viewport[0], viewport[1]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * si, sBg, GL_DYNAMIC_DRAW);
-        setupVertexAttribs();
-        glDrawArrays(GL_TRIANGLES, 0, si);
-        glDisable(GL_BLEND);
-
-        // --- Text pass: label + query + cursor + count + close ---
-        Vertex stv[512 * 6];
-        int sti = 0;
-
-        sti = emitString(stv, sti, &g_gc, "Find:", 5,
-                         offX + padX, offY + textY, gw, gh, 0.40f, 0.50f, 0.65f);
-
-        float qx = inputX + inputPad;
-        sti = emitString(stv, sti, &g_gc, queryCopy, qLen,
-                         offX + qx, offY + textY, gw, gh, 0.92f, 0.92f, 0.92f);
-
-        // Blinking cursor bar
-        {
-            double tnow = glfwGetTime();
-            int phase = ((int)(tnow / 0.5)) % 2;
-            if (phase == 0) {
-                float cx = qx + qLen * gw;
-                sti = emitRect(stv, sti, offX + cx, offY + textY, 2.0f, gh,
-                               0.45f, 0.65f, 1.0f, 1.0f);
-            }
-        }
-
-        if (countLen > 0) {
-            float cr = (sTotal > 0) ? 0.50f : 0.60f;
-            float cg = (sTotal > 0) ? 0.50f : 0.30f;
-            float cb = (sTotal > 0) ? 0.55f : 0.30f;
-            sti = emitString(stv, sti, &g_gc, countLabel, countLen,
-                             offX + countX, offY + textY, gw, gh, cr, cg, cb);
-        }
-
-        sti = emitGlyph(stv, sti, &g_gc, 'x',
-                        offX + closeX, offY + textY, gw, gh, 0.50f, 0.50f, 0.55f);
-
-        if (sti > 0) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glUseProgram(g_text_prog);
-            glUniform2f(g_vp_loc_text, viewport[0], viewport[1]);
-            glBindTexture(GL_TEXTURE_2D, g_gc.texture);
-            glUniform1i(g_tex_loc, 0);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * sti,
-                         stv, GL_DYNAMIC_DRAW);
-            setupVertexAttribs();
-            glDrawArrays(GL_TRIANGLES, 0, sti);
-            glDisable(GL_BLEND);
-        }
-    }
+    // Search bar is now rendered via the overlay system (drawOverlays above).
 
     // Context menu overlay (right-click menu: Copy, Paste, ---, Reload Config)
     if (g_ctx_menu_open) {

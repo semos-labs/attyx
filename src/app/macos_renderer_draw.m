@@ -206,7 +206,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         memset(&_bgVerts[cursorSlot], 0, sizeof(Vertex) * 6);
 
         int bgVertCount = total * 6;
-        BOOL drawCursor = curVisible && _blinkOn
+        BOOL drawCursor = curVisible && _blinkOn && !g_search_suppress_cursor
                           && curRow >= 0 && curRow < rows && curCol >= 0 && curCol < cols;
         if (drawCursor) {
             float cx0 = offX + curCol * gw;
@@ -754,8 +754,6 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 }
             }
         }
-
-        syncSearchBarCount();
 
         [enc endEncoding];
         [cmdBuf commit];

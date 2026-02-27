@@ -227,6 +227,9 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     int col, row;
     mouseCell0(event, self, &col, &row);
 
+    // Overlay click: consume if hit
+    if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
+
     if (event.modifierFlags & NSEventModifierFlagCommand) {
         int cols = g_cols, rows_n = g_rows;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
@@ -537,7 +540,26 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (g_alt_screen) return;
 
     CGFloat dy = event.scrollingDeltaY;
-    if (event.hasPreciseScrollingDeltas) {
+
+    // Overlay scroll: check before viewport scrollback
+    if (g_overlay_has_actions) {
+        int col0, row0;
+        mouseCell0(event, self, &col0, &row0);
+        int lines;
+        if (event.hasPreciseScrollingDeltas) {
+            _scrollAccum += dy;
+            CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
+            lines = (int)(_scrollAccum / threshold);
+            if (lines == 0) return;
+            _scrollAccum -= lines * threshold;
+        } else {
+            lines = (int)dy;
+            if (lines == 0) lines = (dy > 0) ? 1 : -1;
+        }
+        if (attyx_overlay_scroll(col0, row0, lines)) return;
+        // Not on overlay — fall through to viewport scroll
+        attyx_scroll_viewport(lines);
+    } else if (event.hasPreciseScrollingDeltas) {
         _scrollAccum += dy;
         CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
         int lines = (int)(_scrollAccum / threshold);
