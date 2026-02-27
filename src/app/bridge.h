@@ -307,6 +307,10 @@ extern volatile uint32_t g_popup_gen;
 extern volatile int      g_popup_active;        // 1 = popup visible, input routed there
 extern volatile int      g_popup_trail_active;  // 1 = popup cursor trail animating
 
+#define ATTYX_POPUP_MAX_IMAGE_PLACEMENTS 16
+extern AttyxImagePlacement g_popup_image_placements[ATTYX_POPUP_MAX_IMAGE_PLACEMENTS];
+extern volatile int        g_popup_image_placement_count;
+
 // ---------------------------------------------------------------------------
 // Configurable keybindings (implemented in Zig keybinds.zig)
 // ---------------------------------------------------------------------------

@@ -213,6 +213,56 @@ pub const PopupState = struct {
 
         _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_popup_gen))), .Add, 1, .seq_cst);
     }
+
+    pub fn publishImagePlacements(self: *PopupState, cfg: PopupConfig) void {
+        const state = &self.engine.state;
+        const store = state.graphics_store orelse {
+            c.g_popup_image_placement_count = 0;
+            return;
+        };
+
+        const gs = attyx.graphics_store;
+        var buf: [c.ATTYX_POPUP_MAX_IMAGE_PLACEMENTS]gs.Placement = undefined;
+        const visible = store.visiblePlacements(self.rows, &buf);
+
+        const has_border = cfg.border_style != .none;
+        const border_off: i32 = if (has_border) 1 else 0;
+        const col_off: i32 = border_off + @as(i32, cfg.pad.left);
+        const row_off: i32 = border_off + @as(i32, cfg.pad.top);
+
+        var out_count: c_int = 0;
+        for (visible) |p| {
+            if (out_count >= c.ATTYX_POPUP_MAX_IMAGE_PLACEMENTS) break;
+
+            const img = store.getImage(p.image_id) orelse continue;
+            const idx: usize = @intCast(out_count);
+
+            // Offset to absolute main-grid coordinates
+            const abs_row = p.row + row_off + @as(i32, self.outer_row);
+            const abs_col = p.col + col_off + @as(i32, self.outer_col);
+
+            // Set high bit on image_id to avoid texture cache collisions
+            // with main terminal images (separate engines have independent IDs)
+            c.g_popup_image_placements[idx] = .{
+                .image_id = p.image_id | 0x8000_0000,
+                .row = abs_row,
+                .col = abs_col,
+                .img_width = img.width,
+                .img_height = img.height,
+                .src_x = p.src_x,
+                .src_y = p.src_y,
+                .src_w = p.src_width,
+                .src_h = p.src_height,
+                .display_cols = p.display_cols,
+                .display_rows = p.display_rows,
+                .z_index = p.z_index,
+                .pixels = img.pixels.ptr,
+            };
+            out_count += 1;
+        }
+
+        c.g_popup_image_placement_count = out_count;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -283,6 +333,24 @@ fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.
 }
 
 fn cellToOverlayCell(cell: attyx.Cell, theme: *const Theme) c.AttyxOverlayCell {
+    // Kitty Unicode placeholder: suppress all visual attributes.
+    // The fg color encodes image_id and must not be rendered.
+    if (cell.char == 0x10EEEE) {
+        const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;
+        const bg = resolveWithTheme(eff_bg, !cell.style.reverse, theme);
+        return .{
+            .character = ' ',
+            .combining = .{ 0, 0 },
+            .fg_r = 0,
+            .fg_g = 0,
+            .fg_b = 0,
+            .bg_r = bg.r,
+            .bg_g = bg.g,
+            .bg_b = bg.b,
+            .bg_alpha = 255,
+        };
+    }
+
     const eff_fg = if (cell.style.reverse) cell.style.bg else cell.style.fg;
     const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;
     const fg = resolveWithTheme(eff_fg, cell.style.reverse, theme);
@@ -371,6 +439,7 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
 /// Clear the popup bridge state (called when popup closes).
 pub fn clearBridgeState() void {
     c.g_popup_desc.active = 0;
+    c.g_popup_image_placement_count = 0;
     @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 0, .seq_cst);
     _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_popup_gen))), .Add, 1, .seq_cst);
 }

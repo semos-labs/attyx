@@ -84,6 +84,9 @@ AttyxImagePlacement g_image_placements[ATTYX_MAX_IMAGE_PLACEMENTS];
 volatile int      g_image_placement_count = 0;
 volatile uint64_t g_image_gen = 0;
 
+AttyxImagePlacement g_popup_image_placements[ATTYX_POPUP_MAX_IMAGE_PLACEMENTS];
+volatile int        g_popup_image_placement_count = 0;
+
 char g_detected_url[DETECTED_URL_MAX];
 volatile int g_detected_url_len = 0;
 volatile int g_detected_url_row = -1;

@@ -64,6 +64,10 @@ typedef struct {
     id<MTLTexture> texture;
 } ImageTexEntry;
 
+// Texture cache helpers (defined in macos_renderer_images.m)
+id<MTLTexture> findCachedTexture(uint32_t image_id, uint32_t width, uint32_t height);
+void cacheTexture(uint32_t image_id, uint32_t width, uint32_t height, id<MTLTexture> tex);
+
 @interface AttyxRenderer (Images)
 - (void)drawImagesWithEncoder:(id<MTLRenderCommandEncoder>)enc
                      viewport:(float[2])viewport

@@ -23,6 +23,7 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn chdir(path: [*:0]const u8) c_int;
+extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
 
 pub const Pty = struct {
     master: posix.fd_t,
@@ -102,7 +103,10 @@ pub const Pty = struct {
 
     pub fn deinit(self: *Pty) void {
         posix.close(self.master);
-        _ = posix.waitpid(self.pid, std.posix.W.NOHANG);
+        // Use raw C waitpid to handle ECHILD gracefully.
+        // std.posix.waitpid treats ECHILD as unreachable, which panics
+        // if the child was already reaped (common on some Linux distros).
+        _ = waitpid(self.pid, null, 1); // 1 = WNOHANG
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {
@@ -128,7 +132,9 @@ pub const Pty = struct {
     }
 
     pub fn childExited(self: *Pty) bool {
-        const result = posix.waitpid(self.pid, std.posix.W.NOHANG);
-        return result.pid != 0;
+        // Raw C waitpid: returns pid if reaped, 0 if still running, -1 on error.
+        // ECHILD (-1) means already reaped — treat as exited.
+        const result = waitpid(self.pid, null, 1); // 1 = WNOHANG
+        return result != 0;
     }
 };
