@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Attyx
+Comment=GPU-accelerated terminal emulator
+Exec=attyx
+Icon=attyx
+Type=Application
+Categories=System;TerminalEmulator;
+Terminal=false
+StartupWMClass=attyx

@@ -241,11 +241,12 @@ fn authWorker(self: *AuthThread, allocator: std.mem.Allocator, base_url: []u8, r
     // Step 2: Device flow
     self.setStatus(.device_starting);
 
-    const start_result = doDeviceStart(allocator, base_url) catch {
+    var start_result = doDeviceStart(allocator, base_url) catch {
         self.setError("Failed to start device authorization");
         return;
     };
     defer allocator.free(start_result.device_code);
+    if (start_result.verification_url) |v| allocator.free(v);
 
     // Write user_code to shared buffer
     const uc_len: u8 = @intCast(@min(start_result.user_code.len, 10));
@@ -311,10 +312,20 @@ fn writeTokenResult(self: *AuthThread, access: []const u8, refresh: []const u8) 
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-const TokenPair = struct { access: []u8, refresh: []u8 };
-const DeviceStartResult = struct { device_code: []u8, user_code: []u8 };
+pub const TokenPair = struct { access: []u8, refresh: []u8 };
+pub const DeviceStartResult = struct {
+    device_code: []u8,
+    user_code: []u8,
+    verification_url: ?[]u8 = null,
 
-fn doRefresh(allocator: std.mem.Allocator, base_url: []const u8, refresh_token: []const u8) !TokenPair {
+    pub fn deinit(self: *DeviceStartResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.device_code);
+        allocator.free(self.user_code);
+        if (self.verification_url) |v| allocator.free(v);
+    }
+};
+
+pub fn doRefresh(allocator: std.mem.Allocator, base_url: []const u8, refresh_token: []const u8) !TokenPair {
     var body_buf: [512]u8 = undefined;
     var body_stream = std.io.fixedBufferStream(&body_buf);
     const bw = body_stream.writer();
@@ -330,7 +341,10 @@ fn doRefresh(allocator: std.mem.Allocator, base_url: []const u8, refresh_token: 
     const response = try httpPost(allocator, url, body, null);
     defer allocator.free(response.body);
 
-    if (response.status != 200) return error.RefreshFailed;
+    if (response.status != 200) {
+        logHttpError("auth/refresh", response.status, response.body);
+        return error.RefreshFailed;
+    }
 
     const access = try extractAndDupe(allocator, response.body, "access_token");
     errdefer allocator.free(access);
@@ -338,22 +352,34 @@ fn doRefresh(allocator: std.mem.Allocator, base_url: []const u8, refresh_token: 
     return .{ .access = access, .refresh = refresh };
 }
 
-fn doDeviceStart(allocator: std.mem.Allocator, base_url: []const u8) !DeviceStartResult {
+pub fn doDeviceStart(allocator: std.mem.Allocator, base_url: []const u8) !DeviceStartResult {
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}/v1/auth/device/start", .{base_url}) catch return error.BufferOverflow;
 
-    const response = try httpPost(allocator, url, "{}", null);
+    const platform = comptime switch (@import("builtin").os.tag) {
+        .macos => "darwin",
+        .linux => "linux",
+        else => "unknown",
+    };
+    const body = "{\"device_name\":\"attyx-terminal\",\"platform\":\"" ++ platform ++ "\"}";
+
+    const response = try httpPost(allocator, url, body, null);
     defer allocator.free(response.body);
 
-    if (response.status != 200) return error.DeviceStartFailed;
+    if (response.status != 200) {
+        logHttpError("auth/device/start", response.status, response.body);
+        return error.DeviceStartFailed;
+    }
 
     const device_code = try extractAndDupe(allocator, response.body, "device_code");
     errdefer allocator.free(device_code);
     const user_code = try extractAndDupe(allocator, response.body, "user_code");
-    return .{ .device_code = device_code, .user_code = user_code };
+    errdefer allocator.free(user_code);
+    const verification_url = extractAndDupe(allocator, response.body, "verification_uri_complete") catch null;
+    return .{ .device_code = device_code, .user_code = user_code, .verification_url = verification_url };
 }
 
-fn doDevicePoll(allocator: std.mem.Allocator, base_url: []const u8, device_code: []const u8) !TokenPair {
+pub fn doDevicePoll(allocator: std.mem.Allocator, base_url: []const u8, device_code: []const u8) !TokenPair {
     var body_buf: [512]u8 = undefined;
     var body_stream = std.io.fixedBufferStream(&body_buf);
     const bw = body_stream.writer();
@@ -372,7 +398,10 @@ fn doDevicePoll(allocator: std.mem.Allocator, base_url: []const u8, device_code:
     if (response.status == 202) return error.DevicePending;
     if (response.status == 429) return error.RateLimited;
     if (response.status == 401 or response.status == 404) return error.DeviceExpired;
-    if (response.status != 200) return error.DevicePollFailed;
+    if (response.status != 200) {
+        logHttpError("auth/device/poll", response.status, response.body);
+        return error.DevicePollFailed;
+    }
 
     const access = try extractAndDupe(allocator, response.body, "access_token");
     errdefer allocator.free(access);
@@ -380,7 +409,52 @@ fn doDevicePoll(allocator: std.mem.Allocator, base_url: []const u8, device_code:
     return .{ .access = access, .refresh = refresh };
 }
 
-const HttpResponse = struct { status: u16, body: []u8 };
+fn logHttpError(endpoint: []const u8, status: u16, body: []const u8) void {
+    const truncated = if (body.len > 512) body[0..512] else body;
+    std.debug.print("{s}: HTTP {d}: {s}\n", .{ endpoint, status, truncated });
+}
+
+pub const HttpResponse = struct { status: u16, body: []u8 };
+
+pub fn httpGet(allocator: std.mem.Allocator, url: []const u8, bearer: ?[]const u8) !HttpResponse {
+    const uri = try std.Uri.parse(url);
+
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var auth_buf: [2100]u8 = undefined;
+    const auth_val: ?[]const u8 = if (bearer) |token| blk: {
+        break :blk std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch null;
+    } else null;
+
+    var auth_header: [1]std.http.Header = undefined;
+    const extra_headers: []const std.http.Header = if (auth_val) |av| blk: {
+        auth_header[0] = .{ .name = "Authorization", .value = av };
+        break :blk &auth_header;
+    } else &.{};
+
+    var req = try client.request(.GET, uri, .{
+        .keep_alive = false,
+        .extra_headers = extra_headers,
+    });
+    defer req.deinit();
+
+    try req.sendBodiless();
+
+    var redirect_buf: [0]u8 = .{};
+    var response = try req.receiveHead(&redirect_buf);
+    const status: u16 = @intFromEnum(response.head.status);
+
+    var transfer_buf: [4096]u8 = undefined;
+    const reader = response.reader(&transfer_buf);
+    const resp_body = reader.allocRemaining(allocator, .limited(256_000)) catch |err| switch (err) {
+        error.StreamTooLong => return error.ResponseTooLarge,
+        error.ReadFailed => return error.ReadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    return .{ .status = status, .body = resp_body };
+}
 
 fn httpPost(allocator: std.mem.Allocator, url: []const u8, body: []const u8, bearer: ?[]const u8) !HttpResponse {
     const uri = try std.Uri.parse(url);
@@ -423,19 +497,13 @@ fn httpPost(allocator: std.mem.Allocator, url: []const u8, body: []const u8, bea
     // Read response body
     var transfer_buf: [4096]u8 = undefined;
     const reader = response.reader(&transfer_buf);
+    const resp_body = reader.allocRemaining(allocator, .limited(256_000)) catch |err| switch (err) {
+        error.StreamTooLong => return error.ResponseTooLarge,
+        error.ReadFailed => return error.ReadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
 
-    var resp_list: std.ArrayList(u8) = .{};
-    errdefer resp_list.deinit(allocator);
-
-    var read_tmp: [1024]u8 = undefined;
-    while (true) {
-        const n = reader.readSliceShort(&read_tmp) catch break;
-        if (n == 0) break;
-        try resp_list.appendSlice(allocator, read_tmp[0..n]);
-        if (resp_list.items.len > 256_000) break;
-    }
-
-    return .{ .status = status, .body = try resp_list.toOwnedSlice(allocator) };
+    return .{ .status = status, .body = resp_body };
 }
 
 // ---------------------------------------------------------------------------

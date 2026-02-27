@@ -518,9 +518,6 @@ pub fn run(
         .popup_config_count = popup_config_count,
     };
 
-    // Set AI base URL from config
-    g_ai_base_url = config.ai_base_url;
-
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
     defer thread.join();
 
@@ -806,7 +803,7 @@ var g_auth_thread: ?overlay_ai_auth.AuthThread = null;
 var g_sse_thread: ?overlay_ai_stream.SseThread = null;
 var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
 var g_ai_request_body: ?[]u8 = null;
-var g_ai_base_url: []const u8 = "http://localhost:8080";
+const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
 
 fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;

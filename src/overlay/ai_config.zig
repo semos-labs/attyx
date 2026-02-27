@@ -1,18 +1,20 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const context_mod = @import("context.zig");
 const InvocationType = context_mod.InvocationType;
 const ContextBundle = context_mod.ContextBundle;
 
 // ---------------------------------------------------------------------------
-// Backend configuration
+// Backend configuration (build-time, not user-configurable)
 // ---------------------------------------------------------------------------
 
-pub const AiBackendConfig = struct {
-    base_url: []const u8 = "http://localhost:8080",
-    connect_timeout_ms: u32 = 5_000,
-    read_timeout_ms: u32 = 60_000,
-    max_response_bytes: u32 = 256_000,
-};
+pub const base_url: []const u8 = if (std.mem.eql(u8, build_options.env, "production"))
+    "https://app.semos.sh"
+else
+    "http://localhost:8085";
+
+pub const connect_timeout_ms: u32 = 5_000;
+pub const read_timeout_ms: u32 = 60_000;
 
 // ---------------------------------------------------------------------------
 // Action mapping

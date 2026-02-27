@@ -21,6 +21,7 @@ extern "c" fn setsid() c_int;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn chdir(path: [*:0]const u8) c_int;
 extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
@@ -68,6 +69,17 @@ pub const Pty = struct {
 
             _ = setenv("TERM", "xterm-256color", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);
+            // Inject ~/.attyx/bin into PATH so the `attyx` CLI is available
+            // inside the terminal session.
+            if (getenv("HOME")) |home| {
+                const existing_path = getenv("PATH") orelse "/usr/bin:/bin";
+                var path_buf: [4096]u8 = undefined;
+                const written = std.fmt.bufPrintZ(&path_buf, "{s}/.attyx/bin:{s}", .{ home, existing_path }) catch null;
+                if (written) |new_path| {
+                    _ = setenv("PATH", new_path, 1);
+                }
+            }
+
             // Prevent child processes from thinking they're inside tmux.
             // When Attyx is launched from a tmux session, TMUX is inherited
             // but Attyx doesn't support DCS tmux passthrough, so apps that
