@@ -57,6 +57,7 @@ pub const Action = enum(u8) {
     close_window = 14,
     popup_toggle_0 = 15,
     send_sequence = 47,
+    ai_demo_toggle = 48,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -214,6 +215,7 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "anchor_demo_toggle", Action.anchor_demo_toggle },
         .{ "new_window", Action.new_window },
         .{ "close_window", Action.close_window },
+        .{ "ai_demo_toggle", Action.ai_demo_toggle },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -238,6 +240,7 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'a' }, .anchor_demo_toggle),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .new_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
         };
         if (is_macos) {
             list = list ++ &[_]Keybind{

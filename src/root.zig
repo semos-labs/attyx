@@ -27,6 +27,9 @@ pub const overlay_mod = @import("overlay/overlay.zig");
 pub const overlay_layout = @import("overlay/layout.zig");
 pub const overlay_anchor = @import("overlay/anchor.zig");
 pub const overlay_action = @import("overlay/action.zig");
+pub const overlay_content = @import("overlay/content.zig");
+pub const overlay_streaming = @import("overlay/streaming.zig");
+pub const overlay_demo = @import("overlay/demo.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -80,4 +83,7 @@ test {
     _ = @import("overlay/layout.zig");
     _ = @import("overlay/anchor.zig");
     _ = @import("overlay/action.zig");
+    _ = @import("overlay/content.zig");
+    _ = @import("overlay/streaming.zig");
+    _ = @import("overlay/demo.zig");
 }

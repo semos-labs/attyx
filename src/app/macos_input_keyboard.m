@@ -109,6 +109,9 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_ANCHOR_DEMO:
             attyx_toggle_anchor_demo();
             return 1;
+        case ATTYX_ACTION_AI_DEMO_TOGGLE:
+            attyx_toggle_ai_demo();
+            return 1;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;

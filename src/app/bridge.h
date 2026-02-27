@@ -281,6 +281,9 @@ void attyx_toggle_debug_overlay(void);
 extern volatile int g_toggle_anchor_demo;
 void attyx_toggle_anchor_demo(void);
 
+extern volatile int g_toggle_ai_demo;
+void attyx_toggle_ai_demo(void);
+
 // Overlay interaction (PTY thread -> input thread: read-only signal)
 extern volatile int g_overlay_has_actions;
 
@@ -338,6 +341,7 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_CLOSE_WINDOW     14
 #define ATTYX_ACTION_POPUP_TOGGLE_0   15
 #define ATTYX_ACTION_SEND_SEQUENCE    47
+#define ATTYX_ACTION_AI_DEMO_TOGGLE   48
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.
