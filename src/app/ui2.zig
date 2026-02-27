@@ -22,6 +22,9 @@ pub const Theme = theme_registry_mod.Theme;
 const overlay_mod = attyx.overlay_mod;
 const overlay_layout = attyx.overlay_layout;
 const overlay_anchor = attyx.overlay_anchor;
+const overlay_content = attyx.overlay_content;
+const overlay_streaming = attyx.overlay_streaming;
+const overlay_demo = attyx.overlay_demo;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
@@ -113,6 +116,13 @@ export var g_toggle_anchor_demo: i32 = 0;
 
 export fn attyx_toggle_anchor_demo() void {
     @atomicStore(i32, &g_toggle_anchor_demo, 1, .seq_cst);
+}
+
+// AI demo toggle flag: set to 1 by input thread, read-and-reset by PTY thread.
+export var g_toggle_ai_demo: i32 = 0;
+
+export fn attyx_toggle_ai_demo() void {
+    @atomicStore(i32, &g_toggle_ai_demo, 1, .seq_cst);
 }
 
 // Overlay interaction: signal to input thread whether overlay has actionable buttons.
@@ -701,6 +711,9 @@ fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
 // Shared anchor demo mode counter (persists across calls).
 var g_anchor_mode_counter: u8 = 0;
 
+// AI demo streaming state (persists across PTY loop iterations).
+var g_streaming: ?overlay_streaming.StreamingOverlay = null;
+
 fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (!mgr.isVisible(.anchor_demo)) return;
@@ -755,6 +768,77 @@ fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
 
     // Store anchor on the layer for relayout
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.anchor_demo)].anchor = anchor;
+}
+
+fn startAiDemo(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    // Layout full structured card
+    const action_bar_mod = attyx.overlay_action;
+    var bar = action_bar_mod.ActionBar{};
+    bar.add(.dismiss, "Dismiss");
+    bar.add(.copy, "Copy");
+
+    const result = overlay_content.layoutStructuredCard(
+        mgr.allocator,
+        overlay_demo.mock_title,
+        &overlay_demo.mock_blocks,
+        48, // max_content_width
+        .{},
+        bar,
+    ) catch return;
+
+    // Compute placement (viewport dock bottom-right)
+    const vp = viewportInfoFromCtx(ctx);
+    const anchor = overlay_anchor.Anchor{
+        .kind = .viewport_dock,
+        .dock = .bottom_right,
+    };
+    const placement = overlay_anchor.placeOverlay(anchor, result.width, result.height, vp, .{});
+
+    // Initialize streaming (takes ownership of result.cells)
+    if (g_streaming == null) {
+        g_streaming = overlay_streaming.StreamingOverlay{ .allocator = mgr.allocator };
+    }
+    var so = &(g_streaming.?);
+    so.start(result.cells, result.width, result.height, placement.col, placement.row, std.time.nanoTimestamp());
+
+    // Set action bar on the layer
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].anchor = anchor;
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].z_order = 2;
+
+    // Publish initial frame
+    publishAiStreamingFrame(ctx);
+}
+
+fn publishAiStreamingFrame(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    var so = &(g_streaming orelse return);
+
+    var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
+    const vis = so.buildVisibleCells(&scratch) orelse return;
+
+    mgr.setContent(.ai_demo, so.col, so.row, vis.width, vis.height, scratch[0 .. @as(usize, vis.width) * vis.height]) catch return;
+    publishOverlays(ctx);
+}
+
+fn tickAiStreaming(ctx: *PtyThreadCtx) void {
+    var so = &(g_streaming orelse return);
+    if (so.state != .active) return;
+
+    if (so.tick(std.time.nanoTimestamp())) {
+        publishAiStreamingFrame(ctx);
+    }
+}
+
+fn cancelAiDemo(ctx: *PtyThreadCtx) void {
+    if (g_streaming) |*so| {
+        so.cancel();
+    }
+    if (ctx.overlay_mgr) |mgr| {
+        mgr.hide(.ai_demo);
+    }
 }
 
 fn publishState(ctx: *PtyThreadCtx) void {
@@ -936,10 +1020,33 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // AI demo toggle check
+        if (@atomicRmw(i32, &g_toggle_ai_demo, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.isVisible(.ai_demo)) {
+                    cancelAiDemo(ctx);
+                } else {
+                    mgr.show(.ai_demo);
+                    startAiDemo(ctx);
+                }
+                publishOverlays(ctx);
+            }
+        }
+
+        // Tick AI streaming (advance reveal each iteration)
+        tickAiStreaming(ctx);
+
         // Overlay interaction: dismiss (Esc)
         if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
-                if (mgr.dismissActive()) publishOverlays(ctx);
+                const was_ai_visible = mgr.isVisible(.ai_demo);
+                if (mgr.dismissActive()) {
+                    // If AI demo was just dismissed, cancel streaming
+                    if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
+                        if (g_streaming) |*so| so.cancel();
+                    }
+                    publishOverlays(ctx);
+                }
             }
         }
 
@@ -956,12 +1063,17 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Overlay interaction: activate focused action (Enter)
         if (@atomicRmw(i32, &g_overlay_activate, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
+                const was_ai_visible = mgr.isVisible(.ai_demo);
                 if (mgr.activateFocused()) |action_id| {
                     switch (action_id) {
                         .dismiss => {
                             _ = mgr.dismissActive();
+                            // Cancel streaming if AI demo was dismissed
+                            if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
+                                if (g_streaming) |*so| so.cancel();
+                            }
                         },
-                        else => {}, // placeholder for future actions
+                        else => {},
                     }
                     publishOverlays(ctx);
                 }

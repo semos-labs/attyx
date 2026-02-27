@@ -2,7 +2,7 @@ const std = @import("std");
 const anchor_mod = @import("anchor.zig");
 const action_mod = @import("action.zig");
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2 };
 
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
