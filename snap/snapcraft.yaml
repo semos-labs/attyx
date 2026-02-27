@@ -6,7 +6,7 @@ description: |
   Attyx is a fast, GPU-accelerated VT-compatible terminal emulator
   built with Zig. Features OpenGL rendering on Linux with support for
   256 colors, Unicode, and GPU-accelerated drawing.
-grade: edge
+grade: devel
 confinement: classic
 
 platforms:
