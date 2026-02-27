@@ -191,8 +191,10 @@ jobs:
         run: |
           mkdir -p staging
           cp zig-out/bin/attyx staging/attyx
+          cp images/attyx.desktop staging/attyx.desktop
+          cp images/Attyx.png staging/attyx.png
           cd staging
-          tar --zstd -cf ../${{ matrix.artifact }} attyx
+          tar --zstd -cf ../${{ matrix.artifact }} attyx attyx.desktop attyx.png
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
