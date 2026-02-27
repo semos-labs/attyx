@@ -171,7 +171,7 @@ var g_overlay_scroll_pending: i32 = 0;
 /// Hit-test click against visible overlay descs. Returns 1 if consumed.
 /// Called from input thread; signals PTY thread with coordinates.
 export fn attyx_overlay_click(col: c_int, row: c_int) c_int {
-    if (overlayHitTest(col, row)) {
+    if (c.attyx_overlay_hit_test(col, row) != 0) {
         @atomicStore(i32, &g_overlay_click_col, col, .seq_cst);
         @atomicStore(i32, &g_overlay_click_row, row, .seq_cst);
         @atomicStore(i32, &g_overlay_click_pending, 1, .seq_cst);
@@ -182,30 +182,12 @@ export fn attyx_overlay_click(col: c_int, row: c_int) c_int {
 
 /// Hit-test scroll against visible overlay descs. Returns 1 if consumed.
 export fn attyx_overlay_scroll(col: c_int, row: c_int, delta: c_int) c_int {
-    if (overlayHitTest(col, row)) {
+    if (c.attyx_overlay_hit_test(col, row) != 0) {
         @atomicStore(i32, &g_overlay_scroll_delta, delta, .seq_cst);
         @atomicStore(i32, &g_overlay_scroll_pending, 1, .seq_cst);
         return 1;
     }
     return 0;
-}
-
-/// Shared hit-test logic extracted to non-export fn to work around
-/// Zig 0.15.2 MIR codegen bug on Linux x86_64 Debug builds.
-fn overlayHitTest(col: c_int, row: c_int) bool {
-    const count = @atomicLoad(i32, &c.g_overlay_count, .seq_cst);
-    if (count <= 0) return false;
-    const n: usize = @intCast(@min(count, c.ATTYX_OVERLAY_MAX_LAYERS));
-    for (0..n) |i| {
-        const desc = c.g_overlay_descs[i];
-        if (desc.visible == 0) continue;
-        const dc: i32 = desc.col;
-        const dr: i32 = desc.row;
-        const dw: i32 = desc.width;
-        const dh: i32 = desc.height;
-        if (col >= dc and col < dc + dw and row >= dr and row < dr + dh) return true;
-    }
-    return false;
 }
 
 // ---------------------------------------------------------------------------

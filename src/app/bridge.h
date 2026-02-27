@@ -289,6 +289,23 @@ extern AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY
 extern volatile int      g_overlay_count;
 extern volatile uint32_t g_overlay_gen;
 
+// Hit-test a point against visible overlay layers.
+// Returns 1 if (col, row) is inside any visible overlay, 0 otherwise.
+// Defined inline to avoid Zig 0.15.2 MIR codegen bug when accessing
+// C structs from Zig on Linux x86_64 Debug builds.
+static inline int attyx_overlay_hit_test(int col, int row) {
+    int count = g_overlay_count;
+    if (count <= 0) return 0;
+    if (count > ATTYX_OVERLAY_MAX_LAYERS) count = ATTYX_OVERLAY_MAX_LAYERS;
+    for (int i = 0; i < count; i++) {
+        AttyxOverlayDesc d = g_overlay_descs[i];
+        if (d.visible && col >= d.col && col < d.col + d.width &&
+            row >= d.row && row < d.row + d.height)
+            return 1;
+    }
+    return 0;
+}
+
 void attyx_toggle_debug_overlay(void);
 
 extern volatile int g_toggle_anchor_demo;
