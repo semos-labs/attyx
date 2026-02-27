@@ -199,6 +199,50 @@ jobs:
         with:
           files: ${{ matrix.artifact }}
 
+  snap:
+    needs: [build-linux]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            artifact: attyx-linux-x64.tar.zst
+            runner: ubuntu-latest
+          - arch: arm64
+            artifact: attyx-linux-arm64.tar.zst
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release artifact
+        run: |
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPO" \
+            --pattern "${{ matrix.artifact }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract binary
+        run: tar --zstd -xf ${{ matrix.artifact }}
+
+      - name: Set snap version from tag
+        run: sed -i "s/^version: .*/version: '${GITHUB_REF_NAME#v}'/" snap/snapcraft.yaml
+
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: build
+        with:
+          snapcraft-args: --platform ${{ matrix.arch }}
+
+      - name: Upload to Snap Store
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAP_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge
+
   homebrew:
     needs: [build-macos, build-linux]
     runs-on: ubuntu-latest

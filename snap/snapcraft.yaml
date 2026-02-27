@@ -1,0 +1,26 @@
+name: attyx
+base: core24
+version: '0.0.0'
+summary: GPU-accelerated terminal emulator
+description: |
+  Attyx is a fast, GPU-accelerated VT-compatible terminal emulator
+  built with Zig. Features OpenGL rendering on Linux with support for
+  256 colors, Unicode, and GPU-accelerated drawing.
+grade: stable
+confinement: classic
+
+platforms:
+  amd64:
+  arm64:
+
+parts:
+  attyx:
+    plugin: nil
+    override-build: |
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      cp $SNAPCRAFT_PROJECT_DIR/attyx $SNAPCRAFT_PART_INSTALL/bin/attyx
+      chmod +x $SNAPCRAFT_PART_INSTALL/bin/attyx
+
+apps:
+  attyx:
+    command: bin/attyx
