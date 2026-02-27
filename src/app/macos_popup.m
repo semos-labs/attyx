@@ -66,8 +66,8 @@
                               alpha);
             }
 
-            // Text glyph (skip spaces and control chars)
-            if (cell.character > 32 && ti + 6 <= POPUP_CHUNK * 6) {
+            // Text glyph (skip spaces, control chars, and Kitty placeholders)
+            if (cell.character > 32 && cell.character != 0x10EEEE && ti + 6 <= POPUP_CHUNK * 6) {
                 ti = emitGlyph(textVerts, ti, &_glyphCache, cell.character,
                                x, y, gw, gh,
                                cell.fg_r / 255.0f,
@@ -100,7 +100,104 @@
         }
     }
 
-    // 3. Draw popup cursor (shape-aware + themed color + trail)
+    // 3. Draw popup images (Kitty graphics inside popup)
+    {
+        int imgCount = g_popup_image_placement_count;
+        if (imgCount > ATTYX_POPUP_MAX_IMAGE_PLACEMENTS)
+            imgCount = ATTYX_POPUP_MAX_IMAGE_PLACEMENTS;
+
+        if (imgCount > 0) {
+            AttyxImagePlacement imgPlacements[ATTYX_POPUP_MAX_IMAGE_PLACEMENTS];
+            memcpy(imgPlacements, g_popup_image_placements,
+                   sizeof(AttyxImagePlacement) * imgCount);
+
+            // Upload new textures
+            for (int i = 0; i < imgCount; i++) {
+                const AttyxImagePlacement* p = &imgPlacements[i];
+                if (!p->pixels || p->img_width == 0 || p->img_height == 0) continue;
+
+                id<MTLTexture> tex = findCachedTexture(
+                    p->image_id, p->img_width, p->img_height);
+                if (tex) continue;
+
+                MTLTextureDescriptor* texDesc = [MTLTextureDescriptor
+                    texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                width:p->img_width
+                                               height:p->img_height
+                                            mipmapped:NO];
+                texDesc.usage = MTLTextureUsageShaderRead;
+                texDesc.storageMode = MTLStorageModeShared;
+
+                tex = [self.device newTextureWithDescriptor:texDesc];
+                if (!tex) continue;
+
+                MTLRegion region = MTLRegionMake2D(0, 0, p->img_width, p->img_height);
+                [tex replaceRegion:region
+                       mipmapLevel:0
+                         withBytes:p->pixels
+                       bytesPerRow:p->img_width * 4];
+
+                cacheTexture(p->image_id, p->img_width, p->img_height, tex);
+            }
+
+            // Draw textured quads
+            [enc setRenderPipelineState:self.imagePipeline];
+            [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+
+            for (int i = 0; i < imgCount; i++) {
+                const AttyxImagePlacement* p = &imgPlacements[i];
+                id<MTLTexture> tex = findCachedTexture(
+                    p->image_id, p->img_width, p->img_height);
+                if (!tex) continue;
+
+                float dCols = (p->display_cols > 0) ? (float)p->display_cols : 0;
+                float dRows = (p->display_rows > 0) ? (float)p->display_rows : 0;
+                float imgW = (float)p->img_width;
+                float imgH = (float)p->img_height;
+
+                if (dCols == 0 && dRows == 0) {
+                    dCols = ceilf(imgW / gw);
+                    dRows = ceilf(imgH / gh);
+                } else if (dCols == 0) {
+                    dCols = dRows * (imgW / imgH) * (gh / gw);
+                } else if (dRows == 0) {
+                    dRows = dCols * (imgH / imgW) * (gw / gh);
+                }
+
+                float x0 = offX + p->col * gw;
+                float y0 = offY + p->row * gh;
+                float w = dCols * gw;
+                float h = dRows * gh;
+
+                float srcX = (float)p->src_x;
+                float srcY = (float)p->src_y;
+                float srcW = (p->src_w > 0) ? (float)p->src_w : imgW;
+                float srcH = (p->src_h > 0) ? (float)p->src_h : imgH;
+
+                float u0 = srcX / imgW;
+                float v0 = srcY / imgH;
+                float u1 = (srcX + srcW) / imgW;
+                float v1 = (srcY + srcH) / imgH;
+
+                Vertex imgVerts[6] = {
+                    { x0,     y0,     u0, v0, 1,1,1,1 },
+                    { x0 + w, y0,     u1, v0, 1,1,1,1 },
+                    { x0,     y0 + h, u0, v1, 1,1,1,1 },
+                    { x0 + w, y0,     u1, v0, 1,1,1,1 },
+                    { x0 + w, y0 + h, u1, v1, 1,1,1,1 },
+                    { x0,     y0 + h, u0, v1, 1,1,1,1 },
+                };
+
+                [enc setVertexBytes:imgVerts length:sizeof(imgVerts) atIndex:0];
+                [enc setFragmentTexture:tex atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle
+                        vertexStart:0
+                        vertexCount:6];
+            }
+        }
+    }
+
+    // 4. Draw popup cursor (shape-aware + themed color + trail)
     {
         static float _popupTrailX, _popupTrailY;
         static double _popupTrailLastTime;

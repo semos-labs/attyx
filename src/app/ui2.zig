@@ -1007,6 +1007,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     const cfg = ctx.popup_configs[ps.config_index];
                     ps.resize(cfg, @intCast(nc), @intCast(nr));
                     ps.publishCells(&ctx.active_theme, cfg);
+                    ps.publishImagePlacements(cfg);
                 }
                 c.attyx_end_cell_update();
                 publishState(ctx);
@@ -1065,6 +1066,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             } else if (popup_got_data) {
                 const pcfg = ctx.popup_configs[ps.config_index];
                 ps.publishCells(&ctx.active_theme, pcfg);
+                ps.publishImagePlacements(pcfg);
             }
         }
 
@@ -1157,6 +1159,7 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             g_popup_engine = ps.engine;
             @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
             ps.publishCells(&ctx.active_theme, cfg);
+            ps.publishImagePlacements(cfg);
             return; // handle one toggle per tick
         }
     }

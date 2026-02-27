@@ -14,8 +14,8 @@
 static ImageTexEntry g_tex_cache[IMAGE_TEX_CACHE_CAP];
 static int g_tex_cache_count = 0;
 
-static id<MTLTexture> findCachedTexture(uint32_t image_id,
-                                        uint32_t width, uint32_t height) {
+id<MTLTexture> findCachedTexture(uint32_t image_id,
+                                uint32_t width, uint32_t height) {
     for (int i = 0; i < g_tex_cache_count; i++) {
         if (g_tex_cache[i].image_id == image_id &&
             g_tex_cache[i].width == width &&
@@ -26,8 +26,8 @@ static id<MTLTexture> findCachedTexture(uint32_t image_id,
     return nil;
 }
 
-static void cacheTexture(uint32_t image_id, uint32_t width,
-                         uint32_t height, id<MTLTexture> tex) {
+void cacheTexture(uint32_t image_id, uint32_t width,
+                  uint32_t height, id<MTLTexture> tex) {
     // Check if slot already exists for this image_id.
     for (int i = 0; i < g_tex_cache_count; i++) {
         if (g_tex_cache[i].image_id == image_id) {
@@ -53,12 +53,18 @@ static void cacheTexture(uint32_t image_id, uint32_t width,
 /// Remove textures for image IDs that are no longer referenced by any
 /// current placement.
 static void pruneCache(const AttyxImagePlacement* placements, int count) {
+    int popupCount = g_popup_image_placement_count;
     int i = 0;
     while (i < g_tex_cache_count) {
         uint32_t cid = g_tex_cache[i].image_id;
         BOOL found = NO;
         for (int j = 0; j < count; j++) {
             if (placements[j].image_id == cid) { found = YES; break; }
+        }
+        if (!found) {
+            for (int j = 0; j < popupCount; j++) {
+                if (g_popup_image_placements[j].image_id == cid) { found = YES; break; }
+            }
         }
         if (!found) {
             g_tex_cache[i] = g_tex_cache[g_tex_cache_count - 1];
