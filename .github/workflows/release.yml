@@ -456,7 +456,7 @@ jobs:
           git push
 
   publish:
-    needs: [build-macos, build-linux, snap, homebrew, appcast]
+    needs: [build-macos, build-linux, homebrew, appcast]
     runs-on: ubuntu-latest
     steps:
       - name: Publish release
