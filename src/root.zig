@@ -41,6 +41,8 @@ pub const overlay_ai_content = @import("overlay/ai_content.zig");
 pub const overlay_ai_error = @import("overlay/ai_error.zig");
 pub const overlay_update_check = @import("overlay/update_check.zig");
 
+pub const version = @import("build_options").version;
+
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
 pub const Direction = actions.Direction;

@@ -427,6 +427,27 @@ void attyx_spawn_new_window(void) {
     attyx_updater_check();
 }
 
+- (void)showAbout:(id)sender {
+    (void)sender;
+    NSString* version = @"unknown";
+    if (g_app_version_len > 0) {
+        version = [[NSString alloc] initWithBytes:(const void*)g_app_version
+                                           length:(NSUInteger)g_app_version_len
+                                         encoding:NSUTF8StringEncoding];
+    }
+    NSMutableDictionary* opts = [NSMutableDictionary dictionary];
+    opts[@"ApplicationVersion"] = version;
+    opts[@"Version"] = @"";
+    if (g_icon_png_len > 0) {
+        NSData* iconData = [NSData dataWithBytesNoCopy:(void*)g_icon_png
+                                                length:(NSUInteger)g_icon_png_len
+                                          freeWhenDone:NO];
+        NSImage* icon = [[NSImage alloc] initWithData:iconData];
+        if (icon) opts[@"ApplicationIcon"] = icon;
+    }
+    [NSApp orderFrontStandardAboutPanelWithOptions:opts];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if ([item action] == @selector(checkForUpdates:)) {
         return attyx_updater_available();
@@ -581,7 +602,13 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         NSMenu* menuBar = [[NSMenu alloc] init];
         NSMenuItem* appMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:appMenuItem];
-        NSMenu* appMenu = [[NSMenu alloc] init];
+        NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"Attyx"];
+        NSMenuItem* aboutItem = [[NSMenuItem alloc] initWithTitle:@"About Attyx"
+                                                          action:@selector(showAbout:)
+                                                   keyEquivalent:@""];
+        [aboutItem setTarget:delegate];
+        [appMenu addItem:aboutItem];
+        [appMenu addItem:[NSMenuItem separatorItem]];
         NSMenuItem* reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload Config"
                                                             action:@selector(reloadConfig:)
                                                      keyEquivalent:@""];

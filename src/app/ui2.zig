@@ -116,6 +116,10 @@ const _icon_bytes = @import("app_icon").data;
 export var g_icon_png: [*]const u8 = _icon_bytes.ptr;
 export var g_icon_png_len: c_int = @intCast(_icon_bytes.len);
 
+// App version string embedded at build time. Read-only from C.
+export var g_app_version: [*]const u8 = attyx.version.ptr;
+export var g_app_version_len: c_int = @intCast(attyx.version.len);
+
 // Grid top offset: number of rows to shift terminal content down (search bar padding).
 export var g_grid_top_offset: i32 = 0;
 

@@ -201,6 +201,9 @@ void attyx_apply_window_update(void);
 extern const uint8_t* g_icon_png;
 extern int            g_icon_png_len;
 
+extern const uint8_t* g_app_version;
+extern int            g_app_version_len;
+
 // ---------------------------------------------------------------------------
 // Background transparency and blur (written by Zig at startup)
 // ---------------------------------------------------------------------------

@@ -42,6 +42,9 @@ export var g_theme_sel_fg_b: i32 = 0;
 var _icon_stub: u8 = 0;
 export var g_icon_png: [*]const u8 = @ptrCast(&_icon_stub);
 export var g_icon_png_len: c_int = 0;
+var _ver_stub: u8 = 0;
+export var g_app_version: [*]const u8 = @ptrCast(&_ver_stub);
+export var g_app_version_len: c_int = 0;
 export var g_grid_top_offset: i32 = 0;
 export var g_toggle_debug_overlay: i32 = 0;
 export fn attyx_toggle_debug_overlay() void {}
