@@ -174,14 +174,11 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_overlay.c"),  .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_popup.c"),   .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));
-        exe.root_module.linkSystemLibrary("glfw3", .{});
+        exe.root_module.linkSystemLibrary("glfw3", .{ .preferred_link_mode = .static });
         exe.root_module.linkSystemLibrary("gl", .{});
         exe.root_module.linkSystemLibrary("freetype2", .{});
         exe.root_module.linkSystemLibrary("fontconfig", .{});
         exe.root_module.linkSystemLibrary("libpng", .{});
-        // glibc 2.34+ merged pthread/dl into libc; allow shlib undefined
-        // so lld doesn't reject transitive deps from libglfw.so
-        exe.linker_allow_shlib_undefined = true;
     }
 
     // This declares intent for the executable to be installed into the
