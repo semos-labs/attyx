@@ -70,6 +70,17 @@ static int dispatchAction(uint8_t action) {
         attyx_tab_action(action);
         return 1;
     }
+    if (action >= ATTYX_ACTION_SPLIT_VERTICAL && action <= ATTYX_ACTION_PANE_CLOSE) {
+        attyx_split_action(action);
+        return 1;
+    }
+    if (action >= ATTYX_ACTION_PANE_FOCUS_UP && action <= ATTYX_ACTION_PANE_RESIZE_RIGHT) {
+        if (g_split_active) {
+            attyx_split_action(action);
+            return 1;
+        }
+        return 0; // Pass through to terminal when no splits
+    }
     switch (action) {
         case ATTYX_ACTION_SEARCH_TOGGLE:
             if (g_search_active) {

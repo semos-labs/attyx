@@ -106,6 +106,9 @@ volatile int g_pending_resize_cols = 0;
 CGFloat g_cell_pt_w = 0;
 CGFloat g_cell_pt_h = 0;
 
+volatile float g_cell_w_pts = 0;
+volatile float g_cell_h_pts = 0;
+
 // Overlay system
 AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];
 AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY_MAX_CELLS];
@@ -300,6 +303,8 @@ void attyx_spawn_new_window(void) {
 
     g_cell_pt_w = gc.glyph_w / gc.scale;
     g_cell_pt_h = gc.glyph_h / gc.scale;
+    g_cell_w_pts = (float)g_cell_pt_w;
+    g_cell_h_pts = (float)g_cell_pt_h;
 
     CGFloat winW = g_cols * g_cell_pt_w + g_padding_left + g_padding_right;
     CGFloat winH = g_rows * g_cell_pt_h + g_padding_top  + g_padding_bottom;

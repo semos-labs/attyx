@@ -240,6 +240,10 @@ extern volatile int g_padding_right;
 extern volatile int g_padding_top;
 extern volatile int g_padding_bottom;
 
+// Cell dimensions in points (written by renderer after glyph cache creation / font rebuild)
+extern volatile float g_cell_w_pts;
+extern volatile float g_cell_h_pts;
+
 // ---------------------------------------------------------------------------
 // Kitty graphics image placements (written by PTY thread inside seqlock,
 // read by renderer thread)
@@ -385,6 +389,17 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_TAB_CLOSE        50
 #define ATTYX_ACTION_TAB_NEXT         51
 #define ATTYX_ACTION_TAB_PREV         52
+#define ATTYX_ACTION_SPLIT_VERTICAL   53
+#define ATTYX_ACTION_SPLIT_HORIZONTAL 54
+#define ATTYX_ACTION_PANE_CLOSE       55
+#define ATTYX_ACTION_PANE_FOCUS_UP    56
+#define ATTYX_ACTION_PANE_FOCUS_DOWN  57
+#define ATTYX_ACTION_PANE_FOCUS_LEFT  58
+#define ATTYX_ACTION_PANE_FOCUS_RIGHT 59
+#define ATTYX_ACTION_PANE_RESIZE_UP    60
+#define ATTYX_ACTION_PANE_RESIZE_DOWN  61
+#define ATTYX_ACTION_PANE_RESIZE_LEFT  62
+#define ATTYX_ACTION_PANE_RESIZE_RIGHT 63
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.
@@ -397,6 +412,18 @@ extern volatile int    g_keybind_matched_seq_len;
 // Tab management (called from input thread via keybind dispatch)
 void attyx_tab_action(int action);
 void attyx_tab_bar_click(int col, int grid_cols);
+
+// Split pane management (called from input thread via keybind dispatch)
+void attyx_split_action(int action);
+void attyx_split_click(int col, int row);
+extern volatile int g_split_active; // 1 when active tab has >1 pane
+
+// Split pane drag resize (called from input thread mouse handlers)
+void attyx_split_drag_start(int col, int row);
+void attyx_split_drag_update(int col, int row);
+void attyx_split_drag_end(void);
+extern volatile int g_split_drag_active;    // 1 while drag in progress
+extern volatile int g_split_drag_direction; // 0=vertical, 1=horizontal
 
 // Input routing (called from input thread when g_popup_active)
 void attyx_popup_send_input(const uint8_t* bytes, int len);

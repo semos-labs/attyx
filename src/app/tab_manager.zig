@@ -1,46 +1,61 @@
-// Attyx — TabManager: manages multiple Panes (tabs) with switching
+// Attyx — TabManager: manages multiple tabs, each with a SplitLayout
 //
-// Holds a fixed-size array of heap-allocated Panes. Tracks the active
+// Holds a fixed-size array of SplitLayouts. Tracks the active
 // tab index. Supports add, close, switch, and resize-all operations.
+// Each tab can contain multiple split panes via its SplitLayout.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Pane = @import("pane.zig").Pane;
+const SplitLayout = @import("split_layout.zig").SplitLayout;
 
 pub const max_tabs = 16;
 
 pub const TabManager = struct {
-    tabs: [max_tabs]?*Pane = .{null} ** max_tabs,
+    tabs: [max_tabs]?SplitLayout = .{null} ** max_tabs,
     count: u8 = 0,
     active: u8 = 0,
     allocator: Allocator,
+    split_gap_h: u16 = 1,
+    split_gap_v: u16 = 1,
 
     /// Create a TabManager with an initial pane at index 0.
     pub fn init(allocator: Allocator, initial_pane: *Pane) TabManager {
         var mgr = TabManager{
             .allocator = allocator,
         };
-        mgr.tabs[0] = initial_pane;
+        var sl = SplitLayout.init(initial_pane);
+        // Set initial rects from the pane's engine dimensions so splitPane()
+        // can read correct rects even before the first window resize event.
+        sl.layout(
+            @intCast(initial_pane.engine.state.grid.rows),
+            @intCast(initial_pane.engine.state.grid.cols),
+        );
+        mgr.tabs[0] = sl;
         mgr.count = 1;
         mgr.active = 0;
         return mgr;
     }
 
-    /// Deinit and free all panes.
+    /// Deinit and free all panes across all tabs.
     pub fn deinit(self: *TabManager) void {
         for (&self.tabs) |*slot| {
-            if (slot.*) |pane| {
-                pane.deinit();
-                self.allocator.destroy(pane);
+            if (slot.*) |*layout| {
+                layout.deinitAll(self.allocator);
                 slot.* = null;
             }
         }
         self.count = 0;
     }
 
-    /// Return the currently active pane.
+    /// Return the currently active pane (focused pane of the active tab's layout).
     pub fn activePane(self: *TabManager) *Pane {
-        return self.tabs[self.active].?;
+        return self.tabs[self.active].?.focusedPane();
+    }
+
+    /// Return the active tab's SplitLayout.
+    pub fn activeLayout(self: *TabManager) *SplitLayout {
+        return &(self.tabs[self.active].?);
     }
 
     /// Spawn a new tab. Inserts after the active tab.
@@ -63,18 +78,20 @@ pub const TabManager = struct {
         while (i > insert_at) : (i -= 1) {
             self.tabs[i] = self.tabs[i - 1];
         }
-        self.tabs[insert_at] = pane;
+        var layout = SplitLayout.init(pane);
+        layout.setGaps(self.split_gap_h, self.split_gap_v);
+        layout.layout(rows, cols);
+        self.tabs[insert_at] = layout;
         self.count += 1;
         self.active = insert_at;
     }
 
-    /// Close the tab at the given index. Deinits the pane, shifts
-    /// remaining tabs, and adjusts the active index.
+    /// Close the tab at the given index. Deinits all panes in its layout,
+    /// shifts remaining tabs, and adjusts the active index.
     pub fn closeTab(self: *TabManager, index: u8) void {
         if (index >= self.count) return;
-        if (self.tabs[index]) |pane| {
-            pane.deinit();
-            self.allocator.destroy(pane);
+        if (self.tabs[index]) |*layout| {
+            layout.deinitAll(self.allocator);
         }
 
         // Shift remaining tabs left
@@ -118,11 +135,23 @@ pub const TabManager = struct {
         }
     }
 
-    /// Resize all panes to the given dimensions.
+    /// Resize all tabs. For each tab, calls layout() which recursively
+    /// resizes all split panes to fit within the given dimensions.
     pub fn resizeAll(self: *TabManager, rows: u16, cols: u16) void {
-        for (self.tabs[0..self.count]) |maybe_pane| {
-            if (maybe_pane) |pane| {
-                pane.resize(rows, cols);
+        for (self.tabs[0..self.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*layout| {
+                layout.layout(rows, cols);
+            }
+        }
+    }
+
+    /// Update split gap sizes and propagate to all existing tab layouts.
+    pub fn updateGaps(self: *TabManager, h: u16, v: u16) void {
+        self.split_gap_h = h;
+        self.split_gap_v = v;
+        for (self.tabs[0..self.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*layout| {
+                layout.setGaps(h, v);
             }
         }
     }

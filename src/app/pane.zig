@@ -53,8 +53,14 @@ pub const Pane = struct {
     }
 
     pub fn resize(self: *Pane, rows: u16, cols: u16) void {
+        const old_rows = self.engine.state.grid.rows;
+        const old_cols = self.engine.state.grid.cols;
         self.engine.state.resize(rows, cols) catch {};
-        self.pty.resize(rows, cols) catch {};
+        // Only send TIOCSWINSZ when the size actually changed to avoid
+        // redundant SIGWINCHs (splitPane + layout both call resize).
+        if (rows != old_rows or cols != old_cols) {
+            self.pty.resize(rows, cols) catch {};
+        }
     }
 
     pub fn childExited(self: *Pane) bool {

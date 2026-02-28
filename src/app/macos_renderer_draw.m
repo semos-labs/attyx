@@ -133,7 +133,12 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         }
 
         uint64_t gen2 = g_cell_gen;
-        if (gen1 != gen2) return;
+        if (gen1 != gen2) {
+            // Torn read — restore dirty bits so the next frame re-reads.
+            for (int i = 0; i < 4; i++)
+                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], dirty[i]);
+            return;
+        }
 
         AttyxCell* cells = _cellSnapshot;
 

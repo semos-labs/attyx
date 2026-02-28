@@ -42,6 +42,9 @@ const platform = @import("../platform/platform.zig");
 const TabManager = @import("tab_manager.zig").TabManager;
 const tab_bar_mod = @import("tab_bar.zig");
 const Pane = @import("pane.zig").Pane;
+const split_layout_mod = @import("split_layout.zig");
+const SplitLayout = split_layout_mod.SplitLayout;
+const split_render = @import("split_render.zig");
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -262,6 +265,56 @@ export fn attyx_tab_action(action: c_int) void {
 }
 
 // ---------------------------------------------------------------------------
+// Split pane globals and exports
+// ---------------------------------------------------------------------------
+var g_split_action_request: i32 = 0;
+export var g_split_active: i32 = 0;
+/// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
+/// Prevents stale rows when the renderer discards a torn-read frame.
+var g_force_full_redraw: bool = false;
+var g_split_click_col: i32 = -1;
+var g_split_click_row: i32 = -1;
+var g_split_click_pending: i32 = 0;
+
+export fn attyx_split_action(action: c_int) void {
+    @atomicStore(i32, &g_split_action_request, action, .seq_cst);
+}
+
+export fn attyx_split_click(col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_split_click_col, col, .seq_cst);
+    @atomicStore(i32, &g_split_click_row, row, .seq_cst);
+    @atomicStore(i32, &g_split_click_pending, 1, .seq_cst);
+}
+
+// Split pane drag resize state
+var g_split_drag_start_col: i32 = -1;
+var g_split_drag_start_row: i32 = -1;
+var g_split_drag_start_pending: i32 = 0;
+var g_split_drag_cur_col: i32 = -1;
+var g_split_drag_cur_row: i32 = -1;
+var g_split_drag_cur_pending: i32 = 0;
+var g_split_drag_end_pending: i32 = 0;
+var g_split_drag_branch: u8 = 0xFF;
+export var g_split_drag_active: i32 = 0;
+export var g_split_drag_direction: i32 = 0;
+
+export fn attyx_split_drag_start(col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_split_drag_start_col, col, .seq_cst);
+    @atomicStore(i32, &g_split_drag_start_row, row, .seq_cst);
+    @atomicStore(i32, &g_split_drag_start_pending, 1, .seq_cst);
+}
+
+export fn attyx_split_drag_update(col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_split_drag_cur_col, col, .seq_cst);
+    @atomicStore(i32, &g_split_drag_cur_row, row, .seq_cst);
+    @atomicStore(i32, &g_split_drag_cur_pending, 1, .seq_cst);
+}
+
+export fn attyx_split_drag_end() void {
+    @atomicStore(i32, &g_split_drag_end_pending, 1, .seq_cst);
+}
+
+// ---------------------------------------------------------------------------
 // Popup terminal globals and exports
 // ---------------------------------------------------------------------------
 export var g_popup_active: i32 = 0;
@@ -473,6 +526,10 @@ pub fn run(
 
     var tab_mgr = TabManager.init(allocator, initial_pane);
     defer tab_mgr.deinit();
+    {
+        const gaps = computeSplitGaps();
+        tab_mgr.updateGaps(gaps.h, gaps.v);
+    }
 
     g_pty_master = initial_pane.pty.master;
     g_engine = &initial_pane.engine;
@@ -1992,6 +2049,27 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Tab action handling
         processTabActions(ctx);
 
+        // Split pane action handling
+        processSplitActions(ctx);
+
+        // Split pane drag resize
+        processSplitDrag(ctx);
+
+        // Split pane click focus
+        if (@atomicRmw(i32, &g_split_click_pending, .Xchg, 0, .seq_cst) != 0) {
+            const click_col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_click_col, .seq_cst)));
+            const click_row_raw = @atomicLoad(i32, &g_split_click_row, .seq_cst);
+            // Subtract grid top offset (tab bar/search bar) to get pane-relative row
+            const click_row: u16 = @intCast(@max(0, click_row_raw - g_grid_top_offset));
+            const layout = ctx.tab_mgr.activeLayout();
+            if (layout.paneAt(click_row, click_col)) |target_idx| {
+                if (target_idx != layout.focused) {
+                    layout.focused = target_idx;
+                    switchActiveTab(ctx);
+                }
+            }
+        }
+
         // Tab bar click handling
         {
             const click_idx = @atomicRmw(i32, &g_tab_click_index, .Xchg, -1, .seq_cst);
@@ -2014,20 +2092,32 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Check all tabs for child exit
+        // Check all tabs for child exit (handles split panes)
         {
             var ti: u8 = 0;
             while (ti < ctx.tab_mgr.count) {
-                if (ctx.tab_mgr.tabs[ti]) |p| {
-                    if (p.childExited()) {
-                        ctx.tab_mgr.closeTab(ti);
-                        if (ctx.tab_mgr.count == 0) {
-                            c.attyx_request_quit();
-                            return;
+                if (ctx.tab_mgr.tabs[ti]) |*lay| {
+                    if (lay.findExitedPane()) |exited_idx| {
+                        const result = lay.closePaneAt(exited_idx, ctx.allocator);
+                        if (result == .last_pane) {
+                            ctx.tab_mgr.closeTab(ti);
+                            if (ctx.tab_mgr.count == 0) {
+                                c.attyx_request_quit();
+                                return;
+                            }
+                            updateGridTopOffset(ctx);
+                            switchActiveTab(ctx);
+                            continue; // don't increment; array shifted
+                        } else {
+                            // Pane closed within tab, relayout
+                            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+                            lay.layout(pty_rows, ctx.grid_cols);
+                            if (ti == ctx.tab_mgr.active) {
+                                updateSplitActive(ctx);
+                                switchActiveTab(ctx);
+                            }
+                            continue; // re-check same tab for more exits
                         }
-                        updateGridTopOffset(ctx);
-                        switchActiveTab(ctx);
-                        continue; // don't increment; array shifted
                     }
                 }
                 ti += 1;
@@ -2045,6 +2135,10 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 ctx.grid_rows = @intCast(rr);
                 ctx.grid_cols = @intCast(rc);
 
+                // Recompute split gaps (cell dims may have changed after font rebuild)
+                const gaps = computeSplitGaps();
+                ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+
                 // Resize panes to rows minus overlay offset (tab bar, search bar)
                 const pty_rows: u16 = @intCast(@max(1, rr - g_grid_top_offset));
                 ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
@@ -2058,16 +2152,34 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 }
 
                 c.attyx_begin_cell_update();
-                const new_total = nr * nc;
-                fillCells(ctx.cells[0..new_total], ctxEngine(ctx), new_total, &ctx.active_theme);
-                const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
-                c.attyx_set_cursor(
-                    @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
-                    @intCast(ctxEngine(ctx).state.cursor.col),
-                );
-                c.attyx_set_grid_size(rc, rr);
-                c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
+                const resize_layout = ctx.tab_mgr.activeLayout();
+                if (resize_layout.pane_count > 1) {
+                    split_render.fillCellsSplit(
+                        @ptrCast(ctx.cells),
+                        resize_layout,
+                        pty_rows,
+                        @intCast(rc),
+                        &ctx.active_theme,
+                    );
+                    const resize_rect = resize_layout.pool[resize_layout.focused].rect;
+                    const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
+                    c.attyx_set_cursor(
+                        @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + resize_rect.row + @as(usize, @intCast(g_grid_top_offset))),
+                        @intCast(ctxEngine(ctx).state.cursor.col + resize_rect.col),
+                    );
+                    c.attyx_mark_all_dirty();
+                } else {
+                    const new_total = nr * nc;
+                    fillCells(ctx.cells[0..new_total], ctxEngine(ctx), new_total, &ctx.active_theme);
+                    const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
+                    c.attyx_set_cursor(
+                        @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+                        @intCast(ctxEngine(ctx).state.cursor.col),
+                    );
+                    c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
+                }
                 ctxEngine(ctx).state.dirty.clear();
+                c.attyx_set_grid_size(rc, rr);
                 publishImagePlacements(ctx);
                 if (ctx.overlay_mgr) |mgr| {
                     mgr.relayoutAnchored(viewportInfoFromCtx(ctx));
@@ -2091,39 +2203,57 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Build poll fd array — include all tab PTYs + popup PTY
+        // Build poll fd array — include all split pane PTYs + popup PTY
         const tab_max = @import("tab_manager.zig").max_tabs;
-        var fds: [tab_max + 1]posix.pollfd = undefined;
+        const max_fds = tab_max * split_layout_mod.max_panes + 1;
+        var fds: [max_fds]posix.pollfd = undefined;
+        var fd_panes: [max_fds]*Pane = undefined;
+        var fd_tab_idx: [max_fds]u8 = undefined;
         var nfds: usize = 0;
 
-        // Add all tab PTYs
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |maybe_pane| {
-            if (maybe_pane) |p| {
-                fds[nfds] = .{ .fd = p.pty.master, .events = POLLIN, .revents = 0 };
-                nfds += 1;
+        // Add all tab PTYs (iterating split leaves per tab)
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_i| {
+            if (maybe_layout.*) |*lay| {
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    fds[nfds] = .{ .fd = leaf.pane.pty.master, .events = POLLIN, .revents = 0 };
+                    fd_panes[nfds] = leaf.pane;
+                    fd_tab_idx[nfds] = @intCast(tab_i);
+                    nfds += 1;
+                }
             }
         }
         // Add popup PTY if active
         const popup_fd_idx = nfds;
         if (ctx.popup_state) |ps| {
             fds[nfds] = .{ .fd = ps.pane.pty.master, .events = POLLIN, .revents = 0 };
+            fd_panes[nfds] = ps.pane;
+            fd_tab_idx[nfds] = 0xFF;
             nfds += 1;
         }
 
         _ = posix.poll(fds[0..nfds], 16) catch break;
 
-        // Drain all tab PTYs. Only log session/throughput for the active tab.
+        // Drain all tab PTYs. Only log session/throughput for the active tab's focused pane.
+        // When splits are active, any pane in the active tab receiving data triggers refresh.
         var got_data = false;
-        for (0..ctx.tab_mgr.count) |i| {
+        const active_focused_pane = ctx.tab_mgr.activePane();
+        for (0..nfds) |i| {
+            if (i == popup_fd_idx) continue; // popup handled separately
+            if (fd_tab_idx[i] == 0xFF) continue;
             if (fds[i].revents & POLLIN != 0) {
-                const p = ctx.tab_mgr.tabs[i].?;
+                const p = fd_panes[i];
                 while (true) {
                     const n = p.pty.read(&buf) catch break;
                     if (n == 0) break;
-                    if (i == ctx.tab_mgr.active) {
-                        got_data = true;
+                    if (p == active_focused_pane) {
                         ctx.session.appendOutput(buf[0..n]);
                         ctx.throughput.add(n);
+                    }
+                    // Any pane in the active tab triggers got_data
+                    if (fd_tab_idx[i] == ctx.tab_mgr.active) {
+                        got_data = true;
                     }
                     p.feed(buf[0..n]);
                 }
@@ -2186,18 +2316,42 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         if (need_update_final) {
             c.attyx_begin_cell_update();
-            const total = ctxEngine(ctx).state.grid.rows * ctxEngine(ctx).state.grid.cols;
-            fillCells(ctx.cells[0..total], ctxEngine(ctx), total, &ctx.active_theme);
-            const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
-            c.attyx_set_cursor(
-                @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
-                @intCast(ctxEngine(ctx).state.cursor.col),
-            );
-            if (viewport_changed or search_vp_changed) {
-                // Viewport scroll: all rows have new content, force full redraw.
+            const layout = ctx.tab_mgr.activeLayout();
+            if (layout.pane_count > 1) {
+                // Multi-pane: composite all panes + separators
+                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+                split_render.fillCellsSplit(
+                    @ptrCast(ctx.cells),
+                    layout,
+                    pty_rows,
+                    ctx.grid_cols,
+                    &ctx.active_theme,
+                );
+                // Cursor: offset by focused pane's rect origin
+                const rect = layout.pool[layout.focused].rect;
+                const eng = ctxEngine(ctx);
+                const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+                c.attyx_set_cursor(
+                    @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(g_grid_top_offset))),
+                    @intCast(eng.state.cursor.col + rect.col),
+                );
                 c.attyx_mark_all_dirty();
+                g_force_full_redraw = false;
             } else {
-                c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
+                // Single pane: fast path (original)
+                const total = ctxEngine(ctx).state.grid.rows * ctxEngine(ctx).state.grid.cols;
+                fillCells(ctx.cells[0..total], ctxEngine(ctx), total, &ctx.active_theme);
+                const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
+                c.attyx_set_cursor(
+                    @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+                    @intCast(ctxEngine(ctx).state.cursor.col),
+                );
+                if (viewport_changed or search_vp_changed or g_force_full_redraw) {
+                    c.attyx_mark_all_dirty();
+                    g_force_full_redraw = false;
+                } else {
+                    c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
+                }
             }
             ctxEngine(ctx).state.dirty.clear();
             publishImagePlacements(ctx);
@@ -2215,16 +2369,40 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Check active tab for POLLHUP (quick exit for single-tab case)
-        if (ctx.tab_mgr.count > 0 and fds[ctx.tab_mgr.active].revents & POLLHUP != 0) {
-            if (ctxPty(ctx).childExited()) {
-                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                if (ctx.tab_mgr.count == 0) {
-                    c.attyx_request_quit();
+        // Check active focused pane for POLLHUP (quick exit)
+        {
+            const focused = ctx.tab_mgr.activePane();
+            for (0..nfds) |fi| {
+                if (fi == popup_fd_idx) continue;
+                if (fd_panes[fi] == focused and fds[fi].revents & POLLHUP != 0) {
+                    if (focused.childExited()) {
+                        const lay = ctx.tab_mgr.activeLayout();
+                        if (lay.pane_count <= 1) {
+                            ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                            if (ctx.tab_mgr.count == 0) {
+                                c.attyx_request_quit();
+                                break;
+                            }
+                            updateGridTopOffset(ctx);
+                        } else {
+                            const result = lay.closePane(ctx.allocator);
+                            if (result == .last_pane) {
+                                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                                if (ctx.tab_mgr.count == 0) {
+                                    c.attyx_request_quit();
+                                    break;
+                                }
+                                updateGridTopOffset(ctx);
+                            } else {
+                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+                                lay.layout(pty_rows, ctx.grid_cols);
+                                updateSplitActive(ctx);
+                            }
+                        }
+                        switchActiveTab(ctx);
+                    }
                     break;
                 }
-                updateGridTopOffset(ctx);
-                switchActiveTab(ctx);
             }
         }
     }
@@ -2285,29 +2463,235 @@ fn processTabActions(ctx: *PtyThreadCtx) void {
     }
 }
 
+fn processSplitActions(ctx: *PtyThreadCtx) void {
+    const action_raw = @atomicRmw(i32, &g_split_action_request, .Xchg, 0, .seq_cst);
+    if (action_raw == 0) return;
+
+    const Action = keybinds_mod.Action;
+    const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
+    const layout = ctx.tab_mgr.activeLayout();
+
+    switch (action) {
+        .split_vertical => {
+            layout.splitPane(.vertical, ctx.allocator, ctxPty(ctx).master) catch |err| {
+                logging.err("split", "splitPane(vertical) failed: {}", .{err});
+                return;
+            };
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            layout.layout(pty_rows, ctx.grid_cols);
+            updateSplitActive(ctx);
+            switchActiveTab(ctx);
+            logging.info("split", "vertical split, {d} panes", .{layout.pane_count});
+        },
+        .split_horizontal => {
+            layout.splitPane(.horizontal, ctx.allocator, ctxPty(ctx).master) catch |err| {
+                logging.err("split", "splitPane(horizontal) failed: {}", .{err});
+                return;
+            };
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            layout.layout(pty_rows, ctx.grid_cols);
+            updateSplitActive(ctx);
+            switchActiveTab(ctx);
+            logging.info("split", "horizontal split, {d} panes", .{layout.pane_count});
+        },
+        .pane_close => {
+            const result = layout.closePane(ctx.allocator);
+            if (result == .last_pane) {
+                // Last pane in tab — close the tab
+                if (ctx.tab_mgr.count <= 1) {
+                    c.attyx_request_quit();
+                    return;
+                }
+                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                updateGridTopOffset(ctx);
+            } else {
+                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+                layout.layout(pty_rows, ctx.grid_cols);
+                updateSplitActive(ctx);
+            }
+            switchActiveTab(ctx);
+            logging.info("split", "pane closed", .{});
+        },
+        .pane_focus_up => {
+            layout.navigate(.up);
+            switchActiveTab(ctx);
+        },
+        .pane_focus_down => {
+            layout.navigate(.down);
+            switchActiveTab(ctx);
+        },
+        .pane_focus_left => {
+            layout.navigate(.left);
+            switchActiveTab(ctx);
+        },
+        .pane_focus_right => {
+            layout.navigate(.right);
+            switchActiveTab(ctx);
+        },
+        .pane_resize_left, .pane_resize_right => {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            if (layout.findResizeTarget(.vertical)) |target| {
+                const delta: f32 = if (action == .pane_resize_left) -0.05 else 0.05;
+                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                    switchActiveTab(ctx);
+                }
+            }
+        },
+        .pane_resize_up, .pane_resize_down => {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            if (layout.findResizeTarget(.horizontal)) |target| {
+                const delta: f32 = if (action == .pane_resize_up) -0.05 else 0.05;
+                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                    switchActiveTab(ctx);
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn processSplitDrag(ctx: *PtyThreadCtx) void {
+    const layout = ctx.tab_mgr.activeLayout();
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+
+    // Handle drag start
+    if (@atomicRmw(i32, &g_split_drag_start_pending, .Xchg, 0, .seq_cst) != 0) {
+        const col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_drag_start_col, .seq_cst)));
+        const row_raw = @atomicLoad(i32, &g_split_drag_start_row, .seq_cst);
+        const row: u16 = @intCast(@max(0, row_raw - g_grid_top_offset));
+        if (layout.separatorAt(row, col)) |branch_idx| {
+            g_split_drag_branch = branch_idx;
+            @atomicStore(i32, &g_split_drag_active, 1, .seq_cst);
+            @atomicStore(i32, &g_split_drag_direction, switch (layout.pool[branch_idx].direction) {
+                .vertical => @as(i32, 0),
+                .horizontal => @as(i32, 1),
+            }, .seq_cst);
+        }
+    }
+
+    // Handle drag update
+    if (@atomicRmw(i32, &g_split_drag_cur_pending, .Xchg, 0, .seq_cst) != 0) {
+        const branch_idx = g_split_drag_branch;
+        if (branch_idx != 0xFF and layout.pool[branch_idx].tag == .branch) {
+            const col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_drag_cur_col, .seq_cst)));
+            const row_raw = @atomicLoad(i32, &g_split_drag_cur_row, .seq_cst);
+            const row: u16 = @intCast(@max(0, row_raw - g_grid_top_offset));
+            const rect = layout.pool[branch_idx].rect;
+
+            const new_ratio: f32 = switch (layout.pool[branch_idx].direction) {
+                .vertical => blk: {
+                    const available = rect.cols -| layout.gap_h;
+                    if (available == 0) break :blk @as(f32, 0.5);
+                    const offset: f32 = @floatFromInt(@as(i32, col) - @as(i32, rect.col));
+                    break :blk @max(0.05, @min(0.95, offset / @as(f32, @floatFromInt(available))));
+                },
+                .horizontal => blk: {
+                    const available = rect.rows -| layout.gap_v;
+                    if (available == 0) break :blk @as(f32, 0.5);
+                    const offset: f32 = @floatFromInt(@as(i32, row) - @as(i32, rect.row));
+                    break :blk @max(0.05, @min(0.95, offset / @as(f32, @floatFromInt(available))));
+                },
+            };
+
+            layout.pool[branch_idx].ratio = new_ratio;
+            layout.layout(pty_rows, ctx.grid_cols);
+            switchActiveTab(ctx);
+        }
+    }
+
+    // Handle drag end
+    if (@atomicRmw(i32, &g_split_drag_end_pending, .Xchg, 0, .seq_cst) != 0) {
+        g_split_drag_branch = 0xFF;
+        @atomicStore(i32, &g_split_drag_active, 0, .seq_cst);
+    }
+}
+
+/// Compute split gap sizes from window padding and cell dimensions.
+fn computeSplitGaps() struct { h: u16, v: u16 } {
+    const cell_w: f32 = c.g_cell_w_pts;
+    const cell_h: f32 = c.g_cell_h_pts;
+    if (cell_w <= 0 or cell_h <= 0) return .{ .h = 1, .v = 1 };
+    const pad_h: f32 = @floatFromInt(c.g_padding_left + c.g_padding_right);
+    const pad_v: f32 = @floatFromInt(c.g_padding_top + c.g_padding_bottom);
+    return .{
+        .h = @max(1, @as(u16, @intFromFloat(@round(pad_h / cell_w)))),
+        .v = @max(1, @as(u16, @intFromFloat(@round(pad_v / cell_h)))),
+    };
+}
+
+/// Update g_split_active flag based on active tab's pane count.
+fn updateSplitActive(ctx: *PtyThreadCtx) void {
+    const layout = ctx.tab_mgr.activeLayout();
+    @atomicStore(i32, &g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
+}
+
 /// Update global routing pointers and refresh the cell buffer after a tab switch.
 fn switchActiveTab(ctx: *PtyThreadCtx) void {
     const pane = ctx.tab_mgr.activePane();
     g_pty_master = pane.pty.master;
     g_engine = &pane.engine;
+    updateSplitActive(ctx);
 
     c.attyx_begin_cell_update();
-    const eng = &pane.engine;
-    const total = eng.state.grid.rows * eng.state.grid.cols;
-    fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme);
-    const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
-    c.attyx_set_cursor(
-        @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
-        @intCast(eng.state.cursor.col),
-    );
-    c.attyx_set_dirty(&eng.state.dirty.bits);
-    eng.state.dirty.clear();
+    const layout = ctx.tab_mgr.activeLayout();
+    if (layout.pane_count > 1) {
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+        split_render.fillCellsSplit(
+            @ptrCast(ctx.cells),
+            layout,
+            pty_rows,
+            ctx.grid_cols,
+            &ctx.active_theme,
+        );
+        const rect = layout.pool[layout.focused].rect;
+        const eng = &pane.engine;
+        const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+        c.attyx_set_cursor(
+            @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(g_grid_top_offset))),
+            @intCast(eng.state.cursor.col + rect.col),
+        );
+        c.attyx_mark_all_dirty();
+    } else {
+        // Clear the full renderer buffer first to remove any leftover
+        // content from a previously-active split tab.
+        const buf_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
+        const bg = ctx.active_theme.background;
+        for (0..buf_total) |i| {
+            ctx.cells[i] = .{
+                .character = ' ',
+                .combining = .{ 0, 0 },
+                .fg_r = bg.r,
+                .fg_g = bg.g,
+                .fg_b = bg.b,
+                .bg_r = bg.r,
+                .bg_g = bg.g,
+                .bg_b = bg.b,
+                .flags = 4,
+                .link_id = 0,
+            };
+        }
+        const eng = &pane.engine;
+        const total = eng.state.grid.rows * eng.state.grid.cols;
+        fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme);
+        const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+        c.attyx_set_cursor(
+            @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+            @intCast(eng.state.cursor.col),
+        );
+        c.attyx_mark_all_dirty();
+        eng.state.dirty.clear();
+    }
     publishImagePlacements(ctx);
     publishState(ctx);
     generateTabBar(ctx);
     publishOverlays(ctx);
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();
+    // Force the next main-loop render to use mark_all_dirty.  This guards
+    // against a torn-read race: if the renderer cleared our dirty bits but
+    // then discarded the frame (gen changed), the subsequent main-loop render
+    // must re-mark everything dirty so no stale rows survive in the snapshot.
+    g_force_full_redraw = true;
 }
 
 /// Centralized calculation of g_grid_top_offset accounting for tab bar and search bar.
@@ -2339,13 +2723,12 @@ fn generateTabBar(ctx: *PtyThreadCtx) void {
         return;
     }
 
-    const grid_cols: u16 = @intCast(ctxEngine(ctx).state.grid.cols);
     var tab_cells: [512]overlay_mod.OverlayCell = undefined;
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
         ctx.tab_mgr.active,
-        grid_cols,
+        ctx.grid_cols,
         .{},
     ) orelse return;
 
@@ -2502,6 +2885,9 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
 
         if (needs_window_update) {
             c.g_needs_window_update = 1;
+            // Recompute split gaps when padding changes
+            const gaps = computeSplitGaps();
+            ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
         }
     }
 

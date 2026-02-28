@@ -62,6 +62,17 @@ pub const Action = enum(u8) {
     tab_close = 50,
     tab_next = 51,
     tab_prev = 52,
+    split_vertical = 53,
+    split_horizontal = 54,
+    pane_close = 55,
+    pane_focus_up = 56,
+    pane_focus_down = 57,
+    pane_focus_left = 58,
+    pane_focus_right = 59,
+    pane_resize_up = 60,
+    pane_resize_down = 61,
+    pane_resize_left = 62,
+    pane_resize_right = 63,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -224,6 +235,17 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "tab_close", Action.tab_close },
         .{ "tab_next", Action.tab_next },
         .{ "tab_prev", Action.tab_prev },
+        .{ "split_vertical", Action.split_vertical },
+        .{ "split_horizontal", Action.split_horizontal },
+        .{ "pane_close", Action.pane_close },
+        .{ "pane_focus_up", Action.pane_focus_up },
+        .{ "pane_focus_down", Action.pane_focus_down },
+        .{ "pane_focus_left", Action.pane_focus_left },
+        .{ "pane_focus_right", Action.pane_focus_right },
+        .{ "pane_resize_up", Action.pane_resize_up },
+        .{ "pane_resize_down", Action.pane_resize_down },
+        .{ "pane_resize_left", Action.pane_resize_left },
+        .{ "pane_resize_right", Action.pane_resize_right },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -255,6 +277,13 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_TAB, .mods = MOD_CTRL, .codepoint = 0 }, .tab_next),
             kb(.{ .key = KC_TAB, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
         };
+        // Split pane navigation (cross-platform, only active when splits exist)
+        list = list ++ &[_]Keybind{
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'h' }, .pane_focus_left),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'j' }, .pane_focus_down),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'k' }, .pane_focus_up),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'l' }, .pane_focus_right),
+        };
         if (is_macos) {
             list = list ++ &[_]Keybind{
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'f' }, .search_toggle),
@@ -262,6 +291,13 @@ fn defaultKeybinds() []const Keybind {
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 't' }, .tab_new),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'w' }, .tab_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'd' }, .split_vertical),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'd' }, .split_horizontal),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'w' }, .pane_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'h' }, .pane_resize_left),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'j' }, .pane_resize_down),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'k' }, .pane_resize_up),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'l' }, .pane_resize_right),
             };
         } else {
             list = list ++ &[_]Keybind{
@@ -272,6 +308,13 @@ fn defaultKeybinds() []const Keybind {
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 't' }, .tab_new),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .tab_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'd' }, .split_vertical),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'e' }, .split_horizontal),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'q' }, .pane_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'h' }, .pane_resize_left),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'j' }, .pane_resize_down),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'k' }, .pane_resize_up),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'l' }, .pane_resize_right),
             };
         }
         break :blk list;

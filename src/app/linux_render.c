@@ -39,6 +39,8 @@ static int          g_bg_vert_cap = 0;
 float        g_cell_px_w = 0;
 float        g_cell_px_h = 0;
 float        g_content_scale = 1.0f;
+volatile float g_cell_w_pts = 0;
+volatile float g_cell_h_pts = 0;
 
 // ---------------------------------------------------------------------------
 // Renderer init / cleanup
@@ -88,6 +90,8 @@ void linux_rebuild_font(void) {
     g_gc = createGlyphCache(ft_lib, g_content_scale);
     g_cell_px_w = g_gc.glyph_w;
     g_cell_px_h = g_gc.glyph_h;
+    g_cell_w_pts = g_cell_px_w / g_content_scale;
+    g_cell_h_pts = g_cell_px_h / g_content_scale;
 
     // Snap window to new cell dimensions (logical pixels, not framebuffer).
     int newW = (int)(g_cols * g_cell_px_w / g_content_scale) + g_padding_left + g_padding_right;
