@@ -18,6 +18,9 @@ static BOOL isPackageManaged(void) {
 }
 
 void attyx_updater_init(void) {
+#ifdef ATTYX_DISABLE_UPDATER
+    return;
+#endif
     if (isPackageManaged()) return;
 
     // Per-architecture feed URL override.  Info.plist has the arm64 URL as
