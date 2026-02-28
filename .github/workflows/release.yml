@@ -166,12 +166,13 @@ jobs:
         env:
           SPARKLE_EDDSA_KEY: ${{ secrets.SPARKLE_EDDSA_KEY }}
         run: |
-          # sign_update outputs: sparkle:edSignature="<sig>" length="<len>"
-          RAW=$(vendor/bin/sign_update "${{ matrix.artifact }}" -s "$SPARKLE_EDDSA_KEY")
+          KEY_FILE=$(mktemp)
+          echo "$SPARKLE_EDDSA_KEY" > "$KEY_FILE"
+          RAW=$(vendor/bin/sign_update "${{ matrix.artifact }}" -f "$KEY_FILE")
+          rm -f "$KEY_FILE"
           echo "$RAW"
           SIGNATURE=$(echo "$RAW" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')
           if [ -z "$SIGNATURE" ]; then
-            # Fallback: output might be the raw signature
             SIGNATURE="$RAW"
           fi
           echo "$SIGNATURE" > sparkle-signature.txt
