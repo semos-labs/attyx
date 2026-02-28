@@ -203,6 +203,8 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 
     g_cell_pt_w = _glyphCache.glyph_w / _glyphCache.scale;
     g_cell_pt_h = _glyphCache.glyph_h / _glyphCache.scale;
+    g_cell_w_pts = (float)g_cell_pt_w;
+    g_cell_h_pts = (float)g_cell_pt_h;
 
     NSWindow* window = view.window;
     if (window) {

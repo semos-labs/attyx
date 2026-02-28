@@ -338,6 +338,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     g_gc = createGlyphCache(ft_lib, xscale);
     g_cell_px_w = g_gc.glyph_w;
     g_cell_px_h = g_gc.glyph_h;
+    g_cell_w_pts = g_cell_px_w / xscale;
+    g_cell_h_pts = g_cell_px_h / yscale;
 
     glfwDestroyWindow(tmpWin);
 

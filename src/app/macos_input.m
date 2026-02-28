@@ -236,6 +236,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
+    // Split pane click: focus the clicked pane
+    if (g_split_active) {
+        attyx_split_click(col, row);
+    }
+
     if (event.modifierFlags & NSEventModifierFlagCommand) {
         int cols = g_cols, rows_n = g_rows;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {

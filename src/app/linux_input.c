@@ -114,6 +114,17 @@ static int dispatchAction(uint8_t act) {
         attyx_tab_action(act);
         return 1;
     }
+    if (act >= ATTYX_ACTION_SPLIT_VERTICAL && act <= ATTYX_ACTION_PANE_CLOSE) {
+        attyx_split_action(act);
+        return 1;
+    }
+    if (act >= ATTYX_ACTION_PANE_FOCUS_UP && act <= ATTYX_ACTION_PANE_FOCUS_RIGHT) {
+        if (g_split_active) {
+            attyx_split_action(act);
+            return 1;
+        }
+        return 0;
+    }
     switch (act) {
         case ATTYX_ACTION_COPY:
             doCopy();
@@ -510,6 +521,11 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
 
             // Overlay click: consume if hit
             if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
+
+            // Split pane click: focus the clicked pane
+            if (g_split_active) {
+                attyx_split_click(col, row);
+            }
 
             // Ctrl+click opens hyperlink
             if (mods & GLFW_MOD_CONTROL) {
