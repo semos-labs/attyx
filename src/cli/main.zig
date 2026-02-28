@@ -13,6 +13,7 @@ const usage =
     \\Commands:
     \\  login       Authenticate with Attyx AI services
     \\  device      Show device and account info
+    \\  uninstall   Remove config, auth tokens, and desktop entry
     \\
     \\Options:
     \\  --help, -h  Show this help message
@@ -44,6 +45,8 @@ pub fn main() !void {
                 std.fs.File.stderr().writeAll(msg) catch {};
                 std.process.exit(1);
             };
+        } else if (std.mem.eql(u8, cmd, "uninstall")) {
+            doUninstall();
         } else if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
             std.fs.File.stdout().writeAll(usage) catch {};
         } else {
@@ -214,6 +217,56 @@ fn doDevice(allocator: std.mem.Allocator) !void {
     }
 
     stdout.writeAll("\n") catch {};
+}
+
+fn doUninstall() void {
+    const stdout = std.fs.File.stdout();
+    const home = std.posix.getenv("HOME") orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+
+    const targets = [_]struct { dir: []const u8, file: []const u8 }{
+        .{ .dir = ".config/attyx", .file = "" },                                    // config + auth tokens
+        .{ .dir = ".attyx", .file = "" },                                            // embedded CLI
+        .{ .dir = ".local/share/applications", .file = "attyx.desktop" },            // desktop entry
+        .{ .dir = ".local/share/icons/hicolor/256x256/apps", .file = "attyx.png" },  // icon
+    };
+
+    for (targets) |t| {
+        var path_buf: [512]u8 = undefined;
+        if (t.file.len == 0) {
+            // Remove entire directory
+            const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ home, t.dir }) catch continue;
+            std.fs.cwd().deleteTree(path) catch |err| {
+                if (err != error.FileNotFound) {
+                    var err_buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
+                    stdout.writeAll(msg) catch {};
+                }
+                continue;
+            };
+            var msg_buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "  removed {s}\n", .{path}) catch continue;
+            stdout.writeAll(msg) catch {};
+        } else {
+            // Remove single file
+            const path = std.fmt.bufPrint(&path_buf, "{s}/{s}/{s}", .{ home, t.dir, t.file }) catch continue;
+            std.fs.cwd().deleteFile(path) catch |err| {
+                if (err != error.FileNotFound) {
+                    var err_buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
+                    stdout.writeAll(msg) catch {};
+                }
+                continue;
+            };
+            var msg_buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "  removed {s}\n", .{path}) catch continue;
+            stdout.writeAll(msg) catch {};
+        }
+    }
+
+    stdout.writeAll("\nAttyx data cleaned up. You can now run `brew uninstall attyx`.\n") catch {};
 }
 
 fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) void {
