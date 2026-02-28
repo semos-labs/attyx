@@ -34,6 +34,7 @@ const overlay_ai_auth = attyx.overlay_ai_auth;
 const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_content = attyx.overlay_ai_content;
 const overlay_ai_error = attyx.overlay_ai_error;
+const update_check = attyx.overlay_update_check;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
@@ -73,6 +74,8 @@ const PtyThreadCtx = struct {
     popup_state: ?*popup_mod.PopupState = null,
     popup_configs: [4]popup_mod.PopupConfig = undefined,
     popup_config_count: u8 = 0,
+    // Update notification
+    check_updates: bool = false,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -516,6 +519,7 @@ pub fn run(
         .overlay_mgr = &overlay_mgr,
         .popup_configs = popup_configs,
         .popup_config_count = popup_config_count,
+        .check_updates = config.check_updates,
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -804,6 +808,9 @@ var g_sse_thread: ?overlay_ai_stream.SseThread = null;
 var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
 var g_ai_request_body: ?[]u8 = null;
 const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
+
+// Update notification state
+var g_update_checker: ?update_check.UpdateChecker = null;
 
 fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
@@ -1152,6 +1159,46 @@ fn tickAi(ctx: *PtyThreadCtx) void {
         if (so.tick(std.time.nanoTimestamp())) {
             publishAiStreamingFrame(ctx);
         }
+    }
+}
+
+fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    var checker = &(g_update_checker orelse return);
+
+    const status = checker.getStatus();
+    switch (status) {
+        .update_available => {
+            const latest = checker.getLatestVersion();
+            if (latest.len > 0) {
+                const result = update_check.layoutUpdateCard(mgr.allocator, latest) catch return;
+
+                const eng = ctx.engine;
+                const cols: u16 = @intCast(eng.state.grid.cols);
+                // Position: top-right, 2 cells margin
+                const card_col = if (cols > result.width + 2) cols - result.width - 2 else 0;
+                const card_row: u16 = 2;
+
+                mgr.setContent(.update_notification, card_col, card_row, result.width, result.height, result.cells) catch {
+                    mgr.allocator.free(result.cells);
+                    return;
+                };
+                mgr.allocator.free(result.cells);
+
+                var bar = attyx.overlay_action.ActionBar{};
+                bar.add(.dismiss, "Dismiss");
+                mgr.layers[@intFromEnum(overlay_mod.OverlayId.update_notification)].action_bar = bar;
+                mgr.show(.update_notification);
+                publishOverlays(ctx);
+            }
+            checker.tryJoin();
+            g_update_checker = null;
+        },
+        .up_to_date, .failed => {
+            checker.tryJoin();
+            g_update_checker = null;
+        },
+        else => {},
     }
 }
 
@@ -1704,6 +1751,16 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         g_search = null;
     }
 
+    // Start update checker if enabled
+    if (ctx.check_updates) {
+        g_update_checker = .{ .allocator = ctx.allocator };
+        if (g_update_checker) |*uc| uc.start();
+    }
+    defer {
+        if (g_update_checker) |*uc| uc.tryJoin();
+        g_update_checker = null;
+    }
+
     while (c.attyx_should_quit() == 0) {
         // Config reload check (atomic read-and-reset)
         if (@atomicRmw(i32, &g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
@@ -1754,6 +1811,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Tick AI (auth/SSE state + streaming reveal)
         tickAi(ctx);
+
+        // Tick update check notification
+        tickUpdateCheck(ctx);
 
         // Overlay interaction: dismiss (Esc)
         if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {

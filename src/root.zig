@@ -39,6 +39,7 @@ pub const overlay_ai_auth = @import("overlay/ai_auth.zig");
 pub const overlay_ai_stream = @import("overlay/ai_stream.zig");
 pub const overlay_ai_content = @import("overlay/ai_content.zig");
 pub const overlay_ai_error = @import("overlay/ai_error.zig");
+pub const overlay_update_check = @import("overlay/update_check.zig");
 
 pub const Action = actions.Action;
 pub const ControlCode = actions.ControlCode;
@@ -104,4 +105,5 @@ test {
     _ = @import("overlay/ai_stream.zig");
     _ = @import("overlay/ai_content.zig");
     _ = @import("overlay/ai_error.zig");
+    _ = @import("overlay/update_check.zig");
 }
