@@ -110,14 +110,32 @@ jobs:
 
           echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> "$GITHUB_ENV"
 
-      - name: Codesign Sparkle.framework
+      - name: Codesign Sparkle.framework (inside-out)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          codesign --force --deep --options runtime \
-            --sign "$APPLE_TEAM_ID" \
-            --timestamp \
-            Attyx.app/Contents/Frameworks/Sparkle.framework
+          SPARKLE="Attyx.app/Contents/Frameworks/Sparkle.framework"
+
+          # Sign XPC services first
+          codesign --force --options runtime \
+            --sign "$APPLE_TEAM_ID" --timestamp \
+            "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+          codesign --force --options runtime \
+            --sign "$APPLE_TEAM_ID" --timestamp \
+            "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+
+          # Sign helper executables
+          codesign --force --options runtime \
+            --sign "$APPLE_TEAM_ID" --timestamp \
+            "$SPARKLE/Versions/B/Autoupdate"
+          codesign --force --options runtime \
+            --sign "$APPLE_TEAM_ID" --timestamp \
+            "$SPARKLE/Versions/B/Updater.app"
+
+          # Sign the framework itself
+          codesign --force --options runtime \
+            --sign "$APPLE_TEAM_ID" --timestamp \
+            "$SPARKLE"
 
       - name: Codesign .app bundle
         env:
