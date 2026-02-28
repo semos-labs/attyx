@@ -268,9 +268,10 @@ pub const OverlayManager = struct {
         const bar = &(layer.action_bar orelse return null);
         if (!bar.hasActions()) return null;
 
-        // Action bar is at the second-to-last row (height - 2)
-        if (layer.height < 3) return null;
-        if (hit.local_row != layer.height - 2) return null;
+        // Action bar is at second-to-last row (height - 2) for bordered cards,
+        // or any row for single/two-row cards (buttons inline with content).
+        const action_row: u16 = if (layer.height >= 3) layer.height - 2 else hit.local_row;
+        if (hit.local_row != action_row) return null;
 
         if (bar.hitAction(hit.local_col)) |idx| {
             bar.focused = idx;

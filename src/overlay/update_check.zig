@@ -15,6 +15,7 @@ pub const CheckStatus = enum(u8) {
     update_available = 2,
     up_to_date = 3,
     failed = 4,
+    throttled = 5,
 };
 
 pub const UpdateChecker = struct {
@@ -60,58 +61,71 @@ fn updateWorker(checker: *UpdateChecker) void {
 }
 
 fn updateWorkerInner(checker: *UpdateChecker) !void {
+    std.debug.print("update_check: worker started, current version={s}\n", .{build_options.version});
+
     // 1. Read throttle file — skip if checked within 24h
-    const throttle_path = getThrottlePath(checker.allocator) catch {
+    const throttle_path = getThrottlePath(checker.allocator) catch |err| {
+        std.debug.print("update_check: failed to get throttle path: {}\n", .{err});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
     defer checker.allocator.free(throttle_path);
+    std.debug.print("update_check: throttle path={s}\n", .{throttle_path});
 
     if (shouldSkipCheck(throttle_path)) {
-        checker.status.store(@intFromEnum(CheckStatus.up_to_date), .release);
+        std.debug.print("update_check: throttled, skipping (checked within 24h)\n", .{});
+        checker.status.store(@intFromEnum(CheckStatus.throttled), .release);
         return;
     }
 
     // 2. Fetch latest release from GitHub
-    const response = ai_auth.httpGet(
-        checker.allocator,
-        "https://api.github.com/repos/semos-labs/attyx/releases/latest",
-        null,
-    ) catch {
+    std.debug.print("update_check: fetching latest release from GitHub...\n", .{});
+    const response = fetchGithubRelease(checker.allocator) catch |err| {
+        std.debug.print("update_check: HTTP request failed: {}\n", .{err});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
     defer checker.allocator.free(response.body);
+    std.debug.print("update_check: HTTP status={d}, body_len={d}\n", .{ response.status, response.body.len });
 
     // 3. Write current timestamp to throttle file
     writeThrottleTimestamp(throttle_path);
 
     if (response.status != 200) {
+        std.debug.print("update_check: non-200 response, body={s}\n", .{
+            if (response.body.len > 256) response.body[0..256] else response.body,
+        });
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     }
 
     // 4. Extract tag_name from JSON
     const tag = ai_auth.extractJsonString(response.body, "tag_name") orelse {
+        std.debug.print("update_check: tag_name not found in response\n", .{});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
+    std.debug.print("update_check: tag_name={s}\n", .{tag});
 
     // Strip leading 'v' if present
     const version_str = if (tag.len > 0 and tag[0] == 'v') tag[1..] else tag;
 
     if (version_str.len == 0 or version_str.len > 31) {
+        std.debug.print("update_check: invalid version string len={d}\n", .{version_str.len});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     }
 
     // 5. Compare against compiled-in version
     const current = build_options.version;
+    std.debug.print("update_check: comparing latest={s} vs current={s}\n", .{ version_str, current });
     if (isNewer(version_str, current)) {
+        std.debug.print("update_check: update available!\n", .{});
         @memcpy(checker.version_buf[0..version_str.len], version_str);
         checker.version_len.store(@intCast(version_str.len), .release);
         checker.status.store(@intFromEnum(CheckStatus.update_available), .release);
     } else {
+        std.debug.print("update_check: up to date\n", .{});
         checker.status.store(@intFromEnum(CheckStatus.up_to_date), .release);
     }
 }
@@ -145,6 +159,42 @@ fn parseVersion(v: []const u8) [3]u32 {
         parts[idx] = std.fmt.parseInt(u32, v[start..], 10) catch 0;
     }
     return parts;
+}
+
+/// Fetch GitHub releases/latest with gzip decompression support.
+fn fetchGithubRelease(allocator: std.mem.Allocator) !ai_auth.HttpResponse {
+    const url = "https://api.github.com/repos/semos-labs/attyx/releases/latest";
+    const uri = try std.Uri.parse(url);
+
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var req = try client.request(.GET, uri, .{
+        .keep_alive = false,
+        .extra_headers = &.{
+            .{ .name = "User-Agent", .value = "attyx-update-checker" },
+        },
+    });
+    defer req.deinit();
+
+    try req.sendBodiless();
+
+    var redirect_buf: [0]u8 = .{};
+    var response = try req.receiveHead(&redirect_buf);
+    const status: u16 = @intFromEnum(response.head.status);
+
+    var transfer_buf: [4096]u8 = undefined;
+    const decompress_buf = try allocator.alloc(u8, std.compress.flate.max_window_len);
+    defer allocator.free(decompress_buf);
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
+    const resp_body = reader.allocRemaining(allocator, .limited(256_000)) catch |err| switch (err) {
+        error.StreamTooLong => return error.ResponseTooLarge,
+        error.ReadFailed => return error.ReadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    return .{ .status = status, .body = resp_body };
 }
 
 fn getThrottlePath(allocator: std.mem.Allocator) ![]const u8 {
@@ -184,11 +234,20 @@ fn writeThrottleTimestamp(path: []const u8) void {
     file.writeAll(ts_str) catch {};
 }
 
-/// Build the update notification card.
+pub const UpdateCardResult = struct {
+    cells: []OverlayCell,
+    width: u16,
+    height: u16,
+    action_bar: action_mod.ActionBar,
+};
+
+/// Build the update notification (borderless, single row: text + gap + button).
 pub fn layoutUpdateCard(
     allocator: std.mem.Allocator,
     latest_version: []const u8,
-) !CardResult {
+) !UpdateCardResult {
+    const style = OverlayStyle{ .border = false };
+
     var line_buf: [64]u8 = undefined;
     const line = std.fmt.bufPrint(
         &line_buf,
@@ -196,12 +255,34 @@ pub fn layoutUpdateCard(
         .{ latest_version, build_options.version },
     ) catch "Update available";
 
-    const lines = [_][]const u8{line};
+    const line_len: u16 = @intCast(line.len);
+    const btn_w: u16 = 4 + 7; // "[ Dismiss ]"
+    const gap: u16 = 2;
+    const total_w = 1 + line_len + gap + btn_w + 1; // padding + text + gap + button + padding
+    const total_h: u16 = 1;
 
+    const cells = try allocator.alloc(OverlayCell, @as(usize, total_w) * total_h);
+
+    // Fill background
+    for (cells) |*cell| {
+        cell.* = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    }
+
+    // Text (1 cell left padding)
+    for (line, 0..) |ch, i| {
+        const idx = 1 + i;
+        if (idx >= total_w) break;
+        cells[idx] = .{ .char = ch, .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    }
+
+    // Button after gap
     var bar = action_mod.ActionBar{};
     bar.add(.dismiss, "Dismiss");
+    const btn_start = 1 + line_len + gap;
+    bar.start_col = btn_start;
+    layout_mod.fillActionBar(cells, total_w, 0, btn_start, total_w, bar.actions[0..bar.count], bar.focused, .{}, style);
 
-    return layout_mod.layoutActionCard(allocator, "Update", &lines, .{}, bar);
+    return .{ .cells = cells, .width = total_w, .height = total_h, .action_bar = bar };
 }
 
 // ---------------------------------------------------------------------------

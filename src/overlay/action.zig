@@ -24,6 +24,7 @@ pub const ActionBar = struct {
     actions: [max_actions]OverlayAction = undefined,
     count: u8 = 0,
     focused: u8 = 0,
+    start_col: u16 = 1, // left edge of action bar area (after border)
 
     pub fn add(self: *ActionBar, id: ActionId, label: []const u8) void {
         if (self.count >= max_actions) return;
@@ -54,13 +55,13 @@ pub const ActionBar = struct {
         return self.count > 0;
     }
 
-    /// Given a column within the action bar row (relative to left border),
-    /// return the index of the action button at that column, or null.
-    /// Layout mirrors fillActionBar: 1-cell left margin, then per button:
+    /// Given a column within the action bar row, return the index of the
+    /// action button at that column, or null.
+    /// Layout mirrors fillActionBar: start_col + 1-cell margin, then per button:
     /// "[ " + label + " ]" + 1-cell gap.
     pub fn hitAction(self: *const ActionBar, col: u16) ?u8 {
         if (self.count == 0) return null;
-        var pos: u16 = 2; // 1 cell left border + 1 cell margin
+        var pos: u16 = self.start_col + 1; // start_col + 1 cell margin
         for (0..self.count) |i| {
             const label_len: u16 = @intCast(@min(self.actions[i].label.len, std.math.maxInt(u16)));
             const btn_width = 4 + label_len; // "[ " + label + " ]"

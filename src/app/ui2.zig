@@ -1170,31 +1170,48 @@ fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
     switch (status) {
         .update_available => {
             const latest = checker.getLatestVersion();
+            logging.info("update", "update available: {s}", .{latest});
             if (latest.len > 0) {
-                const result = update_check.layoutUpdateCard(mgr.allocator, latest) catch return;
+                const result = update_check.layoutUpdateCard(mgr.allocator, latest) catch |err| {
+                    logging.err("update", "layoutUpdateCard failed: {}", .{err});
+                    return;
+                };
 
                 const eng = ctx.engine;
                 const cols: u16 = @intCast(eng.state.grid.cols);
-                // Position: top-right, 2 cells margin
-                const card_col = if (cols > result.width + 2) cols - result.width - 2 else 0;
-                const card_row: u16 = 2;
+                const rows: u16 = @intCast(eng.state.grid.rows);
+                // Position: bottom-right, 1 cell margin
+                const card_col = if (cols > result.width + 1) cols - result.width - 1 else 0;
+                const card_row = if (rows > result.height + 1) rows - result.height - 1 else 0;
 
+                logging.info("update", "showing card at col={d} row={d} w={d} h={d}", .{ card_col, card_row, result.width, result.height });
                 mgr.setContent(.update_notification, card_col, card_row, result.width, result.height, result.cells) catch {
                     mgr.allocator.free(result.cells);
+                    logging.err("update", "setContent failed", .{});
                     return;
                 };
                 mgr.allocator.free(result.cells);
 
-                var bar = attyx.overlay_action.ActionBar{};
-                bar.add(.dismiss, "Dismiss");
-                mgr.layers[@intFromEnum(overlay_mod.OverlayId.update_notification)].action_bar = bar;
+                mgr.layers[@intFromEnum(overlay_mod.OverlayId.update_notification)].action_bar = result.action_bar;
                 mgr.show(.update_notification);
                 publishOverlays(ctx);
+                logging.info("update", "overlay published", .{});
             }
             checker.tryJoin();
             g_update_checker = null;
         },
-        .up_to_date, .failed => {
+        .up_to_date => {
+            logging.info("update", "up to date", .{});
+            checker.tryJoin();
+            g_update_checker = null;
+        },
+        .throttled => {
+            logging.info("update", "throttled (checked within 24h)", .{});
+            checker.tryJoin();
+            g_update_checker = null;
+        },
+        .failed => {
+            logging.warn("update", "update check failed", .{});
             checker.tryJoin();
             g_update_checker = null;
         },
@@ -1753,8 +1770,11 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
     // Start update checker if enabled
     if (ctx.check_updates) {
+        logging.info("update", "starting update checker", .{});
         g_update_checker = .{ .allocator = ctx.allocator };
         if (g_update_checker) |*uc| uc.start();
+    } else {
+        logging.info("update", "update check disabled by config", .{});
     }
     defer {
         if (g_update_checker) |*uc| uc.tryJoin();
