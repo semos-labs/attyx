@@ -236,8 +236,10 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
-    // Split pane click: focus the clicked pane
+    // Split pane click: focus the clicked pane + start drag resize
     if (g_split_active) {
+        attyx_split_drag_start(col, row);
+        _splitDragging = YES;
         attyx_split_click(col, row);
     }
 
@@ -300,6 +302,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
 - (void)mouseUp:(NSEvent *)event {
     _leftDown = NO;
+    if (_splitDragging) {
+        if (g_split_drag_active) attyx_split_drag_end();
+        _splitDragging = NO;
+        [[NSCursor IBeamCursor] set];
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         int col, row;
         mouseCell(event, self, &col, &row);
@@ -371,6 +378,16 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    if (_splitDragging && g_split_drag_active) {
+        int col, row;
+        mouseCell0(event, self, &col, &row);
+        attyx_split_drag_update(col, row);
+        if (g_split_drag_direction == 0)
+            [[NSCursor resizeLeftRightCursor] set];
+        else
+            [[NSCursor resizeUpDownCursor] set];
+        return;
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         int tracking = g_mouse_tracking;
         if (tracking < 2) return;

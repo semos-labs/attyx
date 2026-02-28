@@ -118,7 +118,7 @@ static int dispatchAction(uint8_t act) {
         attyx_split_action(act);
         return 1;
     }
-    if (act >= ATTYX_ACTION_PANE_FOCUS_UP && act <= ATTYX_ACTION_PANE_FOCUS_RIGHT) {
+    if (act >= ATTYX_ACTION_PANE_FOCUS_UP && act <= ATTYX_ACTION_PANE_RESIZE_RIGHT) {
         if (g_split_active) {
             attyx_split_action(act);
             return 1;
@@ -401,6 +401,7 @@ static int g_last_click_col = -1, g_last_click_row = -1;
 static int g_click_count = 0;
 static int g_selecting = 0;
 static int g_left_down = 0;
+static int g_split_dragging = 0;
 
 static inline int clampInt(int val, int lo, int hi) {
     if (val < lo) return lo;
@@ -522,8 +523,10 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             // Overlay click: consume if hit
             if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
-            // Split pane click: focus the clicked pane
+            // Split pane click: focus the clicked pane + start drag resize
             if (g_split_active) {
+                attyx_split_drag_start(col, row);
+                g_split_dragging = 1;
                 attyx_split_click(col, row);
             }
 
@@ -588,6 +591,10 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             attyx_mark_all_dirty();
         } else {
             g_left_down = 0;
+            if (g_split_dragging) {
+                if (g_split_drag_active) attyx_split_drag_end();
+                g_split_dragging = 0;
+            }
             if (g_mouse_tracking && g_mouse_sgr) {
                 int col, row;
                 mouseToCell1(mx, my, &col, &row);
@@ -654,6 +661,12 @@ static int g_last_motion_col = -1, g_last_motion_row = -1;
 
 static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     (void)w;
+    if (g_split_dragging && g_split_drag_active) {
+        int col, row;
+        mouseToCell(mx, my, &col, &row);
+        attyx_split_drag_update(col, row);
+        return;
+    }
     if (g_left_down && g_mouse_tracking && g_mouse_sgr) {
         if (g_mouse_tracking < 2) return;
         int col, row;

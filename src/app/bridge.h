@@ -396,6 +396,10 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_PANE_FOCUS_DOWN  57
 #define ATTYX_ACTION_PANE_FOCUS_LEFT  58
 #define ATTYX_ACTION_PANE_FOCUS_RIGHT 59
+#define ATTYX_ACTION_PANE_RESIZE_UP    60
+#define ATTYX_ACTION_PANE_RESIZE_DOWN  61
+#define ATTYX_ACTION_PANE_RESIZE_LEFT  62
+#define ATTYX_ACTION_PANE_RESIZE_RIGHT 63
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.
@@ -413,6 +417,13 @@ void attyx_tab_bar_click(int col, int grid_cols);
 void attyx_split_action(int action);
 void attyx_split_click(int col, int row);
 extern volatile int g_split_active; // 1 when active tab has >1 pane
+
+// Split pane drag resize (called from input thread mouse handlers)
+void attyx_split_drag_start(int col, int row);
+void attyx_split_drag_update(int col, int row);
+void attyx_split_drag_end(void);
+extern volatile int g_split_drag_active;    // 1 while drag in progress
+extern volatile int g_split_drag_direction; // 0=vertical, 1=horizontal
 
 // Input routing (called from input thread when g_popup_active)
 void attyx_popup_send_input(const uint8_t* bytes, int len);

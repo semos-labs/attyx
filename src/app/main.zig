@@ -73,6 +73,11 @@ export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}
 export fn attyx_split_action(_: c_int) void {}
 export fn attyx_split_click(_: c_int, _: c_int) void {}
 export var g_split_active: i32 = 0;
+export fn attyx_split_drag_start(_: c_int, _: c_int) void {}
+export fn attyx_split_drag_update(_: c_int, _: c_int) void {}
+export fn attyx_split_drag_end() void {}
+export var g_split_drag_active: i32 = 0;
+export var g_split_drag_direction: i32 = 0;
 
 // Popup terminal stubs (ui2.zig provides the real implementations)
 export var g_popup_active: i32 = 0;

@@ -74,7 +74,7 @@ static int dispatchAction(uint8_t action) {
         attyx_split_action(action);
         return 1;
     }
-    if (action >= ATTYX_ACTION_PANE_FOCUS_UP && action <= ATTYX_ACTION_PANE_FOCUS_RIGHT) {
+    if (action >= ATTYX_ACTION_PANE_FOCUS_UP && action <= ATTYX_ACTION_PANE_RESIZE_RIGHT) {
         if (g_split_active) {
             attyx_split_action(action);
             return 1;

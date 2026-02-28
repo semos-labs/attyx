@@ -286,6 +286,34 @@ export fn attyx_split_click(col: c_int, row: c_int) void {
     @atomicStore(i32, &g_split_click_pending, 1, .seq_cst);
 }
 
+// Split pane drag resize state
+var g_split_drag_start_col: i32 = -1;
+var g_split_drag_start_row: i32 = -1;
+var g_split_drag_start_pending: i32 = 0;
+var g_split_drag_cur_col: i32 = -1;
+var g_split_drag_cur_row: i32 = -1;
+var g_split_drag_cur_pending: i32 = 0;
+var g_split_drag_end_pending: i32 = 0;
+var g_split_drag_branch: u8 = 0xFF;
+export var g_split_drag_active: i32 = 0;
+export var g_split_drag_direction: i32 = 0;
+
+export fn attyx_split_drag_start(col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_split_drag_start_col, col, .seq_cst);
+    @atomicStore(i32, &g_split_drag_start_row, row, .seq_cst);
+    @atomicStore(i32, &g_split_drag_start_pending, 1, .seq_cst);
+}
+
+export fn attyx_split_drag_update(col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_split_drag_cur_col, col, .seq_cst);
+    @atomicStore(i32, &g_split_drag_cur_row, row, .seq_cst);
+    @atomicStore(i32, &g_split_drag_cur_pending, 1, .seq_cst);
+}
+
+export fn attyx_split_drag_end() void {
+    @atomicStore(i32, &g_split_drag_end_pending, 1, .seq_cst);
+}
+
 // ---------------------------------------------------------------------------
 // Popup terminal globals and exports
 // ---------------------------------------------------------------------------
@@ -2024,6 +2052,9 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Split pane action handling
         processSplitActions(ctx);
 
+        // Split pane drag resize
+        processSplitDrag(ctx);
+
         // Split pane click focus
         if (@atomicRmw(i32, &g_split_click_pending, .Xchg, 0, .seq_cst) != 0) {
             const click_col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_click_col, .seq_cst)));
@@ -2497,7 +2528,81 @@ fn processSplitActions(ctx: *PtyThreadCtx) void {
             layout.navigate(.right);
             switchActiveTab(ctx);
         },
+        .pane_resize_left, .pane_resize_right => {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            if (layout.findResizeTarget(.vertical)) |target| {
+                const delta: f32 = if (action == .pane_resize_left) -0.05 else 0.05;
+                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                    switchActiveTab(ctx);
+                }
+            }
+        },
+        .pane_resize_up, .pane_resize_down => {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+            if (layout.findResizeTarget(.horizontal)) |target| {
+                const delta: f32 = if (action == .pane_resize_up) -0.05 else 0.05;
+                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                    switchActiveTab(ctx);
+                }
+            }
+        },
         else => {},
+    }
+}
+
+fn processSplitDrag(ctx: *PtyThreadCtx) void {
+    const layout = ctx.tab_mgr.activeLayout();
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - g_grid_top_offset));
+
+    // Handle drag start
+    if (@atomicRmw(i32, &g_split_drag_start_pending, .Xchg, 0, .seq_cst) != 0) {
+        const col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_drag_start_col, .seq_cst)));
+        const row_raw = @atomicLoad(i32, &g_split_drag_start_row, .seq_cst);
+        const row: u16 = @intCast(@max(0, row_raw - g_grid_top_offset));
+        if (layout.separatorAt(row, col)) |branch_idx| {
+            g_split_drag_branch = branch_idx;
+            @atomicStore(i32, &g_split_drag_active, 1, .seq_cst);
+            @atomicStore(i32, &g_split_drag_direction, switch (layout.pool[branch_idx].direction) {
+                .vertical => @as(i32, 0),
+                .horizontal => @as(i32, 1),
+            }, .seq_cst);
+        }
+    }
+
+    // Handle drag update
+    if (@atomicRmw(i32, &g_split_drag_cur_pending, .Xchg, 0, .seq_cst) != 0) {
+        const branch_idx = g_split_drag_branch;
+        if (branch_idx != 0xFF and layout.pool[branch_idx].tag == .branch) {
+            const col: u16 = @intCast(@max(0, @atomicLoad(i32, &g_split_drag_cur_col, .seq_cst)));
+            const row_raw = @atomicLoad(i32, &g_split_drag_cur_row, .seq_cst);
+            const row: u16 = @intCast(@max(0, row_raw - g_grid_top_offset));
+            const rect = layout.pool[branch_idx].rect;
+
+            const new_ratio: f32 = switch (layout.pool[branch_idx].direction) {
+                .vertical => blk: {
+                    const available = rect.cols -| layout.gap_h;
+                    if (available == 0) break :blk @as(f32, 0.5);
+                    const offset: f32 = @floatFromInt(@as(i32, col) - @as(i32, rect.col));
+                    break :blk @max(0.05, @min(0.95, offset / @as(f32, @floatFromInt(available))));
+                },
+                .horizontal => blk: {
+                    const available = rect.rows -| layout.gap_v;
+                    if (available == 0) break :blk @as(f32, 0.5);
+                    const offset: f32 = @floatFromInt(@as(i32, row) - @as(i32, rect.row));
+                    break :blk @max(0.05, @min(0.95, offset / @as(f32, @floatFromInt(available))));
+                },
+            };
+
+            layout.pool[branch_idx].ratio = new_ratio;
+            layout.layout(pty_rows, ctx.grid_cols);
+            switchActiveTab(ctx);
+        }
+    }
+
+    // Handle drag end
+    if (@atomicRmw(i32, &g_split_drag_end_pending, .Xchg, 0, .seq_cst) != 0) {
+        g_split_drag_branch = 0xFF;
+        @atomicStore(i32, &g_split_drag_active, 0, .seq_cst);
     }
 }
 

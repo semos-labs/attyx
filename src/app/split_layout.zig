@@ -412,6 +412,60 @@ pub const SplitLayout = struct {
         return result;
     }
 
+    /// Hit-test: find the branch node whose separator gap contains (row, col).
+    /// Returns the pool index of the branch, or null if no separator at that position.
+    pub fn separatorAt(self: *SplitLayout, row: u16, col: u16) ?u8 {
+        for (&self.pool, 0..) |*node, i| {
+            if (node.tag != .branch) continue;
+            const rect = node.rect;
+            // Check that the point is within the branch's rect
+            if (row < rect.row or row >= rect.row + rect.rows) continue;
+            if (col < rect.col or col >= rect.col + rect.cols) continue;
+
+            switch (node.direction) {
+                .vertical => {
+                    const available = rect.cols -| self.gap_h;
+                    const left_cols = @as(u16, @intFromFloat(@as(f32, @floatFromInt(available)) * node.ratio));
+                    const gap_start = rect.col + left_cols;
+                    if (col >= gap_start and col < gap_start + self.gap_h) return @intCast(i);
+                },
+                .horizontal => {
+                    const available = rect.rows -| self.gap_v;
+                    const top_rows = @as(u16, @intFromFloat(@as(f32, @floatFromInt(available)) * node.ratio));
+                    const gap_start = rect.row + top_rows;
+                    if (row >= gap_start and row < gap_start + self.gap_v) return @intCast(i);
+                },
+            }
+        }
+        return null;
+    }
+
+    /// Adjust a branch node's ratio by delta, clamped to [0.05, 0.95].
+    /// Re-layouts the tree and returns true if the ratio actually changed.
+    pub fn resizeNode(self: *SplitLayout, branch_idx: u8, delta: f32, total_rows: u16, total_cols: u16) bool {
+        if (branch_idx >= max_nodes or self.pool[branch_idx].tag != .branch) return false;
+        const old = self.pool[branch_idx].ratio;
+        var new_ratio = old + delta;
+        new_ratio = @max(0.05, @min(0.95, new_ratio));
+        if (new_ratio == old) return false;
+        self.pool[branch_idx].ratio = new_ratio;
+        self.layout(total_rows, total_cols);
+        return true;
+    }
+
+    /// Walk up from focused leaf to find the nearest ancestor branch
+    /// matching the given split direction. For keyboard resize.
+    pub fn findResizeTarget(self: *SplitLayout, dir: Direction) ?u8 {
+        var cur = self.focused;
+        if (cur == null_index) return null;
+        while (true) {
+            const parent = self.findParent(cur);
+            if (parent == null_index) return null;
+            if (self.pool[parent].direction == dir) return parent;
+            cur = parent;
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
@@ -428,7 +482,7 @@ pub const SplitLayout = struct {
         return null;
     }
 
-    fn findParent(self: *SplitLayout, child_idx: u8) u8 {
+    pub fn findParent(self: *SplitLayout, child_idx: u8) u8 {
         for (&self.pool, 0..) |*node, i| {
             if (node.tag == .branch) {
                 if (node.children[0] == child_idx or node.children[1] == child_idx) {
