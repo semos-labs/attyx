@@ -234,6 +234,11 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
 
     self.viewport_offset = 0;
 
+    // Clamp cursor before clearing row_wrapped to avoid overflow when
+    // cursor.row > new_rows (e.g. dramatic vertical shrink via resizeNoReflow).
+    self.cursor.row = @min(self.cursor.row, new_rows - 1);
+    self.cursor.col = @min(self.cursor.col, new_cols - 1);
+
     for (self.cursor.row..new_rows) |r| {
         self.grid.row_wrapped[r] = false;
     }
