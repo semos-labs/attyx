@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addFrameworkPath(b.path("vendor"));
         exe.root_module.addRPath(.{ .cwd_relative = "@executable_path/../Frameworks" }); // .app bundle
         exe.root_module.addRPath(b.path("vendor")); // development
+        exe.headerpad_max_install_names = true;
         exe.root_module.linkFramework("Cocoa", .{});
         exe.root_module.linkFramework("Metal", .{});
         exe.root_module.linkFramework("MetalKit", .{});
@@ -275,6 +276,7 @@ pub fn build(b: *std.Build) void {
         app.root_module.addFrameworkPath(b.path("vendor"));
         app.root_module.addRPath(.{ .cwd_relative = "@executable_path/../Frameworks" });
         app.root_module.addRPath(b.path("vendor"));
+        app.headerpad_max_install_names = true;
         app.root_module.linkFramework("Cocoa", .{});
         app.root_module.linkFramework("Metal", .{});
         app.root_module.linkFramework("MetalKit", .{});
