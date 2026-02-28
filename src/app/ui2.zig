@@ -1962,7 +1962,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Check popup child exit
         if (ctx.popup_state) |ps| {
-            if (ps.pty.childExited()) {
+            if (ps.pane.childExited()) {
                 closePopup(ctx);
             }
         }
@@ -2026,7 +2026,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         var nfds: usize = 1;
         fds[0] = .{ .fd = ctx.pty.master, .events = POLLIN, .revents = 0 };
         if (ctx.popup_state) |ps| {
-            fds[1] = .{ .fd = ps.pty.master, .events = POLLIN, .revents = 0 };
+            fds[1] = .{ .fd = ps.pane.pty.master, .events = POLLIN, .revents = 0 };
             nfds = 2;
         }
 
@@ -2060,7 +2060,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (ctx.popup_state) |ps| {
             if (nfds > 1 and fds[1].revents & POLLIN != 0) {
                 while (true) {
-                    const n = ps.pty.read(&buf) catch break;
+                    const n = ps.pane.pty.read(&buf) catch break;
                     if (n == 0) break;
                     popup_got_data = true;
                     ps.feed(buf[0..n]);
@@ -2175,8 +2175,8 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             };
             ps.config_index = @intCast(i);
             ctx.popup_state = ps;
-            g_popup_pty_master = ps.pty.master;
-            g_popup_engine = ps.engine;
+            g_popup_pty_master = ps.pane.pty.master;
+            g_popup_engine = &ps.pane.engine;
             @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
             ps.publishCells(&ctx.active_theme, cfg);
             ps.publishImagePlacements(cfg);
