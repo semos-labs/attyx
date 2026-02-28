@@ -98,7 +98,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = .ReleaseSmall,
             .imports = &.{
                 .{ .name = "build_options", .module = build_options.createModule() },
                 .{ .name = "ai_auth", .module = ai_auth_mod },
