@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 concurrency:
@@ -454,3 +454,16 @@ jobs:
           git add public/appcast-arm64.xml public/appcast-x64.xml
           git diff --cached --quiet || git commit -m "chore: update appcast for ${GITHUB_REF_NAME}"
           git push
+
+  publish:
+    needs: [build-macos, build-linux, snap, homebrew, appcast]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPO" \
+            --draft=false \
+            --latest

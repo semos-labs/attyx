@@ -208,18 +208,13 @@ async function main() {
   await $`git push origin ${tag}`.quiet();
   ok("Pushed to origin");
 
-  // 8. GitHub release (prerelease for RCs, published for stable)
-  const ghArgs = isRC
-    ? $`gh release create ${tag} --generate-notes --title ${tag} --prerelease`
-    : $`gh release create ${tag} --generate-notes --title ${tag}`;
-
-  const gh = await ghArgs.quiet();
+  // 8. GitHub release (draft — CI will publish once all assets are ready)
+  const ghFlags = isRC ? "--prerelease" : "";
+  const gh = await $`gh release create ${tag} --generate-notes --title ${tag} --draft ${ghFlags}`.quiet();
   if (gh.exitCode === 0) {
-    ok(`Created GitHub release${isRC ? " (prerelease)" : ""}`);
+    ok(`Created draft GitHub release${isRC ? " (prerelease)" : ""}`);
   } else {
-    const cmd = isRC
-      ? `gh release create ${tag} --generate-notes --title ${tag} --prerelease`
-      : `gh release create ${tag} --generate-notes --title ${tag}`;
+    const cmd = `gh release create ${tag} --generate-notes --title ${tag} --draft ${ghFlags}`.trim();
     warn(`Could not create GitHub release — run manually:`);
     console.log(`      ${cyan(cmd)}`);
   }
