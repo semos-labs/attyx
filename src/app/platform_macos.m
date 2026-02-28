@@ -13,6 +13,11 @@
 #include "bridge.h"
 #include "macos_internal.h"
 
+// Sparkle updater (macos_updater.m)
+extern void attyx_updater_init(void);
+extern void attyx_updater_check(void);
+extern BOOL attyx_updater_available(void);
+
 // ---------------------------------------------------------------------------
 // Shared state definitions
 // ---------------------------------------------------------------------------
@@ -390,6 +395,8 @@ void attyx_spawn_new_window(void) {
         }
     }
 
+    // Sparkle auto-updater (skipped for Homebrew installs)
+    attyx_updater_init();
 }
 
 - (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
@@ -413,6 +420,18 @@ void attyx_spawn_new_window(void) {
 - (void)spawnNewWindow:(id)sender {
     (void)sender;
     attyx_spawn_new_window();
+}
+
+- (void)checkForUpdates:(id)sender {
+    (void)sender;
+    attyx_updater_check();
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+    if ([item action] == @selector(checkForUpdates:)) {
+        return attyx_updater_available();
+    }
+    return YES;
 }
 
 @end
@@ -568,6 +587,13 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                                                      keyEquivalent:@""];
         [reloadItem setTarget:delegate];
         [appMenu addItem:reloadItem];
+
+        NSMenuItem* updateItem = [[NSMenuItem alloc] initWithTitle:@"Check for Updates..."
+                                                            action:@selector(checkForUpdates:)
+                                                     keyEquivalent:@""];
+        [updateItem setTarget:delegate];
+        [appMenu addItem:updateItem];
+
         [appMenu addItem:[NSMenuItem separatorItem]];
         [appMenu addItemWithTitle:@"Quit Attyx"
                            action:@selector(terminate:)

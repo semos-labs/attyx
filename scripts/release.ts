@@ -167,8 +167,30 @@ async function main() {
     ok("Updated build.zig.zon version");
   }
 
+  // 4b. Update Info.plist version (CFBundleVersion + CFBundleShortVersionString)
+  const plistPath = "./resources/Info.plist";
+  const plistContent = await Bun.file(plistPath).text();
+  // Strip any -rcN suffix for CFBundleVersion — macOS requires X.Y.Z format
+  const bundleVersion = `${next.major}.${next.minor}.${next.patch}`;
+  const updatedPlist = plistContent
+    .replace(
+      /(<key>CFBundleVersion<\/key>\s*<string>)[^<]*(<\/string>)/,
+      `$1${bundleVersion}$2`,
+    )
+    .replace(
+      /(<key>CFBundleShortVersionString<\/key>\s*<string>)[^<]*(<\/string>)/,
+      `$1${bundleVersion}$2`,
+    );
+
+  if (updatedPlist === plistContent) {
+    warn("Could not find version keys in Info.plist — skipping update");
+  } else {
+    await Bun.write(plistPath, updatedPlist);
+    ok("Updated Info.plist version");
+  }
+
   // 5. Commit version bump
-  await $`git add ${zonPath}`;
+  await $`git add ${zonPath} ${plistPath}`;
   const diff = await $`git diff --cached --name-only`.text();
   if (diff.trim()) {
     await $`git commit -m ${"chore: bump version to " + tag}`.quiet();

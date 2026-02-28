@@ -152,7 +152,11 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_popup.m"),      .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"),   .flags = macos_flags });
         exe.root_module.addIncludePath(b.path("src/app"));
+        exe.root_module.addFrameworkPath(b.path("vendor"));
+        exe.root_module.addRPath(.{ .cwd_relative = "@executable_path/../Frameworks" }); // .app bundle
+        exe.root_module.addRPath(b.path("vendor")); // development
         exe.root_module.linkFramework("Cocoa", .{});
         exe.root_module.linkFramework("Metal", .{});
         exe.root_module.linkFramework("MetalKit", .{});
@@ -160,6 +164,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkFramework("CoreText", .{});
         exe.root_module.linkFramework("CoreGraphics", .{});
         exe.root_module.linkFramework("CoreFoundation", .{});
+        exe.root_module.linkFramework("Sparkle", .{});
     }
 
     // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
@@ -257,7 +262,11 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"),   .flags = app_macos_flags });
         app.root_module.addIncludePath(b.path("src/app"));
+        app.root_module.addFrameworkPath(b.path("vendor"));
+        app.root_module.addRPath(.{ .cwd_relative = "@executable_path/../Frameworks" });
+        app.root_module.addRPath(b.path("vendor"));
         app.root_module.linkFramework("Cocoa", .{});
         app.root_module.linkFramework("Metal", .{});
         app.root_module.linkFramework("MetalKit", .{});
@@ -265,6 +274,7 @@ pub fn build(b: *std.Build) void {
         app.root_module.linkFramework("CoreText", .{});
         app.root_module.linkFramework("CoreGraphics", .{});
         app.root_module.linkFramework("CoreFoundation", .{});
+        app.root_module.linkFramework("Sparkle", .{});
 
         b.installArtifact(app);
 
