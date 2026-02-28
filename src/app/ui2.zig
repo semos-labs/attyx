@@ -367,8 +367,17 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var engine = try Engine.init(allocator, config.rows, config.cols);
-    defer engine.deinit();
+    // Heap-allocate Engine to keep its ~70KB (Parser buffers) off the
+    // main thread's stack.  The PTY reader thread accesses the Engine via
+    // pointer; if it lived on this stack frame, the TerminalState fields
+    // could end up adjacent to the thread's stack-guard page and trigger
+    // SIGBUS during resize writes.
+    const engine = try allocator.create(Engine);
+    engine.* = try Engine.init(allocator, config.rows, config.cols);
+    defer {
+        engine.deinit();
+        allocator.destroy(engine);
+    }
 
     // Apply config: default cursor shape
     engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
@@ -427,7 +436,7 @@ pub fn run(
     defer allocator.free(render_cells);
 
     const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
-    fillCells(render_cells[0..total], &engine, total, &initial_theme);
+    fillCells(render_cells[0..total], engine, total, &initial_theme);
     c.attyx_set_cursor(@intCast(engine.state.cursor.row), @intCast(engine.state.cursor.col));
 
     // Build spawn argv: --cmd wins, then [program] config, then $SHELL default.
@@ -450,7 +459,7 @@ pub fn run(
     defer pty.deinit();
 
     g_pty_master = pty.master;
-    g_engine = &engine;
+    g_engine = engine;
     defer {
         g_pty_master = -1;
         g_engine = null;
@@ -502,7 +511,7 @@ pub fn run(
     logging.info("keybinds", "installed {d} keybind(s)", .{kb_table.count});
 
     var ctx = PtyThreadCtx{
-        .engine = &engine,
+        .engine = engine,
         .pty = &pty,
         .cells = render_cells.ptr,
         .session = &session,

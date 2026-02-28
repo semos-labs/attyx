@@ -158,7 +158,7 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
                     @memset(self.grid.cells[rr * cols .. (rr + 1) * cols], grid_mod.Cell{});
                     self.grid.row_wrapped[rr] = false;
                 }
-                self.cursor.row += shift;
+                self.cursor.row = @min(self.cursor.row + shift, new_rows - 1);
             }
         } else {
             // Compact content upward: shift all rows so the first non-empty
