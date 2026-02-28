@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
     const env = b.option([]const u8, "env", "Build environment (development/production)") orelse "development";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "env", env);
+    build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
 
     const mod = b.addModule("attyx", .{
         // The root source file is the "entry point" of this module. Users of

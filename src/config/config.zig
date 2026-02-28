@@ -138,6 +138,9 @@ pub const AppConfig = struct {
     sequence_entries: ?[]SequenceEntry = null,
     _owned_sequence_entries: ?[]SequenceEntry = null,
 
+    // [updates]
+    check_updates: bool = true,
+
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
     cols: u16 = 80,
@@ -762,6 +765,16 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                 config.sequence_entries = entries[0..idx];
                 config._owned_sequence_entries = entries;
             }
+        }
+    }
+
+    // [updates]
+    if (Lookup.get(root, "updates", "check_updates")) |v| {
+        if (v == .bool) {
+            config.check_updates = v.bool;
+        } else {
+            std.debug.print("error: {s}: updates.check_updates must be a boolean\n", .{path});
+            return error.ConfigValidationError;
         }
     }
 
