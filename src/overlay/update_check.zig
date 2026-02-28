@@ -61,71 +61,54 @@ fn updateWorker(checker: *UpdateChecker) void {
 }
 
 fn updateWorkerInner(checker: *UpdateChecker) !void {
-    std.debug.print("update_check: worker started, current version={s}\n", .{build_options.version});
-
     // 1. Read throttle file — skip if checked within 24h
-    const throttle_path = getThrottlePath(checker.allocator) catch |err| {
-        std.debug.print("update_check: failed to get throttle path: {}\n", .{err});
+    const throttle_path = getThrottlePath(checker.allocator) catch {
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
     defer checker.allocator.free(throttle_path);
-    std.debug.print("update_check: throttle path={s}\n", .{throttle_path});
 
     if (shouldSkipCheck(throttle_path)) {
-        std.debug.print("update_check: throttled, skipping (checked within 24h)\n", .{});
         checker.status.store(@intFromEnum(CheckStatus.throttled), .release);
         return;
     }
 
     // 2. Fetch latest release from GitHub
-    std.debug.print("update_check: fetching latest release from GitHub...\n", .{});
-    const response = fetchGithubRelease(checker.allocator) catch |err| {
-        std.debug.print("update_check: HTTP request failed: {}\n", .{err});
+    const response = fetchGithubRelease(checker.allocator) catch {
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
     defer checker.allocator.free(response.body);
-    std.debug.print("update_check: HTTP status={d}, body_len={d}\n", .{ response.status, response.body.len });
 
     // 3. Write current timestamp to throttle file
     writeThrottleTimestamp(throttle_path);
 
     if (response.status != 200) {
-        std.debug.print("update_check: non-200 response, body={s}\n", .{
-            if (response.body.len > 256) response.body[0..256] else response.body,
-        });
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     }
 
     // 4. Extract tag_name from JSON
     const tag = ai_auth.extractJsonString(response.body, "tag_name") orelse {
-        std.debug.print("update_check: tag_name not found in response\n", .{});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
-    std.debug.print("update_check: tag_name={s}\n", .{tag});
 
     // Strip leading 'v' if present
     const version_str = if (tag.len > 0 and tag[0] == 'v') tag[1..] else tag;
 
     if (version_str.len == 0 or version_str.len > 31) {
-        std.debug.print("update_check: invalid version string len={d}\n", .{version_str.len});
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     }
 
     // 5. Compare against compiled-in version
     const current = build_options.version;
-    std.debug.print("update_check: comparing latest={s} vs current={s}\n", .{ version_str, current });
     if (isNewer(version_str, current)) {
-        std.debug.print("update_check: update available!\n", .{});
         @memcpy(checker.version_buf[0..version_str.len], version_str);
         checker.version_len.store(@intCast(version_str.len), .release);
         checker.status.store(@intFromEnum(CheckStatus.update_available), .release);
     } else {
-        std.debug.print("update_check: up to date\n", .{});
         checker.status.store(@intFromEnum(CheckStatus.up_to_date), .release);
     }
 }
