@@ -213,6 +213,7 @@ jobs:
             artifact: attyx-linux-arm64.tar.zst
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
