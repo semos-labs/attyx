@@ -272,6 +272,7 @@ pub const Grid = struct {
 
         // --- Phase 3: allocate and fill ---
         const new_cells = try self.allocator.alloc(Cell, new_rows * new_cols);
+        errdefer self.allocator.free(new_cells);
         @memset(new_cells, Cell{});
         var new_wrapped: [max_rows]bool = [_]bool{false} ** max_rows;
 

@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
+const logging = @import("../logging/log.zig");
 
 pub const Pane = struct {
     engine: Engine,
@@ -55,7 +56,9 @@ pub const Pane = struct {
     pub fn resize(self: *Pane, rows: u16, cols: u16) void {
         const old_rows = self.engine.state.grid.rows;
         const old_cols = self.engine.state.grid.cols;
-        self.engine.state.resize(rows, cols) catch {};
+        self.engine.state.resize(rows, cols) catch |err| {
+            logging.err("resize", "state.resize({d}x{d}) failed: {}", .{ cols, rows, err });
+        };
         // Only send TIOCSWINSZ when the size actually changed to avoid
         // redundant SIGWINCHs (splitPane + layout both call resize).
         if (rows != old_rows or cols != old_cols) {
