@@ -5,6 +5,10 @@ on:
     types: [published]
   workflow_dispatch:
 
+concurrency:
+  group: release
+  cancel-in-progress: true
+
 env:
   GITHUB_REPO: semos-labs/attyx
   HOMEBREW_TAP: semos-labs/homebrew-tap
