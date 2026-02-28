@@ -7,3 +7,5 @@ package-lock.json
 cert
 zig-out/
 *.app
+!vendor/Sparkle.framework/Versions/B/Updater.app
+!vendor/Sparkle.framework/Versions/B/Updater.app/**
