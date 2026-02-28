@@ -56,17 +56,16 @@ On Linux, Attyx installs as a desktop application. It should appear in your app 
 
 ### Build from source
 
-Requires **Zig 0.15.2+**.
+Requires **Zig 0.15.2+**. On Linux, install build dependencies first:
+
+```bash
+sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
+```
 
 ```bash
 zig build run
 ```
 
-On Linux, install build dependencies first:
-
-```bash
-sudo apt install libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
-```
 
 ## Configuration
 
