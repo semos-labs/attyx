@@ -54,6 +54,9 @@ jobs:
       - name: Set minimum macOS version to 13.0
         run: vtool -set-build-version macos 13.0 15.0 -replace -output zig-out/bin/attyx zig-out/bin/attyx
 
+      - name: Set Sparkle rpath
+        run: install_name_tool -add_rpath "@executable_path/../Frameworks" zig-out/bin/attyx
+
       - name: Create .icns from PNG
         run: |
           mkdir -p Attyx.iconset
