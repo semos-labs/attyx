@@ -9,6 +9,7 @@ const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
+const Pane = @import("pane.zig").Pane;
 const theme_registry_mod = @import("../theme/registry.zig");
 const Theme = theme_registry_mod.Theme;
 
@@ -71,8 +72,7 @@ pub const PopupConfig = struct {
 };
 
 pub const PopupState = struct {
-    engine: *Engine,
-    pty: Pty,
+    pane: *Pane,
     config_index: u8, // which PopupConfig spawned this
     cols: u16, // inner terminal grid cols
     rows: u16, // inner terminal grid rows
@@ -84,13 +84,6 @@ pub const PopupState = struct {
 
     pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
-
-        var engine = try allocator.create(Engine);
-        engine.* = try Engine.init(allocator, dims.rows, dims.cols);
-        errdefer {
-            engine.deinit();
-            allocator.destroy(engine);
-        }
 
         // Build argv: $SHELL -c '<command>'
         const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
@@ -105,16 +98,14 @@ pub const PopupState = struct {
         const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| allocator.free(z);
 
-        const pty = try Pty.spawn(.{
-            .rows = dims.rows,
-            .cols = dims.cols,
-            .argv = &argv,
-            .cwd = if (cwd_z) |z| z.ptr else null,
-        });
+        const pane = try allocator.create(Pane);
+        pane.* = Pane.spawn(allocator, dims.rows, dims.cols, &argv, if (cwd_z) |z| z.ptr else null) catch |err| {
+            allocator.destroy(pane);
+            return err;
+        };
 
         return .{
-            .engine = engine,
-            .pty = pty,
+            .pane = pane,
             .config_index = 0, // overwritten by caller
             .cols = dims.cols,
             .rows = dims.rows,
@@ -127,11 +118,8 @@ pub const PopupState = struct {
     }
 
     pub fn deinit(self: *PopupState) void {
-        // Send SIGHUP to child
-        _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
-        self.pty.deinit();
-        self.engine.deinit();
-        self.allocator.destroy(self.engine);
+        self.pane.deinit();
+        self.allocator.destroy(self.pane);
     }
 
     pub fn resize(self: *PopupState, cfg: PopupConfig, grid_cols: u16, grid_rows: u16) void {
@@ -142,15 +130,11 @@ pub const PopupState = struct {
         self.outer_row = dims.outer_row;
         self.outer_w = dims.outer_w;
         self.outer_h = dims.outer_h;
-        self.engine.state.resize(dims.rows, dims.cols) catch {};
-        self.pty.resize(dims.rows, dims.cols) catch {};
+        self.pane.resize(dims.rows, dims.cols);
     }
 
     pub fn feed(self: *PopupState, data: []const u8) void {
-        self.engine.feed(data);
-        if (self.engine.state.drainResponse()) |resp| {
-            _ = self.pty.writeToPty(resp) catch {};
-        }
+        self.pane.feed(data);
     }
 
     pub fn publishCells(self: *PopupState, theme: *const Theme, cfg: PopupConfig) void {
@@ -180,9 +164,9 @@ pub const PopupState = struct {
                     const inner_c = col - col_off;
                     const grid_idx = inner_r * self.cols + inner_c;
                     if (inner_r < self.rows and inner_c < self.cols and
-                        grid_idx < self.engine.state.grid.cells.len)
+                        grid_idx < self.pane.engine.state.grid.cells.len)
                     {
-                        const cell = self.engine.state.grid.cells[grid_idx];
+                        const cell = self.pane.engine.state.grid.cells[grid_idx];
                         c.g_popup_cells[ci] = cellToOverlayCell(cell, theme);
                     } else {
                         c.g_popup_cells[ci] = defaultCell(theme);
@@ -196,7 +180,7 @@ pub const PopupState = struct {
         }
 
         // Publish descriptor
-        const cursor_vis: bool = self.engine.state.cursor_visible;
+        const cursor_vis: bool = self.pane.engine.state.cursor_visible;
         c.g_popup_desc = .{
             .active = 1,
             .col = @intCast(self.outer_col),
@@ -205,17 +189,17 @@ pub const PopupState = struct {
             .height = @intCast(self.outer_h),
             .inner_cols = @intCast(self.cols),
             .inner_rows = @intCast(self.rows),
-            .cursor_row = @intCast(self.engine.state.cursor.row + row_off),
-            .cursor_col = @intCast(self.engine.state.cursor.col + col_off),
+            .cursor_row = @intCast(self.pane.engine.state.cursor.row + row_off),
+            .cursor_col = @intCast(self.pane.engine.state.cursor.col + col_off),
             .cursor_visible = if (cursor_vis) 1 else 0,
-            .cursor_shape = @intCast(@intFromEnum(self.engine.state.cursor_shape)),
+            .cursor_shape = @intCast(@intFromEnum(self.pane.engine.state.cursor_shape)),
         };
 
         _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_popup_gen))), .Add, 1, .seq_cst);
     }
 
     pub fn publishImagePlacements(self: *PopupState, cfg: PopupConfig) void {
-        const state = &self.engine.state;
+        const state = &self.pane.engine.state;
         const store = state.graphics_store orelse {
             c.g_popup_image_placement_count = 0;
             return;

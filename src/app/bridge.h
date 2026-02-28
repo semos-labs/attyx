@@ -26,6 +26,7 @@ extern volatile int g_cursor_col;
 // Number of grid rows to shift terminal content down (for search bar padding).
 // Overlays are NOT shifted — they render at the original offY.
 extern volatile int g_grid_top_offset;
+extern volatile int g_tab_bar_visible;
 
 // Spawn a new attyx process (new window with fresh shell session).
 void attyx_spawn_new_window(void);
@@ -380,6 +381,10 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_POPUP_TOGGLE_0   15
 #define ATTYX_ACTION_SEND_SEQUENCE    47
 #define ATTYX_ACTION_AI_DEMO_TOGGLE   48
+#define ATTYX_ACTION_TAB_NEW          49
+#define ATTYX_ACTION_TAB_CLOSE        50
+#define ATTYX_ACTION_TAB_NEXT         51
+#define ATTYX_ACTION_TAB_PREV         52
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.
@@ -388,6 +393,10 @@ uint8_t attyx_keybind_match(uint16_t key, uint8_t mods, uint32_t codepoint);
 // Sequence result (valid after attyx_keybind_match returns SEND_SEQUENCE)
 extern const uint8_t* g_keybind_matched_seq;
 extern volatile int    g_keybind_matched_seq_len;
+
+// Tab management (called from input thread via keybind dispatch)
+void attyx_tab_action(int action);
+void attyx_tab_bar_click(int col, int grid_cols);
 
 // Input routing (called from input thread when g_popup_active)
 void attyx_popup_send_input(const uint8_t* bytes, int len);

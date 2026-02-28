@@ -39,6 +39,9 @@ const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
 const keybinds_mod = @import("../config/keybinds.zig");
 const platform = @import("../platform/platform.zig");
+const TabManager = @import("tab_manager.zig").TabManager;
+const tab_bar_mod = @import("tab_bar.zig");
+const Pane = @import("pane.zig").Pane;
 
 const c = @cImport({
     @cInclude("bridge.h");
@@ -47,8 +50,7 @@ const c = @cImport({
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
 const PtyThreadCtx = struct {
-    engine: *Engine,
-    pty: *Pty,
+    tab_mgr: *TabManager,
     cells: [*]c.AttyxCell,
     session: *SessionLog,
     // Reload context (lifetimes: process args alloc in main.zig)
@@ -76,6 +78,9 @@ const PtyThreadCtx = struct {
     popup_config_count: u8 = 0,
     // Update notification
     check_updates: bool = false,
+    // Full renderer grid dimensions (before subtracting g_grid_top_offset)
+    grid_rows: u16 = 0,
+    grid_cols: u16 = 0,
 };
 
 // Global PTY fd for attyx_send_input (set before attyx_run, read by main thread)
@@ -166,6 +171,21 @@ export fn attyx_overlay_enter() void {
     @atomicStore(i32, &g_overlay_activate, 1, .seq_cst);
 }
 
+// Tab bar click: input thread sets target tab index, PTY thread switches.
+var g_tab_click_index: i32 = -1;
+
+/// Called from input thread when a click lands on the tab bar row.
+/// Computes the tab index from column position and signals the PTY thread.
+export fn attyx_tab_bar_click(col: c_int, grid_cols: c_int) void {
+    if (g_grid_top_offset <= 0) return; // no tab bar visible
+    const idx = tab_bar_mod.tabIndexAtCol(
+        @intCast(@max(0, col)),
+        @intCast(@atomicLoad(i32, &g_tab_count, .seq_cst)),
+        @intCast(@max(1, grid_cols)),
+    ) orelse return;
+    @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+}
+
 // Overlay mouse click: input thread sets coords, PTY thread processes.
 var g_overlay_click_col: i32 = -1;
 var g_overlay_click_row: i32 = -1;
@@ -228,6 +248,17 @@ export fn attyx_search_cmd(cmd: c_int) void {
     g_search_cmd_ring[w % 16] = cmd;
     @atomicStore(u32, &g_search_cmd_write, w +% 1, .seq_cst);
     c.attyx_mark_all_dirty();
+}
+
+// ---------------------------------------------------------------------------
+// Tab management globals and exports
+// ---------------------------------------------------------------------------
+var g_tab_action_request: i32 = 0;
+var g_tab_count: i32 = 1; // current tab count, readable by input thread
+export var g_tab_bar_visible: i32 = 0; // 1 when tab bar overlay is showing
+
+export fn attyx_tab_action(action: c_int) void {
+    @atomicStore(i32, &g_tab_action_request, action, .seq_cst);
 }
 
 // ---------------------------------------------------------------------------
@@ -371,28 +402,10 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Heap-allocate Engine to keep its ~70KB (Parser buffers) off the
-    // main thread's stack.  The PTY reader thread accesses the Engine via
-    // pointer; if it lived on this stack frame, the TerminalState fields
-    // could end up adjacent to the thread's stack-guard page and trigger
-    // SIGBUS during resize writes.
-    const engine = try allocator.create(Engine);
-    engine.* = try Engine.init(allocator, config.rows, config.cols);
-    defer {
-        engine.deinit();
-        allocator.destroy(engine);
-    }
-
-    // Apply config: default cursor shape
-    engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
-
-    // Apply config: reflow
-    engine.state.reflow_on_resize = config.reflow_enabled;
-
-    // Apply config: scrollback limit
-    if (config.scrollback_lines != 20_000) {
-        engine.state.scrollback.max_lines = config.scrollback_lines;
-    }
+    // Heap-allocate the initial Pane (Engine + PTY) to keep Engine's ~70KB
+    // (Parser buffers) off the main thread's stack.
+    const initial_pane = try allocator.create(Pane);
+    errdefer allocator.destroy(initial_pane);
 
     // Publish font config to C bridge
     publishFontConfig(&config);
@@ -436,13 +449,6 @@ pub fn run(
     };
     posix.sigaction(posix.SIG.USR1, &sa, null);
 
-    const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
-    defer allocator.free(render_cells);
-
-    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
-    fillCells(render_cells[0..total], engine, total, &initial_theme);
-    c.attyx_set_cursor(@intCast(engine.state.cursor.row), @intCast(engine.state.cursor.col));
-
     // Build spawn argv: --cmd wins, then [program] config, then $SHELL default.
     const program_argv: ?[]const [:0]const u8 = if (config.program) |prog|
         try buildProgramArgv(allocator, prog, config.program_args)
@@ -455,19 +461,32 @@ pub fn run(
 
     const spawn_argv = config.argv orelse program_argv;
 
-    var pty = try Pty.spawn(.{
-        .rows = config.rows,
-        .cols = config.cols,
-        .argv = spawn_argv,
-    });
-    defer pty.deinit();
+    // Spawn initial pane and wrap in TabManager
+    initial_pane.* = try Pane.spawn(allocator, config.rows, config.cols, spawn_argv, null);
 
-    g_pty_master = pty.master;
-    g_engine = engine;
+    // Apply config to initial pane's engine
+    initial_pane.engine.state.cursor_shape = cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
+    initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
+    if (config.scrollback_lines != 20_000) {
+        initial_pane.engine.state.scrollback.max_lines = config.scrollback_lines;
+    }
+
+    var tab_mgr = TabManager.init(allocator, initial_pane);
+    defer tab_mgr.deinit();
+
+    g_pty_master = initial_pane.pty.master;
+    g_engine = &initial_pane.engine;
     defer {
         g_pty_master = -1;
         g_engine = null;
     }
+
+    const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
+    defer allocator.free(render_cells);
+
+    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+    fillCells(render_cells[0..total], &initial_pane.engine, total, &initial_theme);
+    c.attyx_set_cursor(@intCast(initial_pane.engine.state.cursor.row), @intCast(initial_pane.engine.state.cursor.col));
 
     var session = try SessionLog.init(allocator);
     defer session.deinit();
@@ -515,8 +534,7 @@ pub fn run(
     logging.info("keybinds", "installed {d} keybind(s)", .{kb_table.count});
 
     var ctx = PtyThreadCtx{
-        .engine = engine,
-        .pty = &pty,
+        .tab_mgr = &tab_mgr,
         .cells = render_cells.ptr,
         .session = &session,
         .allocator = allocator,
@@ -526,13 +544,15 @@ pub fn run(
         .applied_cursor_shape = config.cursor_shape,
         .applied_cursor_blink = config.cursor_blink,
         .applied_cursor_trail = config.cursor_trail,
-        .applied_scrollback_lines = @intCast(engine.state.scrollback.max_lines),
+        .applied_scrollback_lines = @intCast(initial_pane.engine.state.scrollback.max_lines),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
         .overlay_mgr = &overlay_mgr,
         .popup_configs = popup_configs,
         .popup_config_count = popup_config_count,
         .check_updates = config.check_updates,
+        .grid_rows = config.rows,
+        .grid_cols = config.cols,
     };
 
     const thread = try std.Thread.spawn(.{}, ptyReaderThread, .{&ctx});
@@ -555,6 +575,16 @@ fn buildProgramArgv(
         argv[1 + i] = try allocator.dupeZ(u8, a);
     }
     return argv;
+}
+
+/// Convenience: return the active tab's Engine from a PtyThreadCtx.
+fn ctxEngine(ctx: *PtyThreadCtx) *Engine {
+    return &ctx.tab_mgr.activePane().engine;
+}
+
+/// Convenience: return the active tab's Pty from a PtyThreadCtx.
+fn ctxPty(ctx: *PtyThreadCtx) *Pty {
+    return &ctx.tab_mgr.activePane().pty;
 }
 
 fn cursorShapeFromConfig(shape: CursorShapeConfig, blink: bool) attyx.actions.CursorShape {
@@ -627,7 +657,7 @@ fn findPlaceholderPosition(grid: anytype, image_id: u32) ?struct { row: i32, col
 }
 
 fn publishImagePlacements(ctx: *PtyThreadCtx) void {
-    const state = &ctx.engine.state;
+    const state = &ctxEngine(ctx).state;
     const store = state.graphics_store orelse {
         c.g_image_placement_count = 0;
         return;
@@ -729,7 +759,7 @@ fn generateDebugCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (!mgr.isVisible(.debug_card)) return;
 
-    const eng = ctx.engine;
+    const eng = ctxEngine(ctx);
     const cols: u16 = @intCast(eng.state.grid.cols);
     const rows: u16 = @intCast(eng.state.grid.rows);
 
@@ -789,7 +819,7 @@ fn generateDebugCard(ctx: *PtyThreadCtx) void {
 }
 
 fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
-    const eng = ctx.engine;
+    const eng = ctxEngine(ctx);
     const sel_active_raw: i32 = @bitCast(c.g_sel_active);
     const sel_end_row_raw: i32 = @bitCast(c.g_sel_end_row);
     const sel_end_col_raw: i32 = @bitCast(c.g_sel_end_col);
@@ -883,7 +913,7 @@ fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
 
 fn captureAiContext(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
-    const eng = ctx.engine;
+    const eng = ctxEngine(ctx);
 
     if (g_context_bundle) |*old| old.deinit();
     g_context_bundle = null;
@@ -1190,7 +1220,7 @@ fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
                     return;
                 };
 
-                const eng = ctx.engine;
+                const eng = ctxEngine(ctx);
                 const cols: u16 = @intCast(eng.state.grid.cols);
                 const rows: u16 = @intCast(eng.state.grid.rows);
                 // Position: bottom-right, 1 cell margin
@@ -1391,11 +1421,11 @@ fn handleInsertAction(ctx: *PtyThreadCtx) void {
         break :blk overlay_content.firstCodeBlock(&overlay_demo.mock_blocks);
     } orelse return;
 
-    if (ctx.engine.state.bracketed_paste) {
+    if (ctxEngine(ctx).state.bracketed_paste) {
         c.attyx_send_input("\x1b[200~", 6);
     }
     c.attyx_send_input(code.ptr, @intCast(code.len));
-    if (ctx.engine.state.bracketed_paste) {
+    if (ctxEngine(ctx).state.bracketed_paste) {
         c.attyx_send_input("\x1b[201~", 6);
     }
 }
@@ -1477,25 +1507,25 @@ fn cancelAi(ctx: *PtyThreadCtx) void {
 
 fn publishState(ctx: *PtyThreadCtx) void {
     c.attyx_set_mode_flags(
-        @intFromBool(ctx.engine.state.bracketed_paste),
-        @intFromBool(ctx.engine.state.cursor_keys_app),
+        @intFromBool(ctxEngine(ctx).state.bracketed_paste),
+        @intFromBool(ctxEngine(ctx).state.cursor_keys_app),
     );
     c.attyx_set_mouse_mode(
-        @intFromEnum(ctx.engine.state.mouse_tracking),
-        @intFromBool(ctx.engine.state.mouse_sgr),
+        @intFromEnum(ctxEngine(ctx).state.mouse_tracking),
+        @intFromBool(ctxEngine(ctx).state.mouse_sgr),
     );
-    c.g_scrollback_count = @intCast(ctx.engine.state.scrollback.count);
-    c.g_alt_screen = @intFromBool(ctx.engine.state.alt_active);
-    c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+    c.g_scrollback_count = @intCast(ctxEngine(ctx).state.scrollback.count);
+    c.g_alt_screen = @intFromBool(ctxEngine(ctx).state.alt_active);
+    c.g_viewport_offset = @intCast(ctxEngine(ctx).state.viewport_offset);
 
-    c.g_cursor_shape = @intFromEnum(ctx.engine.state.cursor_shape);
-    c.g_cursor_visible = @intFromBool(ctx.engine.state.cursor_visible);
-    g_kitty_kbd_flags = @intCast(ctx.engine.state.kittyFlags());
+    c.g_cursor_shape = @intFromEnum(ctxEngine(ctx).state.cursor_shape);
+    c.g_cursor_visible = @intFromBool(ctxEngine(ctx).state.cursor_visible);
+    g_kitty_kbd_flags = @intCast(ctxEngine(ctx).state.kittyFlags());
 
     // Window title: prefer OSC 0/2 title from the shell; fall back to the
     // foreground process name (e.g. "zsh", "vim") so the title bar is useful
     // even when the shell doesn't send title sequences.
-    if (ctx.engine.state.title) |title| {
+    if (ctxEngine(ctx).state.title) |title| {
         const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
         @memcpy(c.g_title_buf[0..len], title[0..len]);
         c.g_title_buf[len] = 0;
@@ -1503,7 +1533,7 @@ fn publishState(ctx: *PtyThreadCtx) void {
         c.g_title_changed = 1;
     } else {
         var name_buf: [256]u8 = undefined;
-        if (platform.getForegroundProcessName(ctx.pty.master, &name_buf)) |name| {
+        if (platform.getForegroundProcessName(ctxPty(ctx).master, &name_buf)) |name| {
             const len: usize = @min(name.len, c.ATTYX_TITLE_MAX - 1);
             // Only update if the name actually changed.
             const cur_len: usize = @intCast(c.g_title_len);
@@ -1608,10 +1638,10 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
                 g_saved_cursor_shape = -1;
             }
             c.attyx_set_cursor(g_saved_cursor_row, g_saved_cursor_col);
-            g_grid_top_offset = 0;
+            updateGridTopOffset(ctx);
             // Restore viewport scroll compensation
             if (g_viewport_compensated) {
-                ctx.engine.state.viewport_offset = g_saved_viewport_offset;
+                ctxEngine(ctx).state.viewport_offset = g_saved_viewport_offset;
                 c.g_viewport_offset = @intCast(g_saved_viewport_offset);
                 g_viewport_compensated = false;
                 c.attyx_mark_all_dirty();
@@ -1629,12 +1659,12 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
         g_saved_cursor_row = c.g_cursor_row;
         g_saved_cursor_col = c.g_cursor_col;
         c.g_cursor_shape = 0; // blinking_block
-        g_grid_top_offset = 1;
+        updateGridTopOffset(ctx);
         // Compensate viewport: scroll down 1 row so content stays visually stable
-        g_saved_viewport_offset = ctx.engine.state.viewport_offset;
-        if (ctx.engine.state.viewport_offset > 0) {
-            ctx.engine.state.viewport_offset -= 1;
-            c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+        g_saved_viewport_offset = ctxEngine(ctx).state.viewport_offset;
+        if (ctxEngine(ctx).state.viewport_offset > 0) {
+            ctxEngine(ctx).state.viewport_offset -= 1;
+            c.g_viewport_offset = @intCast(ctxEngine(ctx).state.viewport_offset);
             g_viewport_compensated = true;
             c.attyx_mark_all_dirty();
         } else {
@@ -1646,7 +1676,7 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
     g_search_bar.total_matches = @intCast(@as(c_uint, @bitCast(c.g_search_total)));
     g_search_bar.current_match = @intCast(@as(c_uint, @bitCast(c.g_search_current)));
 
-    const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
+    const grid_cols: u16 = @intCast(ctxEngine(ctx).state.grid.cols);
 
     const result = overlay_search.layoutSearchBar(
         mgr.allocator,
@@ -1655,7 +1685,9 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
         .{},
     ) catch return;
 
-    mgr.setContent(.search_bar, 0, 0, result.width, result.height, result.cells) catch {
+    // Place search bar below tab bar (if visible)
+    const search_row: u16 = if (ctx.tab_mgr.count > 1) 1 else 0;
+    mgr.setContent(.search_bar, 0, search_row, result.width, result.height, result.cells) catch {
         mgr.allocator.free(result.cells);
         return;
     };
@@ -1677,7 +1709,7 @@ fn generateSearchBar(ctx: *PtyThreadCtx) void {
         bp += @intCast(cp_len);
         cursor_char_col += 1;
     }
-    c.attyx_set_cursor(0, @intCast(input_start + cursor_char_col));
+    c.attyx_set_cursor(@intCast(search_row), @intCast(input_start + cursor_char_col));
 
     publishOverlays(ctx);
 }
@@ -1775,7 +1807,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
 
-    g_search = SearchState.init(ctx.engine.state.grid.allocator);
+    g_search = SearchState.init(ctxEngine(ctx).state.grid.allocator);
     defer {
         if (g_search) |*s| s.deinit();
         g_search = null;
@@ -1957,13 +1989,48 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Tab action handling
+        processTabActions(ctx);
+
+        // Tab bar click handling
+        {
+            const click_idx = @atomicRmw(i32, &g_tab_click_index, .Xchg, -1, .seq_cst);
+            if (click_idx >= 0 and click_idx < ctx.tab_mgr.count) {
+                const idx: u8 = @intCast(click_idx);
+                if (idx != ctx.tab_mgr.active) {
+                    ctx.tab_mgr.switchTo(idx);
+                    switchActiveTab(ctx);
+                }
+            }
+        }
+
         // Popup toggle handling
         processPopupToggle(ctx);
 
         // Check popup child exit
         if (ctx.popup_state) |ps| {
-            if (ps.pty.childExited()) {
+            if (ps.pane.childExited()) {
                 closePopup(ctx);
+            }
+        }
+
+        // Check all tabs for child exit
+        {
+            var ti: u8 = 0;
+            while (ti < ctx.tab_mgr.count) {
+                if (ctx.tab_mgr.tabs[ti]) |p| {
+                    if (p.childExited()) {
+                        ctx.tab_mgr.closeTab(ti);
+                        if (ctx.tab_mgr.count == 0) {
+                            c.attyx_request_quit();
+                            return;
+                        }
+                        updateGridTopOffset(ctx);
+                        switchActiveTab(ctx);
+                        continue; // don't increment; array shifted
+                    }
+                }
+                ti += 1;
             }
         }
 
@@ -1974,31 +2041,33 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const nr: usize = @intCast(rr);
                 const nc: usize = @intCast(rc);
 
-                ctx.engine.state.resize(nr, nc) catch {};
-                ctx.pty.resize(@intCast(rr), @intCast(rc)) catch {};
+                // Store full renderer grid dimensions
+                ctx.grid_rows = @intCast(rr);
+                ctx.grid_cols = @intCast(rc);
+
+                // Resize panes to rows minus overlay offset (tab bar, search bar)
+                const pty_rows: u16 = @intCast(@max(1, rr - g_grid_top_offset));
+                ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
 
                 posix.nanosleep(0, 1_000_000);
                 while (true) {
-                    const n = ctx.pty.read(&buf) catch break;
+                    const n = ctxPty(ctx).read(&buf) catch break;
                     if (n == 0) break;
                     ctx.session.appendOutput(buf[0..n]);
-                    ctx.engine.feed(buf[0..n]);
-                    if (ctx.engine.state.drainResponse()) |resp| {
-                        _ = ctx.pty.writeToPty(resp) catch {};
-                    }
+                    ctx.tab_mgr.activePane().feed(buf[0..n]);
                 }
 
                 c.attyx_begin_cell_update();
                 const new_total = nr * nc;
-                fillCells(ctx.cells[0..new_total], ctx.engine, new_total, &ctx.active_theme);
-                const vp_cur = @min(ctx.engine.state.viewport_offset, ctx.engine.state.scrollback.count);
+                fillCells(ctx.cells[0..new_total], ctxEngine(ctx), new_total, &ctx.active_theme);
+                const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
                 c.attyx_set_cursor(
-                    @intCast(ctx.engine.state.cursor.row + vp_cur),
-                    @intCast(ctx.engine.state.cursor.col),
+                    @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+                    @intCast(ctxEngine(ctx).state.cursor.col),
                 );
                 c.attyx_set_grid_size(rc, rr);
-                c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
-                ctx.engine.state.dirty.clear();
+                c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
+                ctxEngine(ctx).state.dirty.clear();
                 publishImagePlacements(ctx);
                 if (ctx.overlay_mgr) |mgr| {
                     mgr.relayoutAnchored(viewportInfoFromCtx(ctx));
@@ -2007,6 +2076,7 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     relayoutAiDemo(ctx);
                     relayoutContextPreview(ctx);
                 }
+                generateTabBar(ctx);
                 publishOverlays(ctx);
                 // Resize popup if active
                 if (ctx.popup_state) |ps| {
@@ -2017,57 +2087,62 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 }
                 c.attyx_end_cell_update();
                 publishState(ctx);
-                last_published_vp = ctx.engine.state.viewport_offset;
+                last_published_vp = ctxEngine(ctx).state.viewport_offset;
             }
         }
 
-        // Build poll fd array — always include main PTY; add popup PTY if active
-        var fds: [2]posix.pollfd = undefined;
-        var nfds: usize = 1;
-        fds[0] = .{ .fd = ctx.pty.master, .events = POLLIN, .revents = 0 };
+        // Build poll fd array — include all tab PTYs + popup PTY
+        const tab_max = @import("tab_manager.zig").max_tabs;
+        var fds: [tab_max + 1]posix.pollfd = undefined;
+        var nfds: usize = 0;
+
+        // Add all tab PTYs
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |maybe_pane| {
+            if (maybe_pane) |p| {
+                fds[nfds] = .{ .fd = p.pty.master, .events = POLLIN, .revents = 0 };
+                nfds += 1;
+            }
+        }
+        // Add popup PTY if active
+        const popup_fd_idx = nfds;
         if (ctx.popup_state) |ps| {
-            fds[1] = .{ .fd = ps.pty.master, .events = POLLIN, .revents = 0 };
-            nfds = 2;
+            fds[nfds] = .{ .fd = ps.pane.pty.master, .events = POLLIN, .revents = 0 };
+            nfds += 1;
         }
 
         _ = posix.poll(fds[0..nfds], 16) catch break;
 
-        // Drain all immediately available PTY data before doing expensive work.
+        // Drain all tab PTYs. Only log session/throughput for the active tab.
         var got_data = false;
-        if (fds[0].revents & POLLIN != 0) {
-            const t0 = std.time.nanoTimestamp();
-            var total_read: usize = 0;
-            while (true) {
-                const n = ctx.pty.read(&buf) catch break;
-                if (n == 0) break;
-                got_data = true;
-                total_read += n;
-                ctx.session.appendOutput(buf[0..n]);
-                ctx.engine.feed(buf[0..n]);
-                if (ctx.engine.state.drainResponse()) |resp| {
-                    _ = ctx.pty.writeToPty(resp) catch {};
+        for (0..ctx.tab_mgr.count) |i| {
+            if (fds[i].revents & POLLIN != 0) {
+                const p = ctx.tab_mgr.tabs[i].?;
+                while (true) {
+                    const n = p.pty.read(&buf) catch break;
+                    if (n == 0) break;
+                    if (i == ctx.tab_mgr.active) {
+                        got_data = true;
+                        ctx.session.appendOutput(buf[0..n]);
+                        ctx.throughput.add(n);
+                    }
+                    p.feed(buf[0..n]);
                 }
-            }
-            if (total_read > 0) {
-                const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - t0, std.time.ns_per_ms);
-                if (elapsed_ms > 16) logging.debug("pty", "slow drain: {d}ms ({d} bytes)", .{ elapsed_ms, total_read });
-                ctx.throughput.add(total_read);
             }
         }
 
         // Drain popup PTY data if available
         var popup_got_data = false;
         if (ctx.popup_state) |ps| {
-            if (nfds > 1 and fds[1].revents & POLLIN != 0) {
+            if (popup_fd_idx < nfds and fds[popup_fd_idx].revents & POLLIN != 0) {
                 while (true) {
-                    const n = ps.pty.read(&buf) catch break;
+                    const n = ps.pane.pty.read(&buf) catch break;
                     if (n == 0) break;
                     popup_got_data = true;
                     ps.feed(buf[0..n]);
                 }
             }
             // Check popup child exit (POLLHUP)
-            if (nfds > 1 and fds[1].revents & POLLHUP != 0) {
+            if (popup_fd_idx < nfds and fds[popup_fd_idx].revents & POLLHUP != 0) {
                 closePopup(ctx);
             } else if (popup_got_data) {
                 const pcfg = ctx.popup_configs[ps.config_index];
@@ -2078,29 +2153,29 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Sync viewport offset from ObjC (scroll wheel may have changed
         // it) BEFORE deciding whether to re-fill cells.
-        syncViewportFromC(&ctx.engine.state);
+        syncViewportFromC(&ctxEngine(ctx).state);
 
-        const viewport_changed = (ctx.engine.state.viewport_offset != last_published_vp);
+        const viewport_changed = (ctxEngine(ctx).state.viewport_offset != last_published_vp);
         const need_update = got_data or viewport_changed;
 
         // Consume search input from the grid-based search bar
         const search_input_changed = consumeSearchInput();
 
         // Process search even when no PTY data arrived (navigation / query changes)
-        processSearch(&ctx.engine.state);
+        processSearch(&ctxEngine(ctx).state);
 
         // Update search bar overlay after processSearch has published match counts
         if (search_input_changed or got_data or @as(i32, @bitCast(c.g_search_active)) != 0) {
             generateSearchBar(ctx);
         }
 
-        const search_vp_changed = (ctx.engine.state.viewport_offset != last_published_vp);
+        const search_vp_changed = (ctxEngine(ctx).state.viewport_offset != last_published_vp);
         const need_update_final = need_update or search_vp_changed;
 
         // DEC 2026 Synchronized Output: defer rendering while the app holds the
         // sync lock so we never present a partial frame.  A 100 ms safety timeout
         // forces a render even if ESC[?2026l is never received (hung or misbehaving app).
-        if (ctx.engine.state.synchronized_output) {
+        if (ctxEngine(ctx).state.synchronized_output) {
             if (ctx.sync_start_ns == 0)
                 ctx.sync_start_ns = std.time.nanoTimestamp();
             const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - ctx.sync_start_ns, std.time.ns_per_ms);
@@ -2111,38 +2186,172 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         if (need_update_final) {
             c.attyx_begin_cell_update();
-            const total = ctx.engine.state.grid.rows * ctx.engine.state.grid.cols;
-            fillCells(ctx.cells[0..total], ctx.engine, total, &ctx.active_theme);
-            const vp_cur = @min(ctx.engine.state.viewport_offset, ctx.engine.state.scrollback.count);
+            const total = ctxEngine(ctx).state.grid.rows * ctxEngine(ctx).state.grid.cols;
+            fillCells(ctx.cells[0..total], ctxEngine(ctx), total, &ctx.active_theme);
+            const vp_cur = @min(ctxEngine(ctx).state.viewport_offset, ctxEngine(ctx).state.scrollback.count);
             c.attyx_set_cursor(
-                @intCast(ctx.engine.state.cursor.row + vp_cur),
-                @intCast(ctx.engine.state.cursor.col),
+                @intCast(ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+                @intCast(ctxEngine(ctx).state.cursor.col),
             );
             if (viewport_changed or search_vp_changed) {
                 // Viewport scroll: all rows have new content, force full redraw.
                 c.attyx_mark_all_dirty();
             } else {
-                c.attyx_set_dirty(&ctx.engine.state.dirty.bits);
+                c.attyx_set_dirty(&ctxEngine(ctx).state.dirty.bits);
             }
-            ctx.engine.state.dirty.clear();
+            ctxEngine(ctx).state.dirty.clear();
             publishImagePlacements(ctx);
             generateDebugCard(ctx);
             generateAnchorDemo(ctx);
+            generateTabBar(ctx);
             publishOverlays(ctx);
             c.attyx_end_cell_update();
             publishState(ctx);
-            last_published_vp = ctx.engine.state.viewport_offset;
+            last_published_vp = ctxEngine(ctx).state.viewport_offset;
 
             if (got_data) {
-                const h = state_hash.hash(&ctx.engine.state);
-                ctx.session.appendFrame(h, ctx.engine.state.alt_active);
+                const h = state_hash.hash(&ctxEngine(ctx).state);
+                ctx.session.appendFrame(h, ctxEngine(ctx).state.alt_active);
             }
         }
 
-        if (fds[0].revents & POLLHUP != 0 or ctx.pty.childExited()) {
-            c.attyx_request_quit();
-            break;
+        // Check active tab for POLLHUP (quick exit for single-tab case)
+        if (ctx.tab_mgr.count > 0 and fds[ctx.tab_mgr.active].revents & POLLHUP != 0) {
+            if (ctxPty(ctx).childExited()) {
+                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                if (ctx.tab_mgr.count == 0) {
+                    c.attyx_request_quit();
+                    break;
+                }
+                updateGridTopOffset(ctx);
+                switchActiveTab(ctx);
+            }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tab lifecycle helpers (called from PTY thread)
+// ---------------------------------------------------------------------------
+
+fn processTabActions(ctx: *PtyThreadCtx) void {
+    const action_raw = @atomicRmw(i32, &g_tab_action_request, .Xchg, 0, .seq_cst);
+    if (action_raw == 0) return;
+
+    const Action = keybinds_mod.Action;
+    const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
+
+    switch (action) {
+        .tab_new => {
+            const eng = ctxEngine(ctx);
+            const rows: u16 = @intCast(eng.state.grid.rows);
+            const cols: u16 = @intCast(eng.state.grid.cols);
+            const fg_cwd = platform.getForegroundCwd(ctx.allocator, ctxPty(ctx).master);
+            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
+            const cwd_z: ?[:0]u8 = if (fg_cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+            defer if (cwd_z) |z| ctx.allocator.free(z);
+            ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null) catch |err| {
+                logging.err("tabs", "addTab failed: {}", .{err});
+                return;
+            };
+            updateGridTopOffset(ctx);
+            switchActiveTab(ctx);
+            logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
+        },
+        .tab_close => {
+            if (ctx.tab_mgr.count <= 1) {
+                // Last tab — close window
+                c.attyx_request_quit();
+                return;
+            }
+            ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+            updateGridTopOffset(ctx);
+            switchActiveTab(ctx);
+            logging.info("tabs", "closed tab, now {d}", .{ctx.tab_mgr.count});
+        },
+        .tab_next => {
+            if (ctx.tab_mgr.count <= 1) return;
+            ctx.tab_mgr.nextTab();
+            switchActiveTab(ctx);
+            logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
+        },
+        .tab_prev => {
+            if (ctx.tab_mgr.count <= 1) return;
+            ctx.tab_mgr.prevTab();
+            switchActiveTab(ctx);
+            logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
+        },
+        else => {},
+    }
+}
+
+/// Update global routing pointers and refresh the cell buffer after a tab switch.
+fn switchActiveTab(ctx: *PtyThreadCtx) void {
+    const pane = ctx.tab_mgr.activePane();
+    g_pty_master = pane.pty.master;
+    g_engine = &pane.engine;
+
+    c.attyx_begin_cell_update();
+    const eng = &pane.engine;
+    const total = eng.state.grid.rows * eng.state.grid.cols;
+    fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme);
+    const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+    c.attyx_set_cursor(
+        @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(g_grid_top_offset))),
+        @intCast(eng.state.cursor.col),
+    );
+    c.attyx_set_dirty(&eng.state.dirty.bits);
+    eng.state.dirty.clear();
+    publishImagePlacements(ctx);
+    publishState(ctx);
+    generateTabBar(ctx);
+    publishOverlays(ctx);
+    c.attyx_end_cell_update();
+    c.attyx_mark_all_dirty();
+}
+
+/// Centralized calculation of g_grid_top_offset accounting for tab bar and search bar.
+/// When the offset changes, resizes all panes to account for rows consumed by overlays.
+fn updateGridTopOffset(ctx: *PtyThreadCtx) void {
+    const old_offset = g_grid_top_offset;
+    var offset: i32 = 0;
+    if (ctx.tab_mgr.count > 1) offset += 1; // tab bar
+    if (@as(i32, @bitCast(c.g_search_active)) != 0) offset += 1; // search bar
+    g_grid_top_offset = offset;
+    @atomicStore(i32, &g_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    g_tab_bar_visible = if (ctx.tab_mgr.count > 1) @as(i32, 1) else @as(i32, 0);
+
+    // Resize panes when offset changes (rows consumed by overlays changed)
+    if (offset != old_offset and ctx.grid_rows > 0) {
+        const pty_rows = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_rows) - offset)));
+        ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
+    }
+}
+
+/// Generate the tab bar overlay (only visible when count > 1).
+fn generateTabBar(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    if (ctx.tab_mgr.count <= 1) {
+        if (mgr.isVisible(.tab_bar)) {
+            mgr.hide(.tab_bar);
+        }
+        return;
+    }
+
+    const grid_cols: u16 = @intCast(ctxEngine(ctx).state.grid.cols);
+    var tab_cells: [512]overlay_mod.OverlayCell = undefined;
+    const result = tab_bar_mod.generate(
+        &tab_cells,
+        ctx.tab_mgr.count,
+        ctx.tab_mgr.active,
+        grid_cols,
+        .{},
+    ) orelse return;
+
+    mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;
+    if (!mgr.isVisible(.tab_bar)) {
+        mgr.show(.tab_bar);
     }
 }
 
@@ -2163,9 +2372,9 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             // Open popup i
             const cfg = ctx.popup_configs[i];
             logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
-            const grid_cols: u16 = @intCast(ctx.engine.state.grid.cols);
-            const grid_rows: u16 = @intCast(ctx.engine.state.grid.rows);
-            const fg_cwd = platform.getForegroundCwd(ctx.allocator, ctx.pty.master);
+            const grid_cols: u16 = @intCast(ctxEngine(ctx).state.grid.cols);
+            const grid_rows: u16 = @intCast(ctxEngine(ctx).state.grid.rows);
+            const fg_cwd = platform.getForegroundCwd(ctx.allocator, ctxPty(ctx).master);
             defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
             ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {
@@ -2175,8 +2384,8 @@ fn processPopupToggle(ctx: *PtyThreadCtx) void {
             };
             ps.config_index = @intCast(i);
             ctx.popup_state = ps;
-            g_popup_pty_master = ps.pty.master;
-            g_popup_engine = ps.engine;
+            g_popup_pty_master = ps.pane.pty.master;
+            g_popup_engine = &ps.pane.engine;
             @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
             ps.publishCells(&ctx.active_theme, cfg);
             ps.publishImagePlacements(cfg);
@@ -2211,7 +2420,7 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
     if (new_cfg.cursor_shape != ctx.applied_cursor_shape or
         new_cfg.cursor_blink != ctx.applied_cursor_blink)
     {
-        ctx.engine.state.cursor_shape = cursorShapeFromConfig(new_cfg.cursor_shape, new_cfg.cursor_blink);
+        ctxEngine(ctx).state.cursor_shape = cursorShapeFromConfig(new_cfg.cursor_shape, new_cfg.cursor_blink);
         ctx.applied_cursor_shape = new_cfg.cursor_shape;
         ctx.applied_cursor_blink = new_cfg.cursor_blink;
     }
@@ -2222,16 +2431,16 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
 
     // Scrollback — fully hot-reloadable via reallocate()
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
-        ctx.engine.state.scrollback.reallocate(new_cfg.scrollback_lines) catch |err| {
+        ctxEngine(ctx).state.scrollback.reallocate(new_cfg.scrollback_lines) catch |err| {
             logging.err("config", "scrollback resize failed: {}", .{err});
         };
-        ctx.applied_scrollback_lines = @intCast(ctx.engine.state.scrollback.max_lines);
+        ctx.applied_scrollback_lines = @intCast(ctxEngine(ctx).state.scrollback.max_lines);
         // Clamp viewport offset if scrollback shrunk
-        if (ctx.engine.state.viewport_offset > ctx.engine.state.scrollback.count) {
-            ctx.engine.state.viewport_offset = ctx.engine.state.scrollback.count;
-            c.g_viewport_offset = @intCast(ctx.engine.state.viewport_offset);
+        if (ctxEngine(ctx).state.viewport_offset > ctxEngine(ctx).state.scrollback.count) {
+            ctxEngine(ctx).state.viewport_offset = ctxEngine(ctx).state.scrollback.count;
+            c.g_viewport_offset = @intCast(ctxEngine(ctx).state.viewport_offset);
         }
-        c.g_scrollback_count = @intCast(ctx.engine.state.scrollback.count);
+        c.g_scrollback_count = @intCast(ctxEngine(ctx).state.scrollback.count);
     }
 
     // Font — write new params to bridge globals; main thread rebuilds
@@ -2297,8 +2506,8 @@ fn doReloadConfig(ctx: *PtyThreadCtx) void {
     }
 
     // Reflow
-    if (new_cfg.reflow_enabled != ctx.engine.state.reflow_on_resize) {
-        ctx.engine.state.reflow_on_resize = new_cfg.reflow_enabled;
+    if (new_cfg.reflow_enabled != ctxEngine(ctx).state.reflow_on_resize) {
+        ctxEngine(ctx).state.reflow_on_resize = new_cfg.reflow_enabled;
     }
 
     // Keybindings — always rebuild (cheap, no diff needed)

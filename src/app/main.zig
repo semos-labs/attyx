@@ -46,6 +46,7 @@ var _ver_stub: u8 = 0;
 export var g_app_version: [*]const u8 = @ptrCast(&_ver_stub);
 export var g_app_version_len: c_int = 0;
 export var g_grid_top_offset: i32 = 0;
+export var g_tab_bar_visible: i32 = 0;
 export var g_toggle_debug_overlay: i32 = 0;
 export fn attyx_toggle_debug_overlay() void {}
 export var g_toggle_anchor_demo: i32 = 0;
@@ -63,6 +64,10 @@ export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }
 // Grid-based search bar stubs (ui2.zig provides real implementations)
 export fn attyx_search_insert_char(_: u32) void {}
 export fn attyx_search_cmd(_: c_int) void {}
+
+// Tab management stubs (ui2.zig provides the real implementations)
+export fn attyx_tab_action(_: c_int) void {}
+export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}
 
 // Popup terminal stubs (ui2.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
