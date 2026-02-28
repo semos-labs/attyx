@@ -66,6 +66,10 @@ static int dispatchAction(uint8_t action) {
         attyx_popup_toggle(action - ATTYX_ACTION_POPUP_TOGGLE_0);
         return 1;
     }
+    if (action >= ATTYX_ACTION_TAB_NEW && action <= ATTYX_ACTION_TAB_PREV) {
+        attyx_tab_action(action);
+        return 1;
+    }
     switch (action) {
         case ATTYX_ACTION_SEARCH_TOGGLE:
             if (g_search_active) {
@@ -151,6 +155,21 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
 }
 
 @implementation AttyxView (Keyboard)
+
+// Intercept Ctrl+Tab / Ctrl+Shift+Tab before macOS uses them for focus navigation
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (event.type != NSEventTypeKeyDown) return [super performKeyEquivalent:event];
+
+    NSEventModifierFlags flags = event.modifierFlags;
+    BOOL ctrl  = (flags & NSEventModifierFlagControl) != 0;
+
+    if (ctrl && event.keyCode == kVK_Tab) {
+        [self keyDown:event];
+        return YES;
+    }
+
+    return [super performKeyEquivalent:event];
+}
 
 - (void)keyUp:(NSEvent *)event {
     // Only send key release when kitty event_types flag is active (bit 1)

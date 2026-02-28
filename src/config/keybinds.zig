@@ -58,6 +58,10 @@ pub const Action = enum(u8) {
     popup_toggle_0 = 15,
     send_sequence = 47,
     ai_demo_toggle = 48,
+    tab_new = 49,
+    tab_close = 50,
+    tab_next = 51,
+    tab_prev = 52,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -216,6 +220,10 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "new_window", Action.new_window },
         .{ "close_window", Action.close_window },
         .{ "ai_demo_toggle", Action.ai_demo_toggle },
+        .{ "tab_new", Action.tab_new },
+        .{ "tab_close", Action.tab_close },
+        .{ "tab_next", Action.tab_next },
+        .{ "tab_prev", Action.tab_prev },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -242,11 +250,18 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
         };
+        // Tab management (cross-platform)
+        list = list ++ &[_]Keybind{
+            kb(.{ .key = KC_TAB, .mods = MOD_CTRL, .codepoint = 0 }, .tab_next),
+            kb(.{ .key = KC_TAB, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
+        };
         if (is_macos) {
             list = list ++ &[_]Keybind{
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'f' }, .search_toggle),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'g' }, .search_next),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 't' }, .tab_new),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'w' }, .tab_close),
             };
         } else {
             list = list ++ &[_]Keybind{
@@ -255,6 +270,8 @@ fn defaultKeybinds() []const Keybind {
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'f' }, .search_toggle),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'g' }, .search_next),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 't' }, .tab_new),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .tab_close),
             };
         }
         break :blk list;

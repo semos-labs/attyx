@@ -448,6 +448,11 @@ void attyx_spawn_new_window(void) {
     [NSApp orderFrontStandardAboutPanelWithOptions:opts];
 }
 
+- (void)closeTabOrWindow:(id)sender {
+    (void)sender;
+    attyx_tab_action(ATTYX_ACTION_TAB_CLOSE);
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if ([item action] == @selector(checkForUpdates:)) {
         return attyx_updater_available();
@@ -644,8 +649,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         [windowMenu addItemWithTitle:@"New Window"
                               action:@selector(spawnNewWindow:)
                        keyEquivalent:@"n"];
-        [windowMenu addItemWithTitle:@"Close Window"
-                              action:@selector(performClose:)
+        [windowMenu addItemWithTitle:@"Close Tab"
+                              action:@selector(closeTabOrWindow:)
                        keyEquivalent:@"w"];
         [windowMenu addItem:[NSMenuItem separatorItem]];
         [windowMenu addItemWithTitle:@"Minimize Window"

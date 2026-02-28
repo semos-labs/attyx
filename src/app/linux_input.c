@@ -110,6 +110,10 @@ static int dispatchAction(uint8_t act) {
         attyx_popup_toggle(act - ATTYX_ACTION_POPUP_TOGGLE_0);
         return 1;
     }
+    if (act >= ATTYX_ACTION_TAB_NEW && act <= ATTYX_ACTION_TAB_PREV) {
+        attyx_tab_action(act);
+        return 1;
+    }
     switch (act) {
         case ATTYX_ACTION_COPY:
             doCopy();
@@ -497,6 +501,12 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             }
             int col, row;
             mouseToCell(mx, my, &col, &row);
+
+            // Tab bar click: consume if click is on the tab bar row
+            if (row == 0 && g_tab_bar_visible) {
+                attyx_tab_bar_click(col, g_cols);
+                return;
+            }
 
             // Overlay click: consume if hit
             if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;

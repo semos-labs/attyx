@@ -227,6 +227,12 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     int col, row;
     mouseCell0(event, self, &col, &row);
 
+    // Tab bar click: consume if click is on the tab bar row
+    if (row == 0 && g_tab_bar_visible) {
+        attyx_tab_bar_click(col, g_cols);
+        return;
+    }
+
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
