@@ -52,6 +52,8 @@ brew install semos-labs/tap/attyx --cask
 brew install semos-labs/tap/attyx
 ```
 
+On Linux, Attyx installs as a desktop application. It should appear in your app launcher automatically. If it doesn't, log out and back in to refresh the desktop entry cache.
+
 ### Build from source
 
 Requires **Zig 0.15.2+**.
