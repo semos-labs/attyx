@@ -34,7 +34,7 @@ You may ask, why not Ghostty or Kitty. Those are great terminals and in fact I'v
 
 There's one take that I started getting a lot: you stole from Ghostty. Well, if "GPU accelerated terminal written in Zig" is a trademark, then, apparently, yes. Otherwise you won't find a single matching line of code -- Attyx is built completely from scratch.
 
-One thing that I'm especially proud is that its binary is under 1mb. Just a tiny little brag :)
+One thing that I'm especially proud is that its binary is under 5mb. Just a tiny little brag :)
 
 For more details, see the [documentation](https://semos.sh/docs/attyx).
 
