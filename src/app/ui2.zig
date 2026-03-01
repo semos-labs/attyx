@@ -377,12 +377,13 @@ export fn attyx_popup_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8,
     const cp: u21 = if (codepoint_raw <= 0x10FFFF) @intCast(codepoint_raw) else 0;
 
     const cursor_keys_app = eng.state.cursor_keys_app;
+    const keypad_app_mode = eng.state.keypad_app_mode;
     const kitty_flags = eng.state.kittyFlags();
 
     var buf: [128]u8 = undefined;
     const encoded = key_encode.encodeKey(
         .{ .key = key, .mods = mods, .event_type = event_type, .codepoint = cp },
-        .{ .cursor_keys_app = cursor_keys_app, .kitty_flags = kitty_flags },
+        .{ .cursor_keys_app = cursor_keys_app, .keypad_app_mode = keypad_app_mode, .kitty_flags = kitty_flags },
         &buf,
     );
 
@@ -441,12 +442,13 @@ export fn attyx_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8, codep
 
     // Read terminal state from engine (published by PTY thread via volatile globals)
     const cursor_keys_app = eng.state.cursor_keys_app;
+    const keypad_app_mode = eng.state.keypad_app_mode;
     const kitty_flags = eng.state.kittyFlags();
 
     var buf: [128]u8 = undefined;
     const encoded = key_encode.encodeKey(
         .{ .key = key, .mods = mods, .event_type = event_type, .codepoint = cp },
-        .{ .cursor_keys_app = cursor_keys_app, .kitty_flags = kitty_flags },
+        .{ .cursor_keys_app = cursor_keys_app, .keypad_app_mode = keypad_app_mode, .kitty_flags = kitty_flags },
         &buf,
     );
 

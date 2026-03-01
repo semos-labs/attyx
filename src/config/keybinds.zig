@@ -13,22 +13,40 @@ const logging = @import("../logging/log.zig");
 // and the Zig KeyCode enum in key_encode.zig)
 // ---------------------------------------------------------------------------
 
-const KC_UP: u16 = 0;
-const KC_DOWN: u16 = 1;
-const KC_LEFT: u16 = 2;
-const KC_RIGHT: u16 = 3;
-const KC_HOME: u16 = 4;
-const KC_END: u16 = 5;
-const KC_PAGE_UP: u16 = 6;
-const KC_PAGE_DOWN: u16 = 7;
-const KC_INSERT: u16 = 8;
-const KC_DELETE: u16 = 9;
-const KC_BACKSPACE: u16 = 10;
-const KC_ENTER: u16 = 11;
-const KC_TAB: u16 = 12;
-const KC_ESCAPE: u16 = 13;
-const KC_F1: u16 = 14;
-const KC_CODEPOINT: u16 = 26;
+pub const KC_UP: u16 = 0;
+pub const KC_DOWN: u16 = 1;
+pub const KC_LEFT: u16 = 2;
+pub const KC_RIGHT: u16 = 3;
+pub const KC_HOME: u16 = 4;
+pub const KC_END: u16 = 5;
+pub const KC_PAGE_UP: u16 = 6;
+pub const KC_PAGE_DOWN: u16 = 7;
+pub const KC_INSERT: u16 = 8;
+pub const KC_DELETE: u16 = 9;
+pub const KC_BACKSPACE: u16 = 10;
+pub const KC_ENTER: u16 = 11;
+pub const KC_TAB: u16 = 12;
+pub const KC_ESCAPE: u16 = 13;
+pub const KC_F1: u16 = 14;
+// F2–F12 are KC_F1+1 through KC_F1+11 (15–25)
+pub const KC_KP_0: u16 = 26;
+pub const KC_KP_1: u16 = 27;
+pub const KC_KP_2: u16 = 28;
+pub const KC_KP_3: u16 = 29;
+pub const KC_KP_4: u16 = 30;
+pub const KC_KP_5: u16 = 31;
+pub const KC_KP_6: u16 = 32;
+pub const KC_KP_7: u16 = 33;
+pub const KC_KP_8: u16 = 34;
+pub const KC_KP_9: u16 = 35;
+pub const KC_KP_DECIMAL: u16 = 36;
+pub const KC_KP_DIVIDE: u16 = 37;
+pub const KC_KP_MULTIPLY: u16 = 38;
+pub const KC_KP_MINUS: u16 = 39;
+pub const KC_KP_PLUS: u16 = 40;
+pub const KC_KP_ENTER: u16 = 41;
+pub const KC_KP_EQUAL: u16 = 42;
+pub const KC_CODEPOINT: u16 = 43;
 
 // Modifier bits (match buildMods() in macOS/Linux input code)
 pub const MOD_SHIFT: u8 = 1;
@@ -208,6 +226,24 @@ fn resolveKeyName(name: []const u8) ?ResolvedKey {
         const num = std.fmt.parseInt(u8, name[1..], 10) catch return null;
         if (num >= 1 and num <= 12) return .{ .key = KC_F1 + num - 1, .codepoint = 0 };
     }
+    // Numpad keys
+    if (eql(name, "kp_0")) return .{ .key = KC_KP_0, .codepoint = 0 };
+    if (eql(name, "kp_1")) return .{ .key = KC_KP_1, .codepoint = 0 };
+    if (eql(name, "kp_2")) return .{ .key = KC_KP_2, .codepoint = 0 };
+    if (eql(name, "kp_3")) return .{ .key = KC_KP_3, .codepoint = 0 };
+    if (eql(name, "kp_4")) return .{ .key = KC_KP_4, .codepoint = 0 };
+    if (eql(name, "kp_5")) return .{ .key = KC_KP_5, .codepoint = 0 };
+    if (eql(name, "kp_6")) return .{ .key = KC_KP_6, .codepoint = 0 };
+    if (eql(name, "kp_7")) return .{ .key = KC_KP_7, .codepoint = 0 };
+    if (eql(name, "kp_8")) return .{ .key = KC_KP_8, .codepoint = 0 };
+    if (eql(name, "kp_9")) return .{ .key = KC_KP_9, .codepoint = 0 };
+    if (eql(name, "kp_decimal")) return .{ .key = KC_KP_DECIMAL, .codepoint = 0 };
+    if (eql(name, "kp_divide")) return .{ .key = KC_KP_DIVIDE, .codepoint = 0 };
+    if (eql(name, "kp_multiply")) return .{ .key = KC_KP_MULTIPLY, .codepoint = 0 };
+    if (eql(name, "kp_minus")) return .{ .key = KC_KP_MINUS, .codepoint = 0 };
+    if (eql(name, "kp_plus")) return .{ .key = KC_KP_PLUS, .codepoint = 0 };
+    if (eql(name, "kp_enter")) return .{ .key = KC_KP_ENTER, .codepoint = 0 };
+    if (eql(name, "kp_equal")) return .{ .key = KC_KP_EQUAL, .codepoint = 0 };
     return null;
 }
 
@@ -475,149 +511,7 @@ fn toLower(cp: u32) u32 {
     return cp;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-test "parseKeyCombo: ctrl+shift+r" {
-    const combo = parseKeyCombo("ctrl+shift+r").?;
-    try std.testing.expectEqual(KC_CODEPOINT, combo.key);
-    try std.testing.expectEqual(MOD_CTRL | MOD_SHIFT, combo.mods);
-    try std.testing.expectEqual(@as(u32, 'r'), combo.codepoint);
-}
-
-test "parseKeyCombo: super+f" {
-    const combo = parseKeyCombo("super+f").?;
-    try std.testing.expectEqual(KC_CODEPOINT, combo.key);
-    try std.testing.expectEqual(MOD_SUPER, combo.mods);
-    try std.testing.expectEqual(@as(u32, 'f'), combo.codepoint);
-}
-
-test "parseKeyCombo: shift+page_up" {
-    const combo = parseKeyCombo("shift+page_up").?;
-    try std.testing.expectEqual(KC_PAGE_UP, combo.key);
-    try std.testing.expectEqual(MOD_SHIFT, combo.mods);
-    try std.testing.expectEqual(@as(u32, 0), combo.codepoint);
-}
-
-test "parseKeyCombo: f12" {
-    const combo = parseKeyCombo("f12").?;
-    try std.testing.expectEqual(KC_F1 + 11, combo.key);
-    try std.testing.expectEqual(@as(u8, 0), combo.mods);
-}
-
-test "parseKeyCombo: alt+enter" {
-    const combo = parseKeyCombo("alt+enter").?;
-    try std.testing.expectEqual(KC_ENTER, combo.key);
-    try std.testing.expectEqual(MOD_ALT, combo.mods);
-}
-
-test "parseKeyCombo: invalid" {
-    try std.testing.expect(parseKeyCombo("") == null);
-    try std.testing.expect(parseKeyCombo("ctrl+shift") == null); // no key
-    try std.testing.expect(parseKeyCombo("ctrl+shift+xx") == null); // unknown key
-}
-
-test "actionFromString" {
-    try std.testing.expectEqual(Action.copy, actionFromString("copy").?);
-    try std.testing.expectEqual(Action.config_reload, actionFromString("config_reload").?);
-    try std.testing.expect(actionFromString("bogus") == null);
-}
-
-test "buildTable: defaults present" {
-    const table = buildTable(null, null, &.{});
-    try std.testing.expect(table.count > 0);
-    // config_reload should be in defaults
-    var found = false;
-    for (table.entries[0..table.count]) |e| {
-        if (e.action == .config_reload) { found = true; break; }
-    }
-    try std.testing.expect(found);
-}
-
-test "buildTable: override replaces binding" {
-    const overrides = [_]KeybindOverride{
-        .{ .action_name = "config_reload", .key_combo = "alt+r" },
-    };
-    const table = buildTable(&overrides, null, &.{});
-    for (table.entries[0..table.count]) |e| {
-        if (e.action == .config_reload) {
-            try std.testing.expectEqual(MOD_ALT, e.combo.mods);
-            try std.testing.expectEqual(@as(u32, 'r'), e.combo.codepoint);
-            return;
-        }
-    }
-    return error.TestUnexpectedResult;
-}
-
-test "buildTable: none unbinds" {
-    const overrides = [_]KeybindOverride{
-        .{ .action_name = "config_reload", .key_combo = "none" },
-    };
-    const table = buildTable(&overrides, null, &.{});
-    for (table.entries[0..table.count]) |e| {
-        if (e.action == .config_reload) return error.TestUnexpectedResult;
-    }
-}
-
-test "buildTable: popup hotkeys" {
-    const hotkeys = [_]PopupHotkey{
-        .{ .index = 0, .hotkey = "ctrl+shift+g" },
-        .{ .index = 1, .hotkey = "ctrl+shift+t" },
-    };
-    const table = buildTable(null, null, &hotkeys);
-    var found: u8 = 0;
-    for (table.entries[0..table.count]) |e| {
-        if (e.action.popupIndex()) |_| found += 1;
-    }
-    try std.testing.expectEqual(@as(u8, 2), found);
-}
-
-test "buildTable: sequence entries" {
-    const seqs = [_]SequenceEntry{
-        .{ .key_combo = "ctrl+shift+k", .data = "\x1b[K" },
-    };
-    const table = buildTable(null, &seqs, &.{});
-    var found = false;
-    for (table.entries[0..table.count]) |e| {
-        if (e.action == .send_sequence) {
-            try std.testing.expectEqual(@as(u16, 3), e.seq_len);
-            const seq = table.seq_buf[e.seq_offset .. e.seq_offset + e.seq_len];
-            try std.testing.expectEqualSlices(u8, "\x1b[K", seq);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
-}
-
-test "match: basic lookup" {
-    const table = buildTable(null, null, &.{});
-    installTable(&table);
-    // config_reload is ctrl+shift+r
-    const action = attyx_keybind_match(KC_CODEPOINT, MOD_CTRL | MOD_SHIFT, 'R');
-    try std.testing.expectEqual(@intFromEnum(Action.config_reload), action);
-}
-
-test "match: no match returns 0" {
-    const table = buildTable(null, null, &.{});
-    installTable(&table);
-    const action = attyx_keybind_match(KC_CODEPOINT, 0, 'z');
-    try std.testing.expectEqual(@as(u8, 0), action);
-}
-
-test "match: case insensitive" {
-    const table = buildTable(null, null, &.{});
-    installTable(&table);
-    // Should match whether platform sends 'r' or 'R'
-    const a1 = attyx_keybind_match(KC_CODEPOINT, MOD_CTRL | MOD_SHIFT, 'r');
-    const a2 = attyx_keybind_match(KC_CODEPOINT, MOD_CTRL | MOD_SHIFT, 'R');
-    try std.testing.expectEqual(a1, a2);
-    try std.testing.expect(a1 != 0);
-}
-
-test "popupIndex" {
-    try std.testing.expectEqual(@as(?u8, 0), Action.popup_toggle_0.popupIndex());
-    try std.testing.expectEqual(@as(?u8, null), Action.copy.popupIndex());
-    const t5 = popupToggleAction(5);
-    try std.testing.expectEqual(@as(?u8, 5), t5.popupIndex());
+// Tests are in keybinds_test.zig
+test {
+    _ = @import("keybinds_test.zig");
 }

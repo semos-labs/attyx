@@ -81,6 +81,7 @@ pub const TerminalState = struct {
     mouse_tracking: actions_mod.MouseTrackingMode = .off,
     mouse_sgr: bool = false,
     cursor_keys_app: bool = false,
+    keypad_app_mode: bool = false,
     cursor_visible: bool = true,
     cursor_shape: actions_mod.CursorShape = .blinking_block,
     /// DEC private mode 2026 — Synchronized Output Mode.
@@ -142,7 +143,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
             else => {
                 self.wrap_next = false;
             },
@@ -248,6 +249,8 @@ pub const TerminalState = struct {
             .kitty_query_flags => self.respondKittyFlags(),
             .inject_into_main => |data| self.appendInject(data),
             .dcs_passthrough => {}, // handled by engine, never reaches here
+            .set_keypad_app_mode => self.keypad_app_mode = true,
+            .reset_keypad_app_mode => self.keypad_app_mode = false,
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
