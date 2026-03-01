@@ -130,6 +130,7 @@ void attyx_set_cursor(int row, int col) {
 }
 
 void attyx_request_quit(void) {
+    g_should_quit = 1;  // Signal PTY thread immediately to prevent use-after-close race
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSApp terminate:nil];
     });

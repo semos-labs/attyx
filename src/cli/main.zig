@@ -1,70 +1,12 @@
 const std = @import("std");
-const build_options = @import("build_options");
-const ai_auth = @import("ai_auth");
+const ai_auth = @import("attyx").overlay_ai_auth;
 
-const base_url: []const u8 = if (std.mem.eql(u8, build_options.env, "production"))
-    "https://app.semos.sh"
-else
-    "http://localhost:8085";
-
-const usage =
-    \\Usage: attyx <command>
-    \\
-    \\Commands:
-    \\  login       Authenticate with Attyx AI services
-    \\  device      Show device and account info
-    \\  uninstall   Remove config, auth tokens, and desktop entry
-    \\
-    \\Options:
-    \\  --help, -h  Show this help message
-    \\
-;
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var iter = std.process.args();
-    _ = iter.next(); // skip argv[0]
-
-    const subcommand = iter.next();
-
-    if (subcommand) |cmd| {
-        if (std.mem.eql(u8, cmd, "login")) {
-            doLogin(allocator) catch |err| {
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "error: login failed: {s}\n", .{@errorName(err)}) catch "error: login failed\n";
-                std.fs.File.stderr().writeAll(msg) catch {};
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, cmd, "device")) {
-            doDevice(allocator) catch |err| {
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "error: {s}\n", .{@errorName(err)}) catch "error: failed to get device info\n";
-                std.fs.File.stderr().writeAll(msg) catch {};
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, cmd, "uninstall")) {
-            doUninstall();
-        } else if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
-            std.fs.File.stdout().writeAll(usage) catch {};
-        } else {
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "attyx: unknown command '{s}'\n\n", .{cmd}) catch "attyx: unknown command\n\n";
-            std.fs.File.stderr().writeAll(msg) catch {};
-            std.fs.File.stdout().writeAll(usage) catch {};
-            std.process.exit(1);
-        }
-    } else {
-        std.fs.File.stdout().writeAll(usage) catch {};
-    }
-}
-
-fn doLogin(allocator: std.mem.Allocator) !void {
+pub fn doLogin(allocator: std.mem.Allocator, base_url: []const u8) !void {
     const stdout = std.fs.File.stdout();
 
-    stdout.writeAll("Connecting to " ++ base_url ++ "...\n") catch {};
+    stdout.writeAll("Connecting to ") catch {};
+    stdout.writeAll(base_url) catch {};
+    stdout.writeAll("...\n") catch {};
 
     // Load existing tokens for refresh
     var store = ai_auth.TokenStore.load(allocator) catch ai_auth.TokenStore.init(allocator);
@@ -133,7 +75,7 @@ fn doLogin(allocator: std.mem.Allocator) !void {
     return error.DeviceExpired;
 }
 
-fn doDevice(allocator: std.mem.Allocator) !void {
+pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
     const stdout = std.fs.File.stdout();
 
     // Load tokens
@@ -219,7 +161,7 @@ fn doDevice(allocator: std.mem.Allocator) !void {
     stdout.writeAll("\n") catch {};
 }
 
-fn doUninstall() void {
+pub fn doUninstall() void {
     const stdout = std.fs.File.stdout();
     const home = std.posix.getenv("HOME") orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
@@ -228,7 +170,6 @@ fn doUninstall() void {
 
     const targets = [_]struct { dir: []const u8, file: []const u8 }{
         .{ .dir = ".config/attyx", .file = "" },                                    // config + auth tokens
-        .{ .dir = ".attyx", .file = "" },                                            // embedded CLI
         .{ .dir = ".local/share/applications", .file = "attyx.desktop" },            // desktop entry
         .{ .dir = ".local/share/icons/hicolor/256x256/apps", .file = "attyx.png" },  // icon
     };
@@ -241,8 +182,8 @@ fn doUninstall() void {
             std.fs.cwd().deleteTree(path) catch |err| {
                 if (err != error.FileNotFound) {
                     var err_buf: [512]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
-                    stdout.writeAll(msg) catch {};
+                    const err_msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
+                    stdout.writeAll(err_msg) catch {};
                 }
                 continue;
             };
@@ -255,8 +196,8 @@ fn doUninstall() void {
             std.fs.cwd().deleteFile(path) catch |err| {
                 if (err != error.FileNotFound) {
                     var err_buf: [512]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
-                    stdout.writeAll(msg) catch {};
+                    const err_msg = std.fmt.bufPrint(&err_buf, "  warning: could not remove {s}: {s}\n", .{ path, @errorName(err) }) catch continue;
+                    stdout.writeAll(err_msg) catch {};
                 }
                 continue;
             };
@@ -269,14 +210,14 @@ fn doUninstall() void {
     stdout.writeAll("\nAttyx data cleaned up. You can now run `brew uninstall attyx`.\n") catch {};
 }
 
-fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) void {
+pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) void {
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ label, value }) catch return;
     stdout.writeAll(line) catch {};
 }
 
 /// Find the JSON object substring containing "is_current":true
-fn findCurrentSession(json: []const u8) ?[]const u8 {
+pub fn findCurrentSession(json: []const u8) ?[]const u8 {
     // Find "is_current":true and work backwards to the enclosing {
     const marker = "\"is_current\":true";
     const alt_marker = "\"is_current\": true";
