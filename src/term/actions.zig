@@ -173,4 +173,9 @@ pub const Action = union(enum) {
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.
     dcs_passthrough: []const u8,
+
+    /// ESC = — DECKPAM: switch keypad to application mode.
+    set_keypad_app_mode,
+    /// ESC > — DECKPNM: switch keypad to normal (numeric) mode.
+    reset_keypad_app_mode,
 };

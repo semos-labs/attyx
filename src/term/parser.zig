@@ -206,10 +206,15 @@ pub const Parser = struct {
                 self.apc_overflow = false;
                 return null;
             },
-            // DECKPAM / DECKPNM — application/normal keypad mode, ignored for now.
-            '=', '>' => {
+            // DECKPAM — application keypad mode.
+            '=' => {
                 self.state = .ground;
-                return .nop;
+                return .set_keypad_app_mode;
+            },
+            // DECKPNM — normal (numeric) keypad mode.
+            '>' => {
+                self.state = .ground;
+                return .reset_keypad_app_mode;
             },
             0x1B => {
                 return .nop;

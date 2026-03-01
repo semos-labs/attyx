@@ -464,3 +464,134 @@ test "parser: plain CSI u → restore_cursor (unchanged)" {
     try testing.expect(action != null);
     try testing.expect(action.? == .restore_cursor);
 }
+
+// ---------------------------------------------------------------------------
+// Parser tests — DECKPAM / DECKPNM
+// ---------------------------------------------------------------------------
+
+test "parser: ESC = → set_keypad_app_mode" {
+    const Parser = @import("parser.zig").Parser;
+    var p = Parser{};
+
+    _ = p.next(0x1b);
+    const action = p.next('=');
+
+    try testing.expect(action != null);
+    try testing.expect(action.? == .set_keypad_app_mode);
+}
+
+test "parser: ESC > → reset_keypad_app_mode" {
+    const Parser = @import("parser.zig").Parser;
+    var p = Parser{};
+
+    _ = p.next(0x1b);
+    const action = p.next('>');
+
+    try testing.expect(action != null);
+    try testing.expect(action.? == .reset_keypad_app_mode);
+}
+
+// ---------------------------------------------------------------------------
+// State tests — keypad_app_mode
+// ---------------------------------------------------------------------------
+
+test "state: keypad_app_mode toggle" {
+    const alloc = std.testing.allocator;
+    const TerminalState = @import("state.zig").TerminalState;
+    var state = try TerminalState.init(alloc, 4, 10);
+    defer state.deinit();
+
+    try testing.expectEqual(false, state.keypad_app_mode);
+
+    state.apply(.set_keypad_app_mode);
+    try testing.expectEqual(true, state.keypad_app_mode);
+
+    state.apply(.reset_keypad_app_mode);
+    try testing.expectEqual(false, state.keypad_app_mode);
+}
+
+// ---------------------------------------------------------------------------
+// xterm numpad encoding
+// ---------------------------------------------------------------------------
+
+test "xterm numpad: normal mode sends ASCII digits" {
+    var buf: [128]u8 = undefined;
+    const r = encodeKey(.{ .key = .kp_5 }, .{}, &buf);
+    try testing.expectEqualStrings("5", r);
+}
+
+test "xterm numpad: normal mode sends operators" {
+    var buf: [128]u8 = undefined;
+
+    try testing.expectEqualStrings("+", encodeKey(.{ .key = .kp_plus }, .{}, &buf));
+    try testing.expectEqualStrings("-", encodeKey(.{ .key = .kp_minus }, .{}, &buf));
+    try testing.expectEqualStrings("*", encodeKey(.{ .key = .kp_multiply }, .{}, &buf));
+    try testing.expectEqualStrings("/", encodeKey(.{ .key = .kp_divide }, .{}, &buf));
+    try testing.expectEqualStrings(".", encodeKey(.{ .key = .kp_decimal }, .{}, &buf));
+    try testing.expectEqualStrings("=", encodeKey(.{ .key = .kp_equal }, .{}, &buf));
+    try testing.expectEqualStrings("\r", encodeKey(.{ .key = .kp_enter }, .{}, &buf));
+}
+
+test "xterm numpad: app mode sends SS3 sequences" {
+    var buf: [128]u8 = undefined;
+    const enc = ke.EncoderState{ .keypad_app_mode = true };
+
+    try testing.expectEqualStrings("\x1bOp", encodeKey(.{ .key = .kp_0 }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOq", encodeKey(.{ .key = .kp_1 }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOy", encodeKey(.{ .key = .kp_9 }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOM", encodeKey(.{ .key = .kp_enter }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOk", encodeKey(.{ .key = .kp_plus }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOm", encodeKey(.{ .key = .kp_minus }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOj", encodeKey(.{ .key = .kp_multiply }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOo", encodeKey(.{ .key = .kp_divide }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOn", encodeKey(.{ .key = .kp_decimal }, enc, &buf));
+    try testing.expectEqualStrings("\x1bOX", encodeKey(.{ .key = .kp_equal }, enc, &buf));
+}
+
+test "xterm numpad: modifiers fall back to ASCII even in app mode" {
+    var buf: [128]u8 = undefined;
+    const enc = ke.EncoderState{ .keypad_app_mode = true };
+
+    const r = encodeKey(.{ .key = .kp_5, .mods = .{ .shift = true } }, enc, &buf);
+    try testing.expectEqualStrings("5", r);
+}
+
+// ---------------------------------------------------------------------------
+// Kitty numpad encoding
+// ---------------------------------------------------------------------------
+
+test "kitty disambiguate: numpad uses CSI u with distinct codepoints" {
+    var buf: [128]u8 = undefined;
+
+    const r0 = encodeKey(
+        .{ .key = .kp_0 },
+        .{ .kitty_flags = KITTY_DISAMBIGUATE },
+        &buf,
+    );
+    try testing.expectEqualStrings("\x1b[57399u", r0);
+
+    const r_enter = encodeKey(
+        .{ .key = .kp_enter },
+        .{ .kitty_flags = KITTY_DISAMBIGUATE },
+        &buf,
+    );
+    try testing.expectEqualStrings("\x1b[57414u", r_enter);
+
+    const r_plus = encodeKey(
+        .{ .key = .kp_plus, .mods = .{ .shift = true } },
+        .{ .kitty_flags = KITTY_DISAMBIGUATE },
+        &buf,
+    );
+    try testing.expectEqualStrings("\x1b[57413;2u", r_plus);
+}
+
+test "kitty all_keys: numpad uses CSI u" {
+    var buf: [128]u8 = undefined;
+
+    const r = encodeKey(
+        .{ .key = .kp_5 },
+        .{ .kitty_flags = KITTY_ALL_KEYS },
+        &buf,
+    );
+    try testing.expectEqualStrings("\x1b[57404u", r);
+}
