@@ -71,6 +71,8 @@ pub const PopupConfig = struct {
     pad: Padding = .{},
     on_return_cmd: ?[]const u8 = null, // command prefix run with grid text on exit 0
     inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
+    bg_opacity: u8 = 255, // 0 (transparent) – 255 (opaque)
+    bg_color: ?[3]u8 = null, // override background color (r, g, b); null = use theme
 };
 
 pub const PopupState = struct {
@@ -166,23 +168,56 @@ pub const PopupState = struct {
                 if (ci >= c.ATTYX_POPUP_MAX_CELLS) break;
                 if (has_border and (r == 0 or r == oh - 1 or col == 0 or col == ow - 1)) {
                     // Border cell
-                    c.g_popup_cells[ci] = borderCell(r, col, ow, oh, cfg.border_style, cfg.border_fg);
+                    var cell = borderCell(r, col, ow, oh, cfg.border_style, cfg.border_fg);
+                    if (cfg.bg_color) |bg| {
+                        cell.bg_r = bg[0];
+                        cell.bg_g = bg[1];
+                        cell.bg_b = bg[2];
+                    }
+                    cell.bg_alpha = cfg.bg_opacity;
+                    c.g_popup_cells[ci] = cell;
                 } else if (r >= row_off and r < content_end_row and col >= col_off and col < content_end_col) {
                     // Content cell — map from engine grid
                     const inner_r = r - row_off;
                     const inner_c = col - col_off;
                     const grid_idx = inner_r * self.cols + inner_c;
-                    if (inner_r < self.rows and inner_c < self.cols and
+                    var overlay = if (inner_r < self.rows and inner_c < self.cols and
                         grid_idx < self.pane.engine.state.grid.cells.len)
-                    {
+                    blk: {
                         const cell = self.pane.engine.state.grid.cells[grid_idx];
-                        c.g_popup_cells[ci] = cellToOverlayCell(cell, theme);
-                    } else {
-                        c.g_popup_cells[ci] = defaultCell(theme);
-                    }
+                        // Only override bg for cells using the default (theme) bg;
+                        // cells with explicit program-set colors stay as-is.
+                        const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;
+                        var ov = cellToOverlayCell(cell, theme);
+                        if (cfg.bg_color) |bg| {
+                            if (eff_bg == .default) {
+                                ov.bg_r = bg[0];
+                                ov.bg_g = bg[1];
+                                ov.bg_b = bg[2];
+                            }
+                        }
+                        break :blk ov;
+                    } else blk: {
+                        var dc = defaultCell(theme);
+                        if (cfg.bg_color) |bg| {
+                            dc.bg_r = bg[0];
+                            dc.bg_g = bg[1];
+                            dc.bg_b = bg[2];
+                        }
+                        break :blk dc;
+                    };
+                    overlay.bg_alpha = cfg.bg_opacity;
+                    c.g_popup_cells[ci] = overlay;
                 } else {
-                    // Padding zone — empty cell with theme background
-                    c.g_popup_cells[ci] = defaultCell(theme);
+                    // Padding zone
+                    var cell = defaultCell(theme);
+                    if (cfg.bg_color) |bg| {
+                        cell.bg_r = bg[0];
+                        cell.bg_g = bg[1];
+                        cell.bg_b = bg[2];
+                    }
+                    cell.bg_alpha = cfg.bg_opacity;
+                    c.g_popup_cells[ci] = cell;
                 }
                 ci += 1;
             }

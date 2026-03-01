@@ -597,6 +597,11 @@ pub fn run(
                 ),
                 .on_return_cmd = entry.on_return_cmd,
                 .inject_alt = entry.inject_alt,
+                .bg_opacity = if (entry.background_opacity) |o| @intFromFloat(o * 255.0) else 255,
+                .bg_color = if (entry.background.len == 7 and entry.background[0] == '#')
+                    popup_mod.parseHexColor(entry.background, .{ 0, 0, 0 })
+                else
+                    null,
             };
             popup_hotkeys[popup_config_count] = .{
                 .index = popup_config_count,

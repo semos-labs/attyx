@@ -76,6 +76,8 @@ pub const PopupConfigEntry = struct {
     border_color: []const u8, // "#RRGGBB" hex string
     on_return_cmd: ?[]const u8 = null, // command to run with popup output on exit 0
     inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
+    background_opacity: ?f32 = null, // 0.0 (transparent) – 1.0 (opaque)
+    background: []const u8 = "", // "#RRGGBB" hex color override; empty = use theme
     padding: ?u16 = null,
     padding_x: ?u16 = null,
     padding_y: ?u16 = null,
@@ -181,6 +183,7 @@ pub const AppConfig = struct {
                 alloc.free(e.height);
                 alloc.free(e.border);
                 alloc.free(e.border_color);
+                alloc.free(e.background);
                 if (e.on_return_cmd) |cmd| alloc.free(cmd);
             }
             alloc.free(entries);
@@ -674,6 +677,8 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                     const border_color_v = item.table.get("border_color");
                     const on_return_v = item.table.get("on_return_cmd");
                     const inject_alt_v = item.table.get("inject_alt");
+                    const bg_opacity_v = item.table.get("background_opacity");
+                    const bg_color_v = item.table.get("background");
                     entries[valid] = .{
                         .hotkey = try allocator.dupe(u8, hotkey_v.string),
                         .command = try allocator.dupe(u8, cmd_v.string),
@@ -683,6 +688,11 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                         .border_color = if (border_color_v != null and border_color_v.? == .string) try allocator.dupe(u8, border_color_v.?.string) else try allocator.dupe(u8, "#78829a"),
                         .on_return_cmd = if (on_return_v != null and on_return_v.? == .string) try allocator.dupe(u8, on_return_v.?.string) else null,
                         .inject_alt = if (inject_alt_v != null and inject_alt_v.? == .bool) inject_alt_v.?.bool else false,
+                        .background_opacity = if (bg_opacity_v) |bv| blk: {
+                            const raw: f64 = if (bv == .float) bv.float else if (bv == .int) @floatFromInt(bv.int) else break :blk null;
+                            break :blk if (raw >= 0.0 and raw <= 1.0) @as(f32, @floatCast(raw)) else null;
+                        } else null,
+                        .background = if (bg_color_v != null and bg_color_v.? == .string) try allocator.dupe(u8, bg_color_v.?.string) else try allocator.dupe(u8, ""),
                         .padding = tomlOptU16(item.table.get("padding")),
                         .padding_x = tomlOptU16(item.table.get("padding_x")),
                         .padding_y = tomlOptU16(item.table.get("padding_y")),
@@ -702,6 +712,7 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                             allocator.free(e.height);
                             allocator.free(e.border);
                             allocator.free(e.border_color);
+                            allocator.free(e.background);
                             if (e.on_return_cmd) |cmd| allocator.free(cmd);
                         }
                         allocator.free(old);
