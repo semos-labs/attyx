@@ -64,6 +64,10 @@ pub const TerminalState = struct {
     response_buf: [512]u8 = undefined,
     response_len: usize = 0,
 
+    // -- Inject buffer (OSC 7337 write-main, consumed by app layer) ----------
+    inject_buf: [512]u8 = undefined,
+    inject_len: usize = 0,
+
     // -- Scrollback (main screen only, not alt) ------------------------------
     scrollback: scrollback_mod.Scrollback,
     viewport_offset: usize = 0,
@@ -138,7 +142,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main => {},
             else => {
                 self.wrap_next = false;
             },
@@ -242,6 +246,7 @@ pub const TerminalState = struct {
             .kitty_push_flags => |flags| self.kittyPushFlags(flags),
             .kitty_pop_flags => |n| self.kittyPopFlags(n),
             .kitty_query_flags => self.respondKittyFlags(),
+            .inject_into_main => |data| self.appendInject(data),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -521,6 +526,25 @@ pub const TerminalState = struct {
         const len = self.response_len;
         self.response_len = 0;
         return self.response_buf[0..len];
+    }
+
+    /// Copy data into the inject buffer (OSC 7337 write-main payload).
+    fn appendInject(self: *TerminalState, data: []const u8) void {
+        const avail = self.inject_buf.len - self.inject_len;
+        const n = @min(data.len, avail);
+        if (n > 0) {
+            @memcpy(self.inject_buf[self.inject_len..][0..n], data[0..n]);
+            self.inject_len += n;
+        }
+    }
+
+    /// Drain the inject buffer. Returns the pending payload and resets.
+    /// Caller writes these bytes to the main terminal PTY.
+    pub fn drainMainInject(self: *TerminalState) ?[]const u8 {
+        if (self.inject_len == 0) return null;
+        const len = self.inject_len;
+        self.inject_len = 0;
+        return self.inject_buf[0..len];
     }
 
     // -- Graphics (state_graphics.zig) ------------------------------------

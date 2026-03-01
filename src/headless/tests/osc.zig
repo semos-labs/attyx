@@ -213,3 +213,68 @@ test "setTitle stores and replaces title" {
     t.apply(.{ .set_title = "World" });
     try std.testing.expectEqualStrings("World", t.title.?);
 }
+
+// ===========================================================================
+// OSC 7337 — inject into main terminal
+// ===========================================================================
+
+test "parser: OSC 7337 write-main emits inject_into_main action" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;write-main;ls -la\n\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| {
+            action = a;
+        }
+    }
+    try std.testing.expect(action != null);
+    switch (action.?) {
+        .inject_into_main => |payload| {
+            try std.testing.expectEqualStrings("ls -la\n", payload);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parser: OSC 7337 unknown sub-command returns nop" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;unknown-cmd;payload\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| {
+            action = a;
+        }
+    }
+    try std.testing.expect(action != null);
+    try std.testing.expect(action.? == .nop);
+}
+
+test "state: inject buffer fills and drains correctly" {
+    const alloc = std.testing.allocator;
+    var t = try TerminalState.init(alloc, 2, 4);
+    defer t.deinit();
+
+    // Initially empty
+    try std.testing.expect(t.drainMainInject() == null);
+
+    // Apply inject action
+    t.apply(.{ .inject_into_main = "echo hello\n" });
+    const drained = t.drainMainInject();
+    try std.testing.expect(drained != null);
+    try std.testing.expectEqualStrings("echo hello\n", drained.?);
+
+    // Second drain returns null
+    try std.testing.expect(t.drainMainInject() == null);
+}
+
+test "integration: OSC 7337 through engine produces drainMainInject payload" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 20);
+    defer engine.deinit();
+
+    engine.feed("\x1b]7337;write-main;tmux attach -t 0\n\x07");
+
+    const inject = engine.state.drainMainInject();
+    try std.testing.expect(inject != null);
+    try std.testing.expectEqualStrings("tmux attach -t 0\n", inject.?);
+}

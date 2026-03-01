@@ -165,4 +165,8 @@ pub const Action = union(enum) {
     kitty_pop_flags: u8,
     /// CSI ? u — Kitty keyboard protocol: query current flags.
     kitty_query_flags,
+
+    /// OSC 7337;write-main — inject payload into main terminal PTY.
+    /// Payload borrowed from parser osc_buf, valid until next parser call.
+    inject_into_main: []const u8,
 };
