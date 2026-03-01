@@ -75,6 +75,7 @@ pub const PopupConfigEntry = struct {
     border: []const u8, // "single", "double", "rounded", "heavy", "none"
     border_color: []const u8, // "#RRGGBB" hex string
     on_return_cmd: ?[]const u8 = null, // command to run with popup output on exit 0
+    inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
     padding: ?u16 = null,
     padding_x: ?u16 = null,
     padding_y: ?u16 = null,
@@ -672,6 +673,7 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                     const border_v = item.table.get("border");
                     const border_color_v = item.table.get("border_color");
                     const on_return_v = item.table.get("on_return_cmd");
+                    const inject_alt_v = item.table.get("inject_alt");
                     entries[valid] = .{
                         .hotkey = try allocator.dupe(u8, hotkey_v.string),
                         .command = try allocator.dupe(u8, cmd_v.string),
@@ -680,6 +682,7 @@ fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8
                         .border = if (border_v != null and border_v.? == .string) try allocator.dupe(u8, border_v.?.string) else try allocator.dupe(u8, "single"),
                         .border_color = if (border_color_v != null and border_color_v.? == .string) try allocator.dupe(u8, border_color_v.?.string) else try allocator.dupe(u8, "#78829a"),
                         .on_return_cmd = if (on_return_v != null and on_return_v.? == .string) try allocator.dupe(u8, on_return_v.?.string) else null,
+                        .inject_alt = if (inject_alt_v != null and inject_alt_v.? == .bool) inject_alt_v.?.bool else false,
                         .padding = tomlOptU16(item.table.get("padding")),
                         .padding_x = tomlOptU16(item.table.get("padding_x")),
                         .padding_y = tomlOptU16(item.table.get("padding_y")),

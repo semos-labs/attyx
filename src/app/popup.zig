@@ -70,6 +70,7 @@ pub const PopupConfig = struct {
     border_fg: [3]u8, // r, g, b
     pad: Padding = .{},
     on_return_cmd: ?[]const u8 = null, // command prefix run with grid text on exit 0
+    inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
 };
 
 pub const PopupState = struct {
@@ -476,6 +477,10 @@ pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
 extern "c" fn _exit(status: c_int) noreturn;
+extern "c" fn getuid() c_uint;
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 /// Execute `cmd_prefix value` in a detached subprocess (fire-and-forget).
 /// Uses double-fork to avoid zombies. Used when the main terminal is in
@@ -494,9 +499,28 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
         // First child: double-fork to detach
         const pid2 = posix.fork() catch _exit(1);
         if (pid2 != 0) _exit(0);
-        // Grandchild: exec the command
+
+        // Grandchild: set up env and exec the command.
+        // Detect tmux socket so tools like sesh can switch sessions
+        // even when attyx itself wasn't launched from tmux.
+        if (getenv("TMUX") == null) {
+            const uid = getuid();
+            const base = getenv("TMUX_TMPDIR") orelse "/tmp";
+            var socket_buf: [256]u8 = undefined;
+            const sp = std.fmt.bufPrintZ(&socket_buf, "{s}/tmux-{d}/default", .{ base, uid }) catch null;
+            if (sp) |socket_path| {
+                if (access(socket_path, 0) == 0) {
+                    var env_buf: [512]u8 = undefined;
+                    const tv = std.fmt.bufPrintZ(&env_buf, "{s},0,0", .{socket_path}) catch null;
+                    if (tv) |tmux_val| _ = setenv("TMUX", tmux_val, 1);
+                }
+            }
+        }
+
+        // -i sources .zshrc/.bashrc for PATH (homebrew, nix, etc.)
+        const i_flag: [:0]const u8 = "-i";
         const c_flag: [:0]const u8 = "-c";
-        var argv_ptrs = [_]?[*:0]const u8{ shell_z.ptr, c_flag.ptr, full.ptr, null };
+        var argv_ptrs = [_]?[*:0]const u8{ shell_z.ptr, i_flag.ptr, c_flag.ptr, full.ptr, null };
         _ = execvp(argv_ptrs[0].?, @ptrCast(&argv_ptrs));
         _exit(127);
     }

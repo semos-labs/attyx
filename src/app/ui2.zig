@@ -596,6 +596,7 @@ pub fn run(
                     entry.padding_right,
                 ),
                 .on_return_cmd = entry.on_return_cmd,
+                .inject_alt = entry.inject_alt,
             };
             popup_hotkeys[popup_config_count] = .{
                 .index = popup_config_count,
@@ -2856,13 +2857,20 @@ fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
                     cmd, text, ctxEngine(ctx).state.alt_active,
                 });
                 defer ctx.allocator.free(text);
-                // Always inject into the main PTY. Even inside tmux/sesh
-                // (which use alt screen), the multiplexer forwards input
-                // to the active pane's shell.
-                _ = ctxPty(ctx).writeToPty(cmd) catch {};
-                _ = ctxPty(ctx).writeToPty(" ") catch {};
-                _ = ctxPty(ctx).writeToPty(text) catch {};
-                _ = ctxPty(ctx).writeToPty("\n") catch {};
+                // Skip injection when alt screen is active (a TUI would
+                // swallow the text) unless inject_alt is set in the popup
+                // config — multiplexers like tmux/sesh forward PTY input
+                // to the active pane, so injection works there.
+                if (ctxEngine(ctx).state.alt_active and !pcfg.inject_alt) {
+                    // Alt screen with inject_alt off — run as detached
+                    // subprocess so we don't send text into a TUI.
+                    popup_mod.execDetached(ctx.allocator, cmd, text);
+                } else {
+                    _ = ctxPty(ctx).writeToPty(cmd) catch {};
+                    _ = ctxPty(ctx).writeToPty(" ") catch {};
+                    _ = ctxPty(ctx).writeToPty(text) catch {};
+                    _ = ctxPty(ctx).writeToPty("\n") catch {};
+                }
             } else {
                 logging.info("popup", "on_return_cmd: no captured stdout", .{});
             }
