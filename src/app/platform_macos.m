@@ -291,6 +291,9 @@ void attyx_spawn_new_window(void) {
 @implementation AttyxAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+    // Disable accent picker so holding a key sends repeats instead
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ApplePressAndHoldEnabled"];
+
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
         NSLog(@"Metal is not supported on this machine");

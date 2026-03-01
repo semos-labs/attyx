@@ -15,6 +15,10 @@ enum {
     KC_BACKSPACE, KC_ENTER, KC_TAB, KC_ESCAPE,
     KC_F1, KC_F2, KC_F3, KC_F4, KC_F5, KC_F6,
     KC_F7, KC_F8, KC_F9, KC_F10, KC_F11, KC_F12,
+    KC_KP_0, KC_KP_1, KC_KP_2, KC_KP_3, KC_KP_4,
+    KC_KP_5, KC_KP_6, KC_KP_7, KC_KP_8, KC_KP_9,
+    KC_KP_DECIMAL, KC_KP_DIVIDE, KC_KP_MULTIPLY,
+    KC_KP_MINUS, KC_KP_PLUS, KC_KP_ENTER, KC_KP_EQUAL,
     KC_CODEPOINT,
 };
 
@@ -59,6 +63,23 @@ static uint16_t mapGlfwKey(int key) {
         case GLFW_KEY_F10:       return KC_F10;
         case GLFW_KEY_F11:       return KC_F11;
         case GLFW_KEY_F12:       return KC_F12;
+        case GLFW_KEY_KP_0:        return KC_KP_0;
+        case GLFW_KEY_KP_1:        return KC_KP_1;
+        case GLFW_KEY_KP_2:        return KC_KP_2;
+        case GLFW_KEY_KP_3:        return KC_KP_3;
+        case GLFW_KEY_KP_4:        return KC_KP_4;
+        case GLFW_KEY_KP_5:        return KC_KP_5;
+        case GLFW_KEY_KP_6:        return KC_KP_6;
+        case GLFW_KEY_KP_7:        return KC_KP_7;
+        case GLFW_KEY_KP_8:        return KC_KP_8;
+        case GLFW_KEY_KP_9:        return KC_KP_9;
+        case GLFW_KEY_KP_DECIMAL:  return KC_KP_DECIMAL;
+        case GLFW_KEY_KP_DIVIDE:   return KC_KP_DIVIDE;
+        case GLFW_KEY_KP_MULTIPLY: return KC_KP_MULTIPLY;
+        case GLFW_KEY_KP_SUBTRACT: return KC_KP_MINUS;
+        case GLFW_KEY_KP_ADD:      return KC_KP_PLUS;
+        case GLFW_KEY_KP_ENTER:    return KC_KP_ENTER;
+        case GLFW_KEY_KP_EQUAL:    return KC_KP_EQUAL;
         default:                 return UINT16_MAX;
     }
 }
