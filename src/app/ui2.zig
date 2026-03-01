@@ -77,7 +77,7 @@ const PtyThreadCtx = struct {
     overlay_mgr: ?*OverlayManager = null,
     // Popup terminal
     popup_state: ?*popup_mod.PopupState = null,
-    popup_configs: [4]popup_mod.PopupConfig = undefined,
+    popup_configs: [32]popup_mod.PopupConfig = undefined,
     popup_config_count: u8 = 0,
     // Update notification
     check_updates: bool = false,
@@ -319,7 +319,9 @@ export fn attyx_split_drag_end() void {
 // ---------------------------------------------------------------------------
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;
-var g_popup_toggle_request: [4]i32 = .{ 0, 0, 0, 0 };
+var g_popup_toggle_request: [32]i32 = .{0} ** 32;
+var g_popup_dead: i32 = 0; // 1 = child exited with error, popup still displayed
+var g_popup_close_request: i32 = 0; // input thread requests close of dead popup
 
 // Ensure keybind exports (attyx_keybind_match, g_keybind_matched_seq*) are linked
 comptime {
@@ -331,12 +333,19 @@ var g_popup_pty_master: posix.fd_t = -1; // popup PTY fd for input routing
 var g_popup_engine: ?*Engine = null; // popup engine for key encoding
 
 export fn attyx_popup_toggle(index: c_int) void {
-    if (index < 0 or index >= 4) return;
+    if (index < 0 or index >= 32) return;
     logging.info("popup", "toggle request: index={d}", .{index});
     @atomicStore(i32, &g_popup_toggle_request[@intCast(@as(c_uint, @bitCast(index)))], 1, .seq_cst);
 }
 
 export fn attyx_popup_send_input(bytes: [*]const u8, len: c_int) void {
+    // Dead popup: Ctrl-C (ETX byte) closes it
+    if (@atomicLoad(i32, &g_popup_dead, .seq_cst) != 0) {
+        if (len == 1 and bytes[0] == 0x03) {
+            @atomicStore(i32, &g_popup_close_request, 1, .seq_cst);
+        }
+        return;
+    }
     const fd = g_popup_pty_master;
     if (fd < 0 or len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
@@ -344,6 +353,19 @@ export fn attyx_popup_send_input(bytes: [*]const u8, len: c_int) void {
 }
 
 export fn attyx_popup_handle_key(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: u32) void {
+    // Dead popup: Ctrl-C closes it
+    if (@atomicLoad(i32, &g_popup_dead, .seq_cst) != 0) {
+        const key_encode = attyx.key_encode;
+        const key: key_encode.KeyCode = std.meta.intToEnum(key_encode.KeyCode, key_raw) catch return;
+        const mods: key_encode.Modifiers = @bitCast(mods_raw);
+        if (key == .codepoint and mods.ctrl and !mods.shift and !mods.alt and
+            (codepoint_raw == 'c' or codepoint_raw == 'C'))
+        {
+            @atomicStore(i32, &g_popup_close_request, 1, .seq_cst);
+        }
+        return;
+    }
+
     const fd = g_popup_pty_master;
     if (fd < 0) return;
     const eng = g_popup_engine orelse return;
@@ -552,12 +574,12 @@ pub fn run(
     defer overlay_mgr.deinit();
 
     // Parse popup configs and build keybind table
-    var popup_configs: [4]popup_mod.PopupConfig = undefined;
+    var popup_configs: [32]popup_mod.PopupConfig = undefined;
     var popup_config_count: u8 = 0;
-    var popup_hotkeys: [4]keybinds_mod.PopupHotkey = undefined;
+    var popup_hotkeys: [32]keybinds_mod.PopupHotkey = undefined;
     if (config.popup_configs) |entries| {
         for (entries) |entry| {
-            if (popup_config_count >= 4) break;
+            if (popup_config_count >= 32) break;
             popup_configs[popup_config_count] = .{
                 .command = entry.command,
                 .width_pct = popup_mod.parsePct(entry.width, 80),
@@ -573,6 +595,7 @@ pub fn run(
                     entry.padding_left,
                     entry.padding_right,
                 ),
+                .on_return_cmd = entry.on_return_cmd,
             };
             popup_hotkeys[popup_config_count] = .{
                 .index = popup_config_count,
@@ -2085,10 +2108,15 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Popup toggle handling
         processPopupToggle(ctx);
 
+        // Close dead popup on Ctrl-C from input thread
+        if (@atomicRmw(i32, &g_popup_close_request, .Xchg, 0, .seq_cst) != 0) {
+            closePopup(ctx);
+        }
+
         // Check popup child exit
         if (ctx.popup_state) |ps| {
-            if (ps.pane.childExited()) {
-                closePopup(ctx);
+            if (!ps.child_exited and ps.pane.childExited()) {
+                handlePopupExit(ctx, ps);
             }
         }
 
@@ -2224,13 +2252,15 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 }
             }
         }
-        // Add popup PTY if active
+        // Add popup PTY if active and child still running
         const popup_fd_idx = nfds;
         if (ctx.popup_state) |ps| {
-            fds[nfds] = .{ .fd = ps.pane.pty.master, .events = POLLIN, .revents = 0 };
-            fd_panes[nfds] = ps.pane;
-            fd_tab_idx[nfds] = 0xFF;
-            nfds += 1;
+            if (!ps.child_exited) {
+                fds[nfds] = .{ .fd = ps.pane.pty.master, .events = POLLIN, .revents = 0 };
+                fd_panes[nfds] = ps.pane;
+                fd_tab_idx[nfds] = 0xFF;
+                nfds += 1;
+            }
         }
 
         _ = posix.poll(fds[0..nfds], 16) catch break;
@@ -2269,11 +2299,18 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     if (n == 0) break;
                     popup_got_data = true;
                     ps.feed(buf[0..n]);
+                    // Forward OSC 7337 write-main payload to the main terminal PTY
+                    if (ps.pane.engine.state.drainMainInject()) |inject| {
+                        _ = ctxPty(ctx).writeToPty(inject) catch {};
+                    }
                 }
             }
             // Check popup child exit (POLLHUP)
             if (popup_fd_idx < nfds and fds[popup_fd_idx].revents & POLLHUP != 0) {
-                closePopup(ctx);
+                if (!ps.child_exited) {
+                    _ = ps.pane.childExited(); // reap child to capture exit status
+                    handlePopupExit(ctx, ps);
+                }
             } else if (popup_got_data) {
                 const pcfg = ctx.popup_configs[ps.config_index];
                 ps.publishCells(&ctx.active_theme, pcfg);
@@ -2781,10 +2818,68 @@ fn closePopup(ctx: *PtyThreadCtx) void {
     const ps = ctx.popup_state orelse return;
     g_popup_pty_master = -1;
     g_popup_engine = null;
+    @atomicStore(i32, &g_popup_dead, 0, .seq_cst);
     ps.deinit();
     ctx.allocator.destroy(ps);
     ctx.popup_state = null;
     popup_mod.clearBridgeState();
+}
+
+/// Handle popup child exit: close immediately on success, keep visible on error.
+fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
+    // Block until child fully exits — POLLHUP can arrive before waitpid(WNOHANG) sees it
+    ps.pane.pty.waitForExit();
+    const code = ps.pane.pty.exitCode() orelse 1;
+
+    // Drain any remaining data from the PTY buffer.
+    var drain_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = ps.pane.pty.read(&drain_buf) catch break;
+        if (n == 0) break;
+        ps.feed(drain_buf[0..n]);
+        // Forward any pending OSC 7337 inject
+        if (ps.pane.engine.state.drainMainInject()) |inject| {
+            _ = ctxPty(ctx).writeToPty(inject) catch {};
+        }
+    }
+
+    logging.info("popup", "exit code={d} stdout_fd={d} alt_active={}", .{
+        code, ps.pane.pty.stdout_read_fd, ctxEngine(ctx).state.alt_active,
+    });
+    if (code == 0) {
+        // On success: run on_return_cmd with captured stdout if configured
+        const pcfg = ctx.popup_configs[ps.config_index];
+        if (pcfg.on_return_cmd) |cmd| {
+            const captured = popup_mod.readCapturedStdout(ctx.allocator, ps.pane.pty.stdout_read_fd);
+            if (captured) |text| {
+                logging.info("popup", "on_return_cmd: cmd=\"{s}\" value=\"{s}\" alt={}", .{
+                    cmd, text, ctxEngine(ctx).state.alt_active,
+                });
+                defer ctx.allocator.free(text);
+                // Always inject into the main PTY. Even inside tmux/sesh
+                // (which use alt screen), the multiplexer forwards input
+                // to the active pane's shell.
+                _ = ctxPty(ctx).writeToPty(cmd) catch {};
+                _ = ctxPty(ctx).writeToPty(" ") catch {};
+                _ = ctxPty(ctx).writeToPty(text) catch {};
+                _ = ctxPty(ctx).writeToPty("\n") catch {};
+            } else {
+                logging.info("popup", "on_return_cmd: no captured stdout", .{});
+            }
+        }
+        closePopup(ctx);
+        return;
+    }
+    // Non-zero exit: keep popup visible so the user can read the error output.
+    ps.child_exited = true;
+    g_popup_pty_master = -1;
+    g_popup_engine = null;
+    @atomicStore(i32, &g_popup_dead, 1, .seq_cst);
+    // Publish final cell state
+    const pcfg = ctx.popup_configs[ps.config_index];
+    ps.publishCells(&ctx.active_theme, pcfg);
+    ps.publishImagePlacements(pcfg);
+    logging.info("popup", "command exited with code {d}, keeping popup open (Ctrl-C to close)", .{code});
 }
 
 fn doReloadConfig(ctx: *PtyThreadCtx) void {

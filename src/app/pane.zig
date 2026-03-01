@@ -23,6 +23,22 @@ pub const Pane = struct {
         argv: ?[]const [:0]const u8,
         cwd: ?[*:0]const u8,
     ) !Pane {
+        return spawnOpts(allocator, rows, cols, argv, cwd, .{});
+    }
+
+    pub const SpawnOpts = struct {
+        capture_stdout: bool = false,
+        preserve_tmux: bool = false,
+    };
+
+    pub fn spawnOpts(
+        allocator: Allocator,
+        rows: u16,
+        cols: u16,
+        argv: ?[]const [:0]const u8,
+        cwd: ?[*:0]const u8,
+        opts: SpawnOpts,
+    ) !Pane {
         var engine = try Engine.init(allocator, rows, cols);
         errdefer engine.deinit();
 
@@ -31,6 +47,8 @@ pub const Pane = struct {
             .cols = cols,
             .argv = argv,
             .cwd = cwd,
+            .capture_stdout = opts.capture_stdout,
+            .preserve_tmux = opts.preserve_tmux,
         });
 
         return .{
