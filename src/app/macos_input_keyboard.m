@@ -301,6 +301,7 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     unsigned short kc = event.keyCode;
     uint16_t mapped = mapKeyCode(kc);
     uint8_t mods = buildMods(flags);
+    uint8_t et = event.isARepeat ? 2 : 1;
 
     // Route special keys to popup or main terminal
     void (*handle_key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
@@ -308,7 +309,7 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
 
     // Special keys handled by the encoder
     if (mapped != UINT16_MAX) {
-        handle_key_fn(mapped, mods, 1, 0);
+        handle_key_fn(mapped, mods, et, 0);
         return YES;
     }
 
@@ -317,7 +318,7 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
             uint32_t cp = [chars characterAtIndex:0];
-            handle_key_fn(KC_CODEPOINT, mods, 1, cp);
+            handle_key_fn(KC_CODEPOINT, mods, et, cp);
             return YES;
         }
         if (ctrl) return YES;
@@ -349,6 +350,20 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     }
 
     if ([self handleSpecialKey:event]) return;
+
+    // Repeat bypass: send repeated character keys directly to the encoder,
+    // skipping interpretKeyEvents (which would trigger the accent picker).
+    if (event.isARepeat) {
+        NSString* chars = event.characters;
+        if (chars.length > 0) {
+            uint32_t cp = [chars characterAtIndex:0];
+            uint8_t mods = buildMods(event.modifierFlags);
+            void (*handle_key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
+                g_popup_active ? attyx_popup_handle_key : attyx_handle_key;
+            handle_key_fn(KC_CODEPOINT, mods, 2, cp);
+            return;
+        }
+    }
 
     [self interpretKeyEvents:@[event]];
 }
