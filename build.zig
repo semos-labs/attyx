@@ -87,34 +87,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("themes/themes.zig"),
     });
 
-    // -----------------------------------------------------------------------
-    // CLI binary — built here so we can embed it in the main executable below
-    // -----------------------------------------------------------------------
-    const ai_auth_mod = b.createModule(.{
-        .root_source_file = b.path("src/overlay/ai_auth.zig"),
+    const cli_commands_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli/main.zig"),
+        .imports = &.{
+            .{ .name = "attyx", .module = mod },
+        },
     });
-
-    const cli = b.addExecutable(.{
-        .name = "attyx-cli",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli/main.zig"),
-            .target = target,
-            .optimize = .ReleaseSmall,
-            .imports = &.{
-                .{ .name = "build_options", .module = build_options.createModule() },
-                .{ .name = "ai_auth", .module = ai_auth_mod },
-            },
-        }),
-    });
-    cli.root_module.linkSystemLibrary("c", .{});
-
-    // Embed the compiled CLI binary so the main app can extract it at startup
-    const cli_embed_wf = b.addWriteFiles();
-    _ = cli_embed_wf.addCopyFile(cli.getEmittedBin(), "attyx-cli-bin");
-    const cli_embed_src = cli_embed_wf.add("cli_embed.zig",
-        \\pub const data: []const u8 = @embedFile("attyx-cli-bin");
-    );
-    const cli_embed_mod = b.createModule(.{ .root_source_file = cli_embed_src });
 
     const exe = b.addExecutable(.{
         .name = "attyx",
@@ -127,7 +105,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "toml", .module = toml_mod },
                 .{ .name = "app_icon", .module = icon_mod },
                 .{ .name = "builtin_themes", .module = themes_mod },
-                .{ .name = "cli_binary", .module = cli_embed_mod },
+                .{ .name = "cli_commands", .module = cli_commands_mod },
             },
         }),
     });
@@ -198,20 +176,6 @@ pub fn build(b: *std.Build) void {
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
-
-    b.installArtifact(cli);
-
-    // `zig build install-cli` — copies the CLI binary to ~/.attyx/bin/attyx
-    const install_cli_step = b.step("install-cli", "Install the attyx CLI to ~/.attyx/bin/attyx");
-    const copy_cli = b.addInstallFile(cli.getEmittedBin(), "../attyx-cli-tmp");
-    const install_cli_cmd = b.addSystemCommand(&.{
-        "/bin/sh", "-c",
-        "mkdir -p \"$HOME/.attyx/bin\" && cp \"$1\" \"$HOME/.attyx/bin/attyx\"",
-        "--",
-    });
-    install_cli_cmd.addFileArg(cli.getEmittedBin());
-    install_cli_cmd.step.dependOn(&copy_cli.step);
-    install_cli_step.dependOn(&install_cli_cmd.step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).

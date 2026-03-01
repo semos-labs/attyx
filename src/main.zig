@@ -1,9 +1,15 @@
 const std = @import("std");
+const attyx = @import("attyx");
 const cli = @import("config/cli.zig");
 const config_mod = @import("config/config.zig");
 const ui2 = @import("app/ui2.zig");
 const logging = @import("logging/log.zig");
-const cli_binary = @import("cli_binary");
+const cli_commands = @import("cli_commands");
+
+const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
+    "https://app.semos.sh"
+else
+    "http://localhost:8085";
 
 pub const std_options: std.Options = .{
     .logFn = logging.stdLogFn,
@@ -22,6 +28,28 @@ pub fn main() !void {
     switch (result.action) {
         .show_help => {
             cli.printUsage();
+            return;
+        },
+        .login => {
+            cli_commands.doLogin(allocator, base_url) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: login failed: {s}\n", .{@errorName(err)}) catch "error: login failed\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
+            return;
+        },
+        .device => {
+            cli_commands.doDevice(allocator, base_url) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: {s}\n", .{@errorName(err)}) catch "error: failed to get device info\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
+            return;
+        },
+        .uninstall => {
+            cli_commands.doUninstall();
             return;
         },
         .print_config => {
@@ -49,8 +77,6 @@ pub fn main() !void {
         logging.Level.info;
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
-
-    installCli(allocator);
 
     try ui2.run(merged, result.no_config, result.config_path, args);
 }
@@ -85,58 +111,6 @@ fn loadMergedConfig(
 fn fatal(msg: []const u8) noreturn {
     std.debug.print("error: {s}\n", .{msg});
     std.process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// Embedded CLI auto-install
-// ---------------------------------------------------------------------------
-
-fn installCli(allocator: std.mem.Allocator) void {
-    installCliInner(allocator) catch |err| {
-        logging.warn("cli", "failed to install CLI binary: {}", .{err});
-    };
-}
-
-fn installCliInner(allocator: std.mem.Allocator) !void {
-    const home = std.posix.getenv("HOME") orelse return;
-    const bin_dir = try std.fmt.allocPrint(allocator, "{s}/.attyx/bin", .{home});
-    defer allocator.free(bin_dir);
-    const hash_path = try std.fmt.allocPrint(allocator, "{s}/.cli-hash", .{bin_dir});
-    defer allocator.free(hash_path);
-    const bin_path = try std.fmt.allocPrint(allocator, "{s}/attyx", .{bin_dir});
-    defer allocator.free(bin_path);
-
-    // Compute hash of embedded binary at runtime (one-time, fast)
-    var hash_buf: [16]u8 = undefined;
-    const h = std.hash.Fnv1a_64.hash(cli_binary.data);
-    _ = std.fmt.bufPrint(&hash_buf, "{x:0>16}", .{h}) catch unreachable;
-
-    // Check if the currently installed binary is already up-to-date
-    if (hashMatches(hash_path, &hash_buf)) return;
-
-    // Ensure directory exists
-    std.fs.cwd().makePath(bin_dir) catch {};
-
-    // Write the binary
-    const file = try std.fs.cwd().createFile(bin_path, .{ .mode = 0o755 });
-    defer file.close();
-    try file.writeAll(cli_binary.data);
-
-    // Write the hash file
-    const hf = try std.fs.cwd().createFile(hash_path, .{});
-    defer hf.close();
-    try hf.writeAll(&hash_buf);
-
-    logging.info("cli", "installed attyx CLI to {s}", .{bin_path});
-}
-
-fn hashMatches(hash_path: []const u8, expected: *const [16]u8) bool {
-    const file = std.fs.cwd().openFile(hash_path, .{}) catch return false;
-    defer file.close();
-    var buf: [16]u8 = undefined;
-    const n = file.readAll(&buf) catch return false;
-    if (n != 16) return false;
-    return std.mem.eql(u8, &buf, expected);
 }
 
 test {

@@ -16,6 +16,9 @@ pub const Action = enum {
     run,
     print_config,
     show_help,
+    login,
+    device,
+    uninstall,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -37,6 +40,20 @@ pub fn parse(args: []const [:0]const u8) CliResult {
         .config = AppConfig{},
         .action = .run,
     };
+    // Detect bare subcommand as first arg (before any flags)
+    if (args.len > 1) {
+        const first = args[1];
+        if (std.mem.eql(u8, first, "login")) {
+            result.action = .login;
+            return result;
+        } else if (std.mem.eql(u8, first, "device")) {
+            result.action = .device;
+            return result;
+        } else if (std.mem.eql(u8, first, "uninstall")) {
+            result.action = .uninstall;
+            return result;
+        }
+    }
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -294,6 +311,12 @@ pub fn printUsage() void {
         \\
         \\Usage:
         \\  attyx [options]            Launch terminal (GPU-accelerated)
+        \\  attyx <command>            Run a subcommand
+        \\
+        \\Commands:
+        \\  login                      Authenticate with Attyx AI services
+        \\  device                     Show device and account info
+        \\  uninstall                  Remove config, auth tokens, and desktop entry
         \\
         \\Options:
         \\  --rows N                   Terminal rows (default: 24)
