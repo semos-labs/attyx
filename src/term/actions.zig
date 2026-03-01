@@ -169,4 +169,8 @@ pub const Action = union(enum) {
     /// OSC 7337;write-main — inject payload into main terminal PTY.
     /// Payload borrowed from parser osc_buf, valid until next parser call.
     inject_into_main: []const u8,
+
+    /// DCS tmux passthrough — un-doubled inner payload to re-feed.
+    /// Payload borrowed from parser apc_buf, valid until next parser call.
+    dcs_passthrough: []const u8,
 };

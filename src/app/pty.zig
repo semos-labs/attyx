@@ -96,6 +96,7 @@ pub const Pty = struct {
 
             _ = setenv("TERM", "xterm-256color", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);
+            _ = setenv("ATTYX", "1", 1);
             // Inject ~/.attyx/bin into PATH so the `attyx` CLI is available
             // inside the terminal session.
             if (getenv("HOME")) |home| {

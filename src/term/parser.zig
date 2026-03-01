@@ -16,6 +16,8 @@ pub const State = enum {
     str_ignore_escape,
     apc,
     apc_escape,
+    dcs,
+    dcs_escape,
 };
 
 /// Incremental VT parser.
@@ -72,6 +74,8 @@ pub const Parser = struct {
             .str_ignore_escape => self.onStrIgnoreEscape(byte),
             .apc => self.onApc(byte),
             .apc_escape => self.onApcEscape(byte),
+            .dcs => self.onDcs(byte),
+            .dcs_escape => self.onDcsEscape(byte),
         };
     }
 
@@ -93,8 +97,15 @@ pub const Parser = struct {
             '\r' => return .{ .control = .cr },
             0x08 => return .{ .control = .bs },
             '\t' => return .{ .control = .tab },
-            // C1 string-type controls (8-bit forms): DCS, SOS, PM.
-            0x90, 0x98, 0x9E => {
+            // C1 DCS (8-bit form) — may be tmux passthrough.
+            0x90 => {
+                self.state = .dcs;
+                self.apc_len = 0;
+                self.apc_overflow = false;
+                return null;
+            },
+            // C1 string-type controls (8-bit forms): SOS, PM.
+            0x98, 0x9E => {
                 self.state = .str_ignore;
                 return null;
             },
@@ -176,9 +187,16 @@ pub const Parser = struct {
                 self.state = .escape_charset;
                 return null;
             },
-            // DCS (ESC P), PM (ESC ^) — consume payload until ST.
-            'P', '^' => {
+            // PM (ESC ^) — consume payload until ST.
+            '^' => {
                 self.state = .str_ignore;
+                return null;
+            },
+            // DCS (ESC P) — may be tmux passthrough.
+            'P' => {
+                self.state = .dcs;
+                self.apc_len = 0;
+                self.apc_overflow = false;
                 return null;
             },
             // APC (ESC _) — may be a Kitty graphics command (ESC _ G ...).
@@ -260,6 +278,64 @@ pub const Parser = struct {
         // Payload after 'G' is the graphics command data.
         const payload = self.apc_buf[1..self.apc_len];
         return .{ .graphics_command = payload };
+    }
+
+    // -- DCS handler (tmux passthrough) ---------------------------------------
+
+    fn onDcs(self: *Parser, byte: u8) ?Action {
+        switch (byte) {
+            0x1B => {
+                self.state = .dcs_escape;
+                return null;
+            },
+            0x9C => return self.dispatchDcs(),
+            else => {
+                if (!self.apc_overflow) {
+                    if (self.apc_len < self.apc_buf.len) {
+                        self.apc_buf[self.apc_len] = byte;
+                        self.apc_len += 1;
+                    } else {
+                        self.apc_overflow = true;
+                    }
+                }
+                return null;
+            },
+        }
+    }
+
+    fn onDcsEscape(self: *Parser, byte: u8) ?Action {
+        if (byte == '\\') {
+            return self.dispatchDcs();
+        }
+        // ESC ESC → doubled ESC in tmux passthrough. Accumulate one ESC.
+        if (byte == 0x1B) {
+            if (!self.apc_overflow) {
+                if (self.apc_len < self.apc_buf.len) {
+                    self.apc_buf[self.apc_len] = 0x1B;
+                    self.apc_len += 1;
+                } else {
+                    self.apc_overflow = true;
+                }
+            }
+            self.state = .dcs;
+            return null;
+        }
+        // Not ST and not doubled ESC — ignore malformed sequence.
+        self.state = .dcs;
+        return null;
+    }
+
+    fn dispatchDcs(self: *Parser) Action {
+        self.state = .ground;
+        if (self.apc_overflow) return .nop;
+        const payload = self.apc_buf[0..self.apc_len];
+        const prefix = "tmux;";
+        if (payload.len >= prefix.len and
+            std.mem.eql(u8, payload[0..prefix.len], prefix))
+        {
+            return .{ .dcs_passthrough = payload[prefix.len..] };
+        }
+        return .nop;
     }
 
     // -- DCS / PM string ignore ----------------------------------------------

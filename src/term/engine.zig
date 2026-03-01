@@ -44,10 +44,28 @@ pub const Engine = struct {
             {
                 self.feedFiltered(byte);
             } else {
-                if (self.parser.next(byte)) |action| {
-                    self.state.apply(action);
-                }
+                self.feedOne(byte);
             }
+        }
+    }
+
+    fn feedOne(self: *Engine, byte: u8) void {
+        const action = self.parser.next(byte) orelse return;
+        switch (action) {
+            .dcs_passthrough => |inner| self.handleDcsPassthrough(inner),
+            else => self.state.apply(action),
+        }
+    }
+
+    /// Re-feed un-doubled tmux DCS passthrough payload through the parser.
+    /// The payload lives in apc_buf, so we copy it first since re-feeding
+    /// will reuse that buffer for inner APC (kitty graphics) commands.
+    fn handleDcsPassthrough(self: *Engine, inner: []const u8) void {
+        var buf: [Parser.apc_buf_size]u8 = undefined;
+        const n = @min(inner.len, buf.len);
+        @memcpy(buf[0..n], inner[0..n]);
+        for (buf[0..n]) |b| {
+            self.feedOne(b);
         }
     }
 
@@ -69,13 +87,9 @@ pub const Engine = struct {
         const buffered = self.tmux_match;
         self.tmux_match = 0;
         for (tmux_artifact[0..buffered]) |b| {
-            if (self.parser.next(b)) |action| {
-                self.state.apply(action);
-            }
+            self.feedOne(b);
         }
-        if (self.parser.next(byte)) |action| {
-            self.state.apply(action);
-        }
+        self.feedOne(byte);
     }
 };
 

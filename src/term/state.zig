@@ -142,7 +142,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough => {},
             else => {
                 self.wrap_next = false;
             },
@@ -247,6 +247,7 @@ pub const TerminalState = struct {
             .kitty_pop_flags => |n| self.kittyPopFlags(n),
             .kitty_query_flags => self.respondKittyFlags(),
             .inject_into_main => |data| self.appendInject(data),
+            .dcs_passthrough => {}, // handled by engine, never reaches here
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.

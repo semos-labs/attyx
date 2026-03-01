@@ -111,9 +111,23 @@ test "APC payload is consumed silently" {
         "A    \n");
 }
 
-test "DCS payload is consumed silently" {
-    try expectSnapshot(1, 5, "\x1bPtmux;stuff\x1b\\B",
+test "DCS non-tmux payload is consumed silently" {
+    try expectSnapshot(1, 5, "\x1bPsome;data\x1b\\B",
         "B    \n");
+}
+
+test "DCS tmux passthrough re-feeds inner content" {
+    // tmux passthrough wraps: ESC P tmux; <inner-with-doubled-ESC> ESC \
+    // Inner content is plain text "Hi" — should be printed.
+    try expectSnapshot(1, 5, "\x1bPtmux;Hi\x1b\\",
+        "Hi   \n");
+}
+
+test "DCS tmux passthrough un-doubles ESC" {
+    // Inner ESC is doubled: ESC ESC [ 1 m → un-doubled → ESC [ 1 m (bold SGR).
+    // Then "X" is printed bold. Verify "X" appears (SGR doesn't print).
+    try expectSnapshot(1, 5, "\x1bPtmux;\x1b\x1b[1mX\x1b\\",
+        "X    \n");
 }
 
 test "APC terminated by ST" {
