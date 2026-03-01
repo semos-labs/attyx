@@ -1,0 +1,5 @@
+#!/bin/sh
+# attyx-send — emit OSC 7337 to inject text into the main terminal PTY.
+# Usage: attyx-send <text>
+# Typically used inside an attyx popup command.
+printf '\033]7337;write-main;%s\007' "$*"

@@ -404,6 +404,15 @@ pub const Parser = struct {
         return self.onEscape(byte);
     }
 
+    fn dispatchOsc7337(rest: []const u8) Action {
+        // Format: "write-main;<payload>"
+        const prefix = "write-main;";
+        if (rest.len >= prefix.len and std.mem.eql(u8, rest[0..prefix.len], prefix)) {
+            return .{ .inject_into_main = rest[prefix.len..] };
+        }
+        return .nop;
+    }
+
     fn dispatchOsc(self: *Parser) Action {
         if (self.osc_overflow) return .nop;
         const payload = self.osc_buf[0..self.osc_len];
@@ -425,6 +434,7 @@ pub const Parser = struct {
         return switch (num) {
             0, 2 => .{ .set_title = rest },
             8 => csi.makeOscHyperlink(rest),
+            7337 => dispatchOsc7337(rest),
             else => .nop,
         };
     }

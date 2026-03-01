@@ -69,6 +69,8 @@ pub const PopupConfig = struct {
     border_style: BorderStyle,
     border_fg: [3]u8, // r, g, b
     pad: Padding = .{},
+    on_return_cmd: ?[]const u8 = null, // command prefix run with grid text on exit 0
+    inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
 };
 
 pub const PopupState = struct {
@@ -81,25 +83,32 @@ pub const PopupState = struct {
     outer_w: u16, // total including border
     outer_h: u16,
     allocator: std.mem.Allocator,
+    child_exited: bool = false, // true when command exited with non-zero code
 
     pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
 
-        // Build argv: $SHELL -c '<command>'
+        // Build argv: $SHELL -i -c '<command>'
+        // Interactive shell (-i) ensures .zshrc / .bashrc are sourced so
+        // PATH includes homebrew, nix, and other user-configured additions.
         const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
         const shell_z = try allocator.dupeZ(u8, shell_env);
         defer allocator.free(shell_z);
+        const i_flag: [:0]const u8 = "-i";
         const c_flag: [:0]const u8 = "-c";
         const cmd_z = try allocator.dupeZ(u8, cfg.command);
         defer allocator.free(cmd_z);
 
-        const argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
+        const argv = [_][:0]const u8{ shell_z, i_flag, c_flag, cmd_z };
 
         const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| allocator.free(z);
 
         const pane = try allocator.create(Pane);
-        pane.* = Pane.spawn(allocator, dims.rows, dims.cols, &argv, if (cwd_z) |z| z.ptr else null) catch |err| {
+        pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &argv, if (cwd_z) |z| z.ptr else null, .{
+            .capture_stdout = cfg.on_return_cmd != null,
+            .preserve_tmux = true,
+        }) catch |err| {
             allocator.destroy(pane);
             return err;
         };
@@ -418,6 +427,105 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
     const num = std.fmt.parseInt(u8, s[0 .. s.len - 1], 10) catch return default;
     if (num < 1 or num > 100) return default;
     return num;
+}
+
+/// Read captured stdout from the popup's pipe fd.
+/// Returns allocated text (caller owns) with trailing whitespace trimmed,
+/// or null if nothing was captured. Only works when capture_stdout was set.
+pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
+    if (fd == -1) return null;
+    var result: std.ArrayList(u8) = .{};
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = posix.read(fd, &buf) catch break;
+        if (n == 0) break;
+        result.appendSlice(allocator, buf[0..n]) catch {
+            result.deinit(allocator);
+            return null;
+        };
+    }
+    // Trim trailing whitespace/newlines
+    while (result.items.len > 0) {
+        const ch = result.items[result.items.len - 1];
+        if (ch == '\n' or ch == '\r' or ch == ' ' or ch == '\t') {
+            result.items.len -= 1;
+        } else break;
+    }
+    // Trim leading whitespace
+    var start: usize = 0;
+    while (start < result.items.len) {
+        const ch = result.items[start];
+        if (ch == ' ' or ch == '\t') {
+            start += 1;
+        } else break;
+    }
+    if (start > 0) {
+        std.mem.copyForwards(u8, result.items[0..result.items.len - start], result.items[start..result.items.len]);
+        result.items.len -= start;
+    }
+    if (result.items.len == 0) {
+        result.deinit(allocator);
+        return null;
+    }
+    return result.toOwnedSlice(allocator) catch {
+        result.deinit(allocator);
+        return null;
+    };
+}
+
+// C functions for detached subprocess execution
+extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
+extern "c" fn _exit(status: c_int) noreturn;
+extern "c" fn getuid() c_uint;
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+/// Execute `cmd_prefix value` in a detached subprocess (fire-and-forget).
+/// Uses double-fork to avoid zombies. Used when the main terminal is in
+/// alt screen and PTY injection would go to a TUI app instead of a shell.
+pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value: []const u8) void {
+    const full_slice = std.fmt.allocPrint(allocator, "{s} {s}", .{ cmd_prefix, value }) catch return;
+    defer allocator.free(full_slice);
+    const full = allocator.dupeZ(u8, full_slice) catch return;
+    defer allocator.free(full);
+    const shell = posix.getenv("SHELL") orelse "/bin/sh";
+    const shell_z = allocator.dupeZ(u8, shell) catch return;
+    defer allocator.free(shell_z);
+
+    const pid = posix.fork() catch return;
+    if (pid == 0) {
+        // First child: double-fork to detach
+        const pid2 = posix.fork() catch _exit(1);
+        if (pid2 != 0) _exit(0);
+
+        // Grandchild: set up env and exec the command.
+        // Detect tmux socket so tools like sesh can switch sessions
+        // even when attyx itself wasn't launched from tmux.
+        if (getenv("TMUX") == null) {
+            const uid = getuid();
+            const base = getenv("TMUX_TMPDIR") orelse "/tmp";
+            var socket_buf: [256]u8 = undefined;
+            const sp = std.fmt.bufPrintZ(&socket_buf, "{s}/tmux-{d}/default", .{ base, uid }) catch null;
+            if (sp) |socket_path| {
+                if (access(socket_path, 0) == 0) {
+                    var env_buf: [512]u8 = undefined;
+                    const tv = std.fmt.bufPrintZ(&env_buf, "{s},0,0", .{socket_path}) catch null;
+                    if (tv) |tmux_val| _ = setenv("TMUX", tmux_val, 1);
+                }
+            }
+        }
+
+        // -i sources .zshrc/.bashrc for PATH (homebrew, nix, etc.)
+        const i_flag: [:0]const u8 = "-i";
+        const c_flag: [:0]const u8 = "-c";
+        var argv_ptrs = [_]?[*:0]const u8{ shell_z.ptr, i_flag.ptr, c_flag.ptr, full.ptr, null };
+        _ = execvp(argv_ptrs[0].?, @ptrCast(&argv_ptrs));
+        _exit(127);
+    }
+    // Parent: wait for first child (exits immediately)
+    _ = waitpid(pid, null, 0);
 }
 
 /// Clear the popup bridge state (called when popup closes).

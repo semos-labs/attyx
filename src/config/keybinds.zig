@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const logging = @import("../logging/log.zig");
 
 // ---------------------------------------------------------------------------
 // KeyCode constants (must match C enums in macos_input_keyboard.m / linux_input.c
@@ -455,6 +456,7 @@ pub export fn attyx_keybind_match(key: u16, mods: u8, codepoint: u32) u8 {
             g_keybind_matched_seq = @ptrCast(&g_table.seq_buf[entry.seq_offset]);
             g_keybind_matched_seq_len = @intCast(entry.seq_len);
         }
+        logging.info("keybind", "matched: key={d} mods=0x{x:0>2} cp={d} -> action={d}", .{ key, mods, codepoint, @intFromEnum(entry.action) });
         return @intFromEnum(entry.action);
     }
     return 0;
