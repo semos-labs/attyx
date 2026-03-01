@@ -12,6 +12,10 @@ enum {
     KC_BACKSPACE, KC_ENTER, KC_TAB, KC_ESCAPE,
     KC_F1, KC_F2, KC_F3, KC_F4, KC_F5, KC_F6,
     KC_F7, KC_F8, KC_F9, KC_F10, KC_F11, KC_F12,
+    KC_KP_0, KC_KP_1, KC_KP_2, KC_KP_3, KC_KP_4,
+    KC_KP_5, KC_KP_6, KC_KP_7, KC_KP_8, KC_KP_9,
+    KC_KP_DECIMAL, KC_KP_DIVIDE, KC_KP_MULTIPLY,
+    KC_KP_MINUS, KC_KP_PLUS, KC_KP_ENTER, KC_KP_EQUAL,
     KC_CODEPOINT,
 };
 
@@ -43,6 +47,23 @@ static uint16_t mapKeyCode(unsigned short kc) {
         case kVK_F10:          return KC_F10;
         case kVK_F11:          return KC_F11;
         case kVK_F12:          return KC_F12;
+        case kVK_ANSI_Keypad0: return KC_KP_0;
+        case kVK_ANSI_Keypad1: return KC_KP_1;
+        case kVK_ANSI_Keypad2: return KC_KP_2;
+        case kVK_ANSI_Keypad3: return KC_KP_3;
+        case kVK_ANSI_Keypad4: return KC_KP_4;
+        case kVK_ANSI_Keypad5: return KC_KP_5;
+        case kVK_ANSI_Keypad6: return KC_KP_6;
+        case kVK_ANSI_Keypad7: return KC_KP_7;
+        case kVK_ANSI_Keypad8: return KC_KP_8;
+        case kVK_ANSI_Keypad9: return KC_KP_9;
+        case kVK_ANSI_KeypadDecimal:  return KC_KP_DECIMAL;
+        case kVK_ANSI_KeypadDivide:   return KC_KP_DIVIDE;
+        case kVK_ANSI_KeypadMultiply: return KC_KP_MULTIPLY;
+        case kVK_ANSI_KeypadMinus:    return KC_KP_MINUS;
+        case kVK_ANSI_KeypadPlus:     return KC_KP_PLUS;
+        case kVK_ANSI_KeypadEnter:    return KC_KP_ENTER;
+        case kVK_ANSI_KeypadEquals:   return KC_KP_EQUAL;
         default:               return UINT16_MAX;
     }
 }

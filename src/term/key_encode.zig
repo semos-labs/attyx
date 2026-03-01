@@ -37,6 +37,25 @@ pub const KeyCode = enum(u16) {
     f11,
     f12,
 
+    // Numpad keys
+    kp_0,
+    kp_1,
+    kp_2,
+    kp_3,
+    kp_4,
+    kp_5,
+    kp_6,
+    kp_7,
+    kp_8,
+    kp_9,
+    kp_decimal,
+    kp_divide,
+    kp_multiply,
+    kp_minus,
+    kp_plus,
+    kp_enter,
+    kp_equal,
+
     // A Unicode codepoint (printable key). The actual codepoint is in KeyEvent.codepoint.
     codepoint,
 };
@@ -77,6 +96,7 @@ pub const KeyEvent = struct {
 
 pub const EncoderState = struct {
     cursor_keys_app: bool = false,
+    keypad_app_mode: bool = false,
     kitty_flags: u5 = 0,
 };
 
@@ -136,6 +156,10 @@ fn encodeXterm(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const 
 
         .page_up, .page_down, .insert, .delete => {
             return encodeTildeKey(event.key, mods, out);
+        },
+
+        .kp_0, .kp_1, .kp_2, .kp_3, .kp_4, .kp_5, .kp_6, .kp_7, .kp_8, .kp_9, .kp_decimal, .kp_divide, .kp_multiply, .kp_minus, .kp_plus, .kp_enter, .kp_equal => {
+            return encodeNumpad(event.key, mods, enc_state.keypad_app_mode, out);
         },
 
         .codepoint => {
@@ -233,6 +257,60 @@ fn encodeTildeKey(key: KeyCode, mods: Modifiers, out: *[128]u8) []const u8 {
     return bufPrint(out, "\x1b[{d}~", .{code});
 }
 
+fn encodeNumpad(key: KeyCode, mods: Modifiers, app_mode: bool, out: *[128]u8) []const u8 {
+    // With modifiers, fall back to ASCII (matches xterm behavior — SS3 only unmodified)
+    if (!mods.any() and app_mode) {
+        const ss3_ch: u8 = switch (key) {
+            .kp_0 => 'p',
+            .kp_1 => 'q',
+            .kp_2 => 'r',
+            .kp_3 => 's',
+            .kp_4 => 't',
+            .kp_5 => 'u',
+            .kp_6 => 'v',
+            .kp_7 => 'w',
+            .kp_8 => 'x',
+            .kp_9 => 'y',
+            .kp_decimal => 'n',
+            .kp_minus => 'm',
+            .kp_multiply => 'j',
+            .kp_plus => 'k',
+            .kp_enter => 'M',
+            .kp_divide => 'o',
+            .kp_equal => 'X',
+            else => unreachable,
+        };
+        out[0] = 0x1b;
+        out[1] = 'O';
+        out[2] = ss3_ch;
+        return out[0..3];
+    }
+
+    // Normal mode (or modified): send ASCII character
+    const ascii: u8 = switch (key) {
+        .kp_0 => '0',
+        .kp_1 => '1',
+        .kp_2 => '2',
+        .kp_3 => '3',
+        .kp_4 => '4',
+        .kp_5 => '5',
+        .kp_6 => '6',
+        .kp_7 => '7',
+        .kp_8 => '8',
+        .kp_9 => '9',
+        .kp_decimal => '.',
+        .kp_divide => '/',
+        .kp_multiply => '*',
+        .kp_minus => '-',
+        .kp_plus => '+',
+        .kp_enter => '\r',
+        .kp_equal => '=',
+        else => unreachable,
+    };
+    out[0] = ascii;
+    return out[0..1];
+}
+
 fn encodeCodepoint(cp: u21, mods: Modifiers, out: *[128]u8) []const u8 {
     // Ctrl+letter → control byte
     if (mods.ctrl and !mods.alt and !mods.super_key) {
@@ -313,6 +391,10 @@ fn encodeKitty(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const 
             .f1, .f2, .f3, .f4 => return encodeFKey1to4(event.key, event.mods, out),
             .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => return encodeFKey5to12(event.key, event.mods, out),
             .page_up, .page_down, .insert, .delete => return encodeTildeKey(event.key, event.mods, out),
+            // Numpad keys always use CSI u in Kitty (distinct codepoints)
+            .kp_0, .kp_1, .kp_2, .kp_3, .kp_4, .kp_5, .kp_6, .kp_7, .kp_8, .kp_9, .kp_decimal, .kp_divide, .kp_multiply, .kp_minus, .kp_plus, .kp_enter, .kp_equal => {
+                return encodeKittyCSIu(event, enc_state, out);
+            },
             // Ambiguous keys use CSI u
             .enter, .tab, .backspace, .escape, .codepoint => {
                 return encodeKittyCSIu(event, enc_state, out);
@@ -375,6 +457,23 @@ fn kittyCodepoint(event: KeyEvent) u21 {
         .f10 => 57373,
         .f11 => 57374,
         .f12 => 57375,
+        .kp_0 => 57399,
+        .kp_1 => 57400,
+        .kp_2 => 57401,
+        .kp_3 => 57402,
+        .kp_4 => 57403,
+        .kp_5 => 57404,
+        .kp_6 => 57405,
+        .kp_7 => 57406,
+        .kp_8 => 57407,
+        .kp_9 => 57408,
+        .kp_decimal => 57409,
+        .kp_divide => 57410,
+        .kp_multiply => 57411,
+        .kp_minus => 57412,
+        .kp_plus => 57413,
+        .kp_enter => 57414,
+        .kp_equal => 57415,
         .codepoint => event.codepoint,
     };
 }
