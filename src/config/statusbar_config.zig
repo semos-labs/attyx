@@ -49,6 +49,10 @@ pub const StatusbarWidgetConfig = struct {
 pub const StatusbarConfig = struct {
     enabled: bool = false,
     position: StatusbarPosition = .bottom,
+    background_opacity: u8 = 0,
+    background_r: u8 = 30,
+    background_g: u8 = 30,
+    background_b: u8 = 40,
     widgets: [max_widgets]StatusbarWidgetConfig = undefined,
     widget_count: u8 = 0,
 };
@@ -91,6 +95,20 @@ pub fn parseStatusbar(
             return error.ConfigValidationError;
         }
     }
+    if (sb_table.get("background_opacity")) |v| {
+        if (v == .int) {
+            config.background_opacity = @intCast(@min(@max(v.int, 0), 255));
+        }
+    }
+    if (sb_table.get("background")) |v| {
+        if (v == .string) {
+            if (parseHexRgb(v.string)) |rgb| {
+                config.background_r = rgb[0];
+                config.background_g = rgb[1];
+                config.background_b = rgb[2];
+            }
+        }
+    }
 
     // Iterate all keys — sub-tables are widgets
     var it = sb_table.table.iterator();
@@ -119,15 +137,21 @@ pub fn parseStatusbar(
         }
 
         // All other keys are params
+        var int_buf: [32]u8 = undefined;
         var wit = widget_table.table.iterator();
         while (wit.next()) |wentry| {
             const wkey = wentry.key_ptr.*;
             if (std.mem.eql(u8, wkey, "side") or std.mem.eql(u8, wkey, "interval")) continue;
             if (widget.param_count >= max_params) break;
-            if (wentry.value_ptr.* == .string) {
+            const val_str: ?[]const u8 = switch (wentry.value_ptr.*) {
+                .string => |s| s,
+                .int => |v| std.fmt.bufPrint(&int_buf, "{d}", .{v}) catch null,
+                else => null,
+            };
+            if (val_str) |vs| {
                 widget.params[widget.param_count] = .{
                     .key = try allocator.dupe(u8, wkey),
-                    .value = try allocator.dupe(u8, wentry.value_ptr.string),
+                    .value = try allocator.dupe(u8, vs),
                 };
                 widget.param_count += 1;
             }
@@ -149,6 +173,16 @@ pub fn deinitStatusbar(allocator: std.mem.Allocator, config: *StatusbarConfig) v
             allocator.free(p.value);
         }
     }
+}
+
+/// Parse a "#rrggbb" or "rrggbb" hex string into [3]u8 {r, g, b}.
+fn parseHexRgb(s: []const u8) ?[3]u8 {
+    const hex = if (s.len > 0 and s[0] == '#') s[1..] else s;
+    if (hex.len != 6) return null;
+    const r = std.fmt.parseInt(u8, hex[0..2], 16) catch return null;
+    const g = std.fmt.parseInt(u8, hex[2..4], 16) catch return null;
+    const b = std.fmt.parseInt(u8, hex[4..6], 16) catch return null;
+    return .{ r, g, b };
 }
 
 // -------------------------------------------------------------------------

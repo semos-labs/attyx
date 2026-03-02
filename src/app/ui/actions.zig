@@ -286,6 +286,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
     publish.generateTabBar(ctx);
+    publish.generateStatusbar(ctx);
     publish.publishOverlays(ctx);
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();

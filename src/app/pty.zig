@@ -309,7 +309,11 @@ pub const Pty = struct {
             \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
             \\fi
             \\unset __ATTYX_BIN_DIR
+            \\# OSC 7: report cwd on every directory change
+            \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
+            \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
             \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
+            \\__attyx_chpwd
             \\
         ;
         // Use raw C open/write since we're in a fork child

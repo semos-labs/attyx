@@ -221,7 +221,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
 
         int bgVertCount = total * 6;
         BOOL drawCursor = curVisible && _blinkOn
-                          && curRow >= 0 && curRow < visibleRows && curCol >= 0 && curCol < cols;
+                          && curRow >= g_grid_top_offset && curRow < (g_grid_top_offset + visibleRows) && curCol >= 0 && curCol < cols;
         if (drawCursor) {
             float cx0 = offX + curCol * gw;
             float cy0 = baseOffY + curRow * gh;

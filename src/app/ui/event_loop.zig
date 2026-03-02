@@ -45,6 +45,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         search.g_search = null;
     }
 
+    // Apply initial grid offsets (statusbar/tab bar) and resize PTY
+    publish.updateGridOffsets(ctx);
+    publish.generateStatusbar(ctx);
+    publish.publishOverlays(ctx);
+
     // Start update checker if enabled
     if (ctx.check_updates) {
         logging.info("update", "starting update checker", .{});
@@ -65,7 +70,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         // Tick statusbar widgets
-        if (ctx.statusbar) |sb| if (sb.config.enabled) sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master);
+        if (ctx.statusbar) |sb| if (sb.config.enabled) {
+            // Resolve theme palette into statusbar ANSI colors
+            for (ctx.active_theme.palette, 0..) |opt_color, i| {
+                if (opt_color) |p| sb.ansi_palette[i] = .{ .r = p.r, .g = p.g, .b = p.b };
+            }
+            sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+        };
         // Debug overlay toggle check
         if (@atomicRmw(i32, &terminal.g_toggle_debug_overlay, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {

@@ -259,7 +259,7 @@ int drawFrame(void) {
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
     int drawCursor = curVis && g_blink_on
-                     && curRow >= 0 && curRow < visibleRows && curCol >= 0 && curCol < cols;
+                     && curRow >= g_grid_top_offset && curRow < (g_grid_top_offset + visibleRows) && curCol >= 0 && curCol < cols;
     if (drawCursor) {
         float cx0 = offX + curCol * gw, cy0 = baseOffY + curRow * gh;
         float cr, cg_c, cb;

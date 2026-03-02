@@ -521,7 +521,13 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
     var bottom: i32 = 0;
     const sb_active = statusbarActive(ctx);
     if (sb_active) {
-        if (ctx.statusbar.?.config.position == .top) top += 1 else bottom += 1;
+        if (ctx.statusbar.?.config.position == .top) {
+            top += 1;
+            terminal.g_statusbar_position = 0;
+        } else {
+            bottom += 1;
+            terminal.g_statusbar_position = 1;
+        }
         terminal.g_statusbar_visible = 1;
         terminal.g_tab_bar_visible = 0;
     } else {
@@ -541,6 +547,27 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
 }
 pub const updateGridTopOffset = updateGridOffsets;
 
+/// Resolve a display title for each tab: prefer OSC title, fall back to
+/// the foreground process name (e.g. "zsh", "vim").
+pub fn resolveTabTitles(
+    ctx: *PtyThreadCtx,
+    titles: *tab_bar_mod.TabTitles,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    titles.* = .{null} ** tab_bar_mod.max_tabs;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        const pane = layout.focusedPane();
+        if (pane.engine.state.title) |t| {
+            titles[i] = t;
+        } else {
+            if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
+                titles[i] = name;
+            }
+        }
+    }
+}
+
 /// Generate the tab bar overlay (only visible when count > 1 and statusbar is not active).
 pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
@@ -558,21 +585,9 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         return;
     }
 
-    // Resolve a display title for each tab: prefer OSC title, fall back to
-    // the foreground process name (e.g. "zsh", "vim").
-    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
+    var titles: tab_bar_mod.TabTitles = undefined;
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
-    for (0..ctx.tab_mgr.count) |i| {
-        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        const pane = layout.focusedPane();
-        if (pane.engine.state.title) |t| {
-            titles[i] = t;
-        } else {
-            if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
-                titles[i] = name;
-            }
-        }
-    }
+    resolveTabTitles(ctx, &titles, &name_bufs);
 
     var tab_cells: [512]overlay_mod.OverlayCell = undefined;
     const result = tab_bar_mod.generate(
@@ -598,8 +613,16 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
         return;
     }
+    var titles: tab_bar_mod.TabTitles = undefined;
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    resolveTabTitles(ctx, &titles, &name_bufs);
+
     var sb_cells: [512]overlay_mod.OverlayCell = undefined;
-    const result = statusbar_mod.generate(&sb_cells, sb, ctx.tab_mgr.count, ctx.tab_mgr.active, ctx.grid_cols, .{}) orelse return;
+    const sb_style = statusbar_mod.Style{
+        .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
+        .bg_alpha = sb.config.background_opacity,
+    };
+    const result = statusbar_mod.generate(&sb_cells, sb, ctx.tab_mgr.count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles) orelse return;
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);

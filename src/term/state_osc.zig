@@ -28,3 +28,13 @@ pub fn setTitle(self: *TerminalState, title_slice: []const u8) void {
     }
     self.title = alloc.dupe(u8, title_slice) catch null;
 }
+
+pub fn setCwd(self: *TerminalState, uri: []const u8) void {
+    const alloc = self.grid.allocator;
+    if (self.working_directory) |old| alloc.free(old);
+    if (uri.len == 0) {
+        self.working_directory = null;
+        return;
+    }
+    self.working_directory = alloc.dupe(u8, uri) catch null;
+}

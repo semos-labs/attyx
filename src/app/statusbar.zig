@@ -3,19 +3,54 @@ const posix = std.posix;
 const attyx = @import("attyx");
 const overlay_mod = attyx.overlay_mod;
 const OverlayCell = overlay_mod.OverlayCell;
-const Rgb = overlay_mod.Rgb;
+pub const Rgb = overlay_mod.Rgb;
 const platform = @import("../platform/platform.zig");
 const statusbar_config = @import("../config/statusbar_config.zig");
 const StatusbarConfig = statusbar_config.StatusbarConfig;
 const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
+const git_widget = @import("git_widget.zig");
+const tab_bar_mod = @import("tab_bar.zig");
 
 pub const max_widgets = statusbar_config.max_widgets;
 pub const max_output_len = 256;
+
+pub const ColorSpan = struct {
+    start: u16, // byte offset in output
+    end: u16, // byte offset end (exclusive)
+    fg: Rgb,
+};
+pub const max_color_spans = 16;
+
+/// Standard ANSI 16-color palette (renderer defaults).
+pub const default_ansi_palette = [16]Rgb{
+    .{ .r = 0, .g = 0, .b = 0 }, // 0  black
+    .{ .r = 170, .g = 0, .b = 0 }, // 1  red
+    .{ .r = 0, .g = 170, .b = 0 }, // 2  green
+    .{ .r = 170, .g = 85, .b = 0 }, // 3  yellow
+    .{ .r = 0, .g = 0, .b = 170 }, // 4  blue
+    .{ .r = 170, .g = 0, .b = 170 }, // 5  magenta
+    .{ .r = 0, .g = 170, .b = 170 }, // 6  cyan
+    .{ .r = 170, .g = 170, .b = 170 }, // 7  white
+    .{ .r = 85, .g = 85, .b = 85 }, // 8  bright black
+    .{ .r = 255, .g = 85, .b = 85 }, // 9  bright red
+    .{ .r = 85, .g = 255, .b = 85 }, // 10 bright green
+    .{ .r = 255, .g = 255, .b = 85 }, // 11 bright yellow
+    .{ .r = 85, .g = 85, .b = 255 }, // 12 bright blue
+    .{ .r = 255, .g = 85, .b = 255 }, // 13 bright magenta
+    .{ .r = 85, .g = 255, .b = 255 }, // 14 bright cyan
+    .{ .r = 255, .g = 255, .b = 255 }, // 15 bright white
+};
+
+/// Column offset where tabs begin in the statusbar (for click detection).
+pub var tab_col_offset: u16 = 0;
 
 pub const WidgetState = struct {
     output: [max_output_len]u8 = undefined,
     output_len: u16 = 0,
     last_tick: i64 = 0,
+    last_cwd_ptr: ?[*]const u8 = null,
+    color_spans: [max_color_spans]ColorSpan = undefined,
+    span_count: u8 = 0,
 };
 
 pub const Style = struct {
@@ -23,7 +58,7 @@ pub const Style = struct {
     fg: Rgb = .{ .r = 180, .g = 180, .b = 200 },
     active_tab_bg: Rgb = .{ .r = 60, .g = 60, .b = 90 },
     active_tab_fg: Rgb = .{ .r = 230, .g = 230, .b = 240 },
-    bg_alpha: u8 = 240,
+    bg_alpha: u8 = 0,
 };
 
 pub const RenderResult = struct {
@@ -37,6 +72,7 @@ pub const Statusbar = struct {
     widgets: [max_widgets]WidgetState = [_]WidgetState{.{}} ** max_widgets,
     config_dir: ?[]const u8 = null,
     allocator: std.mem.Allocator,
+    ansi_palette: [16]Rgb = default_ansi_palette,
 
     pub fn init(allocator: std.mem.Allocator, config: StatusbarConfig) Statusbar {
         return .{
@@ -50,16 +86,22 @@ pub const Statusbar = struct {
     }
 
     /// Tick all widgets — refresh any whose interval has elapsed.
-    pub fn tick(self: *Statusbar, now_s: i64, master_fd: posix.fd_t) void {
+    /// `osc7_cwd` is the terminal's working_directory from OSC 7 (if any).
+    pub fn tick(self: *Statusbar, now_s: i64, master_fd: posix.fd_t, osc7_cwd: ?[]const u8) void {
         for (self.config.widgets[0..self.config.widget_count], 0..) |wc, i| {
             const ws = &self.widgets[i];
-            if (now_s - ws.last_tick < @as(i64, wc.interval_s)) continue;
+
+            // For cwd widget: detect OSC 7 changes for instant refresh
+            const is_cwd = std.mem.eql(u8, wc.name, "cwd");
+            const osc7_changed = is_cwd and cwdPtrChanged(ws, osc7_cwd);
+
+            if (!osc7_changed and now_s - ws.last_tick < @as(i64, wc.interval_s)) continue;
             ws.last_tick = now_s;
 
-            if (std.mem.eql(u8, wc.name, "cwd")) {
-                refreshCwd(ws, self.allocator, master_fd);
+            if (is_cwd) {
+                refreshCwd(ws, &wc, self.allocator, master_fd, osc7_cwd);
             } else if (std.mem.eql(u8, wc.name, "git")) {
-                refreshGit(ws, self.allocator, master_fd);
+                git_widget.refresh(ws, &wc, self.allocator, master_fd, &self.ansi_palette);
             } else if (std.mem.eql(u8, wc.name, "time")) {
                 refreshTime(ws, &wc);
             } else {
@@ -68,58 +110,86 @@ pub const Statusbar = struct {
         }
     }
 
-    fn refreshCwd(ws: *WidgetState, allocator: std.mem.Allocator, master_fd: posix.fd_t) void {
-        const cwd = platform.getForegroundCwd(allocator, master_fd) orelse return;
-        defer allocator.free(cwd);
-        const home = std.posix.getenv("HOME");
-        // Shorten: replace $HOME with ~
-        if (home) |h| {
-            if (std.mem.startsWith(u8, cwd, h)) {
-                const suffix = cwd[h.len..];
-                ws.output[0] = '~';
-                const copy_len = @min(suffix.len, max_output_len - 1);
-                @memcpy(ws.output[1 .. 1 + copy_len], suffix[0..copy_len]);
-                ws.output_len = @intCast(1 + copy_len);
+    /// Check if the OSC 7 cwd pointer has changed since last refresh.
+    fn cwdPtrChanged(ws: *WidgetState, osc7_cwd: ?[]const u8) bool {
+        const new_ptr: ?[*]const u8 = if (osc7_cwd) |c| c.ptr else null;
+        if (new_ptr != ws.last_cwd_ptr) {
+            ws.last_cwd_ptr = new_ptr;
+            return true;
+        }
+        return false;
+    }
+
+    fn refreshCwd(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: std.mem.Allocator, master_fd: posix.fd_t, osc7_cwd: ?[]const u8) void {
+        // Try OSC 7 working directory first (instant), fall back to platform polling
+        var osc7_path_buf: [max_output_len]u8 = undefined;
+        if (osc7_cwd) |uri| {
+            if (parseFileUri(uri, &osc7_path_buf)) |p| {
+                formatCwd(ws, wc, p);
                 return;
             }
         }
-        const len = @min(cwd.len, max_output_len);
-        @memcpy(ws.output[0..len], cwd[0..len]);
-        ws.output_len = @intCast(len);
-    }
-
-    fn refreshGit(ws: *WidgetState, allocator: std.mem.Allocator, master_fd: posix.fd_t) void {
         const cwd = platform.getForegroundCwd(allocator, master_fd) orelse return;
         defer allocator.free(cwd);
+        formatCwd(ws, wc, cwd);
+    }
 
-        const result = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" },
-            .cwd = cwd,
-            .max_output_bytes = 256,
-        }) catch return;
-        defer {
-            allocator.free(result.stdout);
-            allocator.free(result.stderr);
+    fn formatCwd(ws: *WidgetState, wc: *const StatusbarWidgetConfig, cwd: []const u8) void {
+        const home = std.posix.getenv("HOME");
+        var path: []const u8 = cwd;
+        var prefix: []const u8 = "";
+        if (home) |h| {
+            if (std.mem.startsWith(u8, cwd, h)) {
+                path = cwd[h.len..];
+                prefix = "~";
+            }
         }
+        const truncate = parseTruncate(wc);
+        if (truncate > 0) {
+            path = truncatePath(path, truncate);
+            if (prefix.len > 0 or path.len < cwd.len - (if (home) |h| h.len else 0))
+                prefix = ".../";
+        }
+        const plen = @min(prefix.len, max_output_len);
+        @memcpy(ws.output[0..plen], prefix[0..plen]);
+        const rlen = @min(path.len, max_output_len - plen);
+        @memcpy(ws.output[plen .. plen + rlen], path[0..rlen]);
+        ws.output_len = @intCast(plen + rlen);
+    }
 
-        if (result.term.Exited != 0) {
-            ws.output_len = 0;
-            return;
-        }
+    /// Parse a file:// URI to extract the path component.
+    /// Returns a slice into `buf` on success, null on failure.
+    fn parseFileUri(uri: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
+        const prefix = "file://";
+        if (!std.mem.startsWith(u8, uri, prefix)) return null;
+        const after_scheme = uri[prefix.len..];
+        // Skip hostname: find next '/'
+        const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
+        const path = after_scheme[slash_idx..];
+        if (path.len == 0) return null;
+        const len = @min(path.len, buf.len);
+        @memcpy(buf[0..len], path[0..len]);
+        return buf[0..len];
+    }
 
-        const branch = std.mem.trimRight(u8, result.stdout, "\n\r ");
-        if (branch.len == 0) {
-            ws.output_len = 0;
-            return;
+    fn parseTruncate(wc: *const StatusbarWidgetConfig) u16 {
+        const val = wc.getParam("truncate") orelse return 0;
+        return std.fmt.parseInt(u16, val, 10) catch 0;
+    }
+
+    fn truncatePath(path: []const u8, keep: u16) []const u8 {
+        if (keep == 0) return path;
+        var count: u16 = 0;
+        var i: usize = path.len;
+        while (i > 0) {
+            i -= 1;
+            if (path[i] == '/') {
+                count += 1;
+                if (count == keep) return path[i + 1 ..];
+            }
         }
-        const prefix = " ";
-        const total = prefix.len + branch.len;
-        const len = @min(total, max_output_len);
-        @memcpy(ws.output[0..prefix.len], prefix);
-        const blen = @min(branch.len, len - prefix.len);
-        @memcpy(ws.output[prefix.len .. prefix.len + blen], branch[0..blen]);
-        ws.output_len = @intCast(len);
+        // Fewer components than requested — return whole path
+        return path;
     }
 
     fn refreshTime(ws: *WidgetState, wc: *const StatusbarWidgetConfig) void {
@@ -187,6 +257,7 @@ pub fn generate(
     active_tab: u8,
     grid_cols: u16,
     style: Style,
+    titles: *const tab_bar_mod.TabTitles,
 ) ?RenderResult {
     if (!bar.config.enabled or grid_cols == 0) return null;
     if (buf.len < grid_cols) return null;
@@ -209,52 +280,40 @@ pub fn generate(
             buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
             col += 1;
         }
-        for (text) |ch| {
-            if (col >= grid_cols) break;
-            buf[col] = .{ .char = ch, .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-            col += 1;
-        }
+        col = writeUtf8Colored(buf, col, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
         if (col < grid_cols) {
             buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
             col += 1;
         }
     }
 
-    // 3. Tabs (only when count > 1)
+    // 3. Tabs (only when count > 1) — delegate to tab_bar for full titles
+    tab_col_offset = col;
     if (tab_count > 1) {
-        if (col < grid_cols) {
-            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-            col += 1;
-        }
-        for (0..tab_count) |ti| {
-            if (col >= grid_cols) break;
-            const is_active = (ti == active_tab);
-            const fg = if (is_active) style.active_tab_fg else style.fg;
-            const bg = if (is_active) style.active_tab_bg else style.bg;
-
-            var title_buf: [20]u8 = undefined;
-            const title = std.fmt.bufPrint(&title_buf, " {d} ", .{ti + 1}) catch " ? ";
-
-            for (title) |ch| {
+        const remaining = grid_cols - col;
+        var tab_buf: [512]OverlayCell = undefined;
+        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, .{}, titles)) |tb_result| {
+            for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
-                buf[col] = .{ .char = ch, .fg = fg, .bg = bg, .bg_alpha = style.bg_alpha };
-                col += 1;
-            }
-            // Separator
-            if (ti + 1 < tab_count and col < grid_cols) {
-                buf[col] = .{ .char = '|', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                if (tc.bg_alpha > 0) {
+                    // Tab cell — use tab_bar styling but keep statusbar bg_alpha
+                    buf[col] = .{ .char = tc.char, .fg = tc.fg, .bg = tc.bg, .bg_alpha = style.bg_alpha };
+                } else {
+                    // Transparent gap — keep statusbar background
+                    buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                }
                 col += 1;
             }
         }
     }
 
-    // 4. Right widgets — compute total width, then render from right edge
+    // 4. Right widgets — compute total width (in codepoints), then render from right edge
     var right_total: u16 = 0;
     for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
         if (wc.side != .right) continue;
         const ws = &bar.widgets[i];
         if (ws.output_len == 0) continue;
-        right_total += ws.output_len + 2; // " text "
+        right_total += utf8CodepointCount(ws.output[0..ws.output_len]) + 2; // " text "
     }
 
     if (right_total > 0 and right_total < grid_cols) {
@@ -268,11 +327,7 @@ pub fn generate(
                 buf[rcol] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
                 rcol += 1;
             }
-            for (text) |ch| {
-                if (rcol >= grid_cols) break;
-                buf[rcol] = .{ .char = ch, .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-                rcol += 1;
-            }
+            rcol = writeUtf8Colored(buf, rcol, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
             if (rcol < grid_cols) {
                 buf[rcol] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
                 rcol += 1;
@@ -283,9 +338,108 @@ pub fn generate(
     return .{ .cells = buf[0..grid_cols], .width = grid_cols, .height = 1 };
 }
 
+/// Write UTF-8 text into overlay cells, decoding codepoints. Returns new column.
+fn writeUtf8(cells: []OverlayCell, start: u16, limit: u16, text: []const u8, fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
+    var col = start;
+    var i: usize = 0;
+    while (i < text.len and col < limit) {
+        const byte = text[i];
+        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > text.len) break;
+        const cp: u21 = switch (seq_len) {
+            1 => @intCast(byte),
+            2 => std.unicode.utf8Decode2(text[i..][0..2].*) catch {
+                i += 2;
+                continue;
+            },
+            3 => std.unicode.utf8Decode3(text[i..][0..3].*) catch {
+                i += 3;
+                continue;
+            },
+            4 => std.unicode.utf8Decode4(text[i..][0..4].*) catch {
+                i += 4;
+                continue;
+            },
+            else => {
+                i += 1;
+                continue;
+            },
+        };
+        cells[col] = .{ .char = cp, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
+        col += 1;
+        i += seq_len;
+    }
+    return col;
+}
+
+/// Write UTF-8 text into overlay cells with per-byte color spans. Returns new column.
+fn writeUtf8Colored(cells: []OverlayCell, start: u16, limit: u16, text: []const u8, spans: []const ColorSpan, default_fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
+    var col = start;
+    var i: usize = 0;
+    while (i < text.len and col < limit) {
+        const byte = text[i];
+        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > text.len) break;
+        const cp: u21 = switch (seq_len) {
+            1 => @intCast(byte),
+            2 => std.unicode.utf8Decode2(text[i..][0..2].*) catch {
+                i += 2;
+                continue;
+            },
+            3 => std.unicode.utf8Decode3(text[i..][0..3].*) catch {
+                i += 3;
+                continue;
+            },
+            4 => std.unicode.utf8Decode4(text[i..][0..4].*) catch {
+                i += 4;
+                continue;
+            },
+            else => {
+                i += 1;
+                continue;
+            },
+        };
+        var fg = default_fg;
+        for (spans) |span| {
+            if (i >= span.start and i < span.end) {
+                fg = span.fg;
+                break;
+            }
+        }
+        cells[col] = .{ .char = cp, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
+        col += 1;
+        i += seq_len;
+    }
+    return col;
+}
+
+/// Count the number of Unicode codepoints in a UTF-8 byte slice.
+fn utf8CodepointCount(text: []const u8) u16 {
+    var count: u16 = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > text.len) break;
+        count += 1;
+        i += seq_len;
+    }
+    return count;
+}
+
 // -------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------
+
+const no_titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
 
 test "generate: returns null when disabled" {
     var config = StatusbarConfig{};
@@ -294,7 +448,7 @@ test "generate: returns null when disabled" {
     defer bar.deinit();
 
     var buf: [100]OverlayCell = undefined;
-    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}) == null);
+    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) == null);
 }
 
 test "generate: returns cells when enabled" {
@@ -304,7 +458,7 @@ test "generate: returns cells when enabled" {
     defer bar.deinit();
 
     var buf: [100]OverlayCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 80, .{}) orelse
+    const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u16, 80), result.width);
     try std.testing.expectEqual(@as(u16, 1), result.height);
@@ -324,7 +478,7 @@ test "generate: left widget text appears at start" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]OverlayCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     // First cell is space padding, then "~/Projects"
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
@@ -345,7 +499,7 @@ test "generate: right widget is right-aligned" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]OverlayCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     // Right widget: " 12:34 " = 7 chars, starts at col 33
     try std.testing.expectEqual(@as(u21, ' '), result.cells[33].char);
@@ -357,37 +511,47 @@ test "generate: right widget is right-aligned" {
     try std.testing.expectEqual(@as(u21, ' '), result.cells[39].char);
 }
 
-test "generate: tabs appear when count > 1" {
+test "generate: tabs with titles appear when count > 1" {
     var config = StatusbarConfig{};
     config.enabled = true;
     var bar = Statusbar.init(std.testing.allocator, config);
     defer bar.deinit();
 
-    var buf: [100]OverlayCell = undefined;
-    const result = generate(&buf, &bar, 3, 1, 40, .{}) orelse
+    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
+    titles[0] = "zsh";
+    titles[1] = "vim";
+    titles[2] = "htop";
+
+    var buf: [512]OverlayCell = undefined;
+    const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles) orelse
         return error.TestUnexpectedResult;
-    // Should have " 1 | 2 | 3 " starting at col 1
+    // Tab bar starts at col 0 (no left widgets), cells should include tab content
+    // First tab: " zsh " + " 1 " = 5+3 = 8 cells
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
-    try std.testing.expectEqual(@as(u21, ' '), result.cells[1].char);
-    try std.testing.expectEqual(@as(u21, '1'), result.cells[2].char);
-    try std.testing.expectEqual(@as(u21, ' '), result.cells[3].char);
-    try std.testing.expectEqual(@as(u21, '|'), result.cells[4].char);
+    try std.testing.expectEqual(@as(u21, 'z'), result.cells[1].char);
+    try std.testing.expectEqual(@as(u21, 's'), result.cells[2].char);
+    try std.testing.expectEqual(@as(u21, 'h'), result.cells[3].char);
 }
 
-test "generate: active tab has different colors" {
+test "generate: active tab uses tab_bar highlight colors" {
     var config = StatusbarConfig{};
     config.enabled = true;
     var bar = Statusbar.init(std.testing.allocator, config);
     defer bar.deinit();
 
-    const style = Style{};
-    var buf: [100]OverlayCell = undefined;
-    const result = generate(&buf, &bar, 2, 1, 40, style) orelse
+    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
+    titles[0] = "a";
+    titles[1] = "b";
+
+    const sb_style = Style{};
+    var buf: [512]OverlayCell = undefined;
+    const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles) orelse
         return error.TestUnexpectedResult;
-    // Tab 1 (inactive at col 1-3): " 1 " should have style.bg
-    try std.testing.expectEqual(style.bg, result.cells[1].bg);
-    // Tab 2 (active at col 5-7): " 2 " should have active_tab_bg
-    try std.testing.expectEqual(style.active_tab_bg, result.cells[5].bg);
+    const tb_style = tab_bar_mod.Style{};
+    // Tab 0 (" a " + " 1 " = 3+3 = 6), gap at 6, Tab 1 starts at 7
+    // Tab 1 is active — its number area should use num_highlight_bg
+    // Tab 1: " b " starts at col 7, number area " 2 " at col 10
+    try std.testing.expectEqual(tb_style.num_highlight_bg, result.cells[10].bg);
 }
 
 test "refreshTime: formats hours and minutes" {
@@ -397,4 +561,11 @@ test "refreshTime: formats hours and minutes" {
     // Should have produced something like "HH:MM"
     try std.testing.expect(ws.output_len == 5);
     try std.testing.expectEqual(@as(u8, ':'), ws.output[2]);
+}
+
+test "truncatePath: keeps last N components" {
+    try std.testing.expectEqualStrings("c/d", Statusbar.truncatePath("/a/b/c/d", 2));
+    try std.testing.expectEqualStrings("d", Statusbar.truncatePath("/a/b/c/d", 1));
+    try std.testing.expectEqualStrings("/a/b/c/d", Statusbar.truncatePath("/a/b/c/d", 10));
+    try std.testing.expectEqualStrings("hello", Statusbar.truncatePath("hello", 2));
 }
