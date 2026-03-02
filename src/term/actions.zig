@@ -170,6 +170,10 @@ pub const Action = union(enum) {
     /// Payload borrowed from parser osc_buf, valid until next parser call.
     inject_into_main: []const u8,
 
+    /// OSC 7 — set working directory. Payload is the raw URI (file://host/path),
+    /// borrowed from parser osc_buf, valid until next parser call.
+    set_cwd: []const u8,
+
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.
     dcs_passthrough: []const u8,

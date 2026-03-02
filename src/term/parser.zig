@@ -514,6 +514,7 @@ pub const Parser = struct {
 
         return switch (num) {
             0, 2 => .{ .set_title = rest },
+            7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
             7337 => dispatchOsc7337(rest),
             else => .nop,

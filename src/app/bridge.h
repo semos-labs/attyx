@@ -26,6 +26,9 @@ extern volatile int g_cursor_col;
 // Number of grid rows to shift terminal content down (for search bar padding).
 // Overlays are NOT shifted — they render at the original offY.
 extern volatile int g_grid_top_offset;
+extern volatile int g_grid_bottom_offset;
+extern volatile int g_statusbar_visible;
+extern volatile int g_statusbar_position; // 0=top, 1=bottom
 extern volatile int g_tab_bar_visible;
 
 // Spawn a new attyx process (new window with fresh shell session).
@@ -419,6 +422,7 @@ extern volatile int    g_keybind_matched_seq_len;
 // Tab management (called from input thread via keybind dispatch)
 void attyx_tab_action(int action);
 void attyx_tab_bar_click(int col, int grid_cols);
+void attyx_statusbar_tab_click(int col, int grid_cols);
 
 // Split pane management (called from input thread via keybind dispatch)
 void attyx_split_action(int action);

@@ -211,7 +211,7 @@ int drawFrame(void) {
     float glyphW = g_gc.glyph_w;
     float glyphH = g_gc.glyph_h;
     int atlasCols = g_gc.atlas_cols;
-    int visibleRows = rows - g_grid_top_offset;
+    int visibleRows = rows - g_grid_top_offset - g_grid_bottom_offset;
     if (visibleRows < 0) visibleRows = 0;
     int visibleTotal = visibleRows * cols;
 
@@ -259,7 +259,7 @@ int drawFrame(void) {
     memset(&g_bg_verts[cursorSlot], 0, sizeof(Vertex) * 6);
     int bgVertCount = total * 6;
     int drawCursor = curVis && g_blink_on
-                     && curRow >= 0 && curRow < visibleRows && curCol >= 0 && curCol < cols;
+                     && curRow >= g_grid_top_offset && curRow < (g_grid_top_offset + visibleRows) && curCol >= 0 && curCol < cols;
     if (drawCursor) {
         float cx0 = offX + curCol * gw, cy0 = baseOffY + curRow * gh;
         float cr, cg_c, cb;

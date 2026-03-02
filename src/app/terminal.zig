@@ -20,6 +20,9 @@ const Pty = @import("pty.zig").Pty;
 const SessionLog = @import("session_log.zig").SessionLog;
 const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
+const platform = @import("../platform/platform.zig");
+const statusbar_mod = @import("statusbar.zig");
+pub const Statusbar = statusbar_mod.Statusbar;
 
 pub const c = @cImport({
     @cInclude("bridge.h");
@@ -57,6 +60,7 @@ pub const PtyThreadCtx = struct {
     check_updates: bool = false,
     grid_rows: u16 = 0,
     grid_cols: u16 = 0,
+    statusbar: ?*Statusbar = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,9 @@ pub export var g_app_version: [*]const u8 = attyx.version.ptr;
 pub export var g_app_version_len: c_int = @intCast(attyx.version.len);
 
 pub export var g_grid_top_offset: i32 = 0;
+pub export var g_grid_bottom_offset: i32 = 0;
+pub export var g_statusbar_visible: i32 = 0;
+pub export var g_statusbar_position: i32 = 0; // 0=top, 1=bottom
 pub export var g_toggle_debug_overlay: i32 = 0;
 pub export var g_toggle_anchor_demo: i32 = 0;
 pub export var g_toggle_ai_demo: i32 = 0;
@@ -145,6 +152,7 @@ export fn attyx_ai_prompt_insert_char(codepoint: u32) void { input.aiPromptInser
 export fn attyx_ai_prompt_cmd(cmd: c_int) void { input.aiPromptCmd(cmd); }
 export fn attyx_tab_action(action: c_int) void { input.tabAction(action); }
 export fn attyx_tab_bar_click(col: c_int, grid_cols: c_int) void { input.tabBarClick(col, grid_cols); }
+export fn attyx_statusbar_tab_click(col: c_int, grid_cols: c_int) void { input.statusbarTabClick(col, grid_cols); }
 export fn attyx_split_action(action: c_int) void { input.splitAction(action); }
 export fn attyx_split_click(col: c_int, row: c_int) void { input.splitClick(col, row); }
 export fn attyx_split_drag_start(col: c_int, row: c_int) void { input.splitDragStart(col, row); }
@@ -232,7 +240,19 @@ pub fn run(
 
     const spawn_argv = config.argv orelse program_argv;
 
-    initial_pane.* = try Pane.spawn(allocator, config.rows, config.cols, spawn_argv, null);
+    // Set initial grid offsets for statusbar so the PTY starts with correct rows
+    if (config.statusbar) |sb_cfg| {
+        if (sb_cfg.enabled) {
+            if (sb_cfg.position == .top) {
+                g_grid_top_offset = 1;
+            } else {
+                g_grid_bottom_offset = 1;
+            }
+            g_statusbar_visible = 1;
+        }
+    }
+    const initial_pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - g_grid_top_offset - g_grid_bottom_offset));
+    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     if (config.scrollback_lines != 20_000) {
@@ -256,9 +276,9 @@ pub fn run(
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     defer allocator.free(render_cells);
 
-    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+    const total: usize = @as(usize, initial_pty_rows) * @as(usize, config.cols);
     publish.fillCells(render_cells[0..total], &initial_pane.engine, total, &initial_theme);
-    c.attyx_set_cursor(@intCast(initial_pane.engine.state.cursor.row), @intCast(initial_pane.engine.state.cursor.col));
+    c.attyx_set_cursor(@intCast(initial_pane.engine.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))), @intCast(initial_pane.engine.state.cursor.col));
 
     var session = try SessionLog.init(allocator);
     defer session.deinit();
@@ -312,6 +332,25 @@ pub fn run(
     logging.info("popup", "configured {d} popup(s)", .{popup_config_count});
     logging.info("keybinds", "installed {d} keybind(s)", .{kb_table.count});
 
+    // Statusbar
+    var statusbar: ?Statusbar = if (config.statusbar) |sb_cfg| blk: {
+        var sb = Statusbar.init(allocator, sb_cfg);
+        // Resolve config_dir for custom script widgets
+        if (platform.getConfigPaths(allocator)) |paths_val| {
+            var paths = paths_val;
+            sb.config_dir = allocator.dupe(u8, paths.config_dir) catch null;
+            paths.deinit();
+        } else |_| {}
+        if (sb.config.enabled) {
+            logging.info("statusbar", "enabled with {d} widget(s), position={s}", .{
+                sb.config.widget_count,
+                if (sb.config.position == .top) "top" else "bottom",
+            });
+        }
+        break :blk sb;
+    } else null;
+    defer if (statusbar) |*sb| sb.deinit();
+
     var ctx = PtyThreadCtx{
         .tab_mgr = &tab_mgr,
         .cells = render_cells.ptr,
@@ -332,6 +371,7 @@ pub fn run(
         .check_updates = config.check_updates,
         .grid_rows = config.rows,
         .grid_cols = config.cols,
+        .statusbar = if (statusbar) |*sb| sb else null,
     };
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
