@@ -24,6 +24,21 @@ pub const SelBounds = struct {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Normalize selection bounds so start <= end (user may select upward).
+fn normalizeSelBounds(sel: SelBounds) SelBounds {
+    if (sel.start_row > sel.end_row or
+        (sel.start_row == sel.end_row and sel.start_col > sel.end_col))
+    {
+        return .{
+            .start_row = sel.end_row,
+            .start_col = sel.end_col,
+            .end_row = sel.start_row,
+            .end_col = sel.start_col,
+        };
+    }
+    return sel;
+}
+
 /// Encode a single u21 codepoint as UTF-8 into `buf`. Returns the number of
 /// bytes written (1..4), or 0 if the codepoint is zero / invalid.
 fn encodeCodepoint(cp: u21, buf: *[4]u8) u3 {
@@ -164,8 +179,10 @@ pub fn extractSelectionText(
     var list: std.ArrayList(u8) = .{};
     errdefer list.deinit(allocator);
 
-    const sr = @min(sel.start_row, grid.rows -| 1);
-    const er = @min(sel.end_row, grid.rows -| 1);
+    // Normalize bounds (user may select upward/backward)
+    const norm = normalizeSelBounds(sel);
+    const sr = @min(norm.start_row, grid.rows -| 1);
+    const er = @min(norm.end_row, grid.rows -| 1);
 
     var row = sr;
     while (row <= er) : (row += 1) {
@@ -178,8 +195,8 @@ pub fn extractSelectionText(
         const base = row * grid.cols;
         const cells = grid.cells[base .. base + grid.cols];
 
-        const col_start: usize = if (row == sr) @min(sel.start_col, grid.cols) else 0;
-        const col_end: usize = if (row == er) @min(sel.end_col + 1, grid.cols) else trimmedLen(cells);
+        const col_start: usize = if (row == sr) @min(norm.start_col, grid.cols) else 0;
+        const col_end: usize = if (row == er) @min(norm.end_col + 1, grid.cols) else trimmedLen(cells);
 
         if (col_start < col_end) {
             for (cells[col_start..col_end]) |cell| {
