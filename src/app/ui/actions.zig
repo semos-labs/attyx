@@ -97,7 +97,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
                 logging.err("split", "splitPane(vertical) failed: {}", .{err});
                 return;
             };
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             layout.layout(pty_rows, ctx.grid_cols);
             updateSplitActive(ctx);
             switchActiveTab(ctx);
@@ -108,7 +108,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
                 logging.err("split", "splitPane(horizontal) failed: {}", .{err});
                 return;
             };
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             layout.layout(pty_rows, ctx.grid_cols);
             updateSplitActive(ctx);
             switchActiveTab(ctx);
@@ -124,7 +124,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
                 ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
                 publish.updateGridTopOffset(ctx);
             } else {
-                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                 layout.layout(pty_rows, ctx.grid_cols);
                 updateSplitActive(ctx);
             }
@@ -136,7 +136,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         .pane_focus_left => { layout.navigate(.left); switchActiveTab(ctx); },
         .pane_focus_right => { layout.navigate(.right); switchActiveTab(ctx); },
         .pane_resize_left, .pane_resize_right => {
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             if (layout.findResizeTarget(.vertical)) |target| {
                 const delta: f32 = if (action == .pane_resize_left) -0.05 else 0.05;
                 if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
@@ -145,7 +145,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
             }
         },
         .pane_resize_up, .pane_resize_down => {
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             if (layout.findResizeTarget(.horizontal)) |target| {
                 const delta: f32 = if (action == .pane_resize_up) -0.05 else 0.05;
                 if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
@@ -159,7 +159,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
 
 pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
     const layout = ctx.tab_mgr.activeLayout();
-    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
 
     if (@atomicRmw(i32, &input.g_split_drag_start_pending, .Xchg, 0, .seq_cst) != 0) {
         const col: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_split_drag_start_col, .seq_cst)));
@@ -239,7 +239,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     c.attyx_begin_cell_update();
     const layout = ctx.tab_mgr.activeLayout();
     if (layout.pane_count > 1) {
-        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
         split_render.fillCellsSplit(
             @ptrCast(ctx.cells),
             layout,
@@ -286,6 +286,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
     publish.generateTabBar(ctx);
+    publish.generateStatusbar(ctx);
     publish.publishOverlays(ctx);
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();

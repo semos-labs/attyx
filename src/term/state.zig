@@ -53,6 +53,7 @@ pub const TerminalState = struct {
     link_uris: std.ArrayListUnmanaged([]const u8) = .{},
     next_link_id: u32 = 1,
     title: ?[]const u8 = null,
+    working_directory: ?[]const u8 = null,
 
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
@@ -122,6 +123,7 @@ pub const TerminalState = struct {
         for (self.link_uris.items) |uri| alloc.free(uri);
         self.link_uris.deinit(alloc);
         if (self.title) |t| alloc.free(t);
+        if (self.working_directory) |wd| alloc.free(wd);
         if (self.graphics_store) |gs| {
             gs.deinit();
             alloc.destroy(gs);
@@ -143,7 +145,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
             else => {
                 self.wrap_next = false;
             },
@@ -234,6 +236,7 @@ pub const TerminalState = struct {
             .hyperlink_start => |uri| self.startHyperlink(uri),
             .hyperlink_end => self.endHyperlink(),
             .set_title => |t| self.setTitle(t),
+            .set_cwd => |u| self.setCwd(u),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -483,6 +486,7 @@ pub const TerminalState = struct {
     const startHyperlink = @import("state_osc.zig").startHyperlink;
     const endHyperlink = @import("state_osc.zig").endHyperlink;
     const setTitle = @import("state_osc.zig").setTitle;
+    const setCwd = @import("state_osc.zig").setCwd;
 
     // -- Kitty keyboard protocol ---------------------------------------------
 

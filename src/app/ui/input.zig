@@ -145,6 +145,22 @@ pub fn tabBarClick(col: c_int, grid_cols: c_int) void {
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
 }
 
+const statusbar_mod = @import("../statusbar.zig");
+
+pub fn statusbarTabClick(col: c_int, grid_cols: c_int) void {
+    if (terminal.g_statusbar_visible == 0) return;
+    const offset = statusbar_mod.tab_col_offset;
+    if (col < offset) return;
+    const adjusted_col: u16 = @intCast(@as(c_uint, @bitCast(col)) -| offset);
+    const remaining: u16 = @intCast(@max(1, grid_cols) -| offset);
+    const idx = tab_bar_mod.tabIndexAtCol(
+        adjusted_col,
+        @intCast(@atomicLoad(i32, &g_tab_count, .seq_cst)),
+        remaining,
+    ) orelse return;
+    @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+}
+
 // ---------------------------------------------------------------------------
 // Split pane atomics
 // ---------------------------------------------------------------------------

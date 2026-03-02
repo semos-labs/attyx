@@ -233,6 +233,15 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         return;
     }
 
+    // Statusbar tab click: check if click is on the statusbar row
+    if (g_statusbar_visible) {
+        int sb_row = (g_statusbar_position == 0) ? 0 : (g_rows - 1);
+        if (row == sb_row) {
+            attyx_statusbar_tab_click(col, g_cols);
+            return;
+        }
+    }
+
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
