@@ -65,6 +65,11 @@ export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }
 export fn attyx_search_insert_char(_: u32) void {}
 export fn attyx_search_cmd(_: c_int) void {}
 
+// AI edit prompt stubs (ui2.zig provides real implementations)
+export var g_ai_prompt_active: i32 = 0;
+export fn attyx_ai_prompt_insert_char(_: u32) void {}
+export fn attyx_ai_prompt_cmd(_: c_int) void {}
+
 // Tab management stubs (ui2.zig provides the real implementations)
 export fn attyx_tab_action(_: c_int) void {}
 export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}

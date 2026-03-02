@@ -34,6 +34,7 @@ const overlay_ai_auth = attyx.overlay_ai_auth;
 const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_content = attyx.overlay_ai_content;
 const overlay_ai_error = attyx.overlay_ai_error;
+const overlay_ai_edit = attyx.overlay_ai_edit;
 const update_check = attyx.overlay_update_check;
 const OverlayManager = overlay_mod.OverlayManager;
 const popup_mod = @import("popup.zig");
@@ -250,6 +251,37 @@ export fn attyx_search_cmd(cmd: c_int) void {
     if (w -% r >= 16) return; // ring full
     g_search_cmd_ring[w % 16] = cmd;
     @atomicStore(u32, &g_search_cmd_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
+}
+
+// ---------------------------------------------------------------------------
+// AI edit prompt input globals and exports
+// ---------------------------------------------------------------------------
+var g_ai_prompt_char_ring: [32]u32 = .{0} ** 32;
+var g_ai_prompt_char_write: u32 = 0;
+var g_ai_prompt_char_read: u32 = 0;
+
+var g_ai_prompt_cmd_ring: [16]i32 = .{0} ** 16;
+var g_ai_prompt_cmd_write: u32 = 0;
+var g_ai_prompt_cmd_read: u32 = 0;
+
+export var g_ai_prompt_active: i32 = 0;
+
+export fn attyx_ai_prompt_insert_char(codepoint: u32) void {
+    const w = @atomicLoad(u32, &g_ai_prompt_char_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_ai_prompt_char_read, .seq_cst);
+    if (w -% r >= 32) return;
+    g_ai_prompt_char_ring[w % 32] = codepoint;
+    @atomicStore(u32, &g_ai_prompt_char_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
+}
+
+export fn attyx_ai_prompt_cmd(cmd: c_int) void {
+    const w = @atomicLoad(u32, &g_ai_prompt_cmd_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_ai_prompt_cmd_read, .seq_cst);
+    if (w -% r >= 16) return;
+    g_ai_prompt_cmd_ring[w % 16] = cmd;
+    @atomicStore(u32, &g_ai_prompt_cmd_write, w +% 1, .seq_cst);
     c.attyx_mark_all_dirty();
 }
 
@@ -940,6 +972,9 @@ var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
 var g_ai_request_body: ?[]u8 = null;
 const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
 
+// AI edit state machine
+var g_ai_edit: ?overlay_ai_edit.EditContext = null;
+
 // Update notification state
 var g_update_checker: ?update_check.UpdateChecker = null;
 
@@ -1100,29 +1135,45 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
     };
 }
 
+fn loadTokensAndStream(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    if (g_token_store == null) {
+        g_token_store = overlay_ai_auth.TokenStore.load(mgr.allocator) catch
+            overlay_ai_auth.TokenStore.init(mgr.allocator);
+    }
+    var store = &(g_token_store.?);
+    if (store.hasAccessToken()) {
+        spawnSseStream(ctx);
+    } else if (store.hasRefreshToken()) {
+        startAuthFlow(ctx, store.refresh_token);
+    } else {
+        startAuthFlow(ctx, null);
+    }
+}
+
 fn startAiInvocation(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
 
     // Capture terminal context
     captureAiContext(ctx);
 
-    // Load token store if not yet loaded
-    if (g_token_store == null) {
-        g_token_store = overlay_ai_auth.TokenStore.load(mgr.allocator) catch
-            overlay_ai_auth.TokenStore.init(mgr.allocator);
+    // If selection exists, enter edit mode
+    if (g_context_bundle) |*bundle| {
+        if (bundle.selection_text != null) {
+            if (g_ai_edit == null) g_ai_edit = overlay_ai_edit.EditContext.init(mgr.allocator);
+            var edit = &(g_ai_edit.?);
+            edit.open(bundle.selection_text.?) catch {
+                showAiErrorCard(ctx, "selection", "Selection too large (max 64KB)");
+                return;
+            };
+            g_ai_prompt_active = 1;
+            renderEditPromptCard(ctx);
+            return;
+        }
     }
-    var store = &(g_token_store.?);
 
-    if (store.hasAccessToken()) {
-        // Have access token — go straight to SSE
-        spawnSseStream(ctx);
-    } else if (store.hasRefreshToken()) {
-        // Have refresh token — try refresh first
-        startAuthFlow(ctx, store.refresh_token);
-    } else {
-        // No tokens — device flow
-        startAuthFlow(ctx, null);
-    }
+    // No selection — existing auto-invoke flow
+    loadTokensAndStream(ctx);
 }
 
 fn startAuthFlow(ctx: *PtyThreadCtx, refresh_token: ?[]const u8) void {
@@ -1181,8 +1232,10 @@ fn tickAi(ctx: *PtyThreadCtx) void {
     if (g_auth_thread) |*auth| {
         const auth_status = auth.getStatus();
         switch (auth_status) {
-            .device_show_code => {
-                // Show device code overlay
+            .device_show_code, .device_polling => {
+                // Show device code overlay (handle both states because
+                // device_show_code → device_polling transition is near-instant
+                // and the PTY thread may never see device_show_code)
                 const user_code = auth.getUserCode();
                 if (user_code.len > 0) {
                     showDeviceCodeCard(ctx, user_code);
@@ -1200,6 +1253,7 @@ fn tickAi(ctx: *PtyThreadCtx) void {
                     }
                 }
                 _ = auth.tryJoin();
+                g_auth_thread = null;
                 spawnSseStream(ctx);
                 publishOverlays(ctx);
             },
@@ -1207,6 +1261,7 @@ fn tickAi(ctx: *PtyThreadCtx) void {
                 const err_msg = auth.getErrorMsg();
                 showAiErrorCard(ctx, "auth", if (err_msg.len > 0) err_msg else "Authentication failed");
                 _ = auth.tryJoin();
+                g_auth_thread = null;
                 publishOverlays(ctx);
             },
             else => {},
@@ -1232,35 +1287,19 @@ fn tickAi(ctx: *PtyThreadCtx) void {
                 }
             },
             .done => {
-                // Final drain
-                var drain_buf: [4096]u8 = undefined;
-                const drained = sse.delta_ring.drain(&drain_buf);
-                if (drained.len > 0) {
-                    if (g_ai_accumulator) |*acc| {
-                        acc.appendDelta(drained) catch {};
-                    }
+                const is_edit = if (g_ai_edit) |*edit| edit.state == .streaming else false;
+                if (is_edit) {
+                    handleEditDoneResponse(ctx, sse);
+                } else {
+                    handleNormalDoneResponse(ctx, sse, mgr);
                 }
-                // Final reparse and relayout with completion action bar
-                if (g_ai_accumulator) |*acc| {
-                    const blocks = acc.reparse() catch &.{};
-                    if (blocks.len > 0) {
-                        relayoutAiStreamContent(ctx, blocks);
-                    }
-                }
-                // Update action bar to show Insert/Copy/Context/Dismiss
-                var bar = attyx.overlay_action.ActionBar{};
-                bar.add(.dismiss, "Dismiss");
-                bar.add(.insert, "Insert");
-                bar.add(.copy, "Copy");
-                bar.add(.context, "Context");
-                mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
-
                 _ = sse.tryJoin();
-                publishOverlays(ctx);
+                g_sse_thread = null;
             },
             .errored => {
                 const http_code = sse.getHttpStatus();
                 _ = sse.tryJoin();
+                g_sse_thread = null;
 
                 if (http_code == 401) {
                     // Token expired — try refresh
@@ -1279,6 +1318,7 @@ fn tickAi(ctx: *PtyThreadCtx) void {
             },
             .canceled => {
                 _ = sse.tryJoin();
+                g_sse_thread = null;
             },
             else => {},
         }
@@ -1360,6 +1400,7 @@ fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_content.C
         .selection_explain => "Selection Explanation",
         .command_generate => "Generate Command",
         .general => "AI Response",
+        .edit_selection => "Edit Selection",
     } else "AI Response";
 
     var bar = attyx.overlay_action.ActionBar{};
@@ -1540,6 +1581,199 @@ fn handleCopyAction(ctx: *PtyThreadCtx) void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Edit mode helpers
+// ---------------------------------------------------------------------------
+
+fn renderEditPromptCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const edit = &(g_ai_edit orelse return);
+    const result = overlay_ai_edit.layoutPromptCard(mgr.allocator, edit, 52) catch return;
+
+    // If streaming overlay is already showing, replace content in-place
+    // to avoid restarting the reveal animation on every keystroke.
+    if (g_streaming) |*so| {
+        if (so.state != .idle) {
+            so.replaceContent(result.cells, result.width, result.height);
+            mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
+                var bar = attyx.overlay_action.ActionBar{};
+                bar.add(.accept, "Submit");
+                bar.add(.dismiss, "Cancel");
+                break :blk bar;
+            };
+            publishAiStreamingFrame(ctx);
+            return;
+        }
+    }
+
+    showAiOverlayCard(ctx, result.cells, result.width, result.height, .{});
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
+        var bar = attyx.overlay_action.ActionBar{};
+        bar.add(.accept, "Submit");
+        bar.add(.dismiss, "Cancel");
+        break :blk bar;
+    };
+    publishOverlays(ctx);
+}
+
+fn renderEditProposalCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const edit = &(g_ai_edit orelse return);
+    const result = overlay_ai_edit.layoutProposalCard(mgr.allocator, edit, 52) catch return;
+    showAiOverlayCard(ctx, result.cells, result.width, result.height, .{});
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
+        var bar = attyx.overlay_action.ActionBar{};
+        bar.add(.accept, "Accept");
+        bar.add(.reject, "Reject");
+        bar.add(.copy, "Copy");
+        bar.add(.insert, "Insert");
+        break :blk bar;
+    };
+    publishOverlays(ctx);
+}
+
+fn submitEditPrompt(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    var edit = &(g_ai_edit orelse return);
+    var bundle = &(g_context_bundle orelse return);
+
+    // Store prompt text in context bundle
+    const prompt_text = edit.prompt.text();
+    if (prompt_text.len == 0) return;
+    if (bundle.edit_prompt) |ep| bundle.allocator.free(ep);
+    bundle.edit_prompt = mgr.allocator.dupe(u8, prompt_text) catch null;
+    bundle.invocation = .edit_selection;
+
+    edit.submitPrompt();
+    g_ai_prompt_active = 0;
+
+    loadTokensAndStream(ctx);
+}
+
+fn consumeAiPromptInput(ctx: *PtyThreadCtx) bool {
+    var edit = &(g_ai_edit orelse return false);
+    var changed = false;
+
+    // Drain char ring
+    while (true) {
+        const w = @atomicLoad(u32, &g_ai_prompt_char_write, .seq_cst);
+        const r = @atomicLoad(u32, &g_ai_prompt_char_read, .seq_cst);
+        if (w == r) break;
+        const cp = g_ai_prompt_char_ring[r % 32];
+        @atomicStore(u32, &g_ai_prompt_char_read, r +% 1, .seq_cst);
+        edit.prompt.insertChar(@intCast(cp));
+        changed = true;
+    }
+
+    // Drain cmd ring
+    while (true) {
+        const w = @atomicLoad(u32, &g_ai_prompt_cmd_write, .seq_cst);
+        const r = @atomicLoad(u32, &g_ai_prompt_cmd_read, .seq_cst);
+        if (w == r) break;
+        const cmd = g_ai_prompt_cmd_ring[r % 16];
+        @atomicStore(u32, &g_ai_prompt_cmd_read, r +% 1, .seq_cst);
+        switch (cmd) {
+            1 => edit.prompt.deleteBack(),
+            2 => edit.prompt.deleteFwd(),
+            3 => edit.prompt.cursorLeft(),
+            4 => edit.prompt.cursorRight(),
+            5 => edit.prompt.cursorHome(),
+            6 => edit.prompt.cursorEnd(),
+            7 => { // cancel
+                edit.close();
+                g_ai_edit = null;
+                g_ai_prompt_active = 0;
+                cancelAi(ctx);
+                return true;
+            },
+            8 => { // submit
+                submitEditPrompt(ctx);
+                return true;
+            },
+            else => {},
+        }
+        changed = true;
+    }
+
+    return changed;
+}
+
+fn handleEditAcceptAction(ctx: *PtyThreadCtx) void {
+    const edit = &(g_ai_edit orelse return);
+    switch (edit.state) {
+        .prompt_input => submitEditPrompt(ctx),
+        .proposal_ready => {
+            if (edit.replacement_text) |repl| {
+                c.attyx_clipboard_copy(repl.ptr, @intCast(repl.len));
+            }
+        },
+        else => {},
+    }
+}
+
+fn handleEditInsertAction(ctx: *PtyThreadCtx) void {
+    const edit = &(g_ai_edit orelse return);
+    const repl = edit.replacement_text orelse return;
+    if (ctxEngine(ctx).state.bracketed_paste) {
+        c.attyx_send_input("\x1b[200~", 6);
+    }
+    c.attyx_send_input(repl.ptr, @intCast(repl.len));
+    if (ctxEngine(ctx).state.bracketed_paste) {
+        c.attyx_send_input("\x1b[201~", 6);
+    }
+}
+
+fn handleEditDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.SseThread) void {
+    var edit = &(g_ai_edit orelse return);
+    if (g_ai_accumulator) |*acc| acc.reset();
+    var drain_buf: [overlay_ai_stream.ring_size]u8 = undefined;
+    const drained = sse.delta_ring.drain(&drain_buf);
+    if (drained.len > 0) {
+        const sep = std.mem.indexOfScalar(u8, drained, 0);
+        if (sep) |s| {
+            const replacement = drained[0..s];
+            const explanation = if (s + 1 < drained.len) drained[s + 1 ..] else "";
+            edit.receiveResponse(replacement, explanation) catch {};
+        } else {
+            edit.receiveResponse(drained, "") catch {};
+        }
+    }
+    renderEditProposalCard(ctx);
+}
+
+fn handleNormalDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.SseThread, mgr: *OverlayManager) void {
+    if (g_ai_accumulator) |*acc| acc.reset();
+    {
+        var drain_buf: [overlay_ai_stream.ring_size]u8 = undefined;
+        const drained = sse.delta_ring.drain(&drain_buf);
+        if (drained.len > 0) {
+            if (g_ai_accumulator) |*acc| {
+                acc.appendDelta(drained) catch {};
+            }
+        }
+    }
+    if (g_ai_accumulator) |*acc| {
+        const blocks = acc.reparse() catch &.{};
+        if (blocks.len > 0) {
+            relayoutAiStreamContent(ctx, blocks);
+        }
+    }
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.dismiss, "Dismiss");
+    bar.add(.insert, "Insert");
+    bar.add(.copy, "Copy");
+    bar.add(.context, "Context");
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
+    publishOverlays(ctx);
+}
+
+fn handleEditRejectAction(ctx: *PtyThreadCtx) void {
+    var edit = &(g_ai_edit orelse return);
+    edit.reject();
+    g_ai_prompt_active = 1;
+    renderEditPromptCard(ctx);
+}
+
 fn handleRetryAction(ctx: *PtyThreadCtx) void {
     // Cancel current operations
     if (g_sse_thread) |*sse| {
@@ -1591,6 +1825,12 @@ fn cancelAi(ctx: *PtyThreadCtx) void {
         bundle.deinit();
         g_context_bundle = null;
     }
+    // Clean up edit state
+    if (g_ai_edit) |*edit| {
+        edit.deinit();
+        g_ai_edit = null;
+    }
+    g_ai_prompt_active = 0;
 }
 
 fn publishState(ctx: *PtyThreadCtx) void {
@@ -1965,20 +2205,48 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Tick AI (auth/SSE state + streaming reveal)
         tickAi(ctx);
 
+        // AI edit prompt input polling
+        if (g_ai_edit) |*edit| {
+            if (edit.state == .prompt_input) {
+                if (consumeAiPromptInput(ctx)) {
+                    // Re-render prompt card if edit context is still in prompt_input
+                    if (g_ai_edit) |*e2| {
+                        if (e2.state == .prompt_input) {
+                            renderEditPromptCard(ctx);
+                        }
+                    }
+                }
+            }
+        }
+
         // Tick update check notification
         tickUpdateCheck(ctx);
 
         // Overlay interaction: dismiss (Esc)
         if (@atomicRmw(i32, &g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
-            if (ctx.overlay_mgr) |mgr| {
+            // Edit mode Esc handling
+            if (g_ai_edit) |*edit| {
+                switch (edit.state) {
+                    .proposal_ready => {
+                        handleEditRejectAction(ctx);
+                        // Skip normal dismiss — already handled
+                    },
+                    .prompt_input => {
+                        edit.close();
+                        g_ai_edit = null;
+                        g_ai_prompt_active = 0;
+                        cancelAi(ctx);
+                        publishOverlays(ctx);
+                    },
+                    else => {},
+                }
+            } else if (ctx.overlay_mgr) |mgr| {
                 const was_ai_visible = mgr.isVisible(.ai_demo);
                 const was_ctx_visible = mgr.isVisible(.context_preview);
                 if (mgr.dismissActive()) {
-                    // Context preview dismissed → restore AI demo
                     if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
                         mgr.show(.ai_demo);
                     }
-                    // If AI demo was just dismissed, cancel all AI operations
                     if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
                         cancelAi(ctx);
                     }
@@ -2024,9 +2292,11 @@ fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             }
                         },
                         .context => toggleContextPreview(ctx),
-                        .insert => handleInsertAction(ctx),
+                        .insert => if (g_ai_edit != null) handleEditInsertAction(ctx) else handleInsertAction(ctx),
                         .copy => handleCopyAction(ctx),
                         .retry => handleRetryAction(ctx),
+                        .accept => handleEditAcceptAction(ctx),
+                        .reject => handleEditRejectAction(ctx),
                         else => {},
                     }
                     publishOverlays(ctx);

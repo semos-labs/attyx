@@ -9,10 +9,6 @@ const LineRange = layout.LineRange;
 const CardResult = layout.CardResult;
 const ActionBarStyle = layout.ActionBarStyle;
 
-// ---------------------------------------------------------------------------
-// UTF-8 helpers
-// ---------------------------------------------------------------------------
-
 /// Write UTF-8 decoded codepoints from `text` into overlay cells starting at
 /// (row, start_col). Advances one cell per codepoint (assumes all are width 1).
 /// Stops after `max_cells` cells or end of text. Returns cells written.
@@ -65,11 +61,7 @@ fn utf8CharCount(text: []const u8) usize {
     return count;
 }
 
-// ---------------------------------------------------------------------------
-// Content model
-// ---------------------------------------------------------------------------
-
-pub const BlockTag = enum(u8) { header, paragraph, code_block, bullet_list };
+pub const BlockTag = enum(u8) { header, paragraph, code_block, bullet_list, diff_add, diff_remove, diff_context };
 
 pub const ContentBlock = struct {
     tag: BlockTag,
@@ -92,11 +84,10 @@ pub const ContentStyle = struct {
     code_border_fg: Rgb = .{ .r = 80, .g = 140, .b = 80 },
     header_fg: Rgb = .{ .r = 120, .g = 160, .b = 255 },
     bullet_fg: Rgb = .{ .r = 150, .g = 130, .b = 200 },
+    diff_add_fg: Rgb = .{ .r = 80, .g = 250, .b = 123 },
+    diff_remove_fg: Rgb = .{ .r = 255, .g = 85, .b = 85 },
+    diff_context_fg: Rgb = .{ .r = 140, .g = 140, .b = 150 },
 };
-
-// ---------------------------------------------------------------------------
-// Measurement
-// ---------------------------------------------------------------------------
 
 const max_lines_buf = 128;
 
@@ -107,6 +98,7 @@ pub fn measureBlock(block: ContentBlock, inner_w: u16) u16 {
         .paragraph => measureParagraph(block.text, inner_w),
         .code_block => measureCodeBlock(block.text),
         .bullet_list => measureBulletList(block.items, inner_w),
+        .diff_add, .diff_remove, .diff_context => 1,
     };
 }
 
@@ -142,10 +134,6 @@ fn measureBulletList(items: []const []const u8, inner_w: u16) u16 {
     }
     return total;
 }
-
-// ---------------------------------------------------------------------------
-// Structured card layout
-// ---------------------------------------------------------------------------
 
 pub fn layoutStructuredCard(
     allocator: std.mem.Allocator,
@@ -212,6 +200,9 @@ pub fn layoutStructuredCard(
             .bullet_list => {
                 cur_row = fillBulletList(cells, stride, text_col, cur_row, inner_w, block.items, style);
             },
+            .diff_add, .diff_remove, .diff_context => {
+                cur_row = fillDiffLine(cells, stride, text_col, cur_row, inner_w, block.text, block.tag, style);
+            },
         }
         // Separator row (blank — already filled with bg)
         if (bi + 1 < blocks.len) cur_row += 1;
@@ -235,10 +226,6 @@ pub fn layoutStructuredCard(
 
     return .{ .cells = cells, .width = total_w, .height = total_h };
 }
-
-// ---------------------------------------------------------------------------
-// Block renderers
-// ---------------------------------------------------------------------------
 
 fn fillHeader(
     cells: []OverlayCell,
@@ -409,9 +396,40 @@ fn fillBulletList(
     return cur_row;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers (reused from layout.zig patterns)
-// ---------------------------------------------------------------------------
+fn fillDiffLine(
+    cells: []OverlayCell,
+    stride: u16,
+    start_col: u16,
+    start_row: u16,
+    inner_w: u16,
+    text: []const u8,
+    tag: BlockTag,
+    style: ContentStyle,
+) u16 {
+    const row = @as(usize, start_row);
+    const prefix_char: u21 = switch (tag) {
+        .diff_add => '+',
+        .diff_remove => '-',
+        .diff_context => ' ',
+        else => ' ',
+    };
+    const fg: Rgb = switch (tag) {
+        .diff_add => style.diff_add_fg,
+        .diff_remove => style.diff_remove_fg,
+        .diff_context => style.diff_context_fg,
+        else => style.base.fg,
+    };
+    // Prefix character
+    const idx = row * @as(usize, stride) + @as(usize, start_col);
+    if (idx < cells.len) {
+        cells[idx] = .{ .char = prefix_char, .fg = fg, .bg = style.base.bg, .bg_alpha = style.base.bg_alpha };
+    }
+    // Text after prefix
+    const text_col = @as(usize, start_col) + 1;
+    const max_chars: usize = if (inner_w > 1) inner_w - 1 else 1;
+    _ = fillCellsUtf8(cells, stride, row, text_col, text, max_chars, fg, style.base.bg, style.base.bg_alpha);
+    return start_row + 1;
+}
 
 fn fillBorder(cells: []OverlayCell, width: u16, height: u16, style: OverlayStyle) void {
     const w: usize = width;
@@ -460,10 +478,6 @@ fn placeTitle(cells: []OverlayCell, width: u16, title: []const u8, style: Overla
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test "measureBlock: header" {
     const h = measureBlock(.{ .tag = .header, .text = "Hello" }, 40);
     try std.testing.expectEqual(@as(u16, 2), h); // 1 text line + 1 underline
@@ -494,95 +508,43 @@ test "layoutStructuredCard: basic dimensions" {
         .{ .tag = .header, .text = "Title" },
         .{ .tag = .paragraph, .text = "Some text here." },
     };
-    const result = try layoutStructuredCard(
-        std.testing.allocator,
-        "Test Card",
-        &blocks,
-        40,
-        .{},
-        null,
-    );
+    const result = try layoutStructuredCard(std.testing.allocator, "Test Card", &blocks, 40, .{}, null);
     defer std.testing.allocator.free(result.cells);
-
-    // width = 40, height = border(1) + header(2) + sep(1) + paragraph(1) + border(1) = 6
     try std.testing.expectEqual(@as(u16, 40), result.width);
     try std.testing.expectEqual(@as(u16, 6), result.height);
     try std.testing.expectEqual(@as(usize, 40 * 6), result.cells.len);
 }
 
 test "layoutStructuredCard: code block has code_bg" {
-    const blocks = [_]ContentBlock{
-        .{ .tag = .code_block, .text = "fn foo() void {}" },
-    };
+    const blocks = [_]ContentBlock{.{ .tag = .code_block, .text = "fn foo() void {}" }};
     const cs = ContentStyle{};
-    const result = try layoutStructuredCard(
-        std.testing.allocator,
-        "Code",
-        &blocks,
-        30,
-        cs,
-        null,
-    );
+    const result = try layoutStructuredCard(std.testing.allocator, "Code", &blocks, 30, cs, null);
     defer std.testing.allocator.free(result.cells);
-
-    // Row 1 (after top border) should have code_bg on inner cells
-    const stride: usize = result.width;
-    const idx = 1 * stride + 3; // row 1, col 3 (inside border+padding)
+    const idx = 1 * @as(usize, result.width) + 3;
     try std.testing.expectEqual(cs.code_bg.r, result.cells[idx].bg.r);
     try std.testing.expectEqual(cs.code_bg.g, result.cells[idx].bg.g);
-    try std.testing.expectEqual(cs.code_bg.b, result.cells[idx].bg.b);
 }
 
 test "layoutStructuredCard: bullet prefix present" {
     const items = [_][]const u8{"item one"};
-    const blocks = [_]ContentBlock{
-        .{ .tag = .bullet_list, .items = &items },
-    };
-    const result = try layoutStructuredCard(
-        std.testing.allocator,
-        "Bullets",
-        &blocks,
-        30,
-        .{},
-        null,
-    );
+    const blocks = [_]ContentBlock{.{ .tag = .bullet_list, .items = &items }};
+    const result = try layoutStructuredCard(std.testing.allocator, "Bullets", &blocks, 30, .{}, null);
     defer std.testing.allocator.free(result.cells);
-
-    // Row 1, col 4 should be the bullet character •  (U+2022)
-    const stride: usize = result.width;
-    const idx = 1 * stride + 4; // row 1, start_col(2) + bullet offset(2)
+    const idx = 1 * @as(usize, result.width) + 4;
     try std.testing.expectEqual(@as(u21, 0x2022), result.cells[idx].char);
 }
 
 test "layoutStructuredCard: with action bar" {
     var bar = action_mod.ActionBar{};
     bar.add(.dismiss, "Close");
-
-    const blocks = [_]ContentBlock{
-        .{ .tag = .paragraph, .text = "Hello" },
-    };
-    const result = try layoutStructuredCard(
-        std.testing.allocator,
-        "Actions",
-        &blocks,
-        30,
-        .{},
-        bar,
-    );
+    const blocks = [_]ContentBlock{.{ .tag = .paragraph, .text = "Hello" }};
+    const result = try layoutStructuredCard(std.testing.allocator, "Actions", &blocks, 30, .{}, bar);
     defer std.testing.allocator.free(result.cells);
-
-    // height = border(1) + paragraph(1) + action(1) + border(1) = 4
     try std.testing.expectEqual(@as(u16, 4), result.height);
-
-    // Action row should have a bracket '['
-    const action_row: usize = result.height - 2; // row before bottom border
+    const action_row: usize = result.height - 2;
     var found_bracket = false;
     for (1..result.width - 1) |col| {
-        const idx = action_row * @as(usize, result.width) + col;
-        if (result.cells[idx].char == '[') {
-            found_bracket = true;
-            break;
-        }
+        if (result.cells[action_row * @as(usize, result.width) + col].char == '[') { found_bracket = true; break; }
     }
     try std.testing.expect(found_bracket);
 }

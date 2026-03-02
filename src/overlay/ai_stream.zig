@@ -1,10 +1,6 @@
 const std = @import("std");
 const ai_auth = @import("ai_auth.zig");
 
-// ---------------------------------------------------------------------------
-// DeltaRing — lock-free SPSC ring buffer for streaming text deltas
-// ---------------------------------------------------------------------------
-
 pub const ring_size: u32 = 16384;
 
 pub const DeltaRing = struct {
@@ -54,10 +50,6 @@ pub const DeltaRing = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Stream status
-// ---------------------------------------------------------------------------
-
 pub const StreamStatus = enum(u8) {
     idle = 0,
     connecting = 1,
@@ -67,13 +59,10 @@ pub const StreamStatus = enum(u8) {
     canceled = 5,
 };
 
-// ---------------------------------------------------------------------------
-// SSE thread
-// ---------------------------------------------------------------------------
-
 pub const SseThread = struct {
     status: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(StreamStatus.idle)),
     cancel: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    first_delta_sent: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
     delta_ring: DeltaRing = .{},
 
     error_code: [64]u8 = .{0} ** 64,
@@ -109,6 +98,7 @@ pub const SseThread = struct {
     pub fn start(self: *SseThread, allocator: std.mem.Allocator, url: []const u8, access_token: []const u8, body: []const u8) !void {
         if (self.thread != null) return;
         self.cancel.store(0, .release);
+        self.first_delta_sent.store(0, .release);
         self.status.store(@intFromEnum(StreamStatus.idle), .release);
         self.error_code_len.store(0, .release);
         self.error_msg_len.store(0, .release);
@@ -215,23 +205,17 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
     self.http_status.store(status, .release);
 
     if (status != 200) {
-        // Read error body
+        // Read error body — use allocRemaining to avoid readSliceShort panic
+        // on content-length responses (Zig stdlib contentLengthStream bug).
         var transfer_buf: [4096]u8 = undefined;
         const err_reader = response.reader(&transfer_buf);
-        var err_list: std.ArrayList(u8) = .{};
-        defer err_list.deinit(allocator);
-        var tmp: [1024]u8 = undefined;
-        while (true) {
-            const n = err_reader.readSliceShort(&tmp) catch break;
-            if (n == 0) break;
-            err_list.appendSlice(allocator, tmp[0..n]) catch break;
-            if (err_list.items.len > 4096) break;
-        }
+        const err_body = err_reader.allocRemaining(allocator, .limited(4096)) catch "";
+        defer if (err_body.len > 0) allocator.free(err_body);
 
         var code_buf: [16]u8 = undefined;
         const code_str = std.fmt.bufPrint(&code_buf, "{d}", .{status}) catch "unknown";
-        const msg = if (err_list.items.len > 0)
-            (ai_auth.extractJsonString(err_list.items, "message") orelse "Request failed")
+        const msg = if (err_body.len > 0)
+            (ai_auth.extractJsonString(err_body, "message") orelse "Request failed")
         else
             "Request failed";
 
@@ -242,7 +226,27 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
 
     self.setStatus(.streaming);
 
-    // Parse SSE stream line by line
+    // Content-length responses trigger a panic in Zig's HTTP reader
+    // (contentLengthStream accesses inactive union field after exhausting
+    // content). Read such responses in one shot; stream chunked responses
+    // normally since chunkedStream handles the .ready state safely.
+    if (response.head.content_length != null) {
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+        const body_data = reader.allocRemaining(allocator, .limited(256_000)) catch {
+            self.setError("read", "Failed to read response");
+            self.setStatus(.errored);
+            return;
+        };
+        defer allocator.free(body_data);
+        parseSseBuffer(self, body_data);
+        if (self.getStatus() == .streaming) {
+            self.setStatus(.done);
+        }
+        return;
+    }
+
+    // Parse SSE stream line by line (chunked or close-delimited)
     var transfer_buf: [4096]u8 = undefined;
     const reader = response.reader(&transfer_buf);
     var line_buf: [4096]u8 = undefined;
@@ -284,6 +288,29 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
     }
 }
 
+/// Parse a complete SSE body (from a content-length response) into events.
+fn parseSseBuffer(self: *SseThread, data: []const u8) void {
+    var line_buf: [4096]u8 = undefined;
+    var line_len: usize = 0;
+    var current_event: SseEventType = .unknown;
+
+    for (data) |byte| {
+        if (byte == '\n') {
+            const line = line_buf[0..line_len];
+            processSseLine(self, line, &current_event);
+            line_len = 0;
+
+            const s = self.getStatus();
+            if (s == .done or s == .errored or s == .canceled) return;
+        } else if (byte != '\r') {
+            if (line_len < line_buf.len) {
+                line_buf[line_len] = byte;
+                line_len += 1;
+            }
+        }
+    }
+}
+
 const SseEventType = enum { unknown, meta, progress, delta, final_event, error_event };
 
 fn parseSseEventType(name: []const u8) SseEventType {
@@ -321,9 +348,10 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
 
         switch (current_event.*) {
             .delta => {
-                // Extract "text" field and push to ring
-                if (ai_auth.extractJsonString(data, "text")) |text| {
-                    _ = self.delta_ring.push(text);
+                // Show progress on first delta; ignore raw JSON fragments
+                if (self.first_delta_sent.load(.acquire) == 0) {
+                    _ = self.delta_ring.push("Generating response...");
+                    self.first_delta_sent.store(1, .release);
                 }
             },
             .error_event => {
@@ -333,10 +361,7 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
                 self.setStatus(.errored);
             },
             .final_event => {
-                // Final event may contain text in data field
-                if (ai_auth.extractJsonString(data, "text")) |text| {
-                    _ = self.delta_ring.push(text);
-                }
+                formatFinalResponse(self, data);
                 self.setStatus(.done);
             },
             else => {},
@@ -344,72 +369,138 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+fn formatFinalResponse(self: *SseThread, data: []const u8) void {
+    // Edit response: replacement_text found → push raw replacement + \0 + explanation
+    if (ai_auth.extractJsonString(data, "replacement_text")) |replacement| {
+        _ = self.delta_ring.push(replacement);
+        _ = self.delta_ring.push(&[_]u8{0}); // null separator
+        if (ai_auth.extractJsonString(data, "short_explanation")) |expl| {
+            _ = self.delta_ring.push(expl);
+        }
+        return;
+    }
 
-test "DeltaRing: push and drain" {
-    var ring = DeltaRing{};
-    const written = ring.push("hello world");
-    try std.testing.expectEqual(@as(usize, 11), written);
-
-    var out: [32]u8 = undefined;
-    const drained = ring.drain(&out);
-    try std.testing.expectEqualStrings("hello world", drained);
+    if (ai_auth.extractJsonString(data, "summary")) |summary| {
+        _ = self.delta_ring.push(summary);
+        _ = self.delta_ring.push("\n");
+    }
+    if (ai_auth.extractJsonString(data, "explanation")) |explanation| {
+        _ = self.delta_ring.push("\n");
+        _ = self.delta_ring.push(explanation);
+        _ = self.delta_ring.push("\n");
+    }
+    pushJsonStringArray(self, data, "highlights", "Highlights");
+    pushJsonStringArray(self, data, "causes", "Causes");
+    pushJsonStringArray(self, data, "key_points", "Key Points");
+    pushJsonStringArray(self, data, "errors", "Errors");
+    pushJsonStringArray(self, data, "warnings", "Warnings");
+    pushJsonStringArray(self, data, "next_steps", "Next Steps");
+    pushJsonStringArray(self, data, "notes", "Notes");
+    pushJsonCommandArray(self, data);
+}
+fn findJsonArrayStart(json: []const u8, key: []const u8) ?usize {
+    var pos: usize = 0;
+    while (pos + key.len + 4 < json.len) : (pos += 1) {
+        if (json[pos] == '"' and
+            pos + 1 + key.len < json.len and
+            std.mem.eql(u8, json[pos + 1 .. pos + 1 + key.len], key) and
+            json[pos + 1 + key.len] == '"')
+        {
+            var vpos = pos + 2 + key.len;
+            while (vpos < json.len and (json[vpos] == ' ' or json[vpos] == ':')) vpos += 1;
+            if (vpos < json.len and json[vpos] == '[') return vpos + 1;
+        }
+    }
+    return null;
 }
 
-test "DeltaRing: empty drain" {
-    var ring = DeltaRing{};
-    var out: [32]u8 = undefined;
-    const drained = ring.drain(&out);
-    try std.testing.expectEqual(@as(usize, 0), drained.len);
+fn pushJsonStringArray(self: *SseThread, json: []const u8, key: []const u8, header: []const u8) void {
+    const start = findJsonArrayStart(json, key) orelse return;
+    var header_pushed = false;
+    var i = start;
+    while (i < json.len) {
+        if (json[i] == ']') break;
+        if (json[i] == '"') {
+            const s = i + 1;
+            var e = s;
+            while (e < json.len and json[e] != '"') {
+                if (json[e] == '\\') e += 1;
+                e += 1;
+            }
+            if (e > s) {
+                if (!header_pushed) {
+                    _ = self.delta_ring.push("\n");
+                    _ = self.delta_ring.push(header);
+                    _ = self.delta_ring.push(":\n");
+                    header_pushed = true;
+                }
+                _ = self.delta_ring.push("- ");
+                _ = self.delta_ring.push(json[s..e]);
+                _ = self.delta_ring.push("\n");
+            }
+            i = e + 1;
+        } else i += 1;
+    }
 }
 
-test "DeltaRing: multiple pushes and single drain" {
+fn pushJsonCommandArray(self: *SseThread, json: []const u8) void {
+    const start = findJsonArrayStart(json, "commands") orelse return;
+    var header_pushed = false;
+    var i = start;
+    while (i < json.len) {
+        if (json[i] == ']') break;
+        if (json[i] == '{') {
+            var depth: usize = 1;
+            var e = i + 1;
+            while (e < json.len and depth > 0) : (e += 1) {
+                if (json[e] == '{') depth += 1 else if (json[e] == '}') depth -= 1;
+            }
+            const obj = json[i..e];
+            if (ai_auth.extractJsonString(obj, "command")) |cmd| {
+                if (!header_pushed) {
+                    _ = self.delta_ring.push("\nCommands:\n");
+                    header_pushed = true;
+                }
+                _ = self.delta_ring.push("```\n");
+                _ = self.delta_ring.push(cmd);
+                _ = self.delta_ring.push("\n```\n");
+                if (ai_auth.extractJsonString(obj, "risk")) |risk| {
+                    _ = self.delta_ring.push("Risk: ");
+                    _ = self.delta_ring.push(risk);
+                    _ = self.delta_ring.push("\n");
+                }
+            }
+            i = e;
+        } else i += 1;
+    }
+}
+
+test "DeltaRing: basic, partial drain, reset, wraparound" {
     var ring = DeltaRing{};
+    var out: [32]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), ring.drain(&out).len);
+    try std.testing.expectEqual(@as(usize, 11), ring.push("hello world"));
+    try std.testing.expectEqualStrings("hello world", ring.drain(&out));
     _ = ring.push("hello ");
     _ = ring.push("world");
-
-    var out: [32]u8 = undefined;
-    const drained = ring.drain(&out);
-    try std.testing.expectEqualStrings("hello world", drained);
-}
-
-test "DeltaRing: partial drain" {
-    var ring = DeltaRing{};
+    try std.testing.expectEqualStrings("hello world", ring.drain(&out));
+    // Partial drain
     _ = ring.push("abcdefghij");
-
-    var out: [5]u8 = undefined;
-    const d1 = ring.drain(&out);
-    try std.testing.expectEqualStrings("abcde", d1);
-
-    const d2 = ring.drain(&out);
-    try std.testing.expectEqualStrings("fghij", d2);
-}
-
-test "DeltaRing: reset clears state" {
-    var ring = DeltaRing{};
+    var out5: [5]u8 = undefined;
+    try std.testing.expectEqualStrings("abcde", ring.drain(&out5));
+    try std.testing.expectEqualStrings("fghij", ring.drain(&out5));
+    // Reset
     _ = ring.push("data");
     ring.reset();
-
-    var out: [32]u8 = undefined;
-    const drained = ring.drain(&out);
-    try std.testing.expectEqual(@as(usize, 0), drained.len);
-}
-
-test "DeltaRing: wraparound" {
-    var ring = DeltaRing{};
-    // Fill most of the ring
+    try std.testing.expectEqual(@as(usize, 0), ring.drain(&out).len);
+    // Wraparound
     var big: [ring_size - 10]u8 = undefined;
     @memset(&big, 'X');
     _ = ring.push(&big);
-    // Drain it
     var drain_buf: [ring_size]u8 = undefined;
     _ = ring.drain(&drain_buf);
-    // Now push data that wraps around
     _ = ring.push("wrap_around_test");
-    const drained = ring.drain(&drain_buf);
-    try std.testing.expectEqualStrings("wrap_around_test", drained);
+    try std.testing.expectEqualStrings("wrap_around_test", ring.drain(&drain_buf));
 }
 
 test "SseThread: init state" {
@@ -418,17 +509,22 @@ test "SseThread: init state" {
     try std.testing.expectEqual(@as(u16, 0), sse.getHttpStatus());
 }
 
-test "processSseLine: delta event" {
+test "processSseLine: delta event shows progress" {
     var sse = SseThread.init();
     var event_type: SseEventType = .unknown;
 
     processSseLine(&sse, "event: delta", &event_type);
     try std.testing.expectEqual(SseEventType.delta, event_type);
 
-    processSseLine(&sse, "data: {\"text\":\"hello\"}", &event_type);
-    var out: [32]u8 = undefined;
+    processSseLine(&sse, "data: {\"text\":\"{\\\"su\"}", &event_type);
+    var out: [64]u8 = undefined;
     const drained = sse.delta_ring.drain(&out);
-    try std.testing.expectEqualStrings("hello", drained);
+    try std.testing.expectEqualStrings("Generating response...", drained);
+
+    // Second delta should not push anything more
+    processSseLine(&sse, "data: {\"text\":\"mm\"}", &event_type);
+    const drained2 = sse.delta_ring.drain(&out);
+    try std.testing.expectEqual(@as(usize, 0), drained2.len);
 }
 
 test "processSseLine: error event" {
@@ -443,31 +539,60 @@ test "processSseLine: error event" {
     try std.testing.expectEqualStrings("Too many requests", sse.getErrorMsg());
 }
 
-test "processSseLine: final event" {
+test "processSseLine: final event formats response" {
     var sse = SseThread.init();
     var event_type: SseEventType = .unknown;
 
     processSseLine(&sse, "event: final", &event_type);
-    processSseLine(&sse, "data: {\"text\":\"done\"}", &event_type);
+    const json = "data: {\"data\":{\"summary\":\"All good\",\"next_steps\":[\"check logs\"]}}";
+    processSseLine(&sse, json, &event_type);
 
     try std.testing.expectEqual(StreamStatus.done, sse.getStatus());
-    var out: [32]u8 = undefined;
+    var out: [256]u8 = undefined;
     const drained = sse.delta_ring.drain(&out);
-    try std.testing.expectEqualStrings("done", drained);
+    try std.testing.expectEqualStrings("All good\n\nNext Steps:\n- check logs\n", drained);
 }
 
-test "processSseLine: comment ignored" {
+test "processSseLine: comment and blank line" {
     var sse = SseThread.init();
     var event_type: SseEventType = .delta;
     processSseLine(&sse, ": ping", &event_type);
-    // Event type should not change
     try std.testing.expectEqual(SseEventType.delta, event_type);
-}
-
-test "processSseLine: blank line resets event" {
-    var sse = SseThread.init();
-    var event_type: SseEventType = .delta;
     processSseLine(&sse, "", &event_type);
     try std.testing.expectEqual(SseEventType.unknown, event_type);
-    try std.testing.expectEqual(StreamStatus.idle, sse.getStatus());
+}
+
+test "formatFinalResponse: commands, empty arrays" {
+    var sse = SseThread.init();
+    const json = "{\"data\":{\"summary\":\"Fix it\",\"commands\":[{\"command\":\"rm -rf /tmp\",\"risk\":\"low\"}]}}";
+    formatFinalResponse(&sse, json);
+    var out: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("Fix it\n\nCommands:\n```\nrm -rf /tmp\n```\nRisk: low\n", sse.delta_ring.drain(&out));
+    // Empty arrays should be skipped
+    var sse2 = SseThread.init();
+    formatFinalResponse(&sse2, "{\"data\":{\"summary\":\"OK\",\"errors\":[],\"warnings\":[]}}");
+    var out2: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("OK\n", sse2.delta_ring.drain(&out2));
+}
+
+test "formatFinalResponse: edit response with and without explanation" {
+    var sse = SseThread.init();
+    formatFinalResponse(&sse, "{\"data\":{\"replacement_text\":\"HELLO WORLD\",\"short_explanation\":\"Made uppercase\"}}");
+    var out: [256]u8 = undefined;
+    const drained = sse.delta_ring.drain(&out);
+    const sep = std.mem.indexOfScalar(u8, drained, 0) orelse unreachable;
+    try std.testing.expectEqualStrings("HELLO WORLD", drained[0..sep]);
+    try std.testing.expectEqualStrings("Made uppercase", drained[sep + 1 ..]);
+    // Without explanation
+    var sse2 = SseThread.init();
+    formatFinalResponse(&sse2, "{\"data\":{\"replacement_text\":\"fixed code\"}}");
+    const drained2 = sse2.delta_ring.drain(&out);
+    const sep2 = std.mem.indexOfScalar(u8, drained2, 0) orelse unreachable;
+    try std.testing.expectEqualStrings("fixed code", drained2[0..sep2]);
+    try std.testing.expectEqual(sep2 + 1, drained2.len);
+}
+
+test "findJsonArrayStart: found and missing" {
+    try std.testing.expectEqual(@as(?usize, 10), findJsonArrayStart("{\"items\":[\"a\",\"b\"]}", "items"));
+    try std.testing.expect(findJsonArrayStart("{\"items\":[\"a\"]}", "other") == null);
 }

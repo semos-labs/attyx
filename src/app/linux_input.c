@@ -328,6 +328,20 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
+    // AI edit prompt key routing
+    if (g_ai_prompt_active) {
+        if (key == GLFW_KEY_ESCAPE)       { attyx_ai_prompt_cmd(7); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_ENTER)        { attyx_ai_prompt_cmd(8); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_BACKSPACE)    { attyx_ai_prompt_cmd(1); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DELETE)       { attyx_ai_prompt_cmd(2); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_LEFT)         { attyx_ai_prompt_cmd(3); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_RIGHT)        { attyx_ai_prompt_cmd(4); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_HOME)         { attyx_ai_prompt_cmd(5); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_END)          { attyx_ai_prompt_cmd(6); g_suppress_char = 1; return; }
+        g_suppress_char = 0;
+        return;
+    }
+
     // When popup is active, route ALL input to popup
     if (g_popup_active && action != GLFW_RELEASE) {
         uint16_t mapped = mapGlfwKey(key);
@@ -398,6 +412,12 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     // When search bar is open, route chars to search overlay
     if (g_search_active) {
         if (codepoint >= 0x20) attyx_search_insert_char(codepoint);
+        return;
+    }
+
+    // When AI prompt is open, route chars to prompt
+    if (g_ai_prompt_active) {
+        if (codepoint >= 0x20) attyx_ai_prompt_insert_char(codepoint);
         return;
     }
 

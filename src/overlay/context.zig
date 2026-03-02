@@ -13,6 +13,7 @@ pub const InvocationType = enum(u8) {
     selection_explain,
     command_generate,
     general,
+    edit_selection,
 };
 
 /// Immutable snapshot of terminal context captured at AI invocation time.
@@ -28,6 +29,7 @@ pub const ContextBundle = struct {
     grid_cols: u16,
     grid_rows: u16,
     alt_active: bool,
+    edit_prompt: ?[]const u8 = null,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ContextBundle) void {
@@ -35,6 +37,7 @@ pub const ContextBundle = struct {
         if (self.selection_text) |s| self.allocator.free(s);
         if (self.scrollback_excerpt) |e| self.allocator.free(e);
         if (self.cursor_line) |cl| self.allocator.free(cl);
+        if (self.edit_prompt) |ep| self.allocator.free(ep);
         self.* = undefined;
     }
 
@@ -71,6 +74,12 @@ pub const ContextBundle = struct {
             parts += 1;
         }
 
+        if (self.edit_prompt != null) {
+            if (parts > 0) w.writeAll(" +") catch {};
+            w.writeAll(" edit") catch {};
+            parts += 1;
+        }
+
         if (parts == 0) {
             w.writeAll(" (empty)") catch {};
         }
@@ -94,6 +103,7 @@ pub const ContextBundle = struct {
             .selection_explain => "selection_explain",
             .command_generate => "command_generate",
             .general => "general",
+            .edit_selection => "edit_selection",
         });
         try w.writeByte('\n');
 
@@ -118,6 +128,13 @@ pub const ContextBundle = struct {
             try w.writeByte('\n');
         } else {
             try w.writeAll("(none)\n");
+        }
+
+        // Edit prompt
+        if (self.edit_prompt) |ep| {
+            try w.writeAll("Edit prompt: ");
+            try w.writeAll(ep);
+            try w.writeByte('\n');
         }
 
         // Selection

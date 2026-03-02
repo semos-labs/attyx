@@ -260,6 +260,19 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (ctrl && kc == kVK_ANSI_W)          { attyx_search_cmd(10); return YES; }
     }
 
+    // AI edit prompt key routing
+    if (g_ai_prompt_active) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_Escape)                   { attyx_ai_prompt_cmd(7); return YES; }
+        if (kc == kVK_Return)                   { attyx_ai_prompt_cmd(8); return YES; }
+        if (kc == kVK_Delete)                   { attyx_ai_prompt_cmd(1); return YES; }
+        if (kc == kVK_ForwardDelete)            { attyx_ai_prompt_cmd(2); return YES; }
+        if (kc == kVK_LeftArrow)                { attyx_ai_prompt_cmd(3); return YES; }
+        if (kc == kVK_RightArrow)               { attyx_ai_prompt_cmd(4); return YES; }
+        if (kc == kVK_Home)                     { attyx_ai_prompt_cmd(5); return YES; }
+        if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
+    }
+
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
         unsigned short kc = event.keyCode;
@@ -335,12 +348,11 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         return;
     }
 
-    [self snapViewportAndClearSelection];
-
     NSEventModifierFlags flags = event.modifierFlags;
     BOOL cmd = (flags & NSEventModifierFlagCommand) != 0;
 
     if ([self hasMarkedText]) {
+        [self snapViewportAndClearSelection];
         if (cmd) {
             [super keyDown:event];
             return;
@@ -349,7 +361,11 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         return;
     }
 
+    // Handle special keys (keybinds, overlays, search) BEFORE clearing
+    // selection — the AI edit keybind needs to see g_sel_active.
     if ([self handleSpecialKey:event]) return;
+
+    [self snapViewportAndClearSelection];
 
     // Repeat bypass: send repeated character keys directly to the encoder,
     // skipping interpretKeyEvents (which would trigger the accent picker).

@@ -26,6 +26,7 @@ pub fn actionString(inv: InvocationType) []const u8 {
         .selection_explain => "explain_selection",
         .command_generate => "generate_command",
         .general => "summarize_output",
+        .edit_selection => "edit_selection",
     };
 }
 
@@ -46,6 +47,29 @@ pub fn serializeRequest(allocator: std.mem.Allocator, bundle: *const ContextBund
     try writeJsonString(w, "action");
     try w.writeAll(":");
     try writeJsonString(w, actionString(bundle.invocation));
+
+    // mode (edit vs chat)
+    if (bundle.invocation == .edit_selection) {
+        try w.writeAll(",");
+        try writeJsonString(w, "mode");
+        try w.writeAll(":");
+        try writeJsonString(w, "edit");
+
+        // edit_target
+        try w.writeAll(",");
+        try writeJsonString(w, "edit_target");
+        try w.writeAll(":{");
+        try writeJsonString(w, "kind");
+        try w.writeAll(":");
+        try writeJsonString(w, "selection");
+        if (bundle.selection_text) |sel| {
+            try w.writeAll(",");
+            try writeJsonString(w, "original_text");
+            try w.writeAll(":");
+            try writeJsonString(w, sel);
+        }
+        try w.writeAll("}");
+    }
 
     // context object
     try w.writeAll(",");
@@ -78,6 +102,15 @@ pub fn serializeRequest(allocator: std.mem.Allocator, bundle: *const ContextBund
         try writeJsonString(w, "stdout_tail");
         try w.writeAll(":");
         try writeJsonString(w, exc);
+        ctx_fields += 1;
+    }
+
+    // edit prompt
+    if (bundle.edit_prompt) |ep| {
+        if (ctx_fields > 0) try w.writeAll(",");
+        try writeJsonString(w, "prompt");
+        try w.writeAll(":");
+        try writeJsonString(w, ep);
         ctx_fields += 1;
     }
 
@@ -170,6 +203,7 @@ test "actionString mapping" {
     try std.testing.expectEqualStrings("explain_selection", actionString(.selection_explain));
     try std.testing.expectEqualStrings("generate_command", actionString(.command_generate));
     try std.testing.expectEqualStrings("summarize_output", actionString(.general));
+    try std.testing.expectEqualStrings("edit_selection", actionString(.edit_selection));
 }
 
 test "serializeRequest: basic JSON structure" {
@@ -230,6 +264,35 @@ test "serializeRequest: escapes special characters" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\\t") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\\\"quoted\\\"") != null);
+}
+
+test "serializeRequest: edit mode includes mode and edit_target" {
+    const alloc = std.testing.allocator;
+
+    var bundle = ContextBundle{
+        .invocation = .edit_selection,
+        .title = null,
+        .selection_text = "hello world",
+        .scrollback_excerpt = null,
+        .scrollback_line_count = 0,
+        .cursor_line = null,
+        .grid_cols = 80,
+        .grid_rows = 24,
+        .alt_active = false,
+        .edit_prompt = "make it uppercase",
+        .allocator = alloc,
+    };
+
+    const json = try serializeRequest(alloc, &bundle);
+    defer alloc.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"mode\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"edit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"edit_target\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"original_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"hello world\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"prompt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"make it uppercase\"") != null);
 }
 
 test "serializeRequest: null fields omitted" {

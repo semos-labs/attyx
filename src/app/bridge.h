@@ -174,6 +174,11 @@ extern volatile int  g_search_cur_vis_ce;   // current match col_end (viewport)
 void attyx_search_insert_char(uint32_t codepoint);
 void attyx_search_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=home 6=end 7=dismiss 8=next 9=prev
 
+// AI edit prompt input: input thread -> PTY thread (Zig-side)
+extern volatile int g_ai_prompt_active;  // 1 = AI edit prompt has focus (Zig-owned)
+void attyx_ai_prompt_insert_char(uint32_t codepoint);
+void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=home 6=end 7=cancel 8=submit
+
 // ---------------------------------------------------------------------------
 // Config reload
 // ---------------------------------------------------------------------------

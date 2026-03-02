@@ -290,7 +290,7 @@ pub const Pty = struct {
         if (std.mem.indexOf(u8, existing, exe_dir) != null) return;
         var path_buf: [4096]u8 = undefined;
         const new_path = std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{
-            existing, exe_dir,
+            exe_dir, existing,
         }) catch return;
         _ = setenv("PATH", new_path, 1);
     }
@@ -306,7 +306,7 @@ pub const Pty = struct {
             \\fi
             \\unset __ATTYX_ORIGINAL_ZDOTDIR
             \\if [[ -n "$__ATTYX_BIN_DIR" ]] && [[ ":$PATH:" != *":$__ATTYX_BIN_DIR:"* ]]; then
-            \\  export PATH="$PATH:$__ATTYX_BIN_DIR"
+            \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
             \\fi
             \\unset __ATTYX_BIN_DIR
             \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"

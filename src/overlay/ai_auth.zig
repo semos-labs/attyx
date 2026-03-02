@@ -342,7 +342,6 @@ pub fn doRefresh(allocator: std.mem.Allocator, base_url: []const u8, refresh_tok
     defer allocator.free(response.body);
 
     if (response.status != 200) {
-        logHttpError("auth/refresh", response.status, response.body);
         return error.RefreshFailed;
     }
 

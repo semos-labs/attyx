@@ -4,23 +4,18 @@ const ai_auth = @import("attyx").overlay_ai_auth;
 pub fn doLogin(allocator: std.mem.Allocator, base_url: []const u8) !void {
     const stdout = std.fs.File.stdout();
 
-    stdout.writeAll("Connecting to ") catch {};
-    stdout.writeAll(base_url) catch {};
-    stdout.writeAll("...\n") catch {};
-
     // Load existing tokens for refresh
     var store = ai_auth.TokenStore.load(allocator) catch ai_auth.TokenStore.init(allocator);
     defer store.deinit();
 
     // Try refresh first if we have a refresh token
     if (store.refresh_token) |rt| {
-        stdout.writeAll("Refreshing authentication...\n") catch {};
         if (ai_auth.doRefresh(allocator, base_url, rt)) |result| {
             defer allocator.free(result.access);
             defer allocator.free(result.refresh);
             try store.update(result.access, result.refresh);
             try store.save();
-            stdout.writeAll("Authenticated successfully.\n") catch {};
+            stdout.writeAll("Already authenticated.\n") catch {};
             return;
         } else |_| {
             // Refresh failed, fall through to device flow
@@ -83,7 +78,7 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
     defer store.deinit();
 
     const access_token = store.access_token orelse {
-        stdout.writeAll("Not logged in. Run `attyx login` first.\n") catch {};
+        stdout.writeAll("Not authenticated. Run `attyx login` to sign in.\n") catch {};
         return;
     };
 
@@ -103,9 +98,9 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
     // GET /v1/me
     var me_url_buf: [512]u8 = undefined;
     const me_url = std.fmt.bufPrint(&me_url_buf, "{s}/v1/me", .{base_url}) catch return error.BufferOverflow;
-    const me_resp = ai_auth.httpGet(allocator, me_url, token) catch |err| {
-        std.debug.print("failed to reach {s}/v1/me: {s}\n", .{ base_url, @errorName(err) });
-        return err;
+    const me_resp = ai_auth.httpGet(allocator, me_url, token) catch {
+        stdout.writeAll("Could not reach server. Check your connection.\n") catch {};
+        return;
     };
     defer allocator.free(me_resp.body);
 
@@ -114,16 +109,16 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
         return;
     }
     if (me_resp.status != 200) {
-        std.debug.print("/v1/me: HTTP {d}: {s}\n", .{ me_resp.status, me_resp.body });
-        return error.RequestFailed;
+        stdout.writeAll("Unexpected server error. Try again later.\n") catch {};
+        return;
     }
 
     // GET /v1/sessions
     var sess_url_buf: [512]u8 = undefined;
     const sess_url = std.fmt.bufPrint(&sess_url_buf, "{s}/v1/sessions", .{base_url}) catch return error.BufferOverflow;
-    const sess_resp = ai_auth.httpGet(allocator, sess_url, token) catch |err| {
-        std.debug.print("failed to reach {s}/v1/sessions: {s}\n", .{ base_url, @errorName(err) });
-        return err;
+    const sess_resp = ai_auth.httpGet(allocator, sess_url, token) catch {
+        stdout.writeAll("Could not reach server. Check your connection.\n") catch {};
+        return;
     };
     defer allocator.free(sess_resp.body);
 

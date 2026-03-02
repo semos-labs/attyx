@@ -11,6 +11,8 @@ pub const ActionId = enum(u8) {
     custom_1,
     context,
     retry,
+    accept,
+    reject,
 };
 
 pub const OverlayAction = struct {
