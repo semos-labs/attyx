@@ -11,7 +11,7 @@ const c = @cImport({
     @cInclude("bridge.h");
 });
 
-// Stubs: ui2.zig normally provides these. UI-0 demo has no PTY.
+// Stubs: terminal.zig normally provides these. UI-0 demo has no PTY.
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
@@ -61,20 +61,20 @@ export fn attyx_overlay_enter() void {}
 export fn attyx_overlay_click(_: c_int, _: c_int) c_int { return 0; }
 export fn attyx_overlay_scroll(_: c_int, _: c_int, _: c_int) c_int { return 0; }
 
-// Grid-based search bar stubs (ui2.zig provides real implementations)
+// Grid-based search bar stubs (terminal.zig provides real implementations)
 export fn attyx_search_insert_char(_: u32) void {}
 export fn attyx_search_cmd(_: c_int) void {}
 
-// AI edit prompt stubs (ui2.zig provides real implementations)
+// AI edit prompt stubs (terminal.zig provides real implementations)
 export var g_ai_prompt_active: i32 = 0;
 export fn attyx_ai_prompt_insert_char(_: u32) void {}
 export fn attyx_ai_prompt_cmd(_: c_int) void {}
 
-// Tab management stubs (ui2.zig provides the real implementations)
+// Tab management stubs (terminal.zig provides the real implementations)
 export fn attyx_tab_action(_: c_int) void {}
 export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}
 
-// Split pane stubs (ui2.zig provides the real implementations)
+// Split pane stubs (terminal.zig provides the real implementations)
 export fn attyx_split_action(_: c_int) void {}
 export fn attyx_split_click(_: c_int, _: c_int) void {}
 export var g_split_active: i32 = 0;
@@ -84,7 +84,7 @@ export fn attyx_split_drag_end() void {}
 export var g_split_drag_active: i32 = 0;
 export var g_split_drag_direction: i32 = 0;
 
-// Popup terminal stubs (ui2.zig provides the real implementations)
+// Popup terminal stubs (terminal.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;
 export fn attyx_popup_toggle(_: c_int) void {}

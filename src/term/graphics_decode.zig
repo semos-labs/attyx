@@ -220,6 +220,108 @@ fn decodeRgb24(
     };
 }
 
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+test "looksLikeImageFile: PNG signature" {
+    const png = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    try std.testing.expect(looksLikeImageFile(&png));
+}
+
+test "looksLikeImageFile: JPEG signature" {
+    const jpeg = [_]u8{ 0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0 };
+    try std.testing.expect(looksLikeImageFile(&jpeg));
+}
+
+test "looksLikeImageFile: GIF signature" {
+    try std.testing.expect(looksLikeImageFile("GIF89a\x00\x00"));
+}
+
+test "looksLikeImageFile: BMP signature" {
+    try std.testing.expect(looksLikeImageFile("BM\x00\x00\x00\x00\x00\x00"));
+}
+
+test "looksLikeImageFile: WebP signature" {
+    try std.testing.expect(looksLikeImageFile("RIFF\x00\x00\x00\x00WEBP"));
+}
+
+test "looksLikeImageFile: short data returns false" {
+    try std.testing.expect(!looksLikeImageFile("PNG"));
+}
+
+test "looksLikeImageFile: random data returns false" {
+    try std.testing.expect(!looksLikeImageFile("\x00\x01\x02\x03\x04\x05\x06\x07"));
+}
+
+test "decodeRgb24: valid RGB converts to RGBA" {
+    const alloc = std.testing.allocator;
+    // 2x1 image: pixel(255,0,0), pixel(0,255,0)
+    const data = [_]u8{ 255, 0, 0, 0, 255, 0 };
+    var img = try decodeRgb24(alloc, &data, 2, 1);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), img.width);
+    try std.testing.expectEqual(@as(u32, 1), img.height);
+    // Pixel 0: R=255 G=0 B=0 A=255
+    try std.testing.expectEqual(@as(u8, 255), img.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 0), img.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 0), img.pixels[2]);
+    try std.testing.expectEqual(@as(u8, 255), img.pixels[3]);
+    // Pixel 1: R=0 G=255 B=0 A=255
+    try std.testing.expectEqual(@as(u8, 0), img.pixels[4]);
+    try std.testing.expectEqual(@as(u8, 255), img.pixels[5]);
+    try std.testing.expectEqual(@as(u8, 255), img.pixels[7]);
+}
+
+test "decodeRgb24: zero dims returns error" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.InvalidDimensions, decodeRgb24(alloc, "", 0, 0));
+    try std.testing.expectError(error.InvalidDimensions, decodeRgb24(alloc, "", 1, 0));
+    try std.testing.expectError(error.InvalidDimensions, decodeRgb24(alloc, "", 0, 1));
+}
+
+test "decodeRgb24: truncated data returns error" {
+    const alloc = std.testing.allocator;
+    const data = [_]u8{ 255, 0 }; // need 3 bytes for 1x1
+    try std.testing.expectError(error.InvalidDimensions, decodeRgb24(alloc, &data, 1, 1));
+}
+
+test "decodeRgba32: valid copy" {
+    const alloc = std.testing.allocator;
+    const data = [_]u8{ 10, 20, 30, 40, 50, 60, 70, 80 }; // 2x1 RGBA
+    var img = try decodeRgba32(alloc, &data, 2, 1);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), img.width);
+    try std.testing.expectEqual(@as(u32, 1), img.height);
+    try std.testing.expectEqualSlices(u8, &data, img.pixels);
+}
+
+test "decodeRgba32: zero dims returns error" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.InvalidDimensions, decodeRgba32(alloc, "", 0, 0));
+}
+
+test "decodeRgba32: truncated data returns error" {
+    const alloc = std.testing.allocator;
+    const data = [_]u8{ 1, 2, 3 }; // need 4 bytes for 1x1
+    try std.testing.expectError(error.InvalidDimensions, decodeRgba32(alloc, &data, 1, 1));
+}
+
+test "decodeBase64: valid round-trip" {
+    const alloc = std.testing.allocator;
+    // "Hello" = "SGVsbG8="
+    const decoded = try decodeBase64(alloc, "SGVsbG8=");
+    defer alloc.free(decoded);
+    try std.testing.expectEqualStrings("Hello", decoded);
+}
+
+test "decodeBase64: invalid chars returns error" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.InvalidCharacter, decodeBase64(alloc, "!!!"));
+}
+
 fn decodeRgba32(
     allocator: std.mem.Allocator,
     data: []const u8,

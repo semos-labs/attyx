@@ -2,7 +2,7 @@ const std = @import("std");
 const attyx = @import("attyx");
 const cli = @import("config/cli.zig");
 const config_mod = @import("config/config.zig");
-const ui2 = @import("app/ui2.zig");
+const terminal = @import("app/terminal.zig");
 const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
 
@@ -78,7 +78,7 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
-    try ui2.run(merged, result.no_config, result.config_path, args);
+    try terminal.run(merged, result.no_config, result.config_path, args);
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.
@@ -114,7 +114,7 @@ fn fatal(msg: []const u8) noreturn {
 }
 
 test {
-    _ = ui2;
+    _ = terminal;
     _ = @import("config/config.zig");
 }
 

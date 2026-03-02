@@ -13,4 +13,6 @@ test {
     _ = @import("tests/search.zig");
     _ = @import("tests/graphics_parse.zig");
     _ = @import("tests/graphics_store.zig");
+    _ = @import("tests/erase.zig");
+    _ = @import("tests/state_resize_extra.zig");
 }

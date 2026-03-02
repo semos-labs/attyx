@@ -1,7 +1,7 @@
 // Attyx — Popup terminal (tmux-style)
 //
 // Core lifecycle: spawn/deinit popup PTY+Engine, convert cells for rendering,
-// publish to C bridge globals. Imported by ui2.zig.
+// publish to C bridge globals. Imported by terminal.zig.
 
 const std = @import("std");
 const posix = std.posix;

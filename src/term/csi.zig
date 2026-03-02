@@ -227,6 +227,157 @@ pub fn dispatchKittyQuery(param_buf: []const u8) Action {
     return .kitty_query_flags;
 }
 
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+const testing = std.testing;
+
+test "parseCsiParams: empty buffer" {
+    const p = parseCsiParams("");
+    try testing.expectEqual(@as(u8, 0), p.len);
+}
+
+test "parseCsiParams: single param" {
+    const p = parseCsiParams("42");
+    try testing.expectEqual(@as(u8, 1), p.len);
+    try testing.expectEqual(@as(u16, 42), p.params[0]);
+}
+
+test "parseCsiParams: multiple params" {
+    const p = parseCsiParams("3;14;159");
+    try testing.expectEqual(@as(u8, 3), p.len);
+    try testing.expectEqual(@as(u16, 3), p.params[0]);
+    try testing.expectEqual(@as(u16, 14), p.params[1]);
+    try testing.expectEqual(@as(u16, 159), p.params[2]);
+}
+
+test "parseCsiParams: missing param defaults to 0" {
+    const p = parseCsiParams(";5;");
+    try testing.expectEqual(@as(u8, 3), p.len);
+    try testing.expectEqual(@as(u16, 0), p.params[0]);
+    try testing.expectEqual(@as(u16, 5), p.params[1]);
+    try testing.expectEqual(@as(u16, 0), p.params[2]);
+}
+
+test "parseCsiParams: overflow >16 params capped" {
+    const p = parseCsiParams("1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18");
+    try testing.expectEqual(@as(u8, 16), p.len);
+    try testing.expectEqual(@as(u16, 16), p.params[15]);
+}
+
+test "parseCsiParams: u16 cap at 65535" {
+    const p = parseCsiParams("99999");
+    try testing.expectEqual(@as(u16, 65535), p.params[0]);
+}
+
+test "parseCsiParams: non-digit bytes skipped" {
+    const p = parseCsiParams("?25");
+    try testing.expectEqual(@as(u8, 1), p.len);
+    try testing.expectEqual(@as(u16, 25), p.params[0]);
+}
+
+test "makeCursorAbs: default to origin" {
+    const a = makeCursorAbs(.{});
+    try testing.expectEqual(@as(u16, 0), a.cursor_abs.row);
+    try testing.expectEqual(@as(u16, 0), a.cursor_abs.col);
+}
+
+test "makeCursorAbs: 1-based to 0-based" {
+    var p = CsiParams{};
+    p.params[0] = 5;
+    p.params[1] = 10;
+    p.len = 2;
+    const a = makeCursorAbs(p);
+    try testing.expectEqual(@as(u16, 4), a.cursor_abs.row);
+    try testing.expectEqual(@as(u16, 9), a.cursor_abs.col);
+}
+
+test "makeEraseDisplay: modes 0-3" {
+    const ed0 = makeEraseDisplay(.{});
+    try testing.expectEqual(actions_mod.EraseMode.to_end, ed0.erase_display);
+
+    var p1 = CsiParams{};
+    p1.params[0] = 1;
+    p1.len = 1;
+    try testing.expectEqual(actions_mod.EraseMode.to_start, makeEraseDisplay(p1).erase_display);
+
+    p1.params[0] = 2;
+    try testing.expectEqual(actions_mod.EraseMode.all, makeEraseDisplay(p1).erase_display);
+
+    p1.params[0] = 3;
+    try testing.expectEqual(actions_mod.EraseMode.scrollback, makeEraseDisplay(p1).erase_display);
+}
+
+test "makeEraseDisplay: unknown mode is nop" {
+    var p = CsiParams{};
+    p.params[0] = 99;
+    p.len = 1;
+    try testing.expectEqual(Action.nop, makeEraseDisplay(p));
+}
+
+test "makeEraseLine: modes 0-2 and unknown" {
+    const el0 = makeEraseLine(.{});
+    try testing.expectEqual(actions_mod.EraseMode.to_end, el0.erase_line);
+
+    var p = CsiParams{};
+    p.params[0] = 1;
+    p.len = 1;
+    try testing.expectEqual(actions_mod.EraseMode.to_start, makeEraseLine(p).erase_line);
+
+    p.params[0] = 2;
+    try testing.expectEqual(actions_mod.EraseMode.all, makeEraseLine(p).erase_line);
+
+    p.params[0] = 99;
+    try testing.expectEqual(Action.nop, makeEraseLine(p));
+}
+
+test "makeSgr: no params defaults to reset" {
+    const a = makeSgr(.{});
+    try testing.expectEqual(@as(u8, 1), a.sgr.len);
+    try testing.expectEqual(@as(u8, 0), a.sgr.params[0]);
+}
+
+test "makeSgr: multiple params forwarded with u8 clamping" {
+    var p = CsiParams{};
+    p.params[0] = 1;
+    p.params[1] = 31;
+    p.params[2] = 300; // exceeds u8, clamped to 255
+    p.len = 3;
+    const a = makeSgr(p);
+    try testing.expectEqual(@as(u8, 3), a.sgr.len);
+    try testing.expectEqual(@as(u8, 1), a.sgr.params[0]);
+    try testing.expectEqual(@as(u8, 31), a.sgr.params[1]);
+    try testing.expectEqual(@as(u8, 255), a.sgr.params[2]);
+}
+
+test "makeCursorShape: all shapes" {
+    var p = CsiParams{};
+    p.len = 1;
+
+    const expected = [_]actions_mod.CursorShape{
+        .blinking_block,   // 0
+        .blinking_block,   // 1
+        .steady_block,     // 2
+        .blinking_underline, // 3
+        .steady_underline, // 4
+        .blinking_bar,     // 5
+        .steady_bar,       // 6
+    };
+    for (expected, 0..) |shape, i| {
+        p.params[0] = @intCast(i);
+        const a = makeCursorShape(p);
+        try testing.expectEqual(shape, a.set_cursor_shape);
+    }
+}
+
+test "makeCursorShape: unknown is nop" {
+    var p = CsiParams{};
+    p.params[0] = 99;
+    p.len = 1;
+    try testing.expectEqual(Action.nop, makeCursorShape(p));
+}
+
 /// Parse the rest of an OSC 8 payload after the "8;".
 /// Format: "params;URI" — params are ignored, URI determines start/end.
 pub fn makeOscHyperlink(rest: []const u8) Action {

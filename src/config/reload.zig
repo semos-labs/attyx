@@ -22,3 +22,25 @@ pub fn loadReloadedConfig(
     cli_mod.applyCliOverrides(args, &cfg);
     return cfg;
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+test "no_config returns default AppConfig" {
+    const cfg = try loadReloadedConfig(std.testing.allocator, true, null, &.{});
+    try std.testing.expectEqual(@as(u16, 14), cfg.font_size);
+    try std.testing.expectEqualStrings("JetBrains Mono", cfg.font_family);
+    try std.testing.expectEqual(@as(u32, 20_000), cfg.scrollback_lines);
+    try std.testing.expect(cfg.reflow_enabled);
+    try std.testing.expect(cfg.cursor_blink);
+}
+
+test "default AppConfig key fields match expectations" {
+    const cfg = AppConfig{};
+    try std.testing.expectEqual(@as(f32, 1.0), cfg.background_opacity);
+    try std.testing.expectEqual(@as(u16, 30), cfg.background_blur);
+    try std.testing.expect(cfg.window_decorations);
+    try std.testing.expect(cfg.check_updates);
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.program);
+}

@@ -38,7 +38,7 @@ void attyx_request_quit(void);
 int attyx_should_quit(void);
 
 // Send keyboard input to the PTY (called from main/Cocoa thread).
-// Implemented in Zig (ui2.zig).
+// Implemented in Zig (terminal.zig).
 void attyx_send_input(const uint8_t* bytes, int len);
 
 // Copy text to system clipboard (callable from any thread).
@@ -188,7 +188,7 @@ void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=hom
 extern volatile int g_needs_reload_config;
 
 // Set g_needs_reload_config = 1. Safe to call from any thread (signal-safe).
-// Implemented in Zig (ui2.zig).
+// Implemented in Zig (terminal.zig).
 void attyx_trigger_config_reload(void);
 
 // Set to 1 by PTY thread when font config changes (family, size, fallbacks, cell dims).
@@ -436,7 +436,7 @@ void attyx_popup_handle_key(uint16_t key, uint8_t mods, uint8_t event_type, uint
 void attyx_popup_toggle(int index);
 
 // ---------------------------------------------------------------------------
-// Logging bridge (implemented in ui2.zig / main.zig stub)
+// Logging bridge (implemented in terminal.zig / main.zig stub)
 // ---------------------------------------------------------------------------
 
 // Levels: 0=err, 1=warn, 2=info, 3=debug, 4=trace

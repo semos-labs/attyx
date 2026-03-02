@@ -112,3 +112,89 @@ pub fn tabIndexAtCol(col: u16, tab_count: u8, grid_cols: u16) ?u8 {
     const idx: u8 = @intCast(col / tab_width);
     return if (idx < tab_count) idx else null;
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+test "generate: null on 0 cols" {
+    var buf: [100]OverlayCell = undefined;
+    try std.testing.expect(generate(&buf, 2, 0, 0, .{}) == null);
+}
+
+test "generate: null on 0 tabs" {
+    var buf: [100]OverlayCell = undefined;
+    try std.testing.expect(generate(&buf, 0, 0, 40, .{}) == null);
+}
+
+test "generate: null on small buffer" {
+    var buf: [5]OverlayCell = undefined;
+    try std.testing.expect(generate(&buf, 1, 0, 10, .{}) == null);
+}
+
+test "generate: single tab fills width" {
+    var buf: [20]OverlayCell = undefined;
+    const result = generate(&buf, 1, 0, 20, .{}) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 20), result.width);
+    try std.testing.expectEqual(@as(u16, 1), result.height);
+    // First cell should be a space (leading padding)
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
+}
+
+test "generate: separator pipes between tabs" {
+    var buf: [80]OverlayCell = undefined;
+    const style = Style{};
+    const result = generate(&buf, 3, 0, 60, style) orelse return error.TestUnexpectedResult;
+
+    // Tab width = 60/3 = 20 (capped at 24). Last cell of first tab should be '|'
+    const tab_width: u16 = 20;
+    try std.testing.expectEqual(@as(u21, '|'), result.cells[tab_width - 1].char);
+}
+
+test "generate: active tab uses highlight colors" {
+    var buf: [80]OverlayCell = undefined;
+    const style = Style{};
+    const result = generate(&buf, 2, 1, 40, style) orelse return error.TestUnexpectedResult;
+
+    // Tab 0 (inactive) should use default bg
+    try std.testing.expectEqual(style.bg, result.cells[0].bg);
+    // Tab 1 (active) — first cell of second tab should use active_bg
+    const tab_width: u16 = 20;
+    try std.testing.expectEqual(style.active_bg, result.cells[tab_width].bg);
+}
+
+test "tabIndexAtCol: correct index per column" {
+    // 3 tabs, 60 cols → tab_width = 20
+    try std.testing.expectEqual(@as(?u8, 0), tabIndexAtCol(0, 3, 60));
+    try std.testing.expectEqual(@as(?u8, 0), tabIndexAtCol(19, 3, 60));
+    try std.testing.expectEqual(@as(?u8, 1), tabIndexAtCol(20, 3, 60));
+    try std.testing.expectEqual(@as(?u8, 2), tabIndexAtCol(40, 3, 60));
+}
+
+test "tabIndexAtCol: null beyond tabs" {
+    // 2 tabs, 60 cols → tab_width = 24 (capped), total = 48
+    try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(48, 2, 60));
+}
+
+test "tabIndexAtCol: null on 0 cols or 0 tabs" {
+    try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 0, 40));
+    try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 2, 0));
+}
+
+test "tab width capping: max 24" {
+    // 1 tab, 100 cols → tab_width capped at 24
+    var buf: [100]OverlayCell = undefined;
+    const default_style = Style{};
+    const result = generate(&buf, 1, 0, 100, default_style) orelse return error.TestUnexpectedResult;
+
+    // Active tab content should only span first 24 cells with tab content
+    // (the rest is bar background). Check that cell 24 has bar bg, not active bg.
+    try std.testing.expectEqual(default_style.bg, result.cells[24].bg);
+}
+
+test "tab width capping: min 5" {
+    // 10 tabs, 20 cols → 20/10 = 2 < 5, so tab_width = 5
+    try std.testing.expectEqual(@as(?u8, 0), tabIndexAtCol(0, 10, 20));
+    try std.testing.expectEqual(@as(?u8, 0), tabIndexAtCol(4, 10, 20));
+    try std.testing.expectEqual(@as(?u8, 1), tabIndexAtCol(5, 10, 20));
+}
