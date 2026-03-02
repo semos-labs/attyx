@@ -91,6 +91,10 @@ static int dispatchAction(uint8_t action) {
         attyx_tab_action(action);
         return 1;
     }
+    if (action >= ATTYX_ACTION_TAB_SELECT_1 && action <= ATTYX_ACTION_TAB_SELECT_9) {
+        attyx_tab_action(action);
+        return 1;
+    }
     if (action >= ATTYX_ACTION_SPLIT_VERTICAL && action <= ATTYX_ACTION_PANE_CLOSE) {
         attyx_split_action(action);
         return 1;

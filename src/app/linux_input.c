@@ -135,6 +135,10 @@ static int dispatchAction(uint8_t act) {
         attyx_tab_action(act);
         return 1;
     }
+    if (act >= ATTYX_ACTION_TAB_SELECT_1 && act <= ATTYX_ACTION_TAB_SELECT_9) {
+        attyx_tab_action(act);
+        return 1;
+    }
     if (act >= ATTYX_ACTION_SPLIT_VERTICAL && act <= ATTYX_ACTION_PANE_CLOSE) {
         attyx_split_action(act);
         return 1;
@@ -234,6 +238,9 @@ static void glfwToKeyCombo(int key, int mods, uint16_t* outKey, uint32_t* outCp)
         uint32_t cp = 'a' + (key - GLFW_KEY_A);
         if (mods & GLFW_MOD_SHIFT) cp -= 32;
         *outCp = cp;
+    } else if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
+        *outKey = KC_CODEPOINT;
+        *outCp = '0' + (key - GLFW_KEY_0);
     } else {
         *outKey = KC_CODEPOINT;
         *outCp = 0;

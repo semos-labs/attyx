@@ -92,6 +92,15 @@ pub const Action = enum(u8) {
     pane_resize_down = 61,
     pane_resize_left = 62,
     pane_resize_right = 63,
+    tab_select_1 = 64,
+    tab_select_2 = 65,
+    tab_select_3 = 66,
+    tab_select_4 = 67,
+    tab_select_5 = 68,
+    tab_select_6 = 69,
+    tab_select_7 = 70,
+    tab_select_8 = 71,
+    tab_select_9 = 72,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -283,6 +292,15 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "pane_resize_down", Action.pane_resize_down },
         .{ "pane_resize_left", Action.pane_resize_left },
         .{ "pane_resize_right", Action.pane_resize_right },
+        .{ "tab_select_1", Action.tab_select_1 },
+        .{ "tab_select_2", Action.tab_select_2 },
+        .{ "tab_select_3", Action.tab_select_3 },
+        .{ "tab_select_4", Action.tab_select_4 },
+        .{ "tab_select_5", Action.tab_select_5 },
+        .{ "tab_select_6", Action.tab_select_6 },
+        .{ "tab_select_7", Action.tab_select_7 },
+        .{ "tab_select_8", Action.tab_select_8 },
+        .{ "tab_select_9", Action.tab_select_9 },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -314,6 +332,21 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_TAB, .mods = MOD_CTRL, .codepoint = 0 }, .tab_next),
             kb(.{ .key = KC_TAB, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
         };
+        // Tab select by number: Cmd+1..9 on macOS, Alt+1..9 on Linux
+        {
+            const tab_mod = if (is_macos) MOD_SUPER else MOD_ALT;
+            list = list ++ &[_]Keybind{
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '1' }, .tab_select_1),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '2' }, .tab_select_2),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '3' }, .tab_select_3),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '4' }, .tab_select_4),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '5' }, .tab_select_5),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '6' }, .tab_select_6),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '7' }, .tab_select_7),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '8' }, .tab_select_8),
+                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '9' }, .tab_select_9),
+            };
+        }
         // Split pane navigation (cross-platform, only active when splits exist)
         list = list ++ &[_]Keybind{
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'h' }, .pane_focus_left),
