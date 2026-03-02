@@ -18,6 +18,8 @@ const TabManager = @import("tab_manager.zig").TabManager;
 const Pane = @import("pane.zig").Pane;
 const Pty = @import("pty.zig").Pty;
 const SessionLog = @import("session_log.zig").SessionLog;
+const SessionClient = @import("session_client.zig").SessionClient;
+const SessionPane = @import("session_pane.zig").SessionPane;
 const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
 const platform = @import("../platform/platform.zig");
@@ -61,6 +63,9 @@ pub const PtyThreadCtx = struct {
     grid_rows: u16 = 0,
     grid_cols: u16 = 0,
     statusbar: ?*Statusbar = null,
+    // Session mode (daemon-backed)
+    session_client: ?*SessionClient = null,
+    session_pane: ?*SessionPane = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -70,6 +75,7 @@ pub var g_pty_master: posix.fd_t = -1;
 pub var g_engine: ?*attyx.Engine = null;
 pub var g_popup_pty_master: posix.fd_t = -1;
 pub var g_popup_engine: ?*attyx.Engine = null;
+pub var g_session_client: ?*SessionClient = null;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
@@ -129,6 +135,8 @@ pub export var g_split_drag_direction: i32 = 0;
 pub export var g_popup_active: i32 = 0;
 pub export var g_popup_trail_active: i32 = 0;
 pub export var g_ai_prompt_active: i32 = 0;
+pub export var g_toggle_session_switcher: i32 = 0;
+pub export var g_session_switcher_active: i32 = 0;
 
 // Ensure keybind exports are linked
 comptime {
@@ -149,6 +157,12 @@ export fn attyx_toggle_anchor_demo() void {
 export fn attyx_toggle_ai_demo() void {
     @atomicStore(i32, &g_toggle_ai_demo, 1, .seq_cst);
 }
+export fn attyx_toggle_session_switcher() void {
+    @atomicStore(i32, &g_toggle_session_switcher, 1, .seq_cst);
+}
+export fn attyx_session_switcher_nav_up() void { input.sessionSwitcherNavUp(); }
+export fn attyx_session_switcher_nav_down() void { input.sessionSwitcherNavDown(); }
+export fn attyx_session_switcher_action(action: c_int) void { input.sessionSwitcherAction(action); }
 export fn attyx_overlay_esc() void { input.overlayEsc(); }
 export fn attyx_overlay_tab() void { input.overlayTab(); }
 export fn attyx_overlay_shift_tab() void { input.overlayShiftTab(); }
@@ -264,6 +278,73 @@ pub fn run(
         }
     }
     const initial_pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - g_grid_top_offset - g_grid_bottom_offset));
+
+    // Session mode: connect to daemon. On failure, fall back to direct PTY.
+    var session_client: ?SessionClient = null;
+    defer if (session_client) |*sc| sc.deinit();
+
+    if (config.sessions_enabled) {
+        if (SessionClient.connect(allocator)) |sc| {
+            session_client = sc;
+            logging.info("session", "connected to daemon", .{});
+        } else |err| {
+            logging.err("session", "daemon connect failed (falling back to direct PTY): {}", .{err});
+        }
+    }
+
+    // In session mode: attach to last active session, or create a new one.
+    if (session_client) |*sc| attach_or_create: {
+        // Try to get existing sessions
+        sc.requestListSync(2000) catch {
+            // Can't get list — create + attach new session
+            const sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err| {
+                logging.err("session", "create session failed: {}", .{err});
+                sc.deinit();
+                session_client = null;
+                break :attach_or_create;
+            };
+            sc.attach(sid, initial_pty_rows, config.cols) catch {};
+            logging.info("session", "created and attached to session {d}", .{sid});
+            break :attach_or_create;
+        };
+
+        // Look for an alive session to reattach to
+        var found_alive: ?u32 = null;
+        for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+            if (entry.alive) {
+                found_alive = entry.id;
+                break;
+            }
+        }
+
+        if (found_alive) |sid| {
+            sc.attach(sid, initial_pty_rows, config.cols) catch |err| {
+                logging.err("session", "attach to session {d} failed: {}", .{ sid, err });
+                // Fall back to creating new + attach
+                const new_sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err2| {
+                    logging.err("session", "create session failed: {}", .{err2});
+                    sc.deinit();
+                    session_client = null;
+                    break :attach_or_create;
+                };
+                sc.attach(new_sid, initial_pty_rows, config.cols) catch {};
+            };
+            logging.info("session", "reattached to session {d}", .{found_alive.?});
+        } else {
+            // No alive sessions — create + attach
+            const sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err| {
+                logging.err("session", "create session failed: {}", .{err});
+                sc.deinit();
+                session_client = null;
+                break :attach_or_create;
+            };
+            sc.attach(sid, initial_pty_rows, config.cols) catch {};
+            logging.info("session", "created and attached to session {d}", .{sid});
+        }
+    }
+
+    // Always spawn a local Pane (provides Engine + TabManager integration).
+    // In session mode, the Pane's PTY is idle — I/O goes through the daemon socket.
     initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
@@ -280,9 +361,11 @@ pub fn run(
 
     g_pty_master = initial_pane.pty.master;
     g_engine = &initial_pane.engine;
+    g_session_client = if (session_client) |*sc| sc else null;
     defer {
         g_pty_master = -1;
         g_engine = null;
+        g_session_client = null;
     }
 
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
@@ -384,6 +467,7 @@ pub fn run(
         .grid_rows = config.rows,
         .grid_cols = config.cols,
         .statusbar = if (statusbar) |*sb| sb else null,
+        .session_client = if (session_client) |*sc| sc else null,
     };
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});

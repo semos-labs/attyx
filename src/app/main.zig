@@ -98,6 +98,14 @@ export fn attyx_split_drag_end() void {}
 export var g_split_drag_active: i32 = 0;
 export var g_split_drag_direction: i32 = 0;
 
+// Session switcher stubs (terminal.zig provides the real implementations)
+export var g_toggle_session_switcher: i32 = 0;
+export var g_session_switcher_active: i32 = 0;
+export fn attyx_toggle_session_switcher() void {}
+export fn attyx_session_switcher_nav_up() void {}
+export fn attyx_session_switcher_nav_down() void {}
+export fn attyx_session_switcher_action(_: c_int) void {}
+
 // Popup terminal stubs (terminal.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;

@@ -102,6 +102,7 @@ pub const Action = enum(u8) {
     tab_select_8 = 71,
     tab_select_9 = 72,
     clear_screen = 73,
+    session_switcher_toggle = 74,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -303,6 +304,7 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "tab_select_8", Action.tab_select_8 },
         .{ "tab_select_9", Action.tab_select_9 },
         .{ "clear_screen", Action.clear_screen },
+        .{ "session_switcher_toggle", Action.session_switcher_toggle },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -328,6 +330,7 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .new_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 's' }, .session_switcher_toggle),
         };
         // Tab management (cross-platform)
         list = list ++ &[_]Keybind{

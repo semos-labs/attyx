@@ -209,6 +209,9 @@ static int dispatchAction(uint8_t act) {
         case ATTYX_ACTION_AI_DEMO_TOGGLE:
             attyx_toggle_ai_demo();
             return 1;
+        case ATTYX_ACTION_SESSION_SWITCHER:
+            attyx_toggle_session_switcher();
+            return 1;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;
@@ -284,6 +287,17 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     int ctrl  = (mods & GLFW_MOD_CONTROL) != 0;
     int alt   = (mods & GLFW_MOD_ALT) != 0;
     int shift = (mods & GLFW_MOD_SHIFT) != 0;
+
+    // Session switcher key routing
+    if (g_session_switcher_active && action != GLFW_RELEASE) {
+        if (key == GLFW_KEY_ESCAPE)  { attyx_toggle_session_switcher(); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_UP)      { attyx_session_switcher_nav_up(); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DOWN)    { attyx_session_switcher_nav_down(); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_ENTER)   { attyx_session_switcher_action(1); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_N)       { attyx_session_switcher_action(2); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_D || key == GLFW_KEY_X)
+            { attyx_session_switcher_action(3); g_suppress_char = 1; return; }
+    }
 
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions && action != GLFW_RELEASE) {
@@ -443,6 +457,9 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
         if (codepoint >= 0x20) attyx_ai_prompt_insert_char(codepoint);
         return;
     }
+
+    // Session switcher swallows all char input
+    if (g_session_switcher_active) return;
 
     // When popup is active, route chars to popup
     if (g_popup_active) {

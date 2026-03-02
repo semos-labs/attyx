@@ -3,7 +3,7 @@ const anchor_mod = @import("anchor.zig");
 const action_mod = @import("action.zig");
 const layout_mod = @import("layout.zig");
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7, session_switcher = 8 };
 
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 

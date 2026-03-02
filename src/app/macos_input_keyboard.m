@@ -159,6 +159,9 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_AI_DEMO_TOGGLE:
             attyx_toggle_ai_demo();
             return 1;
+        case ATTYX_ACTION_SESSION_SWITCHER:
+            attyx_toggle_session_switcher();
+            return 1;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;
@@ -278,6 +281,22 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_RightArrow)               { attyx_ai_prompt_cmd(4); return YES; }
         if (kc == kVK_Home)                     { attyx_ai_prompt_cmd(5); return YES; }
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
+    }
+
+    // Session switcher key routing
+    if (g_session_switcher_active) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_Escape)       { attyx_toggle_session_switcher(); return YES; }
+        if (kc == kVK_UpArrow)      { attyx_session_switcher_nav_up(); return YES; }
+        if (kc == kVK_DownArrow)    { attyx_session_switcher_nav_down(); return YES; }
+        if (kc == kVK_Return)       { attyx_session_switcher_action(1); return YES; } // switch
+        // 'n' for new, 'd'/'x' for kill
+        NSString* chars = event.charactersIgnoringModifiers;
+        if (chars.length > 0) {
+            unichar ch = [chars characterAtIndex:0];
+            if (ch == 'n' || ch == 'N') { attyx_session_switcher_action(2); return YES; }
+            if (ch == 'd' || ch == 'D' || ch == 'x' || ch == 'X') { attyx_session_switcher_action(3); return YES; }
+        }
     }
 
     // Overlay interaction keys (contextual, not user-configurable)

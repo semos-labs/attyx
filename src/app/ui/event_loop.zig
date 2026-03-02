@@ -24,6 +24,7 @@ const input = @import("input.zig");
 const search = @import("search.zig");
 const ai = @import("ai.zig");
 const actions = @import("actions.zig");
+const session_switcher = @import("session_switcher.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -117,6 +118,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 publish.publishOverlays(ctx);
             }
         }
+
+        // Session switcher toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
+            session_switcher.toggle(ctx);
+        }
+        // Session switcher tick (navigation, actions, list refresh)
+        session_switcher.tick(ctx);
 
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
@@ -443,7 +451,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Build poll fd array
         const tab_max = @import("../tab_manager.zig").max_tabs;
-        const max_fds = tab_max * split_layout_mod.max_panes + 1;
+        const max_fds = tab_max * split_layout_mod.max_panes + 2; // +2 for popup + session socket
         var fds: [max_fds]posix.pollfd = undefined;
         var fd_panes: [max_fds]*@import("../pane.zig").Pane = undefined;
         var fd_tab_idx: [max_fds]u8 = undefined;
@@ -469,6 +477,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 fd_tab_idx[nfds] = 0xFF;
                 nfds += 1;
             }
+        }
+
+        // Session socket fd (daemon mode)
+        const session_fd_idx = nfds;
+        if (ctx.session_client) |sc| {
+            fds[nfds] = .{ .fd = sc.pollFd(), .events = POLLIN, .revents = 0 };
+            fd_tab_idx[nfds] = 0xFE;
+            nfds += 1;
         }
 
         _ = posix.poll(fds[0..nfds], 16) catch break;
@@ -518,6 +534,22 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const pcfg = ctx.popup_configs[ps.config_index];
                 ps.publishCells(&ctx.active_theme, pcfg);
                 ps.publishImagePlacements(pcfg);
+            }
+        }
+
+        // Drain session socket data (daemon mode)
+        if (ctx.session_client) |sc| {
+            if (session_fd_idx < nfds and fds[session_fd_idx].revents & POLLIN != 0) {
+                if (sc.recvData()) {
+                    var died_session: ?u32 = null;
+                    while (sc.readOutput(&died_session)) |output_data| {
+                        if (output_data.len > 0) {
+                            got_data = true;
+                            ctx.session.appendOutput(output_data);
+                            ctx.tab_mgr.activePane().feed(output_data);
+                        }
+                    }
+                }
             }
         }
 

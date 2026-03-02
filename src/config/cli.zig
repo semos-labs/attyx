@@ -19,6 +19,7 @@ pub const Action = enum {
     login,
     device,
     uninstall,
+    daemon,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -51,6 +52,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "uninstall")) {
             result.action = .uninstall;
+            return result;
+        } else if (std.mem.eql(u8, first, "daemon")) {
+            result.action = .daemon;
             return result;
         }
     }
@@ -317,6 +321,7 @@ pub fn printUsage() void {
         \\  login                      Authenticate with Attyx AI services
         \\  device                     Show device and account info
         \\  uninstall                  Remove config, auth tokens, and desktop entry
+        \\  daemon                     Run the session daemon
         \\
         \\Options:
         \\  --rows N                   Terminal rows (default: 24)

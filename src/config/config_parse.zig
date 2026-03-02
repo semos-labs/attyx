@@ -515,6 +515,16 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    // [sessions]
+    if (Lookup.get(root, "sessions", "enabled")) |v| {
+        if (v == .bool) {
+            config.sessions_enabled = v.bool;
+        } else {
+            std.debug.print("error: {s}: sessions.enabled must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [updates]
     if (Lookup.get(root, "updates", "check_updates")) |v| {
         if (v == .bool) {

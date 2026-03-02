@@ -164,6 +164,9 @@ pub const AppConfig = struct {
     tab_appearance: TabAppearance = .builtin,
     tab_always_show: bool = false,
 
+    // [sessions]
+    sessions_enabled: bool = false,
+
     // [updates]
     check_updates: bool = true,
 
