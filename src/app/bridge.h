@@ -26,6 +26,8 @@ extern volatile int g_cursor_col;
 // Number of grid rows to shift terminal content down (for search bar padding).
 // Overlays are NOT shifted — they render at the original offY.
 extern volatile int g_grid_top_offset;
+extern volatile int g_grid_bottom_offset;
+extern volatile int g_statusbar_visible;
 extern volatile int g_tab_bar_visible;
 
 // Spawn a new attyx process (new window with fresh shell session).
