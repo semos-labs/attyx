@@ -535,6 +535,22 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         return;
     }
 
+    // Resolve a display title for each tab: prefer OSC title, fall back to
+    // the foreground process name (e.g. "zsh", "vim").
+    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        const pane = layout.focusedPane();
+        if (pane.engine.state.title) |t| {
+            titles[i] = t;
+        } else {
+            if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
+                titles[i] = name;
+            }
+        }
+    }
+
     var tab_cells: [512]overlay_mod.OverlayCell = undefined;
     const result = tab_bar_mod.generate(
         &tab_cells,
@@ -542,6 +558,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         ctx.tab_mgr.active,
         ctx.grid_cols,
         .{},
+        &titles,
     ) orelse return;
 
     mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;

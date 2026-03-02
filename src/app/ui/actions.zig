@@ -68,6 +68,17 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             switchActiveTab(ctx);
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
+        .tab_select_1, .tab_select_2, .tab_select_3,
+        .tab_select_4, .tab_select_5, .tab_select_6,
+        .tab_select_7, .tab_select_8, .tab_select_9,
+        => {
+            const idx = @intFromEnum(action) - @intFromEnum(Action.tab_select_1);
+            if (idx < ctx.tab_mgr.count and idx != ctx.tab_mgr.active) {
+                ctx.tab_mgr.switchTo(idx);
+                switchActiveTab(ctx);
+                logging.info("tabs", "switched to tab {d}", .{idx + 1});
+            }
+        },
         else => {},
     }
 }
