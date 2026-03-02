@@ -64,6 +64,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             actions.doReloadConfig(ctx);
         }
 
+        // Tick statusbar widgets
+        if (ctx.statusbar) |sb| if (sb.config.enabled) sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master);
         // Debug overlay toggle check
         if (@atomicRmw(i32, &terminal.g_toggle_debug_overlay, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
@@ -246,13 +248,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Tab action handling
         actions.processTabActions(ctx);
-
-        // Split pane action handling
         actions.processSplitActions(ctx);
-
-        // Split pane drag resize
         actions.processSplitDrag(ctx);
 
         // Split pane click focus
@@ -313,7 +310,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             actions.switchActiveTab(ctx);
                             continue;
                         } else {
-                            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+                            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                             lay.layout(pty_rows, ctx.grid_cols);
                             if (ti == ctx.tab_mgr.active) {
                                 actions.updateSplitActive(ctx);
@@ -340,7 +337,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const gaps = actions.computeSplitGaps();
                 ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
 
-                const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset));
+                const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                 ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
 
                 posix.nanosleep(0, 1_000_000);
@@ -389,6 +386,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     ai.relayoutContextPreview(ctx);
                 }
                 publish.generateTabBar(ctx);
+                publish.generateStatusbar(ctx);
                 publish.publishOverlays(ctx);
                 if (ctx.popup_state) |ps| {
                     const cfg = ctx.popup_configs[ps.config_index];
@@ -511,7 +509,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_begin_cell_update();
             const layout = ctx.tab_mgr.activeLayout();
             if (layout.pane_count > 1) {
-                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                 split_render.fillCellsSplit(
                     @ptrCast(ctx.cells),
                     layout,
@@ -548,6 +546,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             publish.generateDebugCard(ctx);
             publish.generateAnchorDemo(ctx);
             publish.generateTabBar(ctx);
+            publish.generateStatusbar(ctx);
             publish.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publish.publishState(ctx);
@@ -584,7 +583,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 }
                                 publish.updateGridTopOffset(ctx);
                             } else {
-                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset));
+                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                                 lay.layout(pty_rows, ctx.grid_cols);
                                 actions.updateSplitActive(ctx);
                             }
@@ -597,4 +596,3 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 }
-

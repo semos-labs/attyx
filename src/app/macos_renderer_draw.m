@@ -167,7 +167,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         float glyphW = _glyphCache.glyph_w;
         float glyphH = _glyphCache.glyph_h;
         int atlasCols = _glyphCache.atlas_cols;
-        int visibleRows = rows - g_grid_top_offset;
+        int visibleRows = rows - g_grid_top_offset - g_grid_bottom_offset;
         if (visibleRows < 0) visibleRows = 0;
         int visibleTotal = visibleRows * cols;
 

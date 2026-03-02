@@ -7,6 +7,7 @@ const overlay_layout = attyx.overlay_layout;
 const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
 const tab_bar_mod = @import("../tab_bar.zig");
+const statusbar_mod = @import("../statusbar.zig");
 const split_render = @import("../split_render.zig");
 const platform = @import("../../platform/platform.zig");
 const Pty = @import("../pty.zig").Pty;
@@ -506,27 +507,49 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
     }
 }
 
-/// Centralized calculation of g_grid_top_offset accounting for tab bar and search bar.
-/// When the offset changes, resizes all panes to account for rows consumed by overlays.
-pub fn updateGridTopOffset(ctx: *PtyThreadCtx) void {
-    const old_offset = terminal.g_grid_top_offset;
-    var offset: i32 = 0;
-    if (ctx.tab_mgr.count > 1) offset += 1; // tab bar
-    if (@as(i32, @bitCast(c.g_search_active)) != 0) offset += 1; // search bar
-    terminal.g_grid_top_offset = offset;
-    @atomicStore(i32, &terminal.g_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
-    terminal.g_tab_bar_visible = if (ctx.tab_mgr.count > 1) @as(i32, 1) else @as(i32, 0);
+/// Check if statusbar is active and enabled.
+fn statusbarActive(ctx: *PtyThreadCtx) bool {
+    const sb = ctx.statusbar orelse return false;
+    return sb.config.enabled;
+}
 
-    // Resize panes when offset changes (rows consumed by overlays changed)
-    if (offset != old_offset and ctx.grid_rows > 0) {
-        const pty_rows = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_rows) - offset)));
+/// Centralized offset calculation for tab bar, search bar, and statusbar.
+/// Resizes panes when the total consumed rows change.
+pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
+    const old_total = terminal.g_grid_top_offset + terminal.g_grid_bottom_offset;
+    var top: i32 = 0;
+    var bottom: i32 = 0;
+    const sb_active = statusbarActive(ctx);
+    if (sb_active) {
+        if (ctx.statusbar.?.config.position == .top) top += 1 else bottom += 1;
+        terminal.g_statusbar_visible = 1;
+        terminal.g_tab_bar_visible = 0;
+    } else {
+        terminal.g_statusbar_visible = 0;
+        if (ctx.tab_mgr.count > 1) top += 1;
+        terminal.g_tab_bar_visible = if (ctx.tab_mgr.count > 1) @as(i32, 1) else @as(i32, 0);
+    }
+    if (@as(i32, @bitCast(c.g_search_active)) != 0) top += 1;
+    terminal.g_grid_top_offset = top;
+    terminal.g_grid_bottom_offset = bottom;
+    @atomicStore(i32, &terminal.g_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    const new_total = top + bottom;
+    if (new_total != old_total and ctx.grid_rows > 0) {
+        const pty_rows = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_rows) - new_total)));
         ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
     }
 }
+pub const updateGridTopOffset = updateGridOffsets;
 
-/// Generate the tab bar overlay (only visible when count > 1).
+/// Generate the tab bar overlay (only visible when count > 1 and statusbar is not active).
 pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
+
+    // When statusbar is active, tabs are rendered inside the statusbar overlay
+    if (statusbarActive(ctx)) {
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+        return;
+    }
 
     if (ctx.tab_mgr.count <= 1) {
         if (mgr.isVisible(.tab_bar)) {
@@ -565,4 +588,19 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     if (!mgr.isVisible(.tab_bar)) {
         mgr.show(.tab_bar);
     }
+}
+
+/// Generate the statusbar overlay.
+pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const sb = ctx.statusbar orelse return;
+    if (!sb.config.enabled) {
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        return;
+    }
+    var sb_cells: [512]overlay_mod.OverlayCell = undefined;
+    const result = statusbar_mod.generate(&sb_cells, sb, ctx.tab_mgr.count, ctx.tab_mgr.active, ctx.grid_cols, .{}) orelse return;
+    const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
+    mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
+    if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);
 }

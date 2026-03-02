@@ -46,6 +46,8 @@ var _ver_stub: u8 = 0;
 export var g_app_version: [*]const u8 = @ptrCast(&_ver_stub);
 export var g_app_version_len: c_int = 0;
 export var g_grid_top_offset: i32 = 0;
+export var g_grid_bottom_offset: i32 = 0;
+export var g_statusbar_visible: i32 = 0;
 export var g_tab_bar_visible: i32 = 0;
 export var g_toggle_debug_overlay: i32 = 0;
 export fn attyx_toggle_debug_overlay() void {}
