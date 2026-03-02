@@ -48,29 +48,6 @@ pub fn serializeRequest(allocator: std.mem.Allocator, bundle: *const ContextBund
     try w.writeAll(":");
     try writeJsonString(w, actionString(bundle.invocation));
 
-    // mode (edit vs chat)
-    if (bundle.invocation == .edit_selection) {
-        try w.writeAll(",");
-        try writeJsonString(w, "mode");
-        try w.writeAll(":");
-        try writeJsonString(w, "edit");
-
-        // edit_target
-        try w.writeAll(",");
-        try writeJsonString(w, "edit_target");
-        try w.writeAll(":{");
-        try writeJsonString(w, "kind");
-        try w.writeAll(":");
-        try writeJsonString(w, "selection");
-        if (bundle.selection_text) |sel| {
-            try w.writeAll(",");
-            try writeJsonString(w, "original_text");
-            try w.writeAll(":");
-            try writeJsonString(w, sel);
-        }
-        try w.writeAll("}");
-    }
-
     // context object
     try w.writeAll(",");
     try writeJsonString(w, "context");
@@ -105,10 +82,10 @@ pub fn serializeRequest(allocator: std.mem.Allocator, bundle: *const ContextBund
         ctx_fields += 1;
     }
 
-    // edit prompt
+    // edit intent
     if (bundle.edit_prompt) |ep| {
         if (ctx_fields > 0) try w.writeAll(",");
-        try writeJsonString(w, "prompt");
+        try writeJsonString(w, "intent");
         try w.writeAll(":");
         try writeJsonString(w, ep);
         ctx_fields += 1;
@@ -266,7 +243,7 @@ test "serializeRequest: escapes special characters" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\\\"quoted\\\"") != null);
 }
 
-test "serializeRequest: edit mode includes mode and edit_target" {
+test "serializeRequest: edit mode includes selection and intent" {
     const alloc = std.testing.allocator;
 
     var bundle = ContextBundle{
@@ -286,12 +263,10 @@ test "serializeRequest: edit mode includes mode and edit_target" {
     const json = try serializeRequest(alloc, &bundle);
     defer alloc.free(json);
 
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"mode\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"edit\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"edit_target\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"original_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"edit_selection\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"selection\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"hello world\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"prompt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"intent\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"make it uppercase\"") != null);
 }
 

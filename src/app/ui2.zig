@@ -1107,9 +1107,10 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
     g_ai_request_body = overlay_ai_config.serializeRequest(mgr.allocator, bundle) catch null;
     const body = g_ai_request_body orelse return;
 
-    // Build URL
+    // Build URL — edit mode uses non-streaming endpoint
     var url_buf: [512]u8 = undefined;
-    const url = std.fmt.bufPrint(&url_buf, "{s}/v1/ai/execute/stream", .{g_ai_base_url}) catch return;
+    const endpoint = if (bundle.invocation == .edit_selection) "/v1/ai/execute" else "/v1/ai/execute/stream";
+    const url = std.fmt.bufPrint(&url_buf, "{s}{s}", .{ g_ai_base_url, endpoint }) catch return;
 
     // Initialize SSE thread
     if (g_sse_thread == null) g_sse_thread = overlay_ai_stream.SseThread.init();
@@ -1159,7 +1160,19 @@ fn startAiInvocation(ctx: *PtyThreadCtx) void {
 
     // If selection exists, enter edit mode
     if (g_context_bundle) |*bundle| {
+        std.debug.print("[ai-edit] invocation={}, sel_text={?}, sel_active={d}, bounds=({d},{d})-({d},{d}), grid={d}x{d}\n", .{
+            bundle.invocation,
+            if (bundle.selection_text) |s| s.len else null,
+            @as(i32, @bitCast(c.g_sel_active)),
+            @as(i32, @bitCast(c.g_sel_start_row)),
+            @as(i32, @bitCast(c.g_sel_start_col)),
+            @as(i32, @bitCast(c.g_sel_end_row)),
+            @as(i32, @bitCast(c.g_sel_end_col)),
+            bundle.grid_cols,
+            bundle.grid_rows,
+        });
         if (bundle.selection_text != null) {
+            std.debug.print("[ai-edit] entering edit mode\n", .{});
             if (g_ai_edit == null) g_ai_edit = overlay_ai_edit.EditContext.init(mgr.allocator);
             var edit = &(g_ai_edit.?);
             edit.open(bundle.selection_text.?) catch {
@@ -1173,6 +1186,7 @@ fn startAiInvocation(ctx: *PtyThreadCtx) void {
     }
 
     // No selection — existing auto-invoke flow
+    std.debug.print("[ai-edit] no selection, normal flow\n", .{});
     loadTokensAndStream(ctx);
 }
 
@@ -1639,11 +1653,13 @@ fn submitEditPrompt(ctx: *PtyThreadCtx) void {
 
     // Store prompt text in context bundle
     const prompt_text = edit.prompt.text();
+    std.debug.print("[ai-edit] submitEditPrompt: prompt=\"{s}\" len={d}\n", .{ prompt_text, prompt_text.len });
     if (prompt_text.len == 0) return;
     if (bundle.edit_prompt) |ep| bundle.allocator.free(ep);
     bundle.edit_prompt = mgr.allocator.dupe(u8, prompt_text) catch null;
     bundle.invocation = .edit_selection;
 
+    std.debug.print("[ai-edit] set invocation=edit_selection, calling loadTokensAndStream\n", .{});
     edit.submitPrompt();
     g_ai_prompt_active = 0;
 

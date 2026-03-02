@@ -156,7 +156,8 @@ fn sseWorker(self: *SseThread, allocator: std.mem.Allocator, url: []u8, access_t
 
     self.setStatus(.connecting);
 
-    sseWorkerInner(self, allocator, url, access_token, body) catch {
+    sseWorkerInner(self, allocator, url, access_token, body) catch |err| {
+        std.debug.print("[ai-net] worker error: {}\n", .{err});
         if (self.isCanceled()) {
             self.setStatus(.canceled);
             return;
@@ -169,6 +170,9 @@ fn sseWorker(self: *SseThread, allocator: std.mem.Allocator, url: []u8, access_t
 }
 
 fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u8, access_token: []const u8, body: []const u8) !void {
+    std.debug.print("[ai-net] POST {s}\n", .{url});
+    std.debug.print("[ai-net] body: {s}\n", .{body});
+
     const uri = try std.Uri.parse(url);
 
     var client = std.http.Client{ .allocator = allocator };
@@ -203,6 +207,7 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
 
     const status: u16 = @intFromEnum(response.head.status);
     self.http_status.store(status, .release);
+    std.debug.print("[ai-net] HTTP {d}\n", .{status});
 
     if (status != 200) {
         // Read error body — use allocRemaining to avoid readSliceShort panic
@@ -211,6 +216,8 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
         const err_reader = response.reader(&transfer_buf);
         const err_body = err_reader.allocRemaining(allocator, .limited(4096)) catch "";
         defer if (err_body.len > 0) allocator.free(err_body);
+
+        std.debug.print("[ai-net] error body: {s}\n", .{if (err_body.len > 0) err_body else "(empty)"});
 
         var code_buf: [16]u8 = undefined;
         const code_str = std.fmt.bufPrint(&code_buf, "{d}", .{status}) catch "unknown";
@@ -239,7 +246,13 @@ fn sseWorkerInner(self: *SseThread, allocator: std.mem.Allocator, url: []const u
             return;
         };
         defer allocator.free(body_data);
-        parseSseBuffer(self, body_data);
+        std.debug.print("[ai-net] content-length body ({d} bytes): {s}\n", .{ body_data.len, body_data[0..@min(body_data.len, 2048)] });
+        // Plain JSON response (non-SSE) — treat as final response directly
+        if (body_data.len > 0 and body_data[0] == '{') {
+            formatFinalResponse(self, body_data);
+        } else {
+            parseSseBuffer(self, body_data);
+        }
         if (self.getStatus() == .streaming) {
             self.setStatus(.done);
         }
@@ -370,12 +383,12 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
 }
 
 fn formatFinalResponse(self: *SseThread, data: []const u8) void {
-    // Edit response: replacement_text found → push raw replacement + \0 + explanation
-    if (ai_auth.extractJsonString(data, "replacement_text")) |replacement| {
+    // Edit response: edited_text found → push raw replacement + \0 + summary
+    if (ai_auth.extractJsonString(data, "edited_text")) |replacement| {
         _ = self.delta_ring.push(replacement);
         _ = self.delta_ring.push(&[_]u8{0}); // null separator
-        if (ai_auth.extractJsonString(data, "short_explanation")) |expl| {
-            _ = self.delta_ring.push(expl);
+        if (ai_auth.extractJsonString(data, "summary")) |s| {
+            _ = self.delta_ring.push(s);
         }
         return;
     }
@@ -575,17 +588,17 @@ test "formatFinalResponse: commands, empty arrays" {
     try std.testing.expectEqualStrings("OK\n", sse2.delta_ring.drain(&out2));
 }
 
-test "formatFinalResponse: edit response with and without explanation" {
+test "formatFinalResponse: edit response with and without summary" {
     var sse = SseThread.init();
-    formatFinalResponse(&sse, "{\"data\":{\"replacement_text\":\"HELLO WORLD\",\"short_explanation\":\"Made uppercase\"}}");
+    formatFinalResponse(&sse, "{\"data\":{\"edited_text\":\"HELLO WORLD\",\"summary\":\"Made uppercase\"}}");
     var out: [256]u8 = undefined;
     const drained = sse.delta_ring.drain(&out);
     const sep = std.mem.indexOfScalar(u8, drained, 0) orelse unreachable;
     try std.testing.expectEqualStrings("HELLO WORLD", drained[0..sep]);
     try std.testing.expectEqualStrings("Made uppercase", drained[sep + 1 ..]);
-    // Without explanation
+    // Without summary
     var sse2 = SseThread.init();
-    formatFinalResponse(&sse2, "{\"data\":{\"replacement_text\":\"fixed code\"}}");
+    formatFinalResponse(&sse2, "{\"data\":{\"edited_text\":\"fixed code\"}}");
     const drained2 = sse2.delta_ring.drain(&out);
     const sep2 = std.mem.indexOfScalar(u8, drained2, 0) orelse unreachable;
     try std.testing.expectEqualStrings("fixed code", drained2[0..sep2]);
