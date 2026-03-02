@@ -277,6 +277,12 @@ pub fn popupHandleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_
 pub fn sendInput(bytes: [*]const u8, len: c_int) void {
     if (terminal.g_pty_master < 0 or len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
+    for (data) |byte| {
+        if (byte == 0x0D) {
+            @atomicStore(i32, &terminal.g_cmd_cr_pending, 1, .seq_cst);
+            break;
+        }
+    }
     const chunk_size: usize = 4096;
     var offset: usize = 0;
     while (offset < data.len) {
@@ -314,6 +320,8 @@ pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: 
     );
 
     if (encoded.len > 0) {
+        if (std.mem.indexOfScalar(u8, encoded, 0x0D) != null)
+            @atomicStore(i32, &terminal.g_cmd_cr_pending, 1, .seq_cst);
         _ = posix.write(terminal.g_pty_master, encoded) catch {};
     }
 }

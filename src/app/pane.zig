@@ -10,11 +10,13 @@ const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
 const logging = @import("../logging/log.zig");
+const CmdCapture = @import("cmd_capture.zig").CmdCapture;
 
 pub const Pane = struct {
     engine: Engine,
     pty: Pty,
     allocator: Allocator,
+    cmd_capture: ?*CmdCapture = null,
 
     pub fn spawn(
         allocator: Allocator,
@@ -65,6 +67,9 @@ pub const Pane = struct {
     }
 
     pub fn feed(self: *Pane, data: []const u8) void {
+        if (self.cmd_capture) |cap| {
+            cap.notifyOutput(data, tsNow());
+        }
         self.engine.feed(data);
         if (self.engine.state.drainResponse()) |resp| {
             _ = self.pty.writeToPty(resp) catch {};
@@ -88,3 +93,8 @@ pub const Pane = struct {
         return self.pty.childExited();
     }
 };
+
+fn tsNow() u64 {
+    const ts = std.time.nanoTimestamp();
+    return if (ts < 0) 0 else @intCast(ts);
+}

@@ -504,8 +504,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         const search_vp_changed = (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp);
-        const need_update_final = need_update or search_vp_changed;
-
+        const need_update_final = need_update or search_vp_changed;        // Tick command capture
+        if (active_focused_pane.cmd_capture) |cap| {
+            const st = &active_focused_pane.engine.state;
+            const cr = @atomicRmw(i32, &terminal.g_cmd_cr_pending, .Xchg, 0, .seq_cst) != 0;
+            const ts = std.time.nanoTimestamp();
+            cap.tick(&st.grid, st.cursor, st.alt_active, cr, if (ts < 0) 0 else @intCast(ts));
+        }
         // DEC 2026 Synchronized Output
         if (publish.ctxEngine(ctx).state.synchronized_output) {
             if (ctx.sync_start_ns == 0)
@@ -570,40 +575,26 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         // Check active focused pane for POLLHUP
-        {
-            const focused = ctx.tab_mgr.activePane();
-            for (0..nfds) |fi| {
-                if (fi == popup_fd_idx) continue;
-                if (fd_panes[fi] == focused and fds[fi].revents & POLLHUP != 0) {
-                    if (focused.childExited()) {
-                        const lay = ctx.tab_mgr.activeLayout();
-                        if (lay.pane_count <= 1) {
-                            ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                            if (ctx.tab_mgr.count == 0) {
-                                c.attyx_request_quit();
-                                break;
-                            }
-                            publish.updateGridTopOffset(ctx);
-                        } else {
-                            const result = lay.closePane(ctx.allocator);
-                            if (result == .last_pane) {
-                                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                                if (ctx.tab_mgr.count == 0) {
-                                    c.attyx_request_quit();
-                                    break;
-                                }
-                                publish.updateGridTopOffset(ctx);
-                            } else {
-                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                                lay.layout(pty_rows, ctx.grid_cols);
-                                actions.updateSplitActive(ctx);
-                            }
-                        }
-                        actions.switchActiveTab(ctx);
-                    }
-                    break;
-                }
+        for (0..nfds) |fi| {
+            if (fi == popup_fd_idx) continue;
+            if (fd_panes[fi] != active_focused_pane or fds[fi].revents & POLLHUP == 0) continue;
+            if (!active_focused_pane.childExited()) break;
+            const lay = ctx.tab_mgr.activeLayout();
+            if (lay.pane_count <= 1) {
+                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+                publish.updateGridTopOffset(ctx);
+            } else if (lay.closePane(ctx.allocator) == .last_pane) {
+                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+                publish.updateGridTopOffset(ctx);
+            } else {
+                const pr: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                lay.layout(pr, ctx.grid_cols);
+                actions.updateSplitActive(ctx);
             }
+            actions.switchActiveTab(ctx);
+            break;
         }
     }
 }
