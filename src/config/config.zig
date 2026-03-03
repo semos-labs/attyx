@@ -65,6 +65,18 @@ pub const CellSize = union(enum) {
     }
 };
 
+/// Tab appearance: built-in overlay bar (default) or macOS native window tabs.
+pub const TabAppearance = enum {
+    builtin,
+    native,
+
+    pub fn fromString(s: []const u8) ?TabAppearance {
+        if (std.mem.eql(u8, s, "builtin")) return .builtin;
+        if (std.mem.eql(u8, s, "native")) return .native;
+        return null;
+    }
+};
+
 const keybinds = @import("keybinds.zig");
 pub const KeybindOverride = keybinds.KeybindOverride;
 pub const SequenceEntry = keybinds.SequenceEntry;
@@ -147,6 +159,10 @@ pub const AppConfig = struct {
     // [statusbar]
     statusbar: ?StatusbarConfig = null,
     _owned_statusbar: bool = false,
+
+    // [tabs]
+    tab_appearance: TabAppearance = .builtin,
+    tab_always_show: bool = false,
 
     // [updates]
     check_updates: bool = true,

@@ -4,6 +4,7 @@ const config_mod = @import("config.zig");
 const AppConfig = config_mod.AppConfig;
 const CursorShapeConfig = config_mod.CursorShapeConfig;
 const CellSize = config_mod.CellSize;
+const TabAppearance = config_mod.TabAppearance;
 const PopupConfigEntry = config_mod.PopupConfigEntry;
 const KeybindOverride = config_mod.KeybindOverride;
 const SequenceEntry = config_mod.SequenceEntry;
@@ -298,6 +299,29 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
                 std.debug.print("error: {s}: window.{s} must be an integer\n", .{ path, kv[0] });
                 return error.ConfigValidationError;
             }
+        }
+    }
+
+    // [tabs]
+    if (Lookup.get(root, "tabs", "appearance")) |v| {
+        if (v == .string) {
+            if (TabAppearance.fromString(v.string)) |appearance| {
+                config.tab_appearance = appearance;
+            } else {
+                std.debug.print("error: {s}: tabs.appearance must be \"builtin\" or \"native\"\n", .{path});
+                return error.ConfigValidationError;
+            }
+        } else {
+            std.debug.print("error: {s}: tabs.appearance must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "tabs", "always_show")) |v| {
+        if (v == .bool) {
+            config.tab_always_show = v.bool;
+        } else {
+            std.debug.print("error: {s}: tabs.always_show must be a boolean\n", .{path});
+            return error.ConfigValidationError;
         }
     }
 
@@ -597,4 +621,33 @@ test "parse popup config" {
     try std.testing.expectEqualStrings("60%", entries[1].height);
     try std.testing.expectEqualStrings("single", entries[1].border);
     try std.testing.expectEqualStrings("#78829a", entries[1].border_color);
+}
+
+test "parse tabs config" {
+    const alloc = std.testing.allocator;
+    var cfg = AppConfig{};
+    defer cfg.deinit();
+
+    const toml_str =
+        \\[tabs]
+        \\appearance = "native"
+        \\always_show = true
+    ;
+
+    try applyToml(alloc, toml_str, "<test>", &cfg);
+
+    try std.testing.expectEqual(TabAppearance.native, cfg.tab_appearance);
+    try std.testing.expect(cfg.tab_always_show);
+}
+
+test "invalid tabs.appearance rejects" {
+    const alloc = std.testing.allocator;
+    var cfg = AppConfig{};
+
+    const toml_str =
+        \\[tabs]
+        \\appearance = "fancy"
+    ;
+
+    try std.testing.expectError(error.ConfigValidationError, applyToml(alloc, toml_str, "<test>", &cfg));
 }
