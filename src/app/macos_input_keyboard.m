@@ -165,13 +165,9 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_CLOSE_WINDOW:
             [NSApp.keyWindow close];
             return 1;
-        case ATTYX_ACTION_CLEAR_SCREEN: {
-            const uint8_t seq[] = "\x1b[H\x1b[2J\x1b[3J";
-            void (*send_fn)(const uint8_t*, int) =
-                g_popup_active ? attyx_popup_send_input : attyx_send_input;
-            send_fn(seq, sizeof(seq) - 1);
+        case ATTYX_ACTION_CLEAR_SCREEN:
+            attyx_clear_screen();
             return 1;
-        }
         case ATTYX_ACTION_SEND_SEQUENCE:
             if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
                 void (*send_fn)(const uint8_t*, int) =
@@ -316,8 +312,31 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             return YES;
     }
 
-    // Cmd with no keybind match: forward to system menu (Cmd+Q, Cmd+H, etc.)
+    // Alt+Arrow: send word movement sequences (ESC b / ESC f)
+    if ((flags & NSEventModifierFlagOption) && !cmd && !ctrl) {
+        uint16_t mapped = mapKeyCode(event.keyCode);
+        if (mapped == KC_LEFT || mapped == KC_RIGHT) {
+            const uint8_t *seq = (mapped == KC_LEFT)
+                ? (const uint8_t *)"\x1b" "b" : (const uint8_t *)"\x1b" "f";
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(seq, 2);
+            return YES;
+        }
+    }
+
+    // Cmd+Arrow: remap to Home/End for standard terminal line-navigation
     if (cmd) {
+        uint16_t mapped = mapKeyCode(event.keyCode);
+        if (mapped == KC_LEFT || mapped == KC_RIGHT) {
+            uint16_t remapped = (mapped == KC_LEFT) ? KC_HOME : KC_END;
+            uint8_t et = event.isARepeat ? 2 : 1;
+            void (*handle_key_fn)(uint16_t, uint8_t, uint8_t, uint32_t) =
+                g_popup_active ? attyx_popup_handle_key : attyx_handle_key;
+            handle_key_fn(remapped, 0, et, 0);
+            return YES;
+        }
+        // Forward remaining Cmd keys to system menu (Cmd+Q, Cmd+H, etc.)
         [super keyDown:event];
         return YES;
     }

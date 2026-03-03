@@ -13,6 +13,7 @@ const c = @cImport({
 
 // Stubs: terminal.zig normally provides these. UI-0 demo has no PTY.
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
+export fn attyx_clear_screen() void {}
 export fn attyx_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 export var g_needs_reload_config: i32 = 0;

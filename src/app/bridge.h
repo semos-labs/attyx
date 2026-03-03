@@ -44,6 +44,11 @@ int attyx_should_quit(void);
 // Implemented in Zig (terminal.zig).
 void attyx_send_input(const uint8_t* bytes, int len);
 
+// Clear screen and scrollback (Cmd+K / Ctrl+Shift+K).
+// Signals the PTY thread to clear the engine state directly and send
+// a form feed to the shell for prompt redraw.
+void attyx_clear_screen(void);
+
 // Copy text to system clipboard (callable from any thread).
 void attyx_clipboard_copy(const char* text, int len);
 
