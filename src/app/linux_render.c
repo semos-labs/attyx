@@ -613,9 +613,9 @@ int drawFrame(void) {
 
     // Fill gap areas outside the centered grid with the terminal background color.
     {
-        float defR = cells[0].bg_r / 255.0f;
-        float defG = cells[0].bg_g / 255.0f;
-        float defB = cells[0].bg_b / 255.0f;
+        float defR = g_theme_bg_r / 255.0f;
+        float defG = g_theme_bg_g / 255.0f;
+        float defB = g_theme_bg_b / 255.0f;
         float ba   = g_background_opacity;
         float gridRight  = offX + cols * gw;
         float gridBottom = offY + visibleRows * gh;
