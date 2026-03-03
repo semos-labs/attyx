@@ -283,18 +283,7 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
                 }
             }
             if (!was_focused) {
-                const rows: u16 = @intCast(leaf.pane.engine.state.grid.rows);
-                const cols: u16 = @intCast(leaf.pane.engine.state.grid.cols);
-                leaf.pane.engine.deinit();
-                leaf.pane.engine = @import("attyx").Engine.init(
-                    leaf.pane.allocator,
-                    rows,
-                    cols,
-                ) catch {
-                    // Engine reinit failed — remove pane from focus set
-                    count -= 1;
-                    continue;
-                };
+                leaf.pane.needs_engine_reinit = true;
             }
         }
     }
