@@ -520,6 +520,8 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
     var top: i32 = 0;
     var bottom: i32 = 0;
     const sb_active = statusbarActive(ctx);
+    const native_tabs = (terminal.g_native_tabs_enabled != 0);
+    const always_show = (terminal.g_tab_always_show != 0);
     if (sb_active) {
         if (ctx.statusbar.?.config.position == .top) {
             top += 1;
@@ -530,10 +532,15 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
         }
         terminal.g_statusbar_visible = 1;
         terminal.g_tab_bar_visible = 0;
+    } else if (native_tabs) {
+        // Native tabs: no overlay tab bar row needed
+        terminal.g_statusbar_visible = 0;
+        terminal.g_tab_bar_visible = 0;
     } else {
         terminal.g_statusbar_visible = 0;
-        if (ctx.tab_mgr.count > 1) top += 1;
-        terminal.g_tab_bar_visible = if (ctx.tab_mgr.count > 1) @as(i32, 1) else @as(i32, 0);
+        const show_builtin = (ctx.tab_mgr.count > 1) or always_show;
+        if (show_builtin) top += 1;
+        terminal.g_tab_bar_visible = if (show_builtin) @as(i32, 1) else @as(i32, 0);
     }
     if (@as(i32, @bitCast(c.g_search_active)) != 0) top += 1;
     terminal.g_grid_top_offset = top;
@@ -572,13 +579,20 @@ pub fn resolveTabTitles(
 pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
 
+    // Native tabs: overlay tab bar is never shown
+    if (terminal.g_native_tabs_enabled != 0) {
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+        return;
+    }
+
     // When statusbar is active, tabs are rendered inside the statusbar overlay
     if (statusbarActive(ctx)) {
         if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
         return;
     }
 
-    if (ctx.tab_mgr.count <= 1) {
+    const always_show = (terminal.g_tab_always_show != 0);
+    if (ctx.tab_mgr.count <= 1 and !always_show) {
         if (mgr.isVisible(.tab_bar)) {
             mgr.hide(.tab_bar);
         }
@@ -605,6 +619,29 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     }
 }
 
+/// Publish per-tab titles to the native tab bridge globals.
+/// Called when native tabs are enabled after tab switches and data updates.
+pub fn publishNativeTabTitles(ctx: *PtyThreadCtx) void {
+    if (terminal.g_native_tabs_enabled == 0) return;
+
+    var titles: tab_bar_mod.TabTitles = undefined;
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    resolveTabTitles(ctx, &titles, &name_bufs);
+
+    const max_native = 16;
+    const count = @min(ctx.tab_mgr.count, max_native);
+    for (0..count) |i| {
+        const title = titles[i] orelse "shell";
+        const len = @min(title.len, c.ATTYX_NATIVE_TAB_TITLE_MAX - 1);
+        const dst: [*]u8 = @ptrCast(@volatileCast(&c.g_native_tab_titles[i]));
+        @memcpy(dst[0..len], title[0..len]);
+        dst[len] = 0;
+    }
+    @atomicStore(i32, &terminal.g_native_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    @atomicStore(i32, &terminal.g_native_tab_active, @as(i32, ctx.tab_mgr.active), .seq_cst);
+    @atomicStore(i32, &terminal.g_native_tab_titles_changed, 1, .seq_cst);
+}
+
 /// Generate the statusbar overlay.
 pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
@@ -622,7 +659,10 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
         .bg_alpha = sb.config.background_opacity,
     };
-    const result = statusbar_mod.generate(&sb_cells, sb, ctx.tab_mgr.count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles) orelse return;
+    // When native tabs are active, hide the tab section in the statusbar
+    // by reporting a single tab (statusbar only renders tabs when count > 1).
+    const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 1 else ctx.tab_mgr.count;
+    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles) orelse return;
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);

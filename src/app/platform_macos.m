@@ -287,6 +287,7 @@ void attyx_spawn_new_window(void) {
 @interface AttyxAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSWindow* window;
 @property (nonatomic, strong) AttyxRenderer* renderer;
+@property (nonatomic, strong) AttyxNativeTabManager* nativeTabMgr;
 @end
 
 @implementation AttyxAppDelegate
@@ -401,6 +402,22 @@ void attyx_spawn_new_window(void) {
                    fraction:1.0];
             [icon unlockFocus];
             [NSApp setApplicationIconImage:icon];
+        }
+    }
+
+    // Native macOS tabs: titlebar accessory (no extra windows).
+    if (g_native_tabs_enabled) {
+        _nativeTabMgr = [[AttyxNativeTabManager alloc] initWithWindow:_window];
+        // Tab bar lives in the titlebar — needs visible title bar.
+        if (!g_window_decorations) {
+            NSUInteger wmask = [_window styleMask];
+            wmask &= ~NSWindowStyleMaskFullSizeContentView;
+            [_window setStyleMask:wmask];
+            [_window setTitlebarAppearsTransparent:NO];
+            [_window setTitleVisibility:NSWindowTitleVisible];
+            [[_window standardWindowButton:NSWindowCloseButton] setHidden:NO];
+            [[_window standardWindowButton:NSWindowMiniaturizeButton] setHidden:NO];
+            [[_window standardWindowButton:NSWindowZoomButton] setHidden:NO];
         }
     }
 
@@ -562,7 +579,8 @@ void attyx_apply_window_update(void) {
     }
 
     // --- Decorations ---
-    if (now_decorations != had_decorations) {
+    // Native tabs require a visible title bar; skip decoration changes.
+    if (now_decorations != had_decorations && !g_native_tabs_enabled) {
         NSUInteger mask = [window styleMask];
         if (!now_decorations) {
             mask |= NSWindowStyleMaskFullSizeContentView;

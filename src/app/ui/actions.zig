@@ -287,6 +287,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.publishState(ctx);
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
+    publish.publishNativeTabTitles(ctx);
     publish.publishOverlays(ctx);
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();
@@ -483,6 +484,15 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
             c.g_needs_window_update = 1;
             const gaps = computeSplitGaps();
             ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+        }
+    }
+
+    // Tab always_show (hot-reloadable; tab_appearance is NOT hot-reloadable)
+    {
+        const new_always: i32 = if (new_cfg.tab_always_show) 1 else 0;
+        if (new_always != terminal.g_tab_always_show) {
+            terminal.g_tab_always_show = new_always;
+            publish.updateGridOffsets(ctx);
         }
     }
 

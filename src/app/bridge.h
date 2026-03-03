@@ -425,6 +425,20 @@ uint8_t attyx_keybind_match(uint16_t key, uint8_t mods, uint32_t codepoint);
 extern const uint8_t* g_keybind_matched_seq;
 extern volatile int    g_keybind_matched_seq_len;
 
+// ---------------------------------------------------------------------------
+// Native macOS tabs
+// ---------------------------------------------------------------------------
+
+extern volatile int g_native_tabs_enabled;    // Zig-owned: 1 = use native window tabs
+extern volatile int g_tab_always_show;         // Zig-owned: 1 = show tab bar with 1 tab
+extern volatile int g_native_tab_count;        // PTY→main: current tab count
+extern volatile int g_native_tab_active;       // PTY→main: current active index
+
+#define ATTYX_NATIVE_TAB_TITLE_MAX 128
+extern char g_native_tab_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX]; // Zig-owned
+extern volatile int g_native_tab_titles_changed; // Zig-owned: set to 1 when titles updated
+extern volatile int g_native_tab_click;          // Zig-owned: main→PTY (-1=none)
+
 // Tab management (called from input thread via keybind dispatch)
 void attyx_tab_action(int action);
 void attyx_tab_bar_click(int col, int grid_cols);
