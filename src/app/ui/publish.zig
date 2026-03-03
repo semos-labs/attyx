@@ -404,6 +404,9 @@ pub fn publishTheme(theme: *const Theme) void {
     } else {
         c.g_theme_sel_fg_set = 0;
     }
+    c.g_theme_bg_r = @intCast(theme.background.r);
+    c.g_theme_bg_g = @intCast(theme.background.g);
+    c.g_theme_bg_b = @intCast(theme.background.b);
 }
 
 /// Resolve a cell color using the active theme for default fg/bg and ANSI palette.
