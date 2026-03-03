@@ -140,8 +140,13 @@ pub const DaemonClient = struct {
     // sendSessionList removed — use sendSessionListFromSlots instead.
 
     /// Send replay data from a pane's ring buffer as pane_output messages.
+    /// Prepends an attribute reset so the engine starts in a known state
+    /// even if the ring buffer begins mid-escape-sequence.
     pub fn sendPaneReplay(self: *DaemonClient, pane: *DaemonPane) void {
         const slices = pane.replay.readSlices();
+        if (slices.first.len == 0 and slices.second.len == 0) return;
+        // Reset all attributes before replay to avoid mid-sequence corruption.
+        self.sendPaneOutput(pane.id, "\x1b[0m");
         if (slices.first.len > 0) self.sendPaneOutput(pane.id, slices.first);
         if (slices.second.len > 0) self.sendPaneOutput(pane.id, slices.second);
     }
