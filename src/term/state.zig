@@ -92,6 +92,10 @@ pub const TerminalState = struct {
     /// Whether to reflow content on resize (configurable, default true).
     reflow_on_resize: bool = true,
 
+    /// When true, apply() drops all actions until a line-feed arrives.
+    /// Used to suppress the shell echo of injected commands (e.g. popup on_return_cmd).
+    suppress_echo: bool = false,
+
     /// Kitty keyboard protocol flags stack (max 16 entries).
     kitty_kbd_flags: [16]u5 = .{0} ** 16,
     kitty_kbd_stack_len: u4 = 0,
@@ -143,6 +147,14 @@ pub const TerminalState = struct {
 
     /// Apply a single Action to the terminal state.
     pub fn apply(self: *TerminalState, action: Action) void {
+        // Suppress echoed command text until a line-feed signals acceptance.
+        if (self.suppress_echo) {
+            if (action == .control and action.control == .lf) {
+                self.suppress_echo = false;
+            }
+            return;
+        }
+
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
             .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
