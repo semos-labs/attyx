@@ -2,14 +2,19 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
+const DaemonPane = @import("pane.zig").DaemonPane;
 
 /// A connected client being served by the daemon.
 pub const DaemonClient = struct {
     socket_fd: posix.fd_t,
     read_buf: [65536]u8 = undefined,
     read_len: usize = 0,
+    msg_buf: [65536]u8 = undefined, // stable copy for nextMessage payloads
     attached_session: ?u32 = null,
     dead: bool = false,
+    /// V2: active panes set (panes the client is currently displaying)
+    active_panes: [32]u32 = .{0} ** 32,
+    active_pane_count: u8 = 0,
 
     pub fn init(fd: posix.fd_t) DaemonClient {
         return .{ .socket_fd = fd };
@@ -53,14 +58,15 @@ pub const DaemonClient = struct {
         if (self.read_len < total) return null;
 
         const payload = self.read_buf[protocol.header_size..total];
-        const msg = Message{
-            .msg_type = header.msg_type,
-            .payload = payload,
-        };
-
-        // Shift remaining data forward
+        // Copy payload to stable msg_buf before consuming,
+        // since consumeBytes shifts read_buf and invalidates the slice.
+        const len = payload.len;
+        @memcpy(self.msg_buf[0..len], payload);
         self.consumeBytes(total);
-        return msg;
+        return Message{
+            .msg_type = header.msg_type,
+            .payload = self.msg_buf[0..len],
+        };
     }
 
     fn consumeBytes(self: *DaemonClient, n: usize) void {
@@ -73,24 +79,44 @@ pub const DaemonClient = struct {
 
     /// Send a raw pre-encoded message to the client.
     pub fn sendRaw(self: *DaemonClient, data: []const u8) void {
-        _ = posix.write(self.socket_fd, data) catch {
-            self.dead = true;
-            return;
-        };
+        self.writeAll(data);
     }
 
-    /// Send an Output message (raw PTY bytes) to the client.
-    pub fn sendOutput(self: *DaemonClient, pty_data: []const u8) void {
-        var hdr: [protocol.header_size]u8 = undefined;
-        protocol.encodeHeader(&hdr, .output, @intCast(pty_data.len));
-        _ = posix.write(self.socket_fd, &hdr) catch {
-            self.dead = true;
-            return;
-        };
-        _ = posix.write(self.socket_fd, pty_data) catch {
-            self.dead = true;
-            return;
-        };
+    /// Max payload per output message. Must be well under the client's 65536-byte
+    /// read buffer so a complete message (header + payload) always fits.
+    const max_output_chunk = 32768;
+
+    /// Write all bytes to the client socket, handling partial writes.
+    /// The socket is non-blocking; on WouldBlock we briefly poll for
+    /// writability.  If the client can't drain data within ~200ms the
+    /// connection is considered dead (prevents the daemon from blocking
+    /// indefinitely when a client's recv buffer is full).
+    fn writeAll(self: *DaemonClient, data: []const u8) void {
+        const POLLOUT: i16 = 0x0004;
+        var offset: usize = 0;
+        var stalls: u32 = 0;
+        while (offset < data.len) {
+            const n = posix.write(self.socket_fd, data[offset..]) catch |err| {
+                if (err == error.WouldBlock) {
+                    stalls += 1;
+                    if (stalls > 20) { // 20 × 10ms = 200ms
+                        self.dead = true;
+                        return;
+                    }
+                    var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = POLLOUT, .revents = 0 }};
+                    _ = posix.poll(&fds, 10) catch {};
+                    continue;
+                }
+                self.dead = true;
+                return;
+            };
+            if (n == 0) {
+                self.dead = true;
+                return;
+            }
+            stalls = 0; // reset on progress
+            offset += n;
+        }
     }
 
     /// Send a Created response.
@@ -99,24 +125,6 @@ pub const DaemonClient = struct {
         var payload: [4]u8 = undefined;
         _ = protocol.encodeCreated(&payload, session_id) catch return;
         _ = protocol.encodeMessage(&buf, .created, &payload) catch return;
-        self.sendRaw(&buf);
-    }
-
-    /// Send an Attached response.
-    pub fn sendAttached(self: *DaemonClient, session_id: u32) void {
-        var buf: [protocol.header_size + 4]u8 = undefined;
-        var payload: [4]u8 = undefined;
-        _ = protocol.encodeAttached(&payload, session_id) catch return;
-        _ = protocol.encodeMessage(&buf, .attached, &payload) catch return;
-        self.sendRaw(&buf);
-    }
-
-    /// Send a SessionDied notification.
-    pub fn sendSessionDied(self: *DaemonClient, session_id: u32, exit_code: u8) void {
-        var buf: [protocol.header_size + 5]u8 = undefined;
-        var payload: [5]u8 = undefined;
-        _ = protocol.encodeSessionDied(&payload, session_id, exit_code) catch return;
-        _ = protocol.encodeMessage(&buf, .session_died, &payload) catch return;
         self.sendRaw(&buf);
     }
 
@@ -129,18 +137,46 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
-    /// Send a SessionList response.
-    pub fn sendSessionList(self: *DaemonClient, sessions: []DaemonSession) void {
+    // sendSessionList removed — use sendSessionListFromSlots instead.
+
+    /// Send replay data from a pane's ring buffer as pane_output messages.
+    pub fn sendPaneReplay(self: *DaemonClient, pane: *DaemonPane) void {
+        const slices = pane.replay.readSlices();
+        if (slices.first.len > 0) self.sendPaneOutput(pane.id, slices.first);
+        if (slices.second.len > 0) self.sendPaneOutput(pane.id, slices.second);
+    }
+
+    /// Send a V2 Attached response with layout blob and pane IDs.
+    pub fn sendAttachedV2(self: *DaemonClient, session: *DaemonSession) void {
+        var pane_ids: [32]u32 = undefined;
+        const pane_count = session.collectPaneIds(&pane_ids);
+        var payload_buf: [4096 + 140]u8 = undefined; // 4+2+4096+1+32*4
+        const payload = protocol.encodeAttachedV2(
+            &payload_buf,
+            session.id,
+            session.layout_data[0..session.layout_len],
+            pane_ids[0..pane_count],
+        ) catch return;
+        var hdr: [protocol.header_size]u8 = undefined;
+        protocol.encodeHeader(&hdr, .attached, @intCast(payload.len));
+        self.writeAll(&hdr);
+        if (!self.dead) self.writeAll(payload);
+    }
+
+    /// Send session list directly from session slots (avoids copying large structs).
+    pub fn sendSessionListFromSlots(self: *DaemonClient, sessions: *[32]?DaemonSession) void {
         var entries: [32]protocol.SessionEntry = undefined;
         var count: usize = 0;
-        for (sessions) |*s| {
-            if (count >= 32) break;
-            entries[count] = .{
-                .id = s.id,
-                .name = s.getName(),
-                .alive = s.alive,
-            };
-            count += 1;
+        for (sessions) |*slot| {
+            if (slot.*) |*s| {
+                if (count >= 32) break;
+                entries[count] = .{
+                    .id = s.id,
+                    .name = s.getName(),
+                    .alive = s.alive,
+                };
+                count += 1;
+            }
         }
 
         var payload_buf: [4096]u8 = undefined;
@@ -151,11 +187,61 @@ pub const DaemonClient = struct {
         self.sendRaw(msg);
     }
 
-    /// Send replay data from a session's ring buffer as Output messages.
-    pub fn sendReplay(self: *DaemonClient, session: *DaemonSession) void {
-        const slices = session.replay.readSlices();
-        if (slices.first.len > 0) self.sendOutput(slices.first);
-        if (slices.second.len > 0) self.sendOutput(slices.second);
+    // ── V2 send helpers ──
+
+    /// Send a PaneCreated response.
+    pub fn sendPaneCreated(self: *DaemonClient, pane_id: u32) void {
+        var buf: [protocol.header_size + 4]u8 = undefined;
+        var payload: [4]u8 = undefined;
+        _ = protocol.encodePaneCreated(&payload, pane_id) catch return;
+        _ = protocol.encodeMessage(&buf, .pane_created, &payload) catch return;
+        self.sendRaw(&buf);
+    }
+
+    /// Send a PaneOutput message (pane-multiplexed PTY output).
+    /// Large payloads are split into multiple messages.
+    pub fn sendPaneOutput(self: *DaemonClient, pane_id: u32, pty_data: []const u8) void {
+        var offset: usize = 0;
+        while (offset < pty_data.len and !self.dead) {
+            const remaining = pty_data.len - offset;
+            const chunk_len = @min(remaining, max_output_chunk - 4); // reserve 4 for pane_id
+            var hdr: [protocol.header_size]u8 = undefined;
+            protocol.encodeHeader(&hdr, .pane_output, @intCast(4 + chunk_len));
+            self.writeAll(&hdr);
+            if (self.dead) break;
+            var id_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &id_buf, pane_id, .little);
+            self.writeAll(&id_buf);
+            if (self.dead) break;
+            self.writeAll(pty_data[offset .. offset + chunk_len]);
+            offset += chunk_len;
+        }
+    }
+
+    /// Send a PaneDied notification.
+    pub fn sendPaneDied(self: *DaemonClient, pane_id: u32, exit_code: u8) void {
+        var buf: [protocol.header_size + 5]u8 = undefined;
+        var payload: [5]u8 = undefined;
+        _ = protocol.encodePaneDied(&payload, pane_id, exit_code) catch return;
+        _ = protocol.encodeMessage(&buf, .pane_died, &payload) catch return;
+        self.sendRaw(&buf);
+    }
+
+    /// Send a PaneProcName notification.
+    pub fn sendPaneProcName(self: *DaemonClient, pane_id: u32, name: []const u8) void {
+        var buf: [protocol.header_size + 4 + 1 + 64]u8 = undefined;
+        var payload: [4 + 1 + 64]u8 = undefined;
+        const p = protocol.encodePaneProcName(&payload, pane_id, name) catch return;
+        const m = protocol.encodeMessage(&buf, .pane_proc_name, p) catch return;
+        self.sendRaw(m);
+    }
+
+    /// Check if a pane_id is in this client's active panes set.
+    pub fn isPaneActive(self: *const DaemonClient, pane_id: u32) bool {
+        for (self.active_panes[0..self.active_pane_count]) |id| {
+            if (id == pane_id) return true;
+        }
+        return false;
     }
 
     pub fn deinit(self: *DaemonClient) void {

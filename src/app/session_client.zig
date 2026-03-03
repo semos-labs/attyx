@@ -1,14 +1,10 @@
 /// UI-side client for connecting to the session daemon over Unix socket.
 /// Handles connect (with auto-start), message send/recv, and replay.
+/// V2: supports pane-multiplexed protocol (one socket per session).
 const std = @import("std");
 const posix = std.posix;
 const protocol = @import("daemon/protocol.zig");
-const platform = @import("../platform/platform.zig");
-
-extern "c" fn setsid() c_int;
-extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
-extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
-extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+const conn = @import("session_connect.zig");
 
 pub const max_list_entries = 32;
 
@@ -18,20 +14,35 @@ pub const ListEntry = struct {
     name: [64]u8 = undefined,
     name_len: u8 = 0,
     alive: bool = false,
+    pane_count: u8 = 0,
 
     pub fn getName(self: *const ListEntry) []const u8 {
         return self.name[0..self.name_len];
     }
 };
 
+/// Tagged union for V2 daemon messages.
+pub const DaemonMessage = union(enum) {
+    pane_output: struct { pane_id: u32, data: []const u8 },
+    pane_created: u32,
+    pane_died: struct { pane_id: u32, exit_code: u8 },
+    pane_proc_name: struct { pane_id: u32, name: []const u8 },
+    session_attached: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
+    session_list: void,
+    session_created: u32,
+    err: void,
+};
+
 pub const SessionClient = struct {
     socket_fd: posix.fd_t = -1,
     read_buf: [65536]u8 = undefined,
     read_len: usize = 0,
+    output_buf: [65536]u8 = undefined,
+    layout_buf: [4096]u8 = undefined,
+    layout_len: u16 = 0,
     attached_session_id: ?u32 = null,
     allocator: std.mem.Allocator,
 
-    /// Pending session list (populated when a session_list message arrives).
     pending_list: [max_list_entries]ListEntry = undefined,
     pending_list_count: u8 = 0,
     pending_list_ready: bool = false,
@@ -39,85 +50,9 @@ pub const SessionClient = struct {
     /// Connect to daemon socket. Auto-starts daemon if not running.
     pub fn connect(allocator: std.mem.Allocator) !SessionClient {
         var client = SessionClient{ .allocator = allocator };
-        client.socket_fd = try connectToSocket();
-        setNonBlocking(client.socket_fd);
+        client.socket_fd = try conn.connectToSocket();
+        conn.setNonBlocking(client.socket_fd);
         return client;
-    }
-
-    fn connectToSocket() !posix.fd_t {
-        var path_buf: [256]u8 = undefined;
-        const socket_path = getSocketPath(&path_buf) orelse return error.NoHome;
-
-        // First attempt
-        if (tryConnect(socket_path)) |fd| return fd;
-
-        // Auto-start daemon
-        try startDaemon();
-
-        // Retry with backoff: 50ms, 100ms, 200ms, 400ms (total ~750ms)
-        var delay_ns: u64 = 50_000_000;
-        for (0..4) |_| {
-            posix.nanosleep(0, delay_ns);
-            if (tryConnect(socket_path)) |fd| return fd;
-            delay_ns *= 2;
-        }
-
-        return error.DaemonConnectFailed;
-    }
-
-    fn tryConnect(path: []const u8) ?posix.fd_t {
-        const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
-        const addr = std.net.Address.initUnix(path) catch {
-            posix.close(fd);
-            return null;
-        };
-        posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
-            posix.close(fd);
-            return null;
-        };
-        return fd;
-    }
-
-    fn startDaemon() !void {
-        // Double-fork to detach daemon from parent process group
-        const pid = try posix.fork();
-        if (pid == 0) {
-            // First child — fork again and exit
-            const pid2 = posix.fork() catch posix.abort();
-            if (pid2 == 0) {
-                // Grandchild — becomes daemon
-                _ = setsid();
-
-                // Re-exec ourselves as `attyx daemon`
-                var exe_buf: [1024]u8 = undefined;
-                const exe = getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
-                // Copy to a separate buffer to avoid aliasing (exe may point into exe_buf)
-                var exe_z_buf: [1024]u8 = undefined;
-                const exe_z = std.fmt.bufPrintZ(&exe_z_buf, "{s}", .{exe}) catch posix.abort();
-
-                const daemon_str: [*:0]const u8 = "daemon";
-                const argv = [_]?[*:0]const u8{ exe_z, daemon_str, null };
-                _ = execvp(exe_z, &argv);
-                posix.abort();
-            }
-            // First child exits immediately
-            posix.abort();
-        }
-        // Parent — wait for first child to exit
-        _ = posix.waitpid(pid, 0);
-    }
-
-    fn getExePath(buf: *[1024]u8) ?[]const u8 {
-        if (comptime @import("builtin").os.tag == .macos) {
-            var size: u32 = buf.len;
-            if (_NSGetExecutablePath(buf, &size) == 0) {
-                return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
-            }
-        } else {
-            const n = readlink("/proc/self/exe", buf, buf.len);
-            if (n > 0) return buf[0..@intCast(n)];
-        }
-        return null;
     }
 
     /// Create a new session on the daemon. Returns session ID.
@@ -125,8 +60,6 @@ pub const SessionClient = struct {
         var payload_buf: [128]u8 = undefined;
         const payload = try protocol.encodeCreate(&payload_buf, name, rows, cols);
         try self.sendMessage(.create, payload);
-
-        // Wait for Created response (blocking with timeout)
         return self.waitForResponse(.created, 5000);
     }
 
@@ -144,24 +77,65 @@ pub const SessionClient = struct {
         self.attached_session_id = null;
     }
 
-    /// Send input bytes to the attached session's PTY.
-    pub fn sendInput(self: *SessionClient, bytes: []const u8) !void {
-        try self.sendMessage(.input, bytes);
-    }
+    // ── V2 pane-multiplexed methods ──
 
-    /// Send resize to the attached session.
-    pub fn sendResize(self: *SessionClient, rows: u16, cols: u16) !void {
+    /// Create a new pane in the attached session.
+    pub fn sendCreatePane(self: *SessionClient, rows: u16, cols: u16) !void {
         var payload_buf: [4]u8 = undefined;
-        const payload = try protocol.encodeResize(&payload_buf, rows, cols);
-        try self.sendMessage(.resize, payload);
+        const payload = try protocol.encodeCreatePane(&payload_buf, rows, cols);
+        try self.sendMessage(.create_pane, payload);
     }
 
-    /// Request session list from daemon (non-blocking).
+    /// Close a pane in the attached session.
+    pub fn sendClosePane(self: *SessionClient, pane_id: u32) !void {
+        var payload_buf: [4]u8 = undefined;
+        const payload = try protocol.encodeClosePane(&payload_buf, pane_id);
+        try self.sendMessage(.close_pane, payload);
+    }
+
+    /// Set the active panes (visible tab's panes). Daemon sends replay for newly active.
+    pub fn sendFocusPanes(self: *SessionClient, pane_ids: []const u32) !void {
+        var payload_buf: [129]u8 = undefined; // 1 + 32*4
+        const payload = try protocol.encodeFocusPanes(&payload_buf, pane_ids);
+        try self.sendMessage(.focus_panes, payload);
+    }
+
+    /// Send input to a specific pane.
+    pub fn sendPaneInput(self: *SessionClient, pane_id: u32, bytes: []const u8) !void {
+        if (bytes.len <= 508) {
+            var payload_buf: [512]u8 = undefined;
+            const payload = try protocol.encodePaneInput(&payload_buf, pane_id, bytes);
+            try self.sendMessage(.pane_input, payload);
+        } else {
+            // Large input — send header + payload separately
+            var hdr: [protocol.header_size]u8 = undefined;
+            protocol.encodeHeader(&hdr, .pane_input, @intCast(4 + bytes.len));
+            _ = try posix.write(self.socket_fd, &hdr);
+            var id_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &id_buf, pane_id, .little);
+            _ = try posix.write(self.socket_fd, &id_buf);
+            _ = try posix.write(self.socket_fd, bytes);
+        }
+    }
+
+    /// Resize a specific pane.
+    pub fn sendPaneResize(self: *SessionClient, pane_id: u32, rows: u16, cols: u16) !void {
+        var payload_buf: [8]u8 = undefined;
+        const payload = try protocol.encodePaneResize(&payload_buf, pane_id, rows, cols);
+        try self.sendMessage(.pane_resize, payload);
+    }
+
+    /// Save layout blob to daemon.
+    pub fn sendSaveLayout(self: *SessionClient, layout_data: []const u8) !void {
+        try self.sendMessage(.save_layout, layout_data);
+    }
+
+    // ── Session list ──
+
     pub fn requestList(self: *SessionClient) !void {
         try self.sendMessage(.list, &.{});
     }
 
-    /// Request session list and block until response arrives (for startup).
     pub fn requestListSync(self: *SessionClient, timeout_ms: u32) !void {
         try self.sendMessage(.list, &.{});
         self.pending_list_ready = false;
@@ -171,7 +145,6 @@ pub const SessionClient = struct {
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                // Check for session_list message in buffer
                 while (self.read_len >= protocol.header_size) {
                     const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
                         self.consumeBytes(1);
@@ -183,7 +156,7 @@ pub const SessionClient = struct {
                     if (header.msg_type == .session_list) {
                         self.parseSessionList(payload);
                         self.consumeBytes(total);
-                        return; // Got the list
+                        return;
                     }
                     self.consumeBytes(total);
                 }
@@ -193,20 +166,91 @@ pub const SessionClient = struct {
         return error.Timeout;
     }
 
-    /// Kill a session on the daemon.
+    /// Wait for a V2 attached response after calling attach(). Returns pane IDs.
+    pub fn waitForAttach(self: *SessionClient, timeout_ms: u32) !struct { session_id: u32, pane_ids: [32]u32, pane_count: u8 } {
+        var elapsed: u32 = 0;
+        while (elapsed < timeout_ms) {
+            var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
+            _ = posix.poll(&fds, 100) catch return error.PollFailed;
+            if (fds[0].revents & 0x0001 != 0) {
+                if (!self.recvData()) return error.ConnectionClosed;
+                while (self.read_len >= protocol.header_size) {
+                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                        self.consumeBytes(1);
+                        continue;
+                    };
+                    const total = protocol.header_size + header.payload_len;
+                    if (self.read_len < total) break;
+                    const payload = self.read_buf[protocol.header_size..total];
+                    if (header.msg_type == .attached) {
+                        const v2 = protocol.decodeAttachedV2(payload) catch {
+                            self.consumeBytes(total);
+                            return error.InvalidResponse;
+                        };
+                        self.attached_session_id = v2.session_id;
+                        const llen: u16 = @intCast(@min(v2.layout.len, self.layout_buf.len));
+                        @memcpy(self.layout_buf[0..llen], v2.layout[0..llen]);
+                        self.layout_len = llen;
+                        self.consumeBytes(total);
+                        return .{ .session_id = v2.session_id, .pane_ids = v2.pane_ids, .pane_count = v2.pane_count };
+                    }
+                    if (header.msg_type == .err) {
+                        self.consumeBytes(total);
+                        return error.DaemonError;
+                    }
+                    self.consumeBytes(total);
+                }
+            }
+            elapsed += 100;
+        }
+        return error.Timeout;
+    }
+
+    /// Wait for a pane_created response. Returns the new pane ID.
+    pub fn waitForPaneCreated(self: *SessionClient, timeout_ms: u32) !u32 {
+        var elapsed: u32 = 0;
+        while (elapsed < timeout_ms) {
+            var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
+            _ = posix.poll(&fds, 100) catch return error.PollFailed;
+            if (fds[0].revents & 0x0001 != 0) {
+                if (!self.recvData()) return error.ConnectionClosed;
+                while (self.read_len >= protocol.header_size) {
+                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                        self.consumeBytes(1);
+                        continue;
+                    };
+                    const total = protocol.header_size + header.payload_len;
+                    if (self.read_len < total) break;
+                    const payload = self.read_buf[protocol.header_size..total];
+                    if (header.msg_type == .pane_created) {
+                        const pane_id = protocol.decodePaneCreated(payload) catch return error.InvalidResponse;
+                        self.consumeBytes(total);
+                        return pane_id;
+                    }
+                    if (header.msg_type == .err) {
+                        self.consumeBytes(total);
+                        return error.DaemonError;
+                    }
+                    self.consumeBytes(total);
+                }
+            }
+            elapsed += 100;
+        }
+        return error.Timeout;
+    }
+
     pub fn killSession(self: *SessionClient, session_id: u32) !void {
         var payload_buf: [4]u8 = undefined;
         const payload = try protocol.encodeKill(&payload_buf, session_id);
         try self.sendMessage(.kill, payload);
     }
 
-    /// Returns the socket fd for inclusion in a poll array.
     pub fn pollFd(self: *const SessionClient) posix.fd_t {
         return self.socket_fd;
     }
 
-    /// Read available data from socket. Call after poll indicates POLLIN.
-    /// Returns false if connection is dead.
+    // ── I/O ──
+
     pub fn recvData(self: *SessionClient) bool {
         const space = self.read_buf[self.read_len..];
         if (space.len == 0) {
@@ -222,9 +266,8 @@ pub const SessionClient = struct {
         return true;
     }
 
-    /// Read and return the next Output message's payload bytes, or null.
-    /// Also handles SessionDied and Error messages inline.
-    pub fn readOutput(self: *SessionClient, died_session: *?u32) ?[]const u8 {
+    /// V2: Read and return the next daemon message as a tagged union.
+    pub fn readMessage(self: *SessionClient) ?DaemonMessage {
         while (self.read_len >= protocol.header_size) {
             const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
                 self.consumeBytes(1);
@@ -236,31 +279,69 @@ pub const SessionClient = struct {
             const payload = self.read_buf[protocol.header_size..total];
 
             switch (header.msg_type) {
-                .output => {
-                    // Copy payload before consuming (it'll be overwritten)
-                    const result = payload;
-                    // Don't consume yet — caller needs the data
-                    // We return a slice into read_buf; caller must use it before next recvData
+                .pane_output => {
+                    if (payload.len < 4) { self.consumeBytes(total); continue; }
+                    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+                    const data = payload[4..];
+                    const len = data.len;
+                    @memcpy(self.output_buf[0..len], data);
                     self.consumeBytes(total);
-                    return result;
+                    return .{ .pane_output = .{ .pane_id = pane_id, .data = self.output_buf[0..len] } };
                 },
-                .session_died => {
-                    if (protocol.decodeSessionDied(payload)) |msg| {
-                        died_session.* = msg.session_id;
-                        if (self.attached_session_id == msg.session_id) {
-                            self.attached_session_id = null;
-                        }
-                    } else |_| {}
+                .pane_created => {
+                    const pane_id = protocol.decodePaneCreated(payload) catch {
+                        self.consumeBytes(total);
+                        continue;
+                    };
                     self.consumeBytes(total);
-                    continue;
+                    return .{ .pane_created = pane_id };
+                },
+                .pane_died => {
+                    const msg = protocol.decodePaneDied(payload) catch {
+                        self.consumeBytes(total);
+                        continue;
+                    };
+                    self.consumeBytes(total);
+                    return .{ .pane_died = .{ .pane_id = msg.pane_id, .exit_code = msg.exit_code } };
+                },
+                .pane_proc_name => {
+                    const msg = protocol.decodePaneProcName(payload) catch {
+                        self.consumeBytes(total);
+                        continue;
+                    };
+                    // Copy name to output_buf so it survives consumeBytes
+                    const nlen = msg.name.len;
+                    @memcpy(self.output_buf[0..nlen], msg.name);
+                    self.consumeBytes(total);
+                    return .{ .pane_proc_name = .{ .pane_id = msg.pane_id, .name = self.output_buf[0..nlen] } };
                 },
                 .session_list => {
                     self.parseSessionList(payload);
                     self.consumeBytes(total);
-                    continue;
+                    return .{ .session_list = {} };
+                },
+                .created => {
+                    const id = protocol.decodeCreated(payload) catch {
+                        self.consumeBytes(total);
+                        continue;
+                    };
+                    self.consumeBytes(total);
+                    return .{ .session_created = id };
                 },
                 .attached => {
-                    // Attached confirmation — continue reading for replay output
+                    if (protocol.decodeAttachedV2(payload)) |v2| {
+                        const llen: u16 = @intCast(@min(v2.layout.len, self.layout_buf.len));
+                        @memcpy(self.layout_buf[0..llen], v2.layout[0..llen]);
+                        self.layout_len = llen;
+                        self.attached_session_id = v2.session_id;
+                        self.consumeBytes(total);
+                        return .{ .session_attached = .{
+                            .session_id = v2.session_id,
+                            .layout = self.layout_buf[0..llen],
+                            .pane_ids = v2.pane_ids,
+                            .pane_count = v2.pane_count,
+                        } };
+                    } else |_| {}
                     self.consumeBytes(total);
                     continue;
                 },
@@ -297,10 +378,15 @@ pub const SessionClient = struct {
     }
 
     fn sendMessage(self: *SessionClient, msg_type: protocol.MessageType, payload: []const u8) !void {
-        var hdr: [protocol.header_size]u8 = undefined;
-        protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
-        _ = try posix.write(self.socket_fd, &hdr);
-        if (payload.len > 0) {
+        var msg_buf: [protocol.header_size + 512]u8 = undefined;
+        if (payload.len <= 512) {
+            const msg = protocol.encodeMessage(&msg_buf, msg_type, payload) catch
+                return error.EncodeFailed;
+            _ = try posix.write(self.socket_fd, msg);
+        } else {
+            var hdr: [protocol.header_size]u8 = undefined;
+            protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
+            _ = try posix.write(self.socket_fd, &hdr);
             _ = try posix.write(self.socket_fd, payload);
         }
     }
@@ -309,12 +395,10 @@ pub const SessionClient = struct {
         _ = expected;
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
-            // Blocking read with short poll
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                // Check for complete message
                 if (self.read_len >= protocol.header_size) {
                     const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
                         self.consumeBytes(1);
@@ -348,15 +432,3 @@ pub const SessionClient = struct {
         }
     }
 };
-
-fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions.sock", .{home}) catch null;
-}
-
-fn setNonBlocking(fd: posix.fd_t) void {
-    const F_GETFL: i32 = 3;
-    const F_SETFL: i32 = 4;
-    const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;
-    _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
-}

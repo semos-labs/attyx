@@ -15,6 +15,17 @@ pub const Pane = struct {
     engine: Engine,
     pty: Pty,
     allocator: Allocator,
+    /// Daemon pane ID. When set, this pane is backed by a daemon PTY and
+    /// the local PTY is idle — I/O goes through the shared session socket.
+    daemon_pane_id: ?u32 = null,
+    /// Foreground process name reported by the daemon (for title fallback).
+    daemon_proc_name: [64]u8 = undefined,
+    daemon_proc_name_len: u8 = 0,
+
+    pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
+        if (self.daemon_proc_name_len == 0) return null;
+        return self.daemon_proc_name[0..self.daemon_proc_name_len];
+    }
 
     pub fn spawn(
         allocator: Allocator,
@@ -58,9 +69,23 @@ pub const Pane = struct {
         };
     }
 
+    /// Create a Pane backed by a daemon PTY (engine only, no local PTY spawn).
+    /// I/O goes through the shared session socket. The local PTY fields are
+    /// unused and deinit skips PTY cleanup when daemon_pane_id is set.
+    pub fn initDaemonBacked(allocator: Allocator, rows: u16, cols: u16) !Pane {
+        const engine = try Engine.init(allocator, rows, cols);
+        return .{
+            .engine = engine,
+            .pty = .{ .master = -1, .pid = 0 },
+            .allocator = allocator,
+        };
+    }
+
     pub fn deinit(self: *Pane) void {
-        _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
-        self.pty.deinit();
+        if (self.daemon_pane_id == null) {
+            _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+            self.pty.deinit();
+        }
         self.engine.deinit();
     }
 
@@ -85,6 +110,9 @@ pub const Pane = struct {
     }
 
     pub fn childExited(self: *Pane) bool {
+        // Session-backed panes: the local PTY is idle — ignore its exit.
+        // The daemon pane lifecycle is managed via the session socket.
+        if (self.daemon_pane_id != null) return false;
         return self.pty.childExited();
     }
 };

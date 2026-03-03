@@ -18,6 +18,16 @@ const input = @import("input.zig");
 /// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
 pub var g_force_full_redraw: bool = false;
 
+/// Persist the current tab/split layout to the daemon.
+pub fn saveSessionLayout(ctx: *PtyThreadCtx) void {
+    const sc = ctx.session_client orelse return;
+    var buf: [4096]u8 = undefined;
+    const len = ctx.tab_mgr.serializeLayout(&buf) catch return;
+    if (len > 0) {
+        sc.sendSaveLayout(buf[0..len]) catch {};
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tab lifecycle helpers
 // ---------------------------------------------------------------------------
@@ -42,8 +52,29 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 logging.err("tabs", "addTab failed: {}", .{err});
                 return;
             };
+            // In session mode, create a daemon pane for the new tab.
+            if (ctx.sessions_enabled) {
+                if (ctx.session_client) |sc| {
+                    sc.sendCreatePane(rows, cols) catch {
+                        logging.err("tabs", "send create_pane failed", .{});
+                        publish.updateGridTopOffset(ctx);
+                        switchActiveTab(ctx);
+                        return;
+                    };
+                    const pane_id = sc.waitForPaneCreated(5000) catch |err| {
+                        logging.err("tabs", "create daemon pane failed: {}", .{err});
+                        publish.updateGridTopOffset(ctx);
+                        switchActiveTab(ctx);
+                        return;
+                    };
+                    const new_pane = ctx.tab_mgr.activePane();
+                    new_pane.daemon_pane_id = pane_id;
+                    logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
+                }
+            }
             publish.updateGridTopOffset(ctx);
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
         },
         .tab_close => {
@@ -51,9 +82,22 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 c.attyx_request_quit();
                 return;
             }
+            // Tell daemon to close all panes in this tab
+            if (ctx.session_client) |sc| {
+                if (ctx.tab_mgr.tabs[ctx.tab_mgr.active]) |*lay| {
+                    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                    const lc = lay.collectLeaves(&leaves);
+                    for (leaves[0..lc]) |leaf| {
+                        if (leaf.pane.daemon_pane_id) |dpid| {
+                            sc.sendClosePane(dpid) catch {};
+                        }
+                    }
+                }
+            }
             ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
             publish.updateGridTopOffset(ctx);
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("tabs", "closed tab, now {d}", .{ctx.tab_mgr.count});
         },
         .tab_next => {
@@ -101,6 +145,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
             layout.layout(pty_rows, ctx.grid_cols);
             updateSplitActive(ctx);
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("split", "vertical split, {d} panes", .{layout.pane_count});
         },
         .split_horizontal => {
@@ -112,6 +157,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
             layout.layout(pty_rows, ctx.grid_cols);
             updateSplitActive(ctx);
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("split", "horizontal split, {d} panes", .{layout.pane_count});
         },
         .pane_close => {
@@ -129,6 +175,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
                 updateSplitActive(ctx);
             }
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("split", "pane closed", .{});
         },
         .pane_focus_up => { layout.navigate(.up); switchActiveTab(ctx); },
@@ -210,6 +257,59 @@ pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
     }
 }
 
+/// Send focus_panes for all daemon-backed panes in the active tab.
+/// Reinitializes engines for panes that weren't in the previous focus set,
+/// since the daemon will replay their scrollback into the engine.
+pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
+    const sc = ctx.session_client orelse return;
+    const layout = ctx.tab_mgr.activeLayout();
+    var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
+    var count: usize = 0;
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const lc = layout.collectLeaves(&leaves);
+    for (leaves[0..lc]) |leaf| {
+        if (leaf.pane.daemon_pane_id) |dpid| {
+            pane_ids[count] = dpid;
+            count += 1;
+
+            // If this pane wasn't in the previous focus set, the daemon will
+            // replay its scrollback. Reinit the engine so replay doesn't
+            // stack on top of stale content from a prior focus cycle.
+            var was_focused = false;
+            for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
+                if (old_id == dpid) {
+                    was_focused = true;
+                    break;
+                }
+            }
+            if (!was_focused) {
+                const rows: u16 = @intCast(leaf.pane.engine.state.grid.rows);
+                const cols: u16 = @intCast(leaf.pane.engine.state.grid.cols);
+                leaf.pane.engine.deinit();
+                leaf.pane.engine = @import("attyx").Engine.init(
+                    leaf.pane.allocator,
+                    rows,
+                    cols,
+                ) catch {
+                    // Engine reinit failed — remove pane from focus set
+                    count -= 1;
+                    continue;
+                };
+            }
+        }
+    }
+
+    // Update tracking
+    for (0..count) |i| {
+        ctx.last_focus_panes[i] = pane_ids[i];
+    }
+    ctx.last_focus_count = @intCast(count);
+
+    if (count > 0) {
+        sc.sendFocusPanes(pane_ids[0..count]) catch {};
+    }
+}
+
 /// Compute split gap sizes from window padding and cell dimensions.
 pub fn computeSplitGaps() struct { h: u16, v: u16 } {
     const cell_w: f32 = c.g_cell_w_pts;
@@ -234,6 +334,17 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     const pane = ctx.tab_mgr.activePane();
     terminal.g_pty_master = pane.pty.master;
     terminal.g_engine = &pane.engine;
+
+    // Update active daemon pane ID for input routing
+    if (pane.daemon_pane_id) |dpid| {
+        terminal.g_active_daemon_pane_id = dpid;
+    }
+
+    // In session mode, tell daemon which panes are now visible
+    if (ctx.sessions_enabled) {
+        sendActiveFocusPanes(ctx);
+    }
+
     updateSplitActive(ctx);
 
     c.attyx_begin_cell_update();

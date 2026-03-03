@@ -2,9 +2,11 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
+const DaemonPane = @import("pane.zig").DaemonPane;
 const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
+const handler = @import("handler.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -39,6 +41,14 @@ pub fn run(allocator: std.mem.Allocator) !void {
     };
     posix.sigaction(posix.SIG.TERM, &sa, null);
     posix.sigaction(posix.SIG.INT, &sa, null);
+
+    // Ignore SIGPIPE — writes to dead client sockets must return EPIPE, not kill us.
+    const sa_ign = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.IGN },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.PIPE, &sa_ign, null);
 
     var path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&path_buf) orelse return error.NoHome;
@@ -88,10 +98,13 @@ pub fn run(allocator: std.mem.Allocator) !void {
     }
 
     var pty_buf: [65536]u8 = undefined;
+    var proc_name_tick: u32 = 0;
+
+    const max_panes_total = max_sessions * @import("session.zig").max_panes_per_session;
 
     while (g_running) {
-        // Build poll fd array: listener + PTY masters + client sockets
-        const max_fds = 1 + max_sessions + max_clients;
+        // Build poll fd array: listener + PTY masters (all panes) + client sockets
+        const max_fds = 1 + max_panes_total + max_clients;
         var fds: [max_fds]posix.pollfd = undefined;
         var nfds: usize = 0;
 
@@ -99,16 +112,21 @@ pub fn run(allocator: std.mem.Allocator) !void {
         fds[0] = .{ .fd = listen_fd, .events = 0x0001, .revents = 0 }; // POLLIN
         nfds = 1;
 
-        // PTY master fds
-        var pty_fd_map: [max_sessions]usize = undefined; // maps poll index → session slot
+        // PTY master fds — iterate all panes across all sessions
+        const PaneFdEntry = struct { session_idx: usize, pane_idx: usize };
+        var pty_fd_map: [max_panes_total]PaneFdEntry = undefined;
         var pty_fd_count: usize = 0;
         for (&sessions, 0..) |*slot, si| {
             if (slot.*) |*s| {
-                if (s.alive) {
-                    fds[nfds] = .{ .fd = s.pty.master, .events = 0x0001, .revents = 0 };
-                    pty_fd_map[pty_fd_count] = si;
-                    pty_fd_count += 1;
-                    nfds += 1;
+                for (&s.panes, 0..) |*pslot, pi| {
+                    if (pslot.*) |*p| {
+                        if (p.alive) {
+                            fds[nfds] = .{ .fd = p.pty.master, .events = 0x0001, .revents = 0 };
+                            pty_fd_map[pty_fd_count] = .{ .session_idx = si, .pane_idx = pi };
+                            pty_fd_count += 1;
+                            nfds += 1;
+                        }
+                    }
                 }
             }
         }
@@ -133,36 +151,75 @@ pub fn run(allocator: std.mem.Allocator) !void {
             acceptClient(listen_fd, &clients, &client_count);
         }
 
-        // Read PTY data and forward to attached clients
+        // Read PTY data from all panes and forward to attached clients
         for (0..pty_fd_count) |pi| {
             const poll_idx = 1 + pi;
-            const si = pty_fd_map[pi];
+            const entry = pty_fd_map[pi];
             if (fds[poll_idx].revents & 0x0001 != 0) {
-                if (sessions[si]) |*s| {
-                    while (true) {
-                        const n = s.readPty(&pty_buf) catch break;
-                        if (n == 0) break;
-                        // Forward to all clients attached to this session
-                        for (&clients) |*cslot| {
-                            if (cslot.*) |*cl| {
-                                if (cl.attached_session == s.id) {
-                                    cl.sendOutput(pty_buf[0..n]);
+                if (sessions[entry.session_idx]) |*s| {
+                    if (s.panes[entry.pane_idx]) |*pane| {
+                        while (true) {
+                            const n = pane.readPty(&pty_buf) catch break;
+                            if (n == 0) break;
+                            for (&clients) |*cslot| {
+                                if (cslot.*) |*cl| {
+                                    if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
+                                        cl.sendPaneOutput(pane.id, pty_buf[0..n]);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            // Check POLLHUP
+            // Check POLLHUP on pane PTY
             if (fds[poll_idx].revents & 0x0010 != 0) {
-                if (sessions[si]) |*s| {
-                    if (s.checkExit()) |exit_code| {
-                        // Notify attached clients
-                        for (&clients) |*cslot| {
-                            if (cslot.*) |*cl| {
-                                if (cl.attached_session == s.id) {
-                                    cl.sendSessionDied(s.id, exit_code);
-                                    cl.attached_session = null;
+                if (sessions[entry.session_idx]) |*s| {
+                    if (s.panes[entry.pane_idx]) |*pane| {
+                        if (pane.checkExit()) |exit_code| {
+                            // Check if session is still alive
+                            var any_alive = false;
+                            for (s.panes) |slot| {
+                                if (slot) |p| if (p.alive) {
+                                    any_alive = true;
+                                    break;
+                                };
+                            }
+                            if (!any_alive) s.alive = false;
+
+                            for (&clients) |*cslot| {
+                                if (cslot.*) |*cl| {
+                                    if (cl.attached_session == s.id) {
+                                        cl.sendPaneDied(pane.id, exit_code);
+                                        if (!s.alive) {
+                                            cl.attached_session = null;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Periodically check foreground process name for active panes (~1s interval)
+        proc_name_tick += 1;
+        if (proc_name_tick >= 20) {
+            proc_name_tick = 0;
+            for (&sessions) |*slot| {
+                if (slot.*) |*s| {
+                    for (&s.panes) |*pslot| {
+                        if (pslot.*) |*pane| {
+                            if (pane.alive) {
+                                if (pane.checkProcNameChanged()) |name| {
+                                    for (&clients) |*cslot| {
+                                        if (cslot.*) |*cl| {
+                                            if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
+                                                cl.sendPaneProcName(pane.id, name);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -185,7 +242,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     }
                     // Process complete messages
                     while (cl.nextMessage()) |msg| {
-                        handleMessage(cl, msg, &sessions, &session_count, &next_session_id, allocator);
+                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, allocator);
                     }
                     if (cl.dead) {
                         cl.deinit();
@@ -200,11 +257,10 @@ pub fn run(allocator: std.mem.Allocator) !void {
         for (&sessions) |*slot| {
             if (slot.*) |*s| {
                 if (s.alive) {
-                    if (s.checkExit()) |exit_code| {
+                    if (s.checkExit()) |_| {
                         for (&clients) |*cslot| {
                             if (cslot.*) |*cl| {
                                 if (cl.attached_session == s.id) {
-                                    cl.sendSessionDied(s.id, exit_code);
                                     cl.attached_session = null;
                                 }
                             }
@@ -216,121 +272,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     }
 }
 
-fn handleMessage(
-    cl: *DaemonClient,
-    msg: DaemonClient.Message,
-    sessions: *[max_sessions]?DaemonSession,
-    session_count: *usize,
-    next_id: *u32,
-    allocator: std.mem.Allocator,
-) void {
-    switch (msg.msg_type) {
-        .create => {
-            const create = protocol.decodeCreate(msg.payload) catch {
-                cl.sendError(1, "invalid create payload");
-                return;
-            };
-            if (session_count.* >= max_sessions) {
-                cl.sendError(2, "max sessions reached");
-                return;
-            }
-            // Find empty slot
-            const slot_idx = for (sessions, 0..) |*slot, i| {
-                if (slot.* == null) break i;
-            } else {
-                cl.sendError(2, "max sessions reached");
-                return;
-            };
-            const id = next_id.*;
-            next_id.* += 1;
-            sessions[slot_idx] = DaemonSession.spawn(
-                allocator,
-                id,
-                create.name,
-                create.rows,
-                create.cols,
-                replay_capacity,
-            ) catch {
-                cl.sendError(3, "spawn failed");
-                return;
-            };
-            session_count.* += 1;
-            // Set non-blocking on PTY master
-            setNonBlocking(sessions[slot_idx].?.pty.master);
-            cl.sendCreated(id);
-        },
-        .list => {
-            // Collect active sessions into contiguous slice for sendSessionList
-            var active: [max_sessions]DaemonSession = undefined;
-            var active_count: usize = 0;
-            for (sessions) |*slot| {
-                if (slot.*) |s| {
-                    active[active_count] = s;
-                    active_count += 1;
-                }
-            }
-            cl.sendSessionList(active[0..active_count]);
-        },
-        .attach => {
-            const attach = protocol.decodeAttach(msg.payload) catch {
-                cl.sendError(1, "invalid attach payload");
-                return;
-            };
-            const session = findSession(sessions, attach.session_id) orelse {
-                cl.sendError(4, "session not found");
-                return;
-            };
-            cl.attached_session = attach.session_id;
-            // Resize to client's dimensions
-            session.resize(attach.rows, attach.cols) catch {};
-            cl.sendAttached(attach.session_id);
-            // Send replay buffer
-            cl.sendReplay(session);
-        },
-        .detach => {
-            cl.attached_session = null;
-        },
-        .input => {
-            if (cl.attached_session) |sid| {
-                if (findSession(sessions, sid)) |session| {
-                    session.writeInput(msg.payload) catch {};
-                }
-            }
-        },
-        .resize => {
-            const r = protocol.decodeResize(msg.payload) catch return;
-            if (cl.attached_session) |sid| {
-                if (findSession(sessions, sid)) |session| {
-                    session.resize(r.rows, r.cols) catch {};
-                }
-            }
-        },
-        .kill => {
-            const kill_id = protocol.decodeKill(msg.payload) catch return;
-            for (sessions) |*slot| {
-                if (slot.*) |*s| {
-                    if (s.id == kill_id) {
-                        s.deinit();
-                        slot.* = null;
-                        session_count.* -= 1;
-                        break;
-                    }
-                }
-            }
-        },
-        // Ignore server→client messages
-        else => {},
-    }
-}
-
-fn findSession(sessions: *[max_sessions]?DaemonSession, id: u32) ?*DaemonSession {
-    for (sessions) |*slot| {
-        if (slot.*) |*s| {
-            if (s.id == id) return s;
-        }
-    }
-    return null;
-}
+// handleMessage and findSession moved to handler.zig
 
 fn acceptClient(listen_fd: posix.fd_t, clients: *[max_clients]?DaemonClient, count: *usize) void {
     const fd = posix.accept(listen_fd, null, null, 0) catch return;
@@ -338,6 +280,9 @@ fn acceptClient(listen_fd: posix.fd_t, clients: *[max_clients]?DaemonClient, cou
         posix.close(fd);
         return;
     }
+    // Non-blocking client sockets — writeAll polls for writability on
+    // WouldBlock with a 200ms timeout, so the daemon never blocks
+    // indefinitely when a client's recv buffer is full.
     setNonBlocking(fd);
     for (clients) |*slot| {
         if (slot.* == null) {

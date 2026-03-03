@@ -356,25 +356,22 @@ pub fn publishState(ctx: *PtyThreadCtx) void {
     // Window title: prefer OSC 0/2 title from the shell; fall back to the
     // foreground process name (e.g. "zsh", "vim") so the title bar is useful
     // even when the shell doesn't send title sequences.
-    if (ctxEngine(ctx).state.title) |title| {
-        const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
-        @memcpy(c.g_title_buf[0..len], title[0..len]);
-        c.g_title_buf[len] = 0;
-        c.g_title_len = @intCast(len);
-        c.g_title_changed = 1;
-    } else {
+    const win_title: ?[]const u8 = ctxEngine(ctx).state.title orelse blk: {
         var name_buf: [256]u8 = undefined;
-        if (platform.getForegroundProcessName(ctxPty(ctx).master, &name_buf)) |name| {
-            const len: usize = @min(name.len, c.ATTYX_TITLE_MAX - 1);
-            // Only update if the name actually changed.
-            const cur_len: usize = @intCast(c.g_title_len);
-            const same = (len == cur_len) and std.mem.eql(u8, c.g_title_buf[0..cur_len], name[0..len]);
-            if (!same) {
-                @memcpy(c.g_title_buf[0..len], name[0..len]);
-                c.g_title_buf[len] = 0;
-                c.g_title_len = @intCast(len);
-                c.g_title_changed = 1;
-            }
+        const pane = ctx.tab_mgr.activePane();
+        if (platform.getForegroundProcessName(ctxPty(ctx).master, &name_buf)) |name|
+            break :blk name;
+        break :blk pane.getDaemonProcName();
+    };
+    if (win_title) |title| {
+        const len: usize = @min(title.len, c.ATTYX_TITLE_MAX - 1);
+        const cur_len: usize = @intCast(c.g_title_len);
+        const same = (len == cur_len) and std.mem.eql(u8, c.g_title_buf[0..cur_len], title[0..len]);
+        if (!same) {
+            @memcpy(c.g_title_buf[0..len], title[0..len]);
+            c.g_title_buf[len] = 0;
+            c.g_title_len = @intCast(len);
+            c.g_title_changed = 1;
         }
     }
 }
@@ -555,7 +552,7 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
 pub const updateGridTopOffset = updateGridOffsets;
 
 /// Resolve a display title for each tab: prefer OSC title, fall back to
-/// the foreground process name (e.g. "zsh", "vim").
+/// the foreground process name (local PTY or daemon-reported).
 pub fn resolveTabTitles(
     ctx: *PtyThreadCtx,
     titles: *tab_bar_mod.TabTitles,
@@ -567,10 +564,10 @@ pub fn resolveTabTitles(
         const pane = layout.focusedPane();
         if (pane.engine.state.title) |t| {
             titles[i] = t;
+        } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
+            titles[i] = name;
         } else {
-            if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
-                titles[i] = name;
-            }
+            titles[i] = pane.getDaemonProcName();
         }
     }
 }

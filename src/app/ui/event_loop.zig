@@ -1,19 +1,10 @@
 const std = @import("std");
 const posix = std.posix;
 const attyx = @import("attyx");
-const Engine = attyx.Engine;
 const SearchState = attyx.SearchState;
 const state_hash = attyx.hash;
 const logging = @import("../../logging/log.zig");
-const diag = @import("../../logging/diag.zig");
-const reload = @import("../../config/reload.zig");
-const config_mod = @import("../../config/config.zig");
-const keybinds_mod = @import("../../config/keybinds.zig");
-const platform = @import("../../platform/platform.zig");
-const Pty = @import("../pty.zig").Pty;
-const popup_mod = @import("../popup.zig");
 const split_layout_mod = @import("../split_layout.zig");
-const SplitLayout = split_layout_mod.SplitLayout;
 const split_render = @import("../split_render.zig");
 
 const terminal = @import("../terminal.zig");
@@ -25,6 +16,8 @@ const search = @import("search.zig");
 const ai = @import("ai.zig");
 const actions = @import("actions.zig");
 const session_switcher = @import("session_switcher.zig");
+const resize_mod = @import("resize.zig");
+const hup_mod = @import("hup.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -39,6 +32,17 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLHUP: i16 = 0x0010;
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
+
+    // Save layout to daemon on clean shutdown (before terminal.zig closes the socket).
+    defer {
+        if (ctx.session_client) |sc| {
+            var save_buf: [4096]u8 = undefined;
+            const save_len = ctx.tab_mgr.serializeLayout(&save_buf) catch 0;
+            if (save_len > 0) {
+                sc.sendSaveLayout(save_buf[0..save_len]) catch {};
+            }
+        }
+    }
 
     search.g_search = SearchState.init(publish.ctxEngine(ctx).state.grid.allocator);
     defer {
@@ -373,95 +377,38 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        {
-            var rr: c_int = 0;
-            var rc: c_int = 0;
-            if (c.attyx_check_resize(&rr, &rc) != 0) {
-                const nr: usize = @intCast(rr);
-                const nc: usize = @intCast(rc);
-
-                ctx.grid_rows = @intCast(rr);
-                ctx.grid_cols = @intCast(rc);
-
-                const gaps = actions.computeSplitGaps();
-                ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
-
-                const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
-
-                posix.nanosleep(0, 1_000_000);
-                while (true) {
-                    const n = publish.ctxPty(ctx).read(&buf) catch break;
-                    if (n == 0) break;
-                    ctx.session.appendOutput(buf[0..n]);
-                    ctx.tab_mgr.activePane().feed(buf[0..n]);
-                }
-
-                c.attyx_begin_cell_update();
-                const resize_layout = ctx.tab_mgr.activeLayout();
-                if (resize_layout.pane_count > 1) {
-                    split_render.fillCellsSplit(
-                        @ptrCast(ctx.cells),
-                        resize_layout,
-                        pty_rows,
-                        @intCast(rc),
-                        &ctx.active_theme,
-                    );
-                    const resize_rect = resize_layout.pool[resize_layout.focused].rect;
-                    const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
-                    c.attyx_set_cursor(
-                        @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + resize_rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                        @intCast(publish.ctxEngine(ctx).state.cursor.col + resize_rect.col),
-                    );
-                    c.attyx_mark_all_dirty();
-                } else {
-                    const new_total = nr * nc;
-                    publish.fillCells(ctx.cells[0..new_total], publish.ctxEngine(ctx), new_total, &ctx.active_theme);
-                    const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
-                    c.attyx_set_cursor(
-                        @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                        @intCast(publish.ctxEngine(ctx).state.cursor.col),
-                    );
-                    c.attyx_set_dirty(&publish.ctxEngine(ctx).state.dirty.bits);
-                }
-                publish.ctxEngine(ctx).state.dirty.clear();
-                c.attyx_set_grid_size(rc, rr);
-                publish.publishImagePlacements(ctx);
-                if (ctx.overlay_mgr) |mgr| {
-                    mgr.relayoutAnchored(publish.viewportInfoFromCtx(ctx));
-                    publish.generateDebugCard(ctx);
-                    publish.generateAnchorDemo(ctx);
-                    ai.relayoutAiDemo(ctx);
-                    ai.relayoutContextPreview(ctx);
-                }
-                publish.generateTabBar(ctx);
-                publish.generateStatusbar(ctx);
-                publish.publishOverlays(ctx);
-                if (ctx.popup_state) |ps| {
-                    const cfg = ctx.popup_configs[ps.config_index];
-                    ps.resize(cfg, @intCast(nc), @intCast(nr));
-                    ps.publishCells(&ctx.active_theme, cfg);
-                    ps.publishImagePlacements(cfg);
-                }
-                c.attyx_end_cell_update();
-                publish.publishState(ctx);
-                last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
-            }
+        resize_mod.handleResize(ctx, &buf);
+        // Update viewport tracking after potential resize
+        if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
+            last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
         }
 
-        // Build poll fd array
+        // Build poll fd array:
+        // - Session socket (one fd for all daemon-backed panes)
+        // - Local PTY fds (for non-session panes)
+        // - Popup fd
         const tab_max = @import("../tab_manager.zig").max_tabs;
-        const max_fds = tab_max * split_layout_mod.max_panes + 2; // +2 for popup + session socket
+        const max_fds = 1 + tab_max * split_layout_mod.max_panes + 1;
         var fds: [max_fds]posix.pollfd = undefined;
         var fd_panes: [max_fds]*@import("../pane.zig").Pane = undefined;
         var fd_tab_idx: [max_fds]u8 = undefined;
         var nfds: usize = 0;
 
+        // Session socket fd (shared by all daemon-backed panes)
+        const session_fd_idx: ?usize = if (ctx.session_client) |sc| blk: {
+            const idx = nfds;
+            fds[nfds] = .{ .fd = sc.pollFd(), .events = POLLIN, .revents = 0 };
+            nfds += 1;
+            break :blk idx;
+        } else null;
+
+        // Local PTY fds (non-session panes only)
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_i| {
             if (maybe_layout.*) |*lay| {
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id != null) continue;
                     fds[nfds] = .{ .fd = leaf.pane.pty.master, .events = POLLIN, .revents = 0 };
                     fd_panes[nfds] = leaf.pane;
                     fd_tab_idx[nfds] = @intCast(tab_i);
@@ -479,22 +426,63 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Session socket fd (daemon mode)
-        const session_fd_idx = nfds;
-        if (ctx.session_client) |sc| {
-            fds[nfds] = .{ .fd = sc.pollFd(), .events = POLLIN, .revents = 0 };
-            fd_tab_idx[nfds] = 0xFE;
-            nfds += 1;
-        }
-
         _ = posix.poll(fds[0..nfds], 16) catch break;
 
         var got_data = false;
         const active_focused_pane = ctx.tab_mgr.activePane();
-        for (0..nfds) |i| {
-            if (i == popup_fd_idx) continue;
-            if (fd_tab_idx[i] == 0xFF) continue;
-            if (fds[i].revents & POLLIN != 0) {
+
+        // Drain session socket — route pane_output by daemon_pane_id
+        if (session_fd_idx) |si| {
+            if (fds[si].revents & POLLIN != 0) {
+                if (ctx.session_client) |sc| {
+                    if (sc.recvData()) {
+                        while (sc.readMessage()) |msg| {
+                            switch (msg) {
+                                .pane_output => |out| {
+                                    if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
+                                        if (result.pane == active_focused_pane) {
+                                            ctx.session.appendOutput(out.data);
+                                            ctx.throughput.add(out.data.len);
+                                        }
+                                        if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                                        result.pane.engine.feed(out.data);
+                                        if (result.pane.engine.state.drainResponse()) |resp| {
+                                            sc.sendPaneInput(out.pane_id, resp) catch {};
+                                        }
+                                    }
+                                },
+                                .pane_died => |died| {
+                                    if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
+                                        result.pane.daemon_pane_id = null;
+                                    }
+                                    // Check if all daemon-backed panes are dead → quit
+                                    if (allDaemonPanesDead(ctx)) {
+                                        c.attyx_request_quit();
+                                        return;
+                                    }
+                                },
+                                .pane_proc_name => |pn| {
+                                    if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
+                                        const len: u8 = @intCast(@min(pn.name.len, 64));
+                                        @memcpy(result.pane.daemon_proc_name[0..len], pn.name[0..len]);
+                                        result.pane.daemon_proc_name_len = len;
+                                        if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drain local PTY data from non-session panes
+        {
+            const local_start = if (session_fd_idx != null) @as(usize, 1) else @as(usize, 0);
+            for (local_start..nfds) |i| {
+                if (fd_tab_idx[i] == 0xFF) continue; // popup handled separately
+                if (fds[i].revents & POLLIN == 0) continue;
                 const p = fd_panes[i];
                 while (true) {
                     const n = p.pty.read(&buf) catch break;
@@ -503,9 +491,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         ctx.session.appendOutput(buf[0..n]);
                         ctx.throughput.add(n);
                     }
-                    if (fd_tab_idx[i] == ctx.tab_mgr.active) {
-                        got_data = true;
-                    }
+                    if (fd_tab_idx[i] == ctx.tab_mgr.active) got_data = true;
                     p.feed(buf[0..n]);
                 }
             }
@@ -534,22 +520,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const pcfg = ctx.popup_configs[ps.config_index];
                 ps.publishCells(&ctx.active_theme, pcfg);
                 ps.publishImagePlacements(pcfg);
-            }
-        }
-
-        // Drain session socket data (daemon mode)
-        if (ctx.session_client) |sc| {
-            if (session_fd_idx < nfds and fds[session_fd_idx].revents & POLLIN != 0) {
-                if (sc.recvData()) {
-                    var died_session: ?u32 = null;
-                    while (sc.readOutput(&died_session)) |output_data| {
-                        if (output_data.len > 0) {
-                            got_data = true;
-                            ctx.session.appendOutput(output_data);
-                            ctx.tab_mgr.activePane().feed(output_data);
-                        }
-                    }
-                }
             }
         }
 
@@ -632,41 +602,36 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Check active focused pane for POLLHUP
-        {
-            const focused = ctx.tab_mgr.activePane();
-            for (0..nfds) |fi| {
-                if (fi == popup_fd_idx) continue;
-                if (fd_panes[fi] == focused and fds[fi].revents & POLLHUP != 0) {
-                    if (focused.childExited()) {
-                        const lay = ctx.tab_mgr.activeLayout();
-                        if (lay.pane_count <= 1) {
-                            ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                            if (ctx.tab_mgr.count == 0) {
-                                c.attyx_request_quit();
-                                break;
-                            }
-                            publish.updateGridTopOffset(ctx);
-                        } else {
-                            const result = lay.closePane(ctx.allocator);
-                            if (result == .last_pane) {
-                                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                                if (ctx.tab_mgr.count == 0) {
-                                    c.attyx_request_quit();
-                                    break;
-                                }
-                                publish.updateGridTopOffset(ctx);
-                            } else {
-                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                                lay.layout(pty_rows, ctx.grid_cols);
-                                actions.updateSplitActive(ctx);
-                            }
-                        }
-                        actions.switchActiveTab(ctx);
-                    }
-                    break;
+        hup_mod.handleActiveHup(ctx, fds[0..nfds], fd_panes[0..nfds], nfds, popup_fd_idx);
+    }
+}
+
+/// Find a pane by its daemon_pane_id across all tabs. Returns the pane and its tab index.
+/// Check if all daemon-backed panes across all tabs are dead (daemon_pane_id cleared).
+fn allDaemonPanesDead(ctx: *PtyThreadCtx) bool {
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe| {
+        if (maybe.*) |*lay| {
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = lay.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id != null) return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8 } {
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe, ti| {
+        if (maybe.*) |*lay| {
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = lay.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id) |dpid| {
+                    if (dpid == pane_id) return .{ .pane = leaf.pane, .tab_idx = @intCast(ti) };
                 }
             }
         }
     }
+    return null;
 }

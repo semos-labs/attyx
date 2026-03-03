@@ -485,7 +485,7 @@ pub const TerminalState = struct {
     // -- OSC: hyperlinks + title (state_osc.zig) ----------------------------
     const startHyperlink = @import("state_osc.zig").startHyperlink;
     const endHyperlink = @import("state_osc.zig").endHyperlink;
-    const setTitle = @import("state_osc.zig").setTitle;
+    pub const setTitle = @import("state_osc.zig").setTitle;
     const setCwd = @import("state_osc.zig").setCwd;
 
     // -- Kitty keyboard protocol ---------------------------------------------

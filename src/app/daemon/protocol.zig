@@ -1,25 +1,33 @@
 const std = @import("std");
 
 /// Session protocol message types.
-/// Client → Daemon: 0x01–0x07
-/// Daemon → Client: 0x81–0x86
+/// Client → Daemon: 0x01–0x0D
+/// Daemon → Client: 0x81–0x89
 pub const MessageType = enum(u8) {
-    // Client → Daemon
+    // Client → Daemon (session management)
     create = 0x01,
     list = 0x02,
     attach = 0x03,
     detach = 0x04,
-    input = 0x05,
-    resize = 0x06,
     kill = 0x07,
+
+    // Client → Daemon (pane-multiplexed)
+    create_pane = 0x08,
+    close_pane = 0x09,
+    focus_panes = 0x0A,
+    pane_input = 0x0B,
+    pane_resize = 0x0C,
+    save_layout = 0x0D,
 
     // Daemon → Client
     created = 0x81,
     session_list = 0x82,
     attached = 0x83,
-    output = 0x84,
-    session_died = 0x85,
     err = 0x86,
+    pane_created = 0x87,
+    pane_output = 0x88,
+    pane_died = 0x89,
+    pane_proc_name = 0x8A,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -61,14 +69,6 @@ pub fn encodeAttach(buf: []u8, session_id: u32, rows: u16, cols: u16) ![]u8 {
     return buf[0..8];
 }
 
-/// Encode Resize message payload: rows:u16, cols:u16
-pub fn encodeResize(buf: []u8, rows: u16, cols: u16) ![]u8 {
-    if (buf.len < 4) return error.BufferTooSmall;
-    std.mem.writeInt(u16, buf[0..2], rows, .little);
-    std.mem.writeInt(u16, buf[2..4], cols, .little);
-    return buf[0..4];
-}
-
 /// Encode Kill message payload: session_id:u32
 pub fn encodeKill(buf: []u8, session_id: u32) ![]u8 {
     if (buf.len < 4) return error.BufferTooSmall;
@@ -81,21 +81,6 @@ pub fn encodeCreated(buf: []u8, session_id: u32) ![]u8 {
     if (buf.len < 4) return error.BufferTooSmall;
     std.mem.writeInt(u32, buf[0..4], session_id, .little);
     return buf[0..4];
-}
-
-/// Encode Attached response payload: session_id:u32
-pub fn encodeAttached(buf: []u8, session_id: u32) ![]u8 {
-    if (buf.len < 4) return error.BufferTooSmall;
-    std.mem.writeInt(u32, buf[0..4], session_id, .little);
-    return buf[0..4];
-}
-
-/// Encode SessionDied response: session_id:u32, exit_code:u8
-pub fn encodeSessionDied(buf: []u8, session_id: u32, exit_code: u8) ![]u8 {
-    if (buf.len < 5) return error.BufferTooSmall;
-    std.mem.writeInt(u32, buf[0..4], session_id, .little);
-    buf[4] = exit_code;
-    return buf[0..5];
 }
 
 /// Encode Error response: code:u8, msg_len:u16, msg:[N]u8
@@ -135,16 +120,6 @@ pub fn decodeAttach(payload: []const u8) !AttachMsg {
     };
 }
 
-pub const ResizeMsg = struct { rows: u16, cols: u16 };
-
-pub fn decodeResize(payload: []const u8) !ResizeMsg {
-    if (payload.len < 4) return error.PayloadTooShort;
-    return .{
-        .rows = std.mem.readInt(u16, payload[0..2], .little),
-        .cols = std.mem.readInt(u16, payload[2..4], .little),
-    };
-}
-
 pub fn decodeKill(payload: []const u8) !u32 {
     if (payload.len < 4) return error.PayloadTooShort;
     return std.mem.readInt(u32, payload[0..4], .little);
@@ -153,21 +128,6 @@ pub fn decodeKill(payload: []const u8) !u32 {
 pub fn decodeCreated(payload: []const u8) !u32 {
     if (payload.len < 4) return error.PayloadTooShort;
     return std.mem.readInt(u32, payload[0..4], .little);
-}
-
-pub fn decodeAttachedId(payload: []const u8) !u32 {
-    if (payload.len < 4) return error.PayloadTooShort;
-    return std.mem.readInt(u32, payload[0..4], .little);
-}
-
-pub const SessionDiedMsg = struct { session_id: u32, exit_code: u8 };
-
-pub fn decodeSessionDied(payload: []const u8) !SessionDiedMsg {
-    if (payload.len < 5) return error.PayloadTooShort;
-    return .{
-        .session_id = std.mem.readInt(u32, payload[0..4], .little),
-        .exit_code = payload[4],
-    };
 }
 
 pub const ErrorMsg = struct { code: u8, msg: []const u8 };
@@ -249,6 +209,215 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
     return decoded;
 }
 
+// ── V2 Encode helpers (pane-multiplexed) ──
+
+/// Encode CreatePane payload: rows:u16, cols:u16
+pub fn encodeCreatePane(buf: []u8, rows: u16, cols: u16) ![]u8 {
+    if (buf.len < 4) return error.BufferTooSmall;
+    std.mem.writeInt(u16, buf[0..2], rows, .little);
+    std.mem.writeInt(u16, buf[2..4], cols, .little);
+    return buf[0..4];
+}
+
+/// Encode ClosePane payload: pane_id:u32
+pub fn encodeClosePane(buf: []u8, pane_id: u32) ![]u8 {
+    if (buf.len < 4) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    return buf[0..4];
+}
+
+/// Encode FocusPanes payload: count:u8, pane_ids:[N]u32
+pub fn encodeFocusPanes(buf: []u8, pane_ids: []const u32) ![]u8 {
+    const count: u8 = @intCast(@min(pane_ids.len, 32));
+    const total: usize = 1 + @as(usize, count) * 4;
+    if (buf.len < total) return error.BufferTooSmall;
+    buf[0] = count;
+    for (0..count) |i| {
+        std.mem.writeInt(u32, buf[1 + i * 4 ..][0..4], pane_ids[i], .little);
+    }
+    return buf[0..total];
+}
+
+/// Encode PaneInput payload: pane_id:u32, bytes:[N]u8
+pub fn encodePaneInput(buf: []u8, pane_id: u32, bytes: []const u8) ![]u8 {
+    const total = 4 + bytes.len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    @memcpy(buf[4 .. 4 + bytes.len], bytes);
+    return buf[0..total];
+}
+
+/// Encode PaneResize payload: pane_id:u32, rows:u16, cols:u16
+pub fn encodePaneResize(buf: []u8, pane_id: u32, rows: u16, cols: u16) ![]u8 {
+    if (buf.len < 8) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    std.mem.writeInt(u16, buf[4..6], rows, .little);
+    std.mem.writeInt(u16, buf[6..8], cols, .little);
+    return buf[0..8];
+}
+
+/// Encode PaneCreated response payload: pane_id:u32
+pub fn encodePaneCreated(buf: []u8, pane_id: u32) ![]u8 {
+    if (buf.len < 4) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    return buf[0..4];
+}
+
+/// Encode PaneDied response: pane_id:u32, exit_code:u8
+pub fn encodePaneDied(buf: []u8, pane_id: u32, exit_code: u8) ![]u8 {
+    if (buf.len < 5) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    buf[4] = exit_code;
+    return buf[0..5];
+}
+
+/// Encode SessionAttachedV2 payload:
+///   session_id:u32, layout_len:u16, layout:[N]u8, pane_count:u8, pane_ids:[N]u32
+pub fn encodeAttachedV2(
+    buf: []u8,
+    session_id: u32,
+    layout_data: []const u8,
+    pane_ids: []const u32,
+) ![]u8 {
+    const layout_len: u16 = @intCast(@min(layout_data.len, 4096));
+    const pane_count: u8 = @intCast(@min(pane_ids.len, 32));
+    const total: usize = 4 + 2 + layout_len + 1 + @as(usize, pane_count) * 4;
+    if (buf.len < total) return error.BufferTooSmall;
+
+    std.mem.writeInt(u32, buf[0..4], session_id, .little);
+    std.mem.writeInt(u16, buf[4..6], layout_len, .little);
+    @memcpy(buf[6 .. 6 + layout_len], layout_data[0..layout_len]);
+    var pos: usize = 6 + layout_len;
+    buf[pos] = pane_count;
+    pos += 1;
+    for (0..pane_count) |i| {
+        std.mem.writeInt(u32, buf[pos..][0..4], pane_ids[i], .little);
+        pos += 4;
+    }
+    return buf[0..pos];
+}
+
+// ── V2 Decode helpers ──
+
+pub const CreatePaneMsg = struct { rows: u16, cols: u16 };
+
+pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
+    if (payload.len < 4) return error.PayloadTooShort;
+    return .{
+        .rows = std.mem.readInt(u16, payload[0..2], .little),
+        .cols = std.mem.readInt(u16, payload[2..4], .little),
+    };
+}
+
+pub fn decodeClosePane(payload: []const u8) !u32 {
+    if (payload.len < 4) return error.PayloadTooShort;
+    return std.mem.readInt(u32, payload[0..4], .little);
+}
+
+pub const FocusPanesMsg = struct {
+    count: u8,
+    pane_ids: [32]u32,
+};
+
+pub fn decodeFocusPanes(payload: []const u8) !FocusPanesMsg {
+    if (payload.len < 1) return error.PayloadTooShort;
+    const count = payload[0];
+    if (payload.len < 1 + @as(usize, count) * 4) return error.PayloadTooShort;
+    var msg = FocusPanesMsg{ .count = count, .pane_ids = .{0} ** 32 };
+    for (0..count) |i| {
+        msg.pane_ids[i] = std.mem.readInt(u32, payload[1 + i * 4 ..][0..4], .little);
+    }
+    return msg;
+}
+
+pub const PaneInputMsg = struct { pane_id: u32, bytes: []const u8 };
+
+pub fn decodePaneInput(payload: []const u8) !PaneInputMsg {
+    if (payload.len < 4) return error.PayloadTooShort;
+    return .{
+        .pane_id = std.mem.readInt(u32, payload[0..4], .little),
+        .bytes = payload[4..],
+    };
+}
+
+pub const PaneResizeMsg = struct { pane_id: u32, rows: u16, cols: u16 };
+
+pub fn decodePaneResize(payload: []const u8) !PaneResizeMsg {
+    if (payload.len < 8) return error.PayloadTooShort;
+    return .{
+        .pane_id = std.mem.readInt(u32, payload[0..4], .little),
+        .rows = std.mem.readInt(u16, payload[4..6], .little),
+        .cols = std.mem.readInt(u16, payload[6..8], .little),
+    };
+}
+
+pub fn decodePaneCreated(payload: []const u8) !u32 {
+    if (payload.len < 4) return error.PayloadTooShort;
+    return std.mem.readInt(u32, payload[0..4], .little);
+}
+
+pub const PaneDiedMsg = struct { pane_id: u32, exit_code: u8 };
+
+pub fn decodePaneDied(payload: []const u8) !PaneDiedMsg {
+    if (payload.len < 5) return error.PayloadTooShort;
+    return .{
+        .pane_id = std.mem.readInt(u32, payload[0..4], .little),
+        .exit_code = payload[4],
+    };
+}
+
+pub const AttachedV2Msg = struct {
+    session_id: u32,
+    layout: []const u8,
+    pane_count: u8,
+    pane_ids: [32]u32,
+};
+
+pub fn decodeAttachedV2(payload: []const u8) !AttachedV2Msg {
+    if (payload.len < 7) return error.PayloadTooShort;
+    const session_id = std.mem.readInt(u32, payload[0..4], .little);
+    const layout_len = std.mem.readInt(u16, payload[4..6], .little);
+    var pos: usize = 6;
+    if (payload.len < pos + layout_len + 1) return error.PayloadTooShort;
+    const layout = payload[pos .. pos + layout_len];
+    pos += layout_len;
+    const pane_count = payload[pos];
+    pos += 1;
+    if (payload.len < pos + @as(usize, pane_count) * 4) return error.PayloadTooShort;
+    var msg = AttachedV2Msg{
+        .session_id = session_id,
+        .layout = layout,
+        .pane_count = pane_count,
+        .pane_ids = .{0} ** 32,
+    };
+    for (0..pane_count) |i| {
+        msg.pane_ids[i] = std.mem.readInt(u32, payload[pos..][0..4], .little);
+        pos += 4;
+    }
+    return msg;
+}
+
+/// Encode PaneProcName payload: pane_id:u32, name_len:u8, name:[N]u8
+pub fn encodePaneProcName(buf: []u8, pane_id: u32, name: []const u8) ![]u8 {
+    const name_len: u8 = @intCast(@min(name.len, 255));
+    const total: usize = 4 + 1 + name_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    buf[4] = name_len;
+    @memcpy(buf[5 .. 5 + name_len], name[0..name_len]);
+    return buf[0..total];
+}
+
+pub const PaneProcNameMsg = struct { pane_id: u32, name: []const u8 };
+
+pub fn decodePaneProcName(payload: []const u8) !PaneProcNameMsg {
+    if (payload.len < 5) return error.PayloadTooShort;
+    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+    const name_len = payload[4];
+    if (payload.len < 5 + @as(usize, name_len)) return error.PayloadTooShort;
+    return .{ .pane_id = pane_id, .name = payload[5 .. 5 + name_len] };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -279,40 +448,12 @@ test "attach round-trip" {
     try std.testing.expectEqual(@as(u16, 120), msg.cols);
 }
 
-test "resize round-trip" {
-    var buf: [128]u8 = undefined;
-    const payload = try encodeResize(&buf, 50, 200);
-    const msg = try decodeResize(payload);
-    try std.testing.expectEqual(@as(u16, 50), msg.rows);
-    try std.testing.expectEqual(@as(u16, 200), msg.cols);
-}
-
 test "error round-trip" {
     var buf: [128]u8 = undefined;
     const payload = try encodeError(&buf, 3, "not found");
     const msg = try decodeError(payload);
     try std.testing.expectEqual(@as(u8, 3), msg.code);
     try std.testing.expectEqualStrings("not found", msg.msg);
-}
-
-test "session_died round-trip" {
-    var buf: [128]u8 = undefined;
-    const payload = try encodeSessionDied(&buf, 42, 1);
-    const msg = try decodeSessionDied(payload);
-    try std.testing.expectEqual(@as(u32, 42), msg.session_id);
-    try std.testing.expectEqual(@as(u8, 1), msg.exit_code);
-}
-
-test "full message encode" {
-    var buf: [128]u8 = undefined;
-    var payload_buf: [32]u8 = undefined;
-    const payload = try encodeResize(&payload_buf, 24, 80);
-    const msg = try encodeMessage(&buf, .resize, payload);
-    try std.testing.expectEqual(@as(usize, header_size + 4), msg.len);
-
-    const h = try decodeHeader(msg[0..header_size]);
-    try std.testing.expectEqual(MessageType.resize, h.msg_type);
-    try std.testing.expectEqual(@as(u32, 4), h.payload_len);
 }
 
 test "session list round-trip" {
@@ -332,4 +473,61 @@ test "session list round-trip" {
     try std.testing.expectEqual(@as(u32, 2), decoded[1].id);
     try std.testing.expectEqualStrings("vim", decoded[1].name);
     try std.testing.expect(!decoded[1].alive);
+}
+
+test "create_pane round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodeCreatePane(&buf, 24, 80);
+    const msg = try decodeCreatePane(payload);
+    try std.testing.expectEqual(@as(u16, 24), msg.rows);
+    try std.testing.expectEqual(@as(u16, 80), msg.cols);
+}
+
+test "focus_panes round-trip" {
+    var buf: [256]u8 = undefined;
+    const ids = [_]u32{ 1, 5, 10 };
+    const payload = try encodeFocusPanes(&buf, &ids);
+    const msg = try decodeFocusPanes(payload);
+    try std.testing.expectEqual(@as(u8, 3), msg.count);
+    try std.testing.expectEqual(@as(u32, 1), msg.pane_ids[0]);
+    try std.testing.expectEqual(@as(u32, 5), msg.pane_ids[1]);
+    try std.testing.expectEqual(@as(u32, 10), msg.pane_ids[2]);
+}
+
+test "pane_input round-trip" {
+    var buf: [256]u8 = undefined;
+    const payload = try encodePaneInput(&buf, 42, "hello");
+    const msg = try decodePaneInput(payload);
+    try std.testing.expectEqual(@as(u32, 42), msg.pane_id);
+    try std.testing.expectEqualStrings("hello", msg.bytes);
+}
+
+test "pane_resize round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodePaneResize(&buf, 7, 30, 120);
+    const msg = try decodePaneResize(payload);
+    try std.testing.expectEqual(@as(u32, 7), msg.pane_id);
+    try std.testing.expectEqual(@as(u16, 30), msg.rows);
+    try std.testing.expectEqual(@as(u16, 120), msg.cols);
+}
+
+test "pane_died round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodePaneDied(&buf, 99, 2);
+    const msg = try decodePaneDied(payload);
+    try std.testing.expectEqual(@as(u32, 99), msg.pane_id);
+    try std.testing.expectEqual(@as(u8, 2), msg.exit_code);
+}
+
+test "attached_v2 round-trip" {
+    var buf: [256]u8 = undefined;
+    const layout = "test-layout";
+    const pane_ids = [_]u32{ 1, 2 };
+    const payload = try encodeAttachedV2(&buf, 5, layout, &pane_ids);
+    const msg = try decodeAttachedV2(payload);
+    try std.testing.expectEqual(@as(u32, 5), msg.session_id);
+    try std.testing.expectEqualStrings("test-layout", msg.layout);
+    try std.testing.expectEqual(@as(u8, 2), msg.pane_count);
+    try std.testing.expectEqual(@as(u32, 1), msg.pane_ids[0]);
+    try std.testing.expectEqual(@as(u32, 2), msg.pane_ids[1]);
 }

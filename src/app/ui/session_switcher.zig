@@ -6,8 +6,11 @@ const layout_mod = attyx.overlay_layout;
 
 const terminal = @import("../terminal.zig");
 const publish = @import("publish.zig");
+const actions = @import("actions.zig");
 const SessionClient = @import("../session_client.zig").SessionClient;
 const ListEntry = @import("../session_client.zig").ListEntry;
+const layout_codec = @import("../layout_codec.zig");
+const split_layout_mod = @import("../split_layout.zig");
 
 const OverlayCell = overlay.OverlayCell;
 const OverlayStyle = overlay.OverlayStyle;
@@ -109,10 +112,64 @@ pub fn tick(ctx: *PtyThreadCtx) void {
 
 fn doSwitch(ctx: *PtyThreadCtx, mgr: *overlay.OverlayManager) void {
     if (entry_count == 0 or selected >= entry_count) return;
-    const sc = terminal.g_session_client orelse return;
+    const sc = ctx.session_client orelse return;
     const entry = &entries[selected];
     const rows: u16 = @intCast(@max(1, ctx.grid_rows));
+
+    // Save current layout to daemon
+    var layout_buf: [4096]u8 = undefined;
+    const layout_len = ctx.tab_mgr.serializeLayout(&layout_buf) catch 0;
+    if (layout_len > 0) {
+        sc.sendSaveLayout(layout_buf[0..layout_len]) catch {};
+    }
+
+    // Detach from current session
+    sc.detach() catch {};
+
+    // Teardown current tabs (deinit all panes/engines)
+    ctx.tab_mgr.reset();
+
+    // Attach to new session
     sc.attach(entry.id, rows, ctx.grid_cols) catch return;
+
+    // Wait for V2 attached response with layout + pane IDs
+    const attach_result = sc.waitForAttach(3000) catch return;
+
+    // Reconstruct tabs from layout blob (if daemon had a saved layout)
+    if (sc.layout_len > 0) {
+        if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
+            ctx.tab_mgr.reconstructFromLayout(&info, rows, ctx.grid_cols) catch {};
+        } else |_| {}
+    }
+
+    // Fallback: if no tabs reconstructed, create a single-pane tab
+    if (ctx.tab_mgr.count == 0 and attach_result.pane_count > 0) {
+        const pane = ctx.tab_mgr.allocator.create(@import("../pane.zig").Pane) catch return;
+        pane.* = @import("../pane.zig").Pane.initDaemonBacked(
+            ctx.tab_mgr.allocator,
+            rows,
+            ctx.grid_cols,
+        ) catch {
+            ctx.tab_mgr.allocator.destroy(pane);
+            return;
+        };
+        pane.daemon_pane_id = attach_result.pane_ids[0];
+        ctx.tab_mgr.tabs[0] = split_layout_mod.SplitLayout.init(pane);
+        ctx.tab_mgr.count = 1;
+        ctx.tab_mgr.active = 0;
+    }
+
+    // Update active daemon pane ID for input routing
+    if (ctx.tab_mgr.count > 0) {
+        const ap = ctx.tab_mgr.activePane();
+        terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
+    }
+
+    // Reset focus tracking — all panes are fresh after session switch.
+    ctx.last_focus_count = 0;
+    // Send focus_panes so daemon sends replay for the active tab
+    actions.sendActiveFocusPanes(ctx);
+
     mgr.hide(.session_switcher);
     terminal.g_session_switcher_active = 0;
 }

@@ -304,9 +304,9 @@ pub fn sendInput(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
 
-    // Session mode: route input through daemon
+    // Session mode: route input through daemon to active pane
     if (terminal.g_session_client) |sc| {
-        sc.sendInput(data) catch {};
+        sc.sendPaneInput(terminal.g_active_daemon_pane_id, data) catch {};
         return;
     }
 
@@ -347,9 +347,9 @@ pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: 
     );
 
     if (encoded.len > 0) {
-        // Session mode: route through daemon
+        // Session mode: route through daemon to active pane
         if (terminal.g_session_client) |sc| {
-            sc.sendInput(encoded) catch {};
+            sc.sendPaneInput(terminal.g_active_daemon_pane_id, encoded) catch {};
             return;
         }
         if (terminal.g_pty_master >= 0) {
