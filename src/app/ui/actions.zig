@@ -18,13 +18,6 @@ const input = @import("input.zig");
 /// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
 pub var g_force_full_redraw: bool = false;
 
-/// Signal a native tab operation to the main/renderer thread.
-/// op: 1=new, 2=close, 3=switch. target: tab index relevant to the op.
-fn signalNativeTabOp(op: i32, target: i32) void {
-    @atomicStore(i32, &terminal.g_native_tab_target, target, .seq_cst);
-    @atomicStore(i32, &terminal.g_native_tab_op, op, .seq_cst);
-}
-
 // ---------------------------------------------------------------------------
 // Tab lifecycle helpers
 // ---------------------------------------------------------------------------
@@ -51,7 +44,6 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             };
             publish.updateGridTopOffset(ctx);
             switchActiveTab(ctx);
-            if (terminal.g_native_tabs_enabled != 0) signalNativeTabOp(1, @intCast(ctx.tab_mgr.active));
             logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
         },
         .tab_close => {
@@ -59,25 +51,21 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 c.attyx_request_quit();
                 return;
             }
-            const old_active: i32 = @intCast(ctx.tab_mgr.active);
             ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
             publish.updateGridTopOffset(ctx);
             switchActiveTab(ctx);
-            if (terminal.g_native_tabs_enabled != 0) signalNativeTabOp(2, old_active);
             logging.info("tabs", "closed tab, now {d}", .{ctx.tab_mgr.count});
         },
         .tab_next => {
             if (ctx.tab_mgr.count <= 1) return;
             ctx.tab_mgr.nextTab();
             switchActiveTab(ctx);
-            if (terminal.g_native_tabs_enabled != 0) signalNativeTabOp(3, @intCast(ctx.tab_mgr.active));
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
         .tab_prev => {
             if (ctx.tab_mgr.count <= 1) return;
             ctx.tab_mgr.prevTab();
             switchActiveTab(ctx);
-            if (terminal.g_native_tabs_enabled != 0) signalNativeTabOp(3, @intCast(ctx.tab_mgr.active));
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
         .tab_select_1, .tab_select_2, .tab_select_3,
@@ -88,7 +76,6 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             if (idx < ctx.tab_mgr.count and idx != ctx.tab_mgr.active) {
                 ctx.tab_mgr.switchTo(idx);
                 switchActiveTab(ctx);
-                if (terminal.g_native_tabs_enabled != 0) signalNativeTabOp(3, @intCast(ctx.tab_mgr.active));
                 logging.info("tabs", "switched to tab {d}", .{idx + 1});
             }
         },

@@ -162,18 +162,17 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 // Native tab manager (macos_native_tabs.m)
 // ---------------------------------------------------------------------------
 
-@interface AttyxNativeTabManager : NSObject <NSWindowDelegate>
-@property (nonatomic, strong) NSMutableArray<NSWindow*>* tabWindows;
-@property (nonatomic, strong) NSMutableSet<NSWindow*>* pendingClose;
-@property (nonatomic, strong) id<MTLDevice> device;
-@property (nonatomic, assign) GlyphCache glyphCache;
-@property (nonatomic, strong) AttyxRenderer* sharedRenderer;
-@property (nonatomic, strong) NSString* tabbingId;
+@class AttyxTabBarView;
 
-- (instancetype)initWithDevice:(id<MTLDevice>)device
-                      renderer:(AttyxRenderer*)renderer
-                    glyphCache:(GlyphCache)gc;
-- (NSWindow*)createTabWindowWithSize:(NSSize)size;
+@interface AttyxNativeTabManager : NSObject
+@property (nonatomic, weak) NSWindow* window;
+@property (nonatomic, strong) NSTitlebarAccessoryViewController* accessoryVC;
+@property (nonatomic, strong) AttyxTabBarView* tabBarView;
+@property (nonatomic) int lastSyncedCount;
+@property (nonatomic) int lastSyncedActive;
+@property (nonatomic) BOOL isAttached;
+
+- (instancetype)initWithWindow:(NSWindow*)window;
 - (void)sync;
 @end
 

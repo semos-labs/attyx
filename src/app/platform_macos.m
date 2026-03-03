@@ -405,15 +405,10 @@ void attyx_spawn_new_window(void) {
         }
     }
 
-    // Native macOS tabs: if enabled, set up the native tab manager.
-    // The first window is managed by the tab manager instead of being
-    // created directly by the app delegate.
+    // Native macOS tabs: titlebar accessory (no extra windows).
     if (g_native_tabs_enabled) {
-        _nativeTabMgr = [[AttyxNativeTabManager alloc] initWithDevice:device
-                                                             renderer:_renderer
-                                                           glyphCache:gc];
-        // Native tabs require a visible title bar. If decorations were hidden,
-        // undo the transparent/full-size-content settings for the initial window.
+        _nativeTabMgr = [[AttyxNativeTabManager alloc] initWithWindow:_window];
+        // Tab bar lives in the titlebar — needs visible title bar.
         if (!g_window_decorations) {
             NSUInteger wmask = [_window styleMask];
             wmask &= ~NSWindowStyleMaskFullSizeContentView;
@@ -424,16 +419,6 @@ void attyx_spawn_new_window(void) {
             [[_window standardWindowButton:NSWindowMiniaturizeButton] setHidden:NO];
             [[_window standardWindowButton:NSWindowZoomButton] setHidden:NO];
         }
-        // The window already exists; register it with the tab manager
-        [_nativeTabMgr.tabWindows addObject:_window];
-        [_window setTabbingIdentifier:_nativeTabMgr.tabbingId];
-        if (g_tab_always_show) {
-            [_window setTabbingMode:NSWindowTabbingModePreferred];
-        } else {
-            [_window setTabbingMode:NSWindowTabbingModeAutomatic];
-        }
-        // Set the tab manager as window delegate (overrides app delegate for tab windows)
-        [_window setDelegate:_nativeTabMgr];
     }
 
     // Sparkle auto-updater (skipped for Homebrew installs)

@@ -87,8 +87,6 @@ export var g_split_active: i32 = 0;
 // Native tab stubs (terminal.zig provides the real implementations)
 export var g_native_tabs_enabled: i32 = 0;
 export var g_tab_always_show: i32 = 0;
-export var g_native_tab_op: i32 = 0;
-export var g_native_tab_target: i32 = 0;
 export var g_native_tab_count: i32 = 1;
 export var g_native_tab_active: i32 = 0;
 export var g_native_tab_titles_changed: i32 = 0;
