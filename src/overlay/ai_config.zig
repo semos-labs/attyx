@@ -27,7 +27,32 @@ pub fn actionString(inv: InvocationType) []const u8 {
         .command_generate => "generate_command",
         .general => "summarize_output",
         .edit_selection => "edit_selection",
+        .command_rewrite => "command_rewrite",
     };
+}
+
+/// Serialize a rewrite-mode request body for POST /v1/ai/execute.
+/// Caller owns the returned slice.
+pub fn serializeRewriteRequest(allocator: std.mem.Allocator, command: []const u8, user_request: []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .{};
+    errdefer list.deinit(allocator);
+    const w = list.writer(allocator);
+
+    try w.writeAll("{");
+    try writeJsonString(w, "mode");
+    try w.writeAll(":");
+    try writeJsonString(w, "command_rewrite");
+    try w.writeAll(",");
+    try writeJsonString(w, "command");
+    try w.writeAll(":");
+    try writeJsonString(w, command);
+    try w.writeAll(",");
+    try writeJsonString(w, "user_request");
+    try w.writeAll(":");
+    try writeJsonString(w, user_request);
+    try w.writeAll("}");
+
+    return list.toOwnedSlice(allocator);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +206,23 @@ test "actionString mapping" {
     try std.testing.expectEqualStrings("generate_command", actionString(.command_generate));
     try std.testing.expectEqualStrings("summarize_output", actionString(.general));
     try std.testing.expectEqualStrings("edit_selection", actionString(.edit_selection));
+    try std.testing.expectEqualStrings("command_rewrite", actionString(.command_rewrite));
+}
+
+test "serializeRewriteRequest: basic JSON structure" {
+    const alloc = std.testing.allocator;
+    const json = try serializeRewriteRequest(alloc, "ls -la", "add color output");
+    defer alloc.free(json);
+
+    try std.testing.expect(json.len > 0);
+    try std.testing.expectEqual(@as(u8, '{'), json[0]);
+    try std.testing.expectEqual(@as(u8, '}'), json[json.len - 1]);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"mode\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command_rewrite\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ls -la\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"user_request\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"add color output\"") != null);
 }
 
 test "serializeRequest: basic JSON structure" {

@@ -14,6 +14,7 @@ pub const InvocationType = enum(u8) {
     command_generate,
     general,
     edit_selection,
+    command_rewrite,
 };
 
 /// Immutable snapshot of terminal context captured at AI invocation time.
@@ -80,6 +81,12 @@ pub const ContextBundle = struct {
             parts += 1;
         }
 
+        if (self.invocation == .command_rewrite) {
+            if (parts > 0) w.writeAll(" +") catch {};
+            w.writeAll(" rewrite") catch {};
+            parts += 1;
+        }
+
         if (parts == 0) {
             w.writeAll(" (empty)") catch {};
         }
@@ -104,6 +111,7 @@ pub const ContextBundle = struct {
             .command_generate => "command_generate",
             .general => "general",
             .edit_selection => "edit_selection",
+            .command_rewrite => "command_rewrite",
         });
         try w.writeByte('\n');
 

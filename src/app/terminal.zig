@@ -17,6 +17,7 @@ const keybinds_mod = @import("../config/keybinds.zig");
 const TabManager = @import("tab_manager.zig").TabManager;
 const Pane = @import("pane.zig").Pane;
 const Pty = @import("pty.zig").Pty;
+const CmdCapture = @import("cmd_capture.zig").CmdCapture;
 const SessionLog = @import("session_log.zig").SessionLog;
 const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
@@ -70,6 +71,7 @@ pub var g_pty_master: posix.fd_t = -1;
 pub var g_engine: ?*attyx.Engine = null;
 pub var g_popup_pty_master: posix.fd_t = -1;
 pub var g_popup_engine: ?*attyx.Engine = null;
+pub var g_cmd_cr_pending: i32 = 0;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
@@ -270,6 +272,14 @@ pub fn run(
     if (config.scrollback_lines != 20_000) {
         initial_pane.engine.state.scrollback.max_lines = config.scrollback_lines;
     }
+
+    const cmd_cap = try allocator.create(CmdCapture);
+    cmd_cap.* = try CmdCapture.init(allocator);
+    defer {
+        cmd_cap.deinit();
+        allocator.destroy(cmd_cap);
+    }
+    initial_pane.cmd_capture = cmd_cap;
 
     var tab_mgr = TabManager.init(allocator, initial_pane);
     defer tab_mgr.deinit();
