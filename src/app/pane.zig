@@ -18,6 +18,9 @@ pub const Pane = struct {
     /// Daemon pane ID. When set, this pane is backed by a daemon PTY and
     /// the local PTY is idle — I/O goes through the shared session socket.
     daemon_pane_id: ?u32 = null,
+    /// When true, the engine will be reinitialized before the next data feed
+    /// (deferred reinit to prevent blank-screen gap between focus and replay).
+    needs_engine_reinit: bool = false,
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,

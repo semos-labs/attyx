@@ -440,6 +440,21 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             switch (msg) {
                                 .pane_output => |out| {
                                     if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
+                                        // Deferred engine reinit: if the daemon is replaying
+                                        // scrollback for a newly-focused pane, reinit the
+                                        // engine NOW (right before feeding data) to prevent
+                                        // blank-screen gap and duplicate content.
+                                        if (result.pane.needs_engine_reinit) {
+                                            const rows: u16 = @intCast(result.pane.engine.state.grid.rows);
+                                            const cols: u16 = @intCast(result.pane.engine.state.grid.cols);
+                                            result.pane.engine.deinit();
+                                            result.pane.engine = @import("attyx").Engine.init(
+                                                result.pane.allocator,
+                                                rows,
+                                                cols,
+                                            ) catch continue;
+                                            result.pane.needs_engine_reinit = false;
+                                        }
                                         if (result.pane == active_focused_pane) {
                                             ctx.session.appendOutput(out.data);
                                             ctx.throughput.add(out.data.len);

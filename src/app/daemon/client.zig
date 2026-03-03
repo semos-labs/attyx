@@ -204,9 +204,10 @@ pub const DaemonClient = struct {
         var offset: usize = 0;
         while (offset < pty_data.len and !self.dead) {
             const remaining = pty_data.len - offset;
-            const chunk_len = @min(remaining, max_output_chunk - 4); // reserve 4 for pane_id
+            const chunk_len: u32 = @intCast(@min(remaining, max_output_chunk - 4));
+            const payload_len: u32 = 4 + chunk_len;
             var hdr: [protocol.header_size]u8 = undefined;
-            protocol.encodeHeader(&hdr, .pane_output, @intCast(4 + chunk_len));
+            protocol.encodeHeader(&hdr, .pane_output, payload_len);
             self.writeAll(&hdr);
             if (self.dead) break;
             var id_buf: [4]u8 = undefined;
