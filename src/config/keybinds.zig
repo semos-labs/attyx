@@ -101,6 +101,7 @@ pub const Action = enum(u8) {
     tab_select_7 = 70,
     tab_select_8 = 71,
     tab_select_9 = 72,
+    clear_screen = 73,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -301,6 +302,7 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "tab_select_7", Action.tab_select_7 },
         .{ "tab_select_8", Action.tab_select_8 },
         .{ "tab_select_9", Action.tab_select_9 },
+        .{ "clear_screen", Action.clear_screen },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -361,6 +363,9 @@ fn defaultKeybinds() []const Keybind {
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 't' }, .tab_new),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'w' }, .tab_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'k' }, .clear_screen),
+                kb(.{ .key = KC_LEFT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
+                kb(.{ .key = KC_RIGHT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 0 }, .tab_next),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'd' }, .split_vertical),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'd' }, .split_horizontal),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'w' }, .pane_close),
@@ -378,6 +383,9 @@ fn defaultKeybinds() []const Keybind {
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 't' }, .tab_new),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .tab_close),
+                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'k' }, .clear_screen),
+                kb(.{ .key = KC_LEFT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 0 }, .tab_prev),
+                kb(.{ .key = KC_RIGHT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 0 }, .tab_next),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'd' }, .split_vertical),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'e' }, .split_horizontal),
                 kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'q' }, .pane_close),

@@ -292,6 +292,24 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Popup toggle handling
         actions.processPopupToggle(ctx);
 
+        // Clear screen + scrollback (Cmd+K / Ctrl+Shift+K)
+        if (@atomicRmw(i32, &input.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
+            const eng = publish.ctxEngine(ctx);
+            const grid = &eng.state.grid;
+            // Clear scrollback
+            eng.state.scrollback.clear();
+            eng.state.viewport_offset = 0;
+            // Clear screen
+            @memset(grid.cells, attyx.grid.Cell{});
+            @memset(grid.row_wrapped[0..grid.rows], false);
+            // Move cursor home
+            eng.state.cursor.row = 0;
+            eng.state.cursor.col = 0;
+            eng.state.dirty.markAll(grid.rows);
+            // Send form feed to shell so it redraws its prompt
+            _ = posix.write(terminal.g_pty_master, "\x0c") catch {};
+        }
+
         // Close dead popup on Ctrl-C from input thread
         if (@atomicRmw(i32, &input.g_popup_close_request, .Xchg, 0, .seq_cst) != 0) {
             actions.closePopup(ctx);
