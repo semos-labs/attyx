@@ -4,6 +4,8 @@ const overlay_mod = attyx.overlay_mod;
 const overlay_ai_edit = attyx.overlay_ai_edit;
 const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_content = attyx.overlay_ai_content;
+const overlay_ai_config = attyx.overlay_ai_config;
+const overlay_context = attyx.overlay_context;
 
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -11,6 +13,7 @@ const c = terminal.c;
 const publish = @import("publish.zig");
 const input = @import("input.zig");
 const ai = @import("ai.zig");
+const cmd_capture_mod = @import("../cmd_capture.zig");
 
 // ---------------------------------------------------------------------------
 // Edit mode helpers
@@ -21,44 +24,32 @@ pub fn renderEditPromptCard(ctx: *PtyThreadCtx) void {
     const edit = &(ai.g_ai_edit orelse return);
     const result = overlay_ai_edit.layoutPromptCard(mgr.allocator, edit, 52) catch return;
 
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.accept, "Submit");
+    bar.add(.dismiss, "Cancel");
+
     if (ai.g_streaming) |*so| {
         if (so.state != .idle) {
             so.replaceContent(result.cells, result.width, result.height);
-            mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
-                var bar = attyx.overlay_action.ActionBar{};
-                bar.add(.accept, "Submit");
-                bar.add(.dismiss, "Cancel");
-                break :blk bar;
-            };
+            mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
             ai.publishAiStreamingFrame(ctx);
             return;
         }
     }
 
-    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, .{});
-    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
-        var bar = attyx.overlay_action.ActionBar{};
-        bar.add(.accept, "Submit");
-        bar.add(.dismiss, "Cancel");
-        break :blk bar;
-    };
-    publish.publishOverlays(ctx);
+    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
 }
 
 fn renderEditProposalCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const edit = &(ai.g_ai_edit orelse return);
     const result = overlay_ai_edit.layoutProposalCard(mgr.allocator, edit, 52) catch return;
-    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, .{});
-    mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = blk: {
-        var bar = attyx.overlay_action.ActionBar{};
-        bar.add(.accept, "Accept");
-        bar.add(.reject, "Reject");
-        bar.add(.copy, "Copy");
-        bar.add(.insert, "Insert");
-        break :blk bar;
-    };
-    publish.publishOverlays(ctx);
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.accept, "Accept");
+    bar.add(.reject, "Reject");
+    bar.add(.copy, "Copy");
+    bar.add(.insert, "Insert");
+    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
 }
 
 fn submitEditPrompt(ctx: *PtyThreadCtx) void {
@@ -182,18 +173,19 @@ pub fn handleNormalDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.SseT
             }
         }
     }
-    if (ai.g_ai_accumulator) |*acc| {
-        const blocks = acc.reparse() catch &.{};
-        if (blocks.len > 0) {
-            ai.relayoutAiStreamContent(ctx, blocks);
-        }
-    }
+    // Set final action bar BEFORE relayout so publishOverlays sees the correct bar
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Dismiss");
     bar.add(.insert, "Insert");
     bar.add(.copy, "Copy");
     bar.add(.context, "Context");
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
+    if (ai.g_ai_accumulator) |*acc| {
+        const blocks = acc.reparse() catch &.{};
+        if (blocks.len > 0) {
+            ai.relayoutAiStreamContent(ctx, blocks);
+        }
+    }
     publish.publishOverlays(ctx);
 }
 
@@ -251,5 +243,289 @@ pub fn cancelAi(ctx: *PtyThreadCtx) void {
         edit.deinit();
         ai.g_ai_edit = null;
     }
+    if (ai.g_ai_rewrite) |*rw| {
+        rw.deinit();
+        ai.g_ai_rewrite = null;
+    }
     terminal.g_ai_prompt_active = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Rewrite mode helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve a rewrite target command from CmdCapture state.
+/// Returns an owned slice (caller must free) or null if no command available.
+///
+/// For current input: only read grid text when the cursor is on the SAME
+/// row as prompt_row. Multi-line/async prompts can render in stages,
+/// causing prompt_row/col to be captured mid-prompt; text on subsequent
+/// rows would be prompt decoration, not user input.
+pub fn resolveRewriteTarget(ctx: *PtyThreadCtx) ?[]const u8 {
+    const pane = ctx.tab_mgr.activePane();
+    const cap = pane.cmd_capture orelse return null;
+    const alloc = (ctx.overlay_mgr orelse return null).allocator;
+
+    // 1. Current input: same row, cursor past prompt end
+    if (cap.state == .at_prompt) {
+        const cursor = pane.engine.state.cursor;
+        if (cursor.row == cap.prompt_row and cursor.col > cap.prompt_col) {
+            if (cmd_capture_mod.readGridText(
+                alloc,
+                &pane.engine.state.grid,
+                cap.prompt_row,
+                cap.prompt_col,
+                cursor.row,
+                cursor.col,
+            )) |text| {
+                if (std.mem.trim(u8, text, " \t").len > 0) return text;
+                alloc.free(text);
+            }
+        }
+    }
+    // 2. Last executed command
+    if (cap.blockCount() > 0) {
+        if (cap.getBlock(cap.blockCount() - 1)) |blk| {
+            if (blk.command.len > 0)
+                return alloc.dupe(u8, blk.command) catch null;
+        }
+    }
+    return null;
+}
+
+pub fn renderRewritePromptCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const rw = &(ai.g_ai_rewrite orelse return);
+    const result = overlay_ai_edit.layoutRewritePromptCard(mgr.allocator, rw, 52) catch return;
+
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.accept, "Submit");
+    bar.add(.dismiss, "Cancel");
+
+    if (ai.g_streaming) |*so| {
+        if (so.state != .idle) {
+            so.replaceContent(result.cells, result.width, result.height);
+            mgr.layers[@intFromEnum(overlay_mod.OverlayId.ai_demo)].action_bar = bar;
+            ai.publishAiStreamingFrame(ctx);
+            return;
+        }
+    }
+
+    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
+}
+
+fn renderRewriteResultCard(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const rw = &(ai.g_ai_rewrite orelse return);
+    const result = overlay_ai_edit.layoutRewriteResultCard(mgr.allocator, rw, 52) catch return;
+    var bar = attyx.overlay_action.ActionBar{};
+    bar.add(.custom_0, "Replace");
+    bar.add(.copy, "Copy");
+    bar.add(.dismiss, "Close");
+    ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
+}
+
+pub fn consumeRewritePromptInput(ctx: *PtyThreadCtx) bool {
+    var rw = &(ai.g_ai_rewrite orelse return false);
+    var changed = false;
+
+    // Drain char ring
+    while (true) {
+        const w = @atomicLoad(u32, &input.g_ai_prompt_char_write, .seq_cst);
+        const r = @atomicLoad(u32, &input.g_ai_prompt_char_read, .seq_cst);
+        if (w == r) break;
+        const cp = input.g_ai_prompt_char_ring[r % 32];
+        @atomicStore(u32, &input.g_ai_prompt_char_read, r +% 1, .seq_cst);
+        rw.prompt.insertChar(@intCast(cp));
+        changed = true;
+    }
+
+    // Drain cmd ring
+    while (true) {
+        const w = @atomicLoad(u32, &input.g_ai_prompt_cmd_write, .seq_cst);
+        const r = @atomicLoad(u32, &input.g_ai_prompt_cmd_read, .seq_cst);
+        if (w == r) break;
+        const cmd = input.g_ai_prompt_cmd_ring[r % 16];
+        @atomicStore(u32, &input.g_ai_prompt_cmd_read, r +% 1, .seq_cst);
+        switch (cmd) {
+            1 => rw.prompt.deleteBack(),
+            2 => rw.prompt.deleteFwd(),
+            3 => rw.prompt.cursorLeft(),
+            4 => rw.prompt.cursorRight(),
+            5 => rw.prompt.cursorHome(),
+            6 => rw.prompt.cursorEnd(),
+            7 => { // cancel
+                rw.close();
+                ai.g_ai_rewrite = null;
+                terminal.g_ai_prompt_active = 0;
+                cancelAi(ctx);
+                return true;
+            },
+            8 => { // submit
+                submitRewritePrompt(ctx);
+                return true;
+            },
+            else => {},
+        }
+        changed = true;
+    }
+
+    return changed;
+}
+
+fn submitRewritePrompt(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    var rw = &(ai.g_ai_rewrite orelse return);
+
+    const prompt_text = rw.prompt.text();
+    if (prompt_text.len == 0) return;
+    const command = rw.target_command orelse return;
+
+    // Build rewrite-specific request body
+    if (ai.g_ai_request_body) |old| mgr.allocator.free(old);
+    ai.g_ai_request_body = overlay_ai_config.serializeRewriteRequest(
+        mgr.allocator,
+        command,
+        prompt_text,
+    ) catch null;
+
+    // Set context bundle invocation type
+    if (ai.g_context_bundle) |*bundle| {
+        bundle.invocation = .command_rewrite;
+    }
+
+    rw.submitPrompt();
+    terminal.g_ai_prompt_active = 0;
+
+    ai.loadTokensAndStream(ctx);
+}
+
+pub fn handleRewriteDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.SseThread) void {
+    var rw = &(ai.g_ai_rewrite orelse return);
+    if (ai.g_ai_accumulator) |*acc| acc.reset();
+    var drain_buf: [overlay_ai_stream.ring_size]u8 = undefined;
+    const drained = sse.delta_ring.drain(&drain_buf);
+    if (drained.len > 0) {
+        // Same format as edit: replacement + \0 + summary
+        const sep = std.mem.indexOfScalar(u8, drained, 0);
+        const rewritten = if (sep) |s| drained[0..s] else drained;
+        rw.receiveResponse(rewritten) catch {};
+    }
+    renderRewriteResultCard(ctx);
+}
+
+pub fn handleRewriteReplaceAction(ctx: *PtyThreadCtx) void {
+    const rw = &(ai.g_ai_rewrite orelse return);
+    const rewritten = rw.rewritten_command orelse return;
+
+    // Clear current input: Ctrl-A (home) + Ctrl-K (kill to end of line)
+    c.attyx_send_input("\x01", 1); // Ctrl-A
+    c.attyx_send_input("\x0B", 1); // Ctrl-K
+
+    // Insert via bracketed paste (does NOT auto-execute)
+    if (publish.ctxEngine(ctx).state.bracketed_paste) {
+        c.attyx_send_input("\x1b[200~", 6);
+    }
+    c.attyx_send_input(rewritten.ptr, @intCast(rewritten.len));
+    if (publish.ctxEngine(ctx).state.bracketed_paste) {
+        c.attyx_send_input("\x1b[201~", 6);
+    }
+
+    // Close rewrite and overlay
+    cancelAi(ctx);
+    publish.publishOverlays(ctx);
+}
+
+pub fn handleRewriteCopyAction(_: *PtyThreadCtx) void {
+    const rw = &(ai.g_ai_rewrite orelse return);
+    const rewritten = rw.rewritten_command orelse return;
+    c.attyx_clipboard_copy(rewritten.ptr, @intCast(rewritten.len));
+}
+
+// ---------------------------------------------------------------------------
+// Extracted event_loop handlers (Esc + prompt polling)
+// ---------------------------------------------------------------------------
+
+pub fn handleOverlayEsc(ctx: *PtyThreadCtx) void {
+    // Rewrite mode Esc handling
+    if (ai.g_ai_rewrite) |*rw| {
+        switch (rw.state) {
+            .result_ready => {
+                // Close result card, clean up
+                cancelAi(ctx);
+                publish.publishOverlays(ctx);
+            },
+            .prompt_input => {
+                rw.close();
+                ai.g_ai_rewrite = null;
+                terminal.g_ai_prompt_active = 0;
+                cancelAi(ctx);
+                publish.publishOverlays(ctx);
+            },
+            else => {},
+        }
+        return;
+    }
+
+    // Edit mode Esc handling
+    if (ai.g_ai_edit) |*edit| {
+        switch (edit.state) {
+            .proposal_ready => {
+                handleEditRejectAction(ctx);
+            },
+            .prompt_input => {
+                edit.close();
+                ai.g_ai_edit = null;
+                terminal.g_ai_prompt_active = 0;
+                cancelAi(ctx);
+                publish.publishOverlays(ctx);
+            },
+            else => {},
+        }
+        return;
+    }
+
+    // General overlay dismiss
+    if (ctx.overlay_mgr) |mgr| {
+        const was_ai_visible = mgr.isVisible(.ai_demo);
+        const was_ctx_visible = mgr.isVisible(.context_preview);
+        if (mgr.dismissActive()) {
+            if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
+                mgr.show(.ai_demo);
+            }
+            if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
+                cancelAi(ctx);
+            }
+            publish.publishOverlays(ctx);
+        }
+    }
+}
+
+pub fn pollPromptInput(ctx: *PtyThreadCtx) void {
+    // Rewrite prompt polling
+    if (ai.g_ai_rewrite) |*rw| {
+        if (rw.state == .prompt_input) {
+            if (consumeRewritePromptInput(ctx)) {
+                if (ai.g_ai_rewrite) |*rw2| {
+                    if (rw2.state == .prompt_input) {
+                        renderRewritePromptCard(ctx);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    // Edit prompt polling
+    if (ai.g_ai_edit) |*edit| {
+        if (edit.state == .prompt_input) {
+            if (consumeAiPromptInput(ctx)) {
+                if (ai.g_ai_edit) |*e2| {
+                    if (e2.state == .prompt_input) {
+                        renderEditPromptCard(ctx);
+                    }
+                }
+            }
+        }
+    }
 }

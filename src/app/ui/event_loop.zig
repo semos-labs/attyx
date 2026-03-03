@@ -121,51 +121,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
 
-        // AI edit prompt input polling
-        if (ai.g_ai_edit) |*edit| {
-            if (edit.state == .prompt_input) {
-                if (ai.consumeAiPromptInput(ctx)) {
-                    if (ai.g_ai_edit) |*e2| {
-                        if (e2.state == .prompt_input) {
-                            ai.renderEditPromptCard(ctx);
-                        }
-                    }
-                }
-            }
-        }
+        // AI prompt input polling (edit + rewrite)
+        ai.pollPromptInput(ctx);
 
         // Tick update check notification
         ai.tickUpdateCheck(ctx);
 
         // Overlay interaction: dismiss (Esc)
         if (@atomicRmw(i32, &input.g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
-            if (ai.g_ai_edit) |*edit| {
-                switch (edit.state) {
-                    .proposal_ready => {
-                        ai.handleEditRejectAction(ctx);
-                    },
-                    .prompt_input => {
-                        edit.close();
-                        ai.g_ai_edit = null;
-                        terminal.g_ai_prompt_active = 0;
-                        ai.cancelAi(ctx);
-                        publish.publishOverlays(ctx);
-                    },
-                    else => {},
-                }
-            } else if (ctx.overlay_mgr) |mgr| {
-                const was_ai_visible = mgr.isVisible(.ai_demo);
-                const was_ctx_visible = mgr.isVisible(.context_preview);
-                if (mgr.dismissActive()) {
-                    if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
-                        mgr.show(.ai_demo);
-                    }
-                    if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                        ai.cancelAi(ctx);
-                    }
-                    publish.publishOverlays(ctx);
-                }
-            }
+            ai.handleOverlayEsc(ctx);
         }
 
         // Overlay interaction: cycle focus (Tab / Shift-Tab)
@@ -206,10 +170,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         },
                         .context => ai.toggleContextPreview(ctx),
                         .insert => if (ai.g_ai_edit != null) ai.handleEditInsertAction(ctx) else ai.handleInsertAction(ctx),
-                        .copy => ai.handleCopyAction(ctx),
+                        .copy => if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
                         .retry => ai.handleRetryAction(ctx),
                         .accept => ai.handleEditAcceptAction(ctx),
                         .reject => ai.handleEditRejectAction(ctx),
+                        .custom_0 => ai.handleRewriteReplaceAction(ctx),
                         else => {},
                     }
                     publish.publishOverlays(ctx);
@@ -238,8 +203,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             },
                             .context => ai.toggleContextPreview(ctx),
                             .insert => ai.handleInsertAction(ctx),
-                            .copy => ai.handleCopyAction(ctx),
+                            .copy => if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
                             .retry => ai.handleRetryAction(ctx),
+                            .custom_0 => ai.handleRewriteReplaceAction(ctx),
                             else => {},
                         }
                     }

@@ -383,8 +383,8 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
 }
 
 fn formatFinalResponse(self: *SseThread, data: []const u8) void {
-    // Edit response: edited_text found → push raw replacement + \0 + summary
-    if (ai_auth.extractJsonString(data, "edited_text")) |replacement| {
+    // Edit/rewrite response: edited_text or rewritten_command → push raw replacement + \0 + summary
+    if (ai_auth.extractJsonString(data, "edited_text") orelse ai_auth.extractJsonString(data, "rewritten_command")) |replacement| {
         _ = self.delta_ring.push(replacement);
         _ = self.delta_ring.push(&[_]u8{0}); // null separator
         if (ai_auth.extractJsonString(data, "summary")) |s| {

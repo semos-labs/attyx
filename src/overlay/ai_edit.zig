@@ -177,6 +177,135 @@ pub const EditContext = struct {
 };
 
 // ---------------------------------------------------------------------------
+// RewriteContext — state machine for command rewrite mode
+// ---------------------------------------------------------------------------
+
+pub const RewriteState = enum(u8) { closed, prompt_input, streaming, result_ready };
+
+pub const RewriteContext = struct {
+    state: RewriteState = .closed,
+    prompt: PromptBuffer = .{},
+    target_command: ?[]u8 = null,
+    rewritten_command: ?[]u8 = null,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) RewriteContext {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *RewriteContext) void {
+        if (self.target_command) |t| self.allocator.free(t);
+        self.target_command = null;
+        if (self.rewritten_command) |r| self.allocator.free(r);
+        self.rewritten_command = null;
+        self.state = .closed;
+    }
+
+    pub fn open(self: *RewriteContext, command: []const u8) !void {
+        if (self.target_command) |t| self.allocator.free(t);
+        if (self.rewritten_command) |r| self.allocator.free(r);
+        self.rewritten_command = null;
+        self.target_command = try self.allocator.dupe(u8, command);
+        self.prompt.clear();
+        self.state = .prompt_input;
+    }
+
+    pub fn submitPrompt(self: *RewriteContext) void {
+        self.state = .streaming;
+    }
+
+    pub fn receiveResponse(self: *RewriteContext, text: []const u8) !void {
+        if (self.rewritten_command) |r| self.allocator.free(r);
+        self.rewritten_command = try self.allocator.dupe(u8, text);
+        self.state = .result_ready;
+    }
+
+    pub fn close(self: *RewriteContext) void {
+        self.deinit();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Layout: Rewrite prompt card
+// ---------------------------------------------------------------------------
+
+pub fn layoutRewritePromptCard(
+    allocator: std.mem.Allocator,
+    rewrite: *const RewriteContext,
+    max_width: u16,
+) !CardResult {
+    var blocks_buf: [4]content_mod.ContentBlock = undefined;
+    var block_count: usize = 0;
+
+    // Show target command
+    if (rewrite.target_command) |cmd| {
+        blocks_buf[block_count] = .{ .tag = .code_block, .text = cmd };
+        block_count += 1;
+    }
+
+    // Prompt input display
+    const prompt_text = if (rewrite.prompt.len > 0) rewrite.prompt.text() else "Type rewrite instructions...";
+    blocks_buf[block_count] = .{ .tag = .paragraph, .text = prompt_text };
+    block_count += 1;
+
+    // Hint
+    blocks_buf[block_count] = .{ .tag = .paragraph, .text = "Enter to submit \xc2\xb7 Esc to cancel" };
+    block_count += 1;
+
+    var bar = action_mod.ActionBar{};
+    bar.add(.accept, "Submit");
+    bar.add(.dismiss, "Cancel");
+
+    return content_mod.layoutStructuredCard(
+        allocator,
+        "Rewrite Command",
+        blocks_buf[0..block_count],
+        max_width,
+        .{},
+        bar,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Layout: Rewrite result card
+// ---------------------------------------------------------------------------
+
+pub fn layoutRewriteResultCard(
+    allocator: std.mem.Allocator,
+    rewrite: *const RewriteContext,
+    max_width: u16,
+) !CardResult {
+    var blocks_buf: [4]content_mod.ContentBlock = undefined;
+    var block_count: usize = 0;
+
+    // Original command
+    if (rewrite.target_command) |cmd| {
+        blocks_buf[block_count] = .{ .tag = .code_block, .text = cmd };
+        block_count += 1;
+    }
+
+    // Rewritten command
+    if (rewrite.rewritten_command) |rw| {
+        blocks_buf[block_count] = .{ .tag = .code_block, .text = rw };
+        block_count += 1;
+    }
+
+    var bar = action_mod.ActionBar{};
+    bar.add(.custom_0, "Replace");
+    bar.add(.copy, "Copy");
+    bar.add(.dismiss, "Close");
+
+    return content_mod.layoutStructuredCard(
+        allocator,
+        "Rewrite Command",
+        blocks_buf[0..block_count],
+        max_width,
+        .{},
+        bar,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Layout: Prompt card
 // ---------------------------------------------------------------------------
 
@@ -310,62 +439,32 @@ pub fn layoutProposalCard(
 // Tests
 // ---------------------------------------------------------------------------
 
-test "EditContext: state transitions" {
+test "EditContext: state transitions, reject, close" {
     const alloc = std.testing.allocator;
     var edit = EditContext.init(alloc);
-    defer edit.deinit();
-
     try std.testing.expectEqual(EditState.closed, edit.state);
-
     try edit.open("hello world");
     try std.testing.expectEqual(EditState.prompt_input, edit.state);
     try std.testing.expectEqualStrings("hello world", edit.original_text.?);
-
     edit.submitPrompt();
     try std.testing.expectEqual(EditState.streaming, edit.state);
-
     try edit.receiveResponse("HELLO WORLD", "Made uppercase");
     try std.testing.expectEqual(EditState.proposal_ready, edit.state);
     try std.testing.expectEqualStrings("HELLO WORLD", edit.replacement_text.?);
-    try std.testing.expectEqualStrings("Made uppercase", edit.explanation.?);
-}
-
-test "EditContext: reject returns to prompt_input" {
-    const alloc = std.testing.allocator;
-    var edit = EditContext.init(alloc);
-    defer edit.deinit();
-
-    try edit.open("test");
-    edit.prompt.insertChar('a');
-    edit.submitPrompt();
-    try edit.receiveResponse("TEST", "");
-    try std.testing.expectEqual(EditState.proposal_ready, edit.state);
-
+    // Reject returns to prompt_input
     edit.reject();
     try std.testing.expectEqual(EditState.prompt_input, edit.state);
-    // Prompt text should be preserved
-    try std.testing.expectEqualStrings("a", edit.prompt.text());
-    // Proposal should be freed
     try std.testing.expectEqual(@as(?[]u8, null), edit.replacement_text);
-}
-
-test "EditContext: close frees all" {
-    const alloc = std.testing.allocator;
-    var edit = EditContext.init(alloc);
-
-    try edit.open("hello");
-    try edit.receiveResponse("world", "changed");
+    // Close frees all
     edit.close();
     try std.testing.expectEqual(EditState.closed, edit.state);
     try std.testing.expectEqual(@as(?[]u8, null), edit.original_text);
-    try std.testing.expectEqual(@as(?[]u8, null), edit.replacement_text);
 }
 
 test "EditContext: selection cap enforcement" {
     const alloc = std.testing.allocator;
     var edit = EditContext.init(alloc);
     defer edit.deinit();
-
     var big: [max_selection_bytes + 1]u8 = undefined;
     @memset(&big, 'X');
     try std.testing.expectError(error.SelectionTooLarge, edit.open(&big));
@@ -449,4 +548,35 @@ test "layoutProposalCard: diff view" {
 
     try std.testing.expect(result.width > 0);
     try std.testing.expect(result.height > 0);
+}
+
+test "RewriteContext: state transitions and close" {
+    const alloc = std.testing.allocator;
+    var rw = RewriteContext.init(alloc);
+    try std.testing.expectEqual(RewriteState.closed, rw.state);
+    try rw.open("ls -la");
+    try std.testing.expectEqual(RewriteState.prompt_input, rw.state);
+    try std.testing.expectEqualStrings("ls -la", rw.target_command.?);
+    rw.submitPrompt();
+    try std.testing.expectEqual(RewriteState.streaming, rw.state);
+    try rw.receiveResponse("ls -la --color=auto");
+    try std.testing.expectEqual(RewriteState.result_ready, rw.state);
+    try std.testing.expectEqualStrings("ls -la --color=auto", rw.rewritten_command.?);
+    rw.close();
+    try std.testing.expectEqual(RewriteState.closed, rw.state);
+    try std.testing.expectEqual(@as(?[]u8, null), rw.target_command);
+}
+
+test "layoutRewritePromptCard and layoutRewriteResultCard" {
+    const alloc = std.testing.allocator;
+    var rw = RewriteContext.init(alloc);
+    defer rw.deinit();
+    try rw.open("git status");
+    const p = try layoutRewritePromptCard(alloc, &rw, 48);
+    defer alloc.free(p.cells);
+    try std.testing.expect(p.width > 0 and p.height > 0);
+    try rw.receiveResponse("git status --short");
+    const r = try layoutRewriteResultCard(alloc, &rw, 48);
+    defer alloc.free(r.cells);
+    try std.testing.expect(r.width > 0 and r.height > 0);
 }

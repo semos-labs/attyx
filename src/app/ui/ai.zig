@@ -37,24 +37,24 @@ pub const handleEditRejectAction = ai_edit.handleEditRejectAction;
 pub const handleRetryAction = ai_edit.handleRetryAction;
 pub const cancelAi = ai_edit.cancelAi;
 
-// AI demo streaming state (persists across PTY loop iterations).
+/// Re-export rewrite helper functions.
+pub const renderRewritePromptCard = ai_edit.renderRewritePromptCard;
+pub const consumeRewritePromptInput = ai_edit.consumeRewritePromptInput;
+pub const handleRewriteReplaceAction = ai_edit.handleRewriteReplaceAction;
+pub const handleRewriteCopyAction = ai_edit.handleRewriteCopyAction;
+pub const handleOverlayEsc = ai_edit.handleOverlayEsc;
+pub const pollPromptInput = ai_edit.pollPromptInput;
+
 pub var g_streaming: ?overlay_streaming.StreamingOverlay = null;
-
-// Context bundle captured when the AI demo is started.
 pub var g_context_bundle: ?overlay_context.ContextBundle = null;
-
-// AI backend integration state
 pub var g_token_store: ?overlay_ai_auth.TokenStore = null;
 pub var g_auth_thread: ?overlay_ai_auth.AuthThread = null;
 pub var g_sse_thread: ?overlay_ai_stream.SseThread = null;
 pub var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
 pub var g_ai_request_body: ?[]u8 = null;
 const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
-
-// AI edit state machine
 pub var g_ai_edit: ?overlay_ai_edit.EditContext = null;
-
-// Update notification state
+pub var g_ai_rewrite: ?overlay_ai_edit.RewriteContext = null;
 pub var g_update_checker: ?update_check.UpdateChecker = null;
 
 pub fn captureAiContext(ctx: *PtyThreadCtx) void {
@@ -125,14 +125,18 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
     const store = &(g_token_store orelse return);
     const token = store.access_token orelse return;
 
-    // Serialize request body
-    if (g_ai_request_body) |old| mgr.allocator.free(old);
-    g_ai_request_body = overlay_ai_config.serializeRequest(mgr.allocator, bundle) catch null;
+    // Serialize request body (skip if pre-set, e.g. rewrite mode)
+    if (g_ai_request_body == null) {
+        g_ai_request_body = overlay_ai_config.serializeRequest(mgr.allocator, bundle) catch null;
+    }
     const body = g_ai_request_body orelse return;
 
-    // Build URL — edit mode uses non-streaming endpoint
+    // Build URL — edit/rewrite modes use non-streaming endpoint
     var url_buf: [512]u8 = undefined;
-    const endpoint = if (bundle.invocation == .edit_selection) "/v1/ai/execute" else "/v1/ai/execute/stream";
+    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite)
+        "/v1/ai/execute"
+    else
+        "/v1/ai/execute/stream";
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}", .{ g_ai_base_url, endpoint }) catch return;
 
     // Initialize SSE thread
@@ -183,19 +187,7 @@ pub fn startAiInvocation(ctx: *PtyThreadCtx) void {
 
     // If selection exists, enter edit mode
     if (g_context_bundle) |*bundle| {
-        std.debug.print("[ai-edit] invocation={}, sel_text={?}, sel_active={d}, bounds=({d},{d})-({d},{d}), grid={d}x{d}\n", .{
-            bundle.invocation,
-            if (bundle.selection_text) |s| s.len else null,
-            @as(i32, @bitCast(c.g_sel_active)),
-            @as(i32, @bitCast(c.g_sel_start_row)),
-            @as(i32, @bitCast(c.g_sel_start_col)),
-            @as(i32, @bitCast(c.g_sel_end_row)),
-            @as(i32, @bitCast(c.g_sel_end_col)),
-            bundle.grid_cols,
-            bundle.grid_rows,
-        });
         if (bundle.selection_text != null) {
-            std.debug.print("[ai-edit] entering edit mode\n", .{});
             if (g_ai_edit == null) g_ai_edit = overlay_ai_edit.EditContext.init(mgr.allocator);
             var edit = &(g_ai_edit.?);
             edit.open(bundle.selection_text.?) catch {
@@ -208,8 +200,21 @@ pub fn startAiInvocation(ctx: *PtyThreadCtx) void {
         }
     }
 
-    // No selection — existing auto-invoke flow
-    std.debug.print("[ai-edit] no selection, normal flow\n", .{});
+    // No selection — check for command rewrite target
+    if (ai_edit.resolveRewriteTarget(ctx)) |target| {
+        if (g_ai_rewrite == null) g_ai_rewrite = overlay_ai_edit.RewriteContext.init(mgr.allocator);
+        var rw = &(g_ai_rewrite.?);
+        rw.open(target) catch {
+            mgr.allocator.free(target);
+            return;
+        };
+        mgr.allocator.free(target);
+        terminal.g_ai_prompt_active = 1;
+        renderRewritePromptCard(ctx);
+        return;
+    }
+
+    // No selection, no command — normal AI flow
     loadTokensAndStream(ctx);
 }
 
@@ -320,8 +325,11 @@ pub fn tickAi(ctx: *PtyThreadCtx) void {
             },
             .done => {
                 const is_edit = if (g_ai_edit) |*edit| edit.state == .streaming else false;
+                const is_rewrite = if (g_ai_rewrite) |*rw| rw.state == .streaming else false;
                 if (is_edit) {
                     handleEditDoneResponse(ctx, sse);
+                } else if (is_rewrite) {
+                    ai_edit.handleRewriteDoneResponse(ctx, sse);
                 } else {
                     handleNormalDoneResponse(ctx, sse, mgr);
                 }
@@ -429,6 +437,7 @@ pub fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_conte
         .command_generate => "Generate Command",
         .general => "AI Response",
         .edit_selection => "Edit Selection",
+        .command_rewrite => "Rewrite Command",
     } else "AI Response";
 
     var bar = attyx.overlay_action.ActionBar{};
@@ -502,27 +511,16 @@ pub fn placeContextPreviewCard(ctx: *PtyThreadCtx) void {
         const needed = vh * w;
         var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
         if (needed > scratch.len) return;
-
+        // Header row
         @memcpy(scratch[0..w], result.cells[0..w]);
+        // Visible content rows
         const visible_content = vh -| 3;
-        if (visible_content > 0) {
-            const src_start = 1 * w;
-            const dst_start = 1 * w;
-            const count = visible_content * w;
-            if (src_start + count <= result.cells.len) {
-                @memcpy(scratch[dst_start .. dst_start + count], result.cells[src_start .. src_start + count]);
-            }
+        if (visible_content > 0 and w + visible_content * w <= result.cells.len) {
+            @memcpy(scratch[w .. w + visible_content * w], result.cells[w .. w + visible_content * w]);
         }
-        {
-            const src_row = fh - 2;
-            const dst_row = vh - 2;
-            @memcpy(scratch[dst_row * w .. (dst_row + 1) * w], result.cells[src_row * w .. (src_row + 1) * w]);
-        }
-        {
-            const src_row = fh - 1;
-            const dst_row = vh - 1;
-            @memcpy(scratch[dst_row * w .. (dst_row + 1) * w], result.cells[src_row * w .. (src_row + 1) * w]);
-        }
+        // Last two rows (action bar area)
+        @memcpy(scratch[(vh - 2) * w .. (vh - 1) * w], result.cells[(fh - 2) * w .. (fh - 1) * w]);
+        @memcpy(scratch[(vh - 1) * w .. vh * w], result.cells[(fh - 1) * w .. fh * w]);
         mgr.setContent(.context_preview, col, top_row, result.width, @intCast(vh), scratch[0..needed]) catch return;
     }
 
