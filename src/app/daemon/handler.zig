@@ -19,7 +19,10 @@ pub fn handleMessage(
         .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, allocator),
         .list => cl.sendSessionListFromSlots(sessions),
         .attach => handleAttach(cl, msg.payload, sessions),
-        .detach => { cl.attached_session = null; },
+        .detach => {
+            cl.attached_session = null;
+            cl.active_pane_count = 0;
+        },
         .kill => handleKill(msg.payload, sessions, session_count),
 
         // V2 pane-multiplexed messages
@@ -59,6 +62,13 @@ fn handleCreate(
     };
     const id = next_id.*;
     next_id.* += 1;
+    // Null-terminate CWD for posix chdir
+    var cwd_z_buf: [4097]u8 = undefined;
+    const cwd_z: ?[*:0]const u8 = if (create.cwd.len > 0 and create.cwd.len < cwd_z_buf.len) blk: {
+        @memcpy(cwd_z_buf[0..create.cwd.len], create.cwd);
+        cwd_z_buf[create.cwd.len] = 0;
+        break :blk @ptrCast(&cwd_z_buf);
+    } else null;
     sessions[slot_idx] = DaemonSession.spawn(
         allocator,
         id,
@@ -66,6 +76,7 @@ fn handleCreate(
         create.rows,
         create.cols,
         replay_capacity,
+        cwd_z,
     ) catch {
         cl.sendError(3, "spawn failed");
         return;
@@ -174,7 +185,10 @@ fn handleFocusPanes(
         cl.active_panes[i] = msg.pane_ids[i];
     }
 
-    // Send replay for newly-active panes
+    // Drain pending PTY data for newly-active panes before replaying.
+    // This closes the race where the shell is still outputting startup
+    // sequences (e.g. zsh PROMPT_EOL_MARK) that haven't been read yet.
+    var drain_buf: [8192]u8 = undefined;
     for (0..msg.count) |i| {
         const new_id = msg.pane_ids[i];
         var was_active = false;
@@ -186,6 +200,10 @@ fn handleFocusPanes(
         }
         if (!was_active) {
             if (session.findPane(new_id)) |pane| {
+                // Drain any buffered PTY output into the ring buffer
+                while (pane.readPty(&drain_buf) catch null) |n| {
+                    if (n == 0) break;
+                }
                 cl.sendPaneReplay(pane);
             }
         }

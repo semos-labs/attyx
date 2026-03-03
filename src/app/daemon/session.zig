@@ -31,6 +31,7 @@ pub const DaemonSession = struct {
         rows: u16,
         cols: u16,
         replay_capacity: usize,
+        cwd: ?[*:0]const u8,
     ) !DaemonSession {
         var session = DaemonSession{
             .id = id,
@@ -44,7 +45,7 @@ pub const DaemonSession = struct {
         // Create initial pane (backward compat with V1 protocol)
         const pane_id = session.next_pane_id;
         session.next_pane_id += 1;
-        session.panes[0] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity);
+        session.panes[0] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd);
         session.pane_count = 1;
         return session;
     }
@@ -63,7 +64,7 @@ pub const DaemonSession = struct {
 
         const pane_id = self.next_pane_id;
         self.next_pane_id += 1;
-        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity);
+        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, null);
         self.pane_count += 1;
         return pane_id;
     }

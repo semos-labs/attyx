@@ -77,6 +77,30 @@ pub const SplitLayout = struct {
         allocator: Allocator,
         pty_master: std.posix.fd_t,
     ) !void {
+        const fg_cwd = platform.getForegroundCwd(allocator, pty_master);
+        defer if (fg_cwd) |cwd| allocator.free(cwd);
+        const cwd_z: ?[:0]u8 = if (fg_cwd) |d| allocator.dupeZ(u8, d) catch null else null;
+        defer if (cwd_z) |z| allocator.free(z);
+
+        const rect = self.pool[self.focused].rect;
+        const child_size = self.splitChildSize(dir, rect) orelse return error.TooSmall;
+
+        const new_pane = try allocator.create(Pane);
+        errdefer allocator.destroy(new_pane);
+        new_pane.* = try Pane.spawn(
+            allocator,
+            child_size.rows,
+            child_size.cols,
+            null,
+            if (cwd_z) |z| z.ptr else null,
+        );
+
+        try self.splitPaneWith(dir, new_pane);
+    }
+
+    /// Split the focused pane, inserting a pre-created pane as the new child.
+    /// Used by session mode where the daemon creates the pane.
+    pub fn splitPaneWith(self: *SplitLayout, dir: Direction, new_pane: *Pane) !void {
         if (self.pane_count >= max_panes) return error.TooManyPanes;
         const focus_idx = self.focused;
         if (focus_idx == null_index) return error.NoFocusedPane;
@@ -99,7 +123,6 @@ pub const SplitLayout = struct {
 
         switch (dir) {
             .vertical => {
-                // Split left/right (subtract gap_h cols for separator + padding)
                 if (rect.cols < min_cols * 2 + self.gap_h) return error.TooSmall;
                 const available = rect.cols - self.gap_h;
                 const left_cols = @as(u16, @intFromFloat(@as(f32, @floatFromInt(available)) * 0.5));
@@ -109,7 +132,6 @@ pub const SplitLayout = struct {
                 right_rect.cols = right_cols;
             },
             .horizontal => {
-                // Split top/bottom (subtract gap_v rows for separator + padding)
                 if (rect.rows < min_rows * 2 + self.gap_v) return error.TooSmall;
                 const available = rect.rows - self.gap_v;
                 const top_rows = @as(u16, @intFromFloat(@as(f32, @floatFromInt(available)) * 0.5));
@@ -119,23 +141,6 @@ pub const SplitLayout = struct {
                 right_rect.rows = bottom_rows;
             },
         }
-
-        // Spawn new pane with cwd from the foreground process of the focused pane
-        const new_pane = try allocator.create(Pane);
-        errdefer allocator.destroy(new_pane);
-
-        const fg_cwd = platform.getForegroundCwd(allocator, pty_master);
-        defer if (fg_cwd) |cwd| allocator.free(cwd);
-        const cwd_z: ?[:0]u8 = if (fg_cwd) |d| allocator.dupeZ(u8, d) catch null else null;
-        defer if (cwd_z) |z| allocator.free(z);
-
-        new_pane.* = try Pane.spawn(
-            allocator,
-            right_rect.rows,
-            right_rect.cols,
-            null,
-            if (cwd_z) |z| z.ptr else null,
-        );
 
         // Resize old pane to its new (smaller) rect
         old_pane.resize(left_rect.rows, left_rect.cols);
@@ -166,6 +171,22 @@ pub const SplitLayout = struct {
 
         self.pane_count += 1;
         self.focused = right_idx;
+    }
+
+    /// Compute the right/bottom child size for a split. Returns null if too small.
+    pub fn splitChildSize(self: *SplitLayout, dir: Direction, rect: Rect) ?struct { rows: u16, cols: u16 } {
+        switch (dir) {
+            .vertical => {
+                if (rect.cols < 10 + self.gap_h) return null;
+                const avail = rect.cols - self.gap_h;
+                return .{ .rows = rect.rows, .cols = avail - @as(u16, @intFromFloat(@as(f32, @floatFromInt(avail)) * 0.5)) };
+            },
+            .horizontal => {
+                if (rect.rows < 6 + self.gap_v) return null;
+                const avail = rect.rows - self.gap_v;
+                return .{ .rows = avail - @as(u16, @intFromFloat(@as(f32, @floatFromInt(avail)) * 0.5)), .cols = rect.cols };
+            },
+        }
     }
 
     /// Close the focused pane. Returns .last_pane if this was the only pane.
@@ -538,13 +559,10 @@ test "SplitLayout: collectLeaves returns all leaves" {
     const allocator = std.testing.allocator;
     var pane_stub = try createTestPane(allocator);
     defer destroyTestPane(allocator, &pane_stub);
-
     var layout = SplitLayout.init(&pane_stub);
     layout.layout(24, 80);
-
     var leaves: [max_panes]LeafEntry = undefined;
-    const count = layout.collectLeaves(&leaves);
-    try std.testing.expectEqual(@as(u8, 1), count);
+    try std.testing.expectEqual(@as(u8, 1), layout.collectLeaves(&leaves));
     try std.testing.expectEqual(&pane_stub, leaves[0].pane);
 }
 

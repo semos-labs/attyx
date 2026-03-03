@@ -71,6 +71,7 @@ pub const PopupConfig = struct {
     pad: Padding = .{},
     on_return_cmd: ?[]const u8 = null, // command prefix run with grid text on exit 0
     inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
+    capture_stdout: bool = false, // capture child stdout via pipe (independent of on_return_cmd)
     bg_opacity: u8 = 255, // 0 (transparent) – 255 (opaque)
     bg_color: ?[3]u8 = null, // override background color (r, g, b); null = use theme
 };
@@ -108,7 +109,7 @@ pub const PopupState = struct {
 
         const pane = try allocator.create(Pane);
         pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &argv, if (cwd_z) |z| z.ptr else null, .{
-            .capture_stdout = cfg.on_return_cmd != null,
+            .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
             .preserve_tmux = true,
         }) catch |err| {
             allocator.destroy(pane);
@@ -469,6 +470,16 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
 /// or null if nothing was captured. Only works when capture_stdout was set.
 pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
     if (fd == -1) return null;
+    // Set non-blocking: shell background processes (.zshrc plugins, nix hooks)
+    // may inherit the pipe write end, preventing EOF even after the main child
+    // exits. Since we only call this after waitForExit(), any data the child
+    // wrote is already in the kernel pipe buffer.
+    const platform = @import("../platform/platform.zig");
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    const flags = std.posix.fcntl(fd, F_GETFL, 0) catch 0;
+    _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
+
     var result: std.ArrayList(u8) = .{};
     var buf: [4096]u8 = undefined;
     while (true) {

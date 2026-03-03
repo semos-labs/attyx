@@ -56,9 +56,9 @@ pub const SessionClient = struct {
     }
 
     /// Create a new session on the daemon. Returns session ID.
-    pub fn createSession(self: *SessionClient, name: []const u8, rows: u16, cols: u16) !u32 {
-        var payload_buf: [128]u8 = undefined;
-        const payload = try protocol.encodeCreate(&payload_buf, name, rows, cols);
+    pub fn createSession(self: *SessionClient, name: []const u8, rows: u16, cols: u16, cwd: []const u8) !u32 {
+        var payload_buf: [4224]u8 = undefined; // 128 name + 4096 cwd + overhead
+        const payload = try protocol.encodeCreate(&payload_buf, name, rows, cols, cwd);
         try self.sendMessage(.create, payload);
         return self.waitForResponse(.created, 5000);
     }
@@ -141,25 +141,27 @@ pub const SessionClient = struct {
         self.pending_list_ready = false;
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
+            // Drain all complete messages already buffered before polling.
+            while (self.read_len >= protocol.header_size) {
+                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                    self.consumeBytes(1);
+                    continue;
+                };
+                const total = protocol.header_size + header.payload_len;
+                if (self.read_len < total) break;
+                const payload = self.read_buf[protocol.header_size..total];
+                if (header.msg_type == .session_list) {
+                    self.parseSessionList(payload);
+                    self.consumeBytes(total);
+                    return;
+                }
+                self.consumeBytes(total);
+            }
+            // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                while (self.read_len >= protocol.header_size) {
-                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-                        self.consumeBytes(1);
-                        continue;
-                    };
-                    const total = protocol.header_size + header.payload_len;
-                    if (self.read_len < total) break;
-                    const payload = self.read_buf[protocol.header_size..total];
-                    if (header.msg_type == .session_list) {
-                        self.parseSessionList(payload);
-                        self.consumeBytes(total);
-                        return;
-                    }
-                    self.consumeBytes(total);
-                }
             }
             elapsed += 100;
         }
@@ -170,36 +172,38 @@ pub const SessionClient = struct {
     pub fn waitForAttach(self: *SessionClient, timeout_ms: u32) !struct { session_id: u32, pane_ids: [32]u32, pane_count: u8 } {
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
+            // Drain all complete messages already buffered before polling.
+            while (self.read_len >= protocol.header_size) {
+                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                    self.consumeBytes(1);
+                    continue;
+                };
+                const total = protocol.header_size + header.payload_len;
+                if (self.read_len < total) break;
+                const payload = self.read_buf[protocol.header_size..total];
+                if (header.msg_type == .attached) {
+                    const v2 = protocol.decodeAttachedV2(payload) catch {
+                        self.consumeBytes(total);
+                        return error.InvalidResponse;
+                    };
+                    self.attached_session_id = v2.session_id;
+                    const llen: u16 = @intCast(@min(v2.layout.len, self.layout_buf.len));
+                    @memcpy(self.layout_buf[0..llen], v2.layout[0..llen]);
+                    self.layout_len = llen;
+                    self.consumeBytes(total);
+                    return .{ .session_id = v2.session_id, .pane_ids = v2.pane_ids, .pane_count = v2.pane_count };
+                }
+                if (header.msg_type == .err) {
+                    self.consumeBytes(total);
+                    return error.DaemonError;
+                }
+                self.consumeBytes(total);
+            }
+            // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                while (self.read_len >= protocol.header_size) {
-                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-                        self.consumeBytes(1);
-                        continue;
-                    };
-                    const total = protocol.header_size + header.payload_len;
-                    if (self.read_len < total) break;
-                    const payload = self.read_buf[protocol.header_size..total];
-                    if (header.msg_type == .attached) {
-                        const v2 = protocol.decodeAttachedV2(payload) catch {
-                            self.consumeBytes(total);
-                            return error.InvalidResponse;
-                        };
-                        self.attached_session_id = v2.session_id;
-                        const llen: u16 = @intCast(@min(v2.layout.len, self.layout_buf.len));
-                        @memcpy(self.layout_buf[0..llen], v2.layout[0..llen]);
-                        self.layout_len = llen;
-                        self.consumeBytes(total);
-                        return .{ .session_id = v2.session_id, .pane_ids = v2.pane_ids, .pane_count = v2.pane_count };
-                    }
-                    if (header.msg_type == .err) {
-                        self.consumeBytes(total);
-                        return error.DaemonError;
-                    }
-                    self.consumeBytes(total);
-                }
             }
             elapsed += 100;
         }
@@ -210,29 +214,31 @@ pub const SessionClient = struct {
     pub fn waitForPaneCreated(self: *SessionClient, timeout_ms: u32) !u32 {
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
+            // Drain all complete messages already buffered before polling.
+            while (self.read_len >= protocol.header_size) {
+                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                    self.consumeBytes(1);
+                    continue;
+                };
+                const total = protocol.header_size + header.payload_len;
+                if (self.read_len < total) break;
+                const payload = self.read_buf[protocol.header_size..total];
+                if (header.msg_type == .pane_created) {
+                    const pane_id = protocol.decodePaneCreated(payload) catch return error.InvalidResponse;
+                    self.consumeBytes(total);
+                    return pane_id;
+                }
+                if (header.msg_type == .err) {
+                    self.consumeBytes(total);
+                    return error.DaemonError;
+                }
+                self.consumeBytes(total);
+            }
+            // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                while (self.read_len >= protocol.header_size) {
-                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-                        self.consumeBytes(1);
-                        continue;
-                    };
-                    const total = protocol.header_size + header.payload_len;
-                    if (self.read_len < total) break;
-                    const payload = self.read_buf[protocol.header_size..total];
-                    if (header.msg_type == .pane_created) {
-                        const pane_id = protocol.decodePaneCreated(payload) catch return error.InvalidResponse;
-                        self.consumeBytes(total);
-                        return pane_id;
-                    }
-                    if (header.msg_type == .err) {
-                        self.consumeBytes(total);
-                        return error.DaemonError;
-                    }
-                    self.consumeBytes(total);
-                }
             }
             elapsed += 100;
         }
@@ -251,19 +257,22 @@ pub const SessionClient = struct {
 
     // ── I/O ──
 
+    /// Read all available data from the daemon socket (loop until EWOULDBLOCK).
+    /// Returns false on EOF or fatal error (daemon disconnected).
     pub fn recvData(self: *SessionClient) bool {
-        const space = self.read_buf[self.read_len..];
-        if (space.len == 0) {
-            self.read_len = 0;
-            return true;
+        while (true) {
+            const space = self.read_buf[self.read_len..];
+            if (space.len == 0) {
+                // Buffer full — let caller process messages to free space
+                return true;
+            }
+            const n = posix.read(self.socket_fd, space) catch |err| switch (err) {
+                error.WouldBlock => return true,
+                else => return false,
+            };
+            if (n == 0) return false;
+            self.read_len += n;
         }
-        const n = posix.read(self.socket_fd, space) catch |err| switch (err) {
-            error.WouldBlock => return true,
-            else => return false,
-        };
-        if (n == 0) return false;
-        self.read_len += n;
-        return true;
     }
 
     /// V2: Read and return the next daemon message as a tagged union.
@@ -395,30 +404,33 @@ pub const SessionClient = struct {
         _ = expected;
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
+            // Process all complete messages already in the buffer before polling.
+            // The daemon may send pane_output + .created in the same write, so
+            // we must drain the buffer — not just one message per poll cycle.
+            while (self.read_len >= protocol.header_size) {
+                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+                    self.consumeBytes(1);
+                    continue;
+                };
+                const total = protocol.header_size + header.payload_len;
+                if (self.read_len < total) break;
+                const payload = self.read_buf[protocol.header_size..total];
+                if (header.msg_type == .created) {
+                    const id = protocol.decodeCreated(payload) catch return error.InvalidResponse;
+                    self.consumeBytes(total);
+                    return id;
+                }
+                if (header.msg_type == .err) {
+                    self.consumeBytes(total);
+                    return error.DaemonError;
+                }
+                self.consumeBytes(total);
+            }
+            // Poll for more data from the daemon
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
             _ = posix.poll(&fds, 100) catch return error.PollFailed;
             if (fds[0].revents & 0x0001 != 0) {
                 if (!self.recvData()) return error.ConnectionClosed;
-                if (self.read_len >= protocol.header_size) {
-                    const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-                        self.consumeBytes(1);
-                        continue;
-                    };
-                    const total = protocol.header_size + header.payload_len;
-                    if (self.read_len >= total) {
-                        const payload = self.read_buf[protocol.header_size..total];
-                        if (header.msg_type == .created) {
-                            const id = protocol.decodeCreated(payload) catch return error.InvalidResponse;
-                            self.consumeBytes(total);
-                            return id;
-                        }
-                        if (header.msg_type == .err) {
-                            self.consumeBytes(total);
-                            return error.DaemonError;
-                        }
-                        self.consumeBytes(total);
-                    }
-                }
             }
             elapsed += 100;
         }

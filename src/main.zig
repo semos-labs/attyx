@@ -62,6 +62,19 @@ pub fn main() !void {
             };
             return;
         },
+        .kill_daemon => {
+            cli_commands.doKillDaemon();
+            return;
+        },
+        ._session_picker => {
+            @import("app/session_picker.zig").run(allocator) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: session picker failed: {s}\n", .{@errorName(err)}) catch "error: session picker failed\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
+            return;
+        },
         .print_config => {
             var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
             defer merged.deinit();

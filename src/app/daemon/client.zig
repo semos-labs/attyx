@@ -140,15 +140,31 @@ pub const DaemonClient = struct {
     // sendSessionList removed — use sendSessionListFromSlots instead.
 
     /// Send replay data from a pane's ring buffer as pane_output messages.
-    /// Prepends an attribute reset so the engine starts in a known state
-    /// even if the ring buffer begins mid-escape-sequence.
+    /// Prepends mode-restore sequences so the engine starts in the correct
+    /// state even if the ring buffer no longer contains the original switches.
     pub fn sendPaneReplay(self: *DaemonClient, pane: *DaemonPane) void {
         const slices = pane.replay.readSlices();
         if (slices.first.len == 0 and slices.second.len == 0) return;
-        // Reset all attributes before replay to avoid mid-sequence corruption.
-        self.sendPaneOutput(pane.id, "\x1b[0m");
+        // Build a mode-restore prefix: SGR reset + cursor visibility + alt screen.
+        var prefix: [32]u8 = undefined;
+        var plen: usize = 0;
+        // SGR reset
+        @memcpy(prefix[plen..][0..4], "\x1b[0m");
+        plen += 4;
+        // Alternate screen
+        if (pane.alt_screen) {
+            @memcpy(prefix[plen..][0..8], "\x1b[?1049h");
+            plen += 8;
+        }
+        // Cursor visibility (send after replay data so it takes final effect)
+        self.sendPaneOutput(pane.id, prefix[0..plen]);
         if (slices.first.len > 0) self.sendPaneOutput(pane.id, slices.first);
         if (slices.second.len > 0) self.sendPaneOutput(pane.id, slices.second);
+        // Apply cursor visibility after replay — the replay may toggle it,
+        // but the tracked state reflects the most recent value.
+        if (!pane.cursor_visible) {
+            self.sendPaneOutput(pane.id, "\x1b[?25l");
+        }
     }
 
     /// Send a V2 Attached response with layout blob and pane IDs.

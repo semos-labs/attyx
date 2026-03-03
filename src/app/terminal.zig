@@ -69,6 +69,8 @@ pub const PtyThreadCtx = struct {
     // Track last-sent focus_panes IDs to avoid stale replay on refocus.
     last_focus_panes: [split_layout_mod.max_panes]u32 = .{0} ** split_layout_mod.max_panes,
     last_focus_count: u8 = 0,
+    // Session picker popup active flag
+    session_picker_active: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,7 +142,7 @@ pub export var g_popup_active: i32 = 0;
 pub export var g_popup_trail_active: i32 = 0;
 pub export var g_ai_prompt_active: i32 = 0;
 pub export var g_toggle_session_switcher: i32 = 0;
-pub export var g_session_switcher_active: i32 = 0;
+pub export var g_create_session_direct: i32 = 0;
 
 // Ensure keybind exports are linked
 comptime {
@@ -164,9 +166,9 @@ export fn attyx_toggle_ai_demo() void {
 export fn attyx_toggle_session_switcher() void {
     @atomicStore(i32, &g_toggle_session_switcher, 1, .seq_cst);
 }
-export fn attyx_session_switcher_nav_up() void { input.sessionSwitcherNavUp(); }
-export fn attyx_session_switcher_nav_down() void { input.sessionSwitcherNavDown(); }
-export fn attyx_session_switcher_action(action: c_int) void { input.sessionSwitcherAction(action); }
+export fn attyx_create_session_direct() void {
+    @atomicStore(i32, &g_create_session_direct, 1, .seq_cst);
+}
 export fn attyx_overlay_esc() void { input.overlayEsc(); }
 export fn attyx_overlay_tab() void { input.overlayTab(); }
 export fn attyx_overlay_shift_tab() void { input.overlayShiftTab(); }
@@ -325,7 +327,7 @@ pub fn run(
 
         // Try to get existing sessions
         sc.requestListSync(2000) catch {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
@@ -348,7 +350,7 @@ pub fn run(
         if (found_alive) |sid| {
             if (!doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count)) {
                 logging.err("session", "attach to session {d} failed", .{sid});
-                const new_sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err2| {
+                const new_sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err2| {
                     logging.err("session", "create session failed: {}", .{err2});
                     sc.deinit();
                     session_client = null;
@@ -358,7 +360,7 @@ pub fn run(
             }
             logging.info("session", "reattached to session {d}", .{found_alive.?});
         } else {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols) catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
@@ -455,6 +457,12 @@ pub fn run(
     g_pty_master = tab_mgr.activePane().pty.master;
     g_engine = &tab_mgr.activePane().engine;
     g_session_client = heap_session_client;
+
+    // Set split-active flag so input dispatch enables pane navigation keybinds.
+    {
+        const init_layout = tab_mgr.activeLayout();
+        @atomicStore(i32, &g_split_active, if (init_layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
+    }
     defer {
         g_pty_master = -1;
         g_engine = null;

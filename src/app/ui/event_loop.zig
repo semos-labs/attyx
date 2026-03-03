@@ -15,9 +15,10 @@ const input = @import("input.zig");
 const search = @import("search.zig");
 const ai = @import("ai.zig");
 const actions = @import("actions.zig");
-const session_switcher = @import("session_switcher.zig");
+const session_actions = @import("session_actions.zig");
 const resize_mod = @import("resize.zig");
 const hup_mod = @import("hup.zig");
+const overlay_input = @import("overlay_input.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -75,12 +76,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         // Tick statusbar widgets
+        var statusbar_refreshed = false;
         if (ctx.statusbar) |sb| if (sb.config.enabled) {
             // Resolve theme palette into statusbar ANSI colors
             for (ctx.active_theme.palette, 0..) |opt_color, i| {
                 if (opt_color) |p| sb.ansi_palette[i] = .{ .r = p.r, .g = p.g, .b = p.b };
             }
-            sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+            statusbar_refreshed = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
         };
         // Debug overlay toggle check
         if (@atomicRmw(i32, &terminal.g_toggle_debug_overlay, .Xchg, 0, .seq_cst) != 0) {
@@ -123,12 +125,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Session switcher toggle check
+        // Session switcher toggle check (popup-based)
         if (@atomicRmw(i32, &terminal.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
-            session_switcher.toggle(ctx);
+            session_actions.spawnSessionPicker(ctx);
         }
-        // Session switcher tick (navigation, actions, list refresh)
-        session_switcher.tick(ctx);
+
+        // Direct session create (Ctrl+Shift+N without picker)
+        if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
+            session_actions.createSessionDirect(ctx);
+        }
 
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
@@ -149,127 +154,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Tick update check notification
         ai.tickUpdateCheck(ctx);
 
-        // Overlay interaction: dismiss (Esc)
-        if (@atomicRmw(i32, &input.g_overlay_dismiss, .Xchg, 0, .seq_cst) != 0) {
-            if (ai.g_ai_edit) |*edit| {
-                switch (edit.state) {
-                    .proposal_ready => {
-                        ai.handleEditRejectAction(ctx);
-                    },
-                    .prompt_input => {
-                        edit.close();
-                        ai.g_ai_edit = null;
-                        terminal.g_ai_prompt_active = 0;
-                        ai.cancelAi(ctx);
-                        publish.publishOverlays(ctx);
-                    },
-                    else => {},
-                }
-            } else if (ctx.overlay_mgr) |mgr| {
-                const was_ai_visible = mgr.isVisible(.ai_demo);
-                const was_ctx_visible = mgr.isVisible(.context_preview);
-                if (mgr.dismissActive()) {
-                    if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
-                        mgr.show(.ai_demo);
-                    }
-                    if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                        ai.cancelAi(ctx);
-                    }
-                    publish.publishOverlays(ctx);
-                }
-            }
-        }
-
-        // Overlay interaction: cycle focus (Tab / Shift-Tab)
-        if (@atomicRmw(i32, &input.g_overlay_cycle_focus, .Xchg, 0, .seq_cst) != 0) {
-            if (ctx.overlay_mgr) |mgr| {
-                if (mgr.cycleFocus()) {
-                    mgr.repaintActiveActionBar();
-                    publish.generateDebugCard(ctx);
-                    publish.publishOverlays(ctx);
-                }
-            }
-        }
-        if (@atomicRmw(i32, &input.g_overlay_cycle_focus_rev, .Xchg, 0, .seq_cst) != 0) {
-            if (ctx.overlay_mgr) |mgr| {
-                if (mgr.cycleFocusReverse()) {
-                    mgr.repaintActiveActionBar();
-                    publish.generateDebugCard(ctx);
-                    publish.publishOverlays(ctx);
-                }
-            }
-        }
-
-        // Overlay interaction: activate focused action (Enter)
-        if (@atomicRmw(i32, &input.g_overlay_activate, .Xchg, 0, .seq_cst) != 0) {
-            if (ctx.overlay_mgr) |mgr| {
-                const was_ai_visible = mgr.isVisible(.ai_demo);
-                const was_ctx_visible = mgr.isVisible(.context_preview);
-                if (mgr.activateFocused()) |action_id| {
-                    switch (action_id) {
-                        .dismiss => {
-                            _ = mgr.dismissActive();
-                            if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
-                                mgr.show(.ai_demo);
-                            }
-                            if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                                ai.cancelAi(ctx);
-                            }
-                        },
-                        .context => ai.toggleContextPreview(ctx),
-                        .insert => if (ai.g_ai_edit != null) ai.handleEditInsertAction(ctx) else ai.handleInsertAction(ctx),
-                        .copy => ai.handleCopyAction(ctx),
-                        .retry => ai.handleRetryAction(ctx),
-                        .accept => ai.handleEditAcceptAction(ctx),
-                        .reject => ai.handleEditRejectAction(ctx),
-                        else => {},
-                    }
-                    publish.publishOverlays(ctx);
-                }
-            }
-        }
-
-        // Overlay interaction: mouse click
-        if (@atomicRmw(i32, &input.g_overlay_click_pending, .Xchg, 0, .seq_cst) != 0) {
-            if (ctx.overlay_mgr) |mgr| {
-                const click_col: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_overlay_click_col, .seq_cst)));
-                const click_row: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_overlay_click_row, .seq_cst)));
-                if (mgr.hitTest(click_col, click_row)) |hit| {
-                    const was_ai_visible = mgr.isVisible(.ai_demo);
-                    const was_ctx_visible = mgr.isVisible(.context_preview);
-                    if (mgr.clickAction(hit)) |action_id| {
-                        switch (action_id) {
-                            .dismiss => {
-                                _ = mgr.dismissActive();
-                                if (was_ctx_visible and !mgr.isVisible(.context_preview)) {
-                                    mgr.show(.ai_demo);
-                                }
-                                if (was_ai_visible and !mgr.isVisible(.ai_demo)) {
-                                    ai.cancelAi(ctx);
-                                }
-                            },
-                            .context => ai.toggleContextPreview(ctx),
-                            .insert => ai.handleInsertAction(ctx),
-                            .copy => ai.handleCopyAction(ctx),
-                            .retry => ai.handleRetryAction(ctx),
-                            else => {},
-                        }
-                    }
-                    publish.publishOverlays(ctx);
-                }
-            }
-        }
-
-        // Overlay interaction: mouse scroll
-        if (@atomicRmw(i32, &input.g_overlay_scroll_pending, .Xchg, 0, .seq_cst) != 0) {
-            const delta = @atomicRmw(i32, &input.g_overlay_scroll_delta, .Xchg, 0, .seq_cst);
-            if (ai.g_streaming) |*so| {
-                const d: i16 = @intCast(std.math.clamp(delta, -100, 100));
-                if (so.scroll(d)) {
-                    ai.publishAiStreamingFrame(ctx);
-                }
-            }
-        }
+        // Overlay interactions: dismiss, focus cycle, activate, mouse click/scroll
+        overlay_input.processOverlayInteractions(ctx);
 
         actions.processTabActions(ctx);
         actions.processSplitActions(ctx);
@@ -433,9 +319,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Drain session socket — route pane_output by daemon_pane_id
         if (session_fd_idx) |si| {
-            if (fds[si].revents & POLLIN != 0) {
+            if (fds[si].revents & (POLLIN | POLLHUP) != 0) {
                 if (ctx.session_client) |sc| {
-                    if (sc.recvData()) {
+                    if (!sc.recvData()) {
+                        // Daemon disconnected — reset to fresh local PTY
+                        handleDaemonDeath(ctx);
+                        got_data = true;
+                    } else {
                         while (sc.readMessage()) |msg| {
                             switch (msg) {
                                 .pane_output => |out| {
@@ -468,12 +358,35 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 },
                                 .pane_died => |died| {
                                     if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
-                                        result.pane.daemon_pane_id = null;
-                                    }
-                                    // Check if all daemon-backed panes are dead → quit
-                                    if (allDaemonPanesDead(ctx)) {
-                                        c.attyx_request_quit();
-                                        return;
+                                        // Close pane BEFORE clearing daemon_pane_id to avoid
+                                        // waitpid(0) reaping random children.
+                                        if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
+                                            const close_result = lay.closePaneAt(result.pool_idx, ctx.allocator);
+                                            if (close_result == .last_pane) {
+                                                ctx.tab_mgr.closeTab(result.tab_idx);
+                                                if (ctx.tab_mgr.count == 0) {
+                                                    c.attyx_request_quit();
+                                                    return;
+                                                }
+                                                publish.updateGridTopOffset(ctx);
+                                            }
+                                            // Re-layout and resize surviving daemon panes
+                                            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                                            if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
+                                                l.layout(pty_rows, ctx.grid_cols);
+                                                var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                                                const rlc = l.collectLeaves(&rl);
+                                                for (rl[0..rlc]) |leaf| {
+                                                    if (leaf.pane.daemon_pane_id) |dpid|
+                                                        sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+                                                }
+                                            }
+                                            actions.updateSplitActive(ctx);
+                                            actions.switchActiveTab(ctx);
+                                            session_actions.sendActiveFocusPanes(ctx);
+                                            session_actions.saveSessionLayout(ctx);
+                                            actions.g_force_full_redraw = true;
+                                        }
                                     }
                                 },
                                 .pane_proc_name => |pn| {
@@ -551,7 +464,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         const search_vp_changed = (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp);
-        const need_update_final = need_update or search_vp_changed;
+        const need_update_final = need_update or search_vp_changed or actions.g_force_full_redraw;
 
         // DEC 2026 Synchronized Output
         if (publish.ctxEngine(ctx).state.synchronized_output) {
@@ -617,12 +530,38 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Statusbar widgets may have refreshed outside the cell-update path
+        // (e.g. after session switch when engine is idle). Re-generate overlay.
+        if (statusbar_refreshed and !need_update_final) {
+            publish.generateStatusbar(ctx);
+            publish.publishOverlays(ctx);
+        }
+
         hup_mod.handleActiveHup(ctx, fds[0..nfds], fd_panes[0..nfds], nfds, popup_fd_idx);
     }
 }
 
-/// Find a pane by its daemon_pane_id across all tabs. Returns the pane and its tab index.
-/// Check if all daemon-backed panes across all tabs are dead (daemon_pane_id cleared).
+fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
+    const Pane = @import("../pane.zig").Pane;
+    const SplitLayout = split_layout_mod.SplitLayout;
+    ctx.tab_mgr.reset();
+    ctx.session_client = null;
+    terminal.g_session_client = null;
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
+    pane.* = Pane.spawn(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, null, null) catch {
+        ctx.tab_mgr.allocator.destroy(pane);
+        return;
+    };
+    ctx.tab_mgr.tabs[0] = SplitLayout.init(pane);
+    ctx.tab_mgr.count = 1;
+    ctx.tab_mgr.active = 0;
+    terminal.g_engine = &pane.engine;
+    terminal.g_pty_master = pane.pty.master;
+    terminal.g_active_daemon_pane_id = 0;
+    @import("../session_connect.zig").setNonBlocking(pane.pty.master);
+}
+
 fn allDaemonPanesDead(ctx: *PtyThreadCtx) bool {
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe| {
         if (maybe.*) |*lay| {
@@ -636,14 +575,14 @@ fn allDaemonPanesDead(ctx: *PtyThreadCtx) bool {
     return true;
 }
 
-fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8 } {
+fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe, ti| {
         if (maybe.*) |*lay| {
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = lay.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
                 if (leaf.pane.daemon_pane_id) |dpid| {
-                    if (dpid == pane_id) return .{ .pane = leaf.pane, .tab_idx = @intCast(ti) };
+                    if (dpid == pane_id) return .{ .pane = leaf.pane, .tab_idx = @intCast(ti), .pool_idx = leaf.index };
                 }
             }
         }

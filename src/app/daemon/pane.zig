@@ -14,6 +14,9 @@ pub const DaemonPane = struct {
     cols: u16,
     alive: bool = true,
     exit_code: ?u8 = null,
+    /// Tracked terminal modes for replay restoration.
+    cursor_visible: bool = true,
+    alt_screen: bool = false,
     /// Cached foreground process name for change detection.
     proc_name: [64]u8 = .{0} ** 64,
     proc_name_len: u8 = 0,
@@ -24,10 +27,11 @@ pub const DaemonPane = struct {
         rows: u16,
         cols: u16,
         replay_capacity: usize,
+        cwd: ?[*:0]const u8,
     ) !DaemonPane {
         return .{
             .id = id,
-            .pty = try Pty.spawn(.{ .rows = rows, .cols = cols }),
+            .pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .cwd = cwd }),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,
@@ -40,8 +44,36 @@ pub const DaemonPane = struct {
         const n = try self.pty.read(buf);
         if (n > 0) {
             self.replay.write(buf[0..n]);
+            self.trackModes(buf[0..n]);
         }
         return n;
+    }
+
+    /// Scan output for terminal mode changes we need to restore on replay.
+    fn trackModes(self: *DaemonPane, data: []const u8) void {
+        // Look for CSI ? sequences: ESC [ ? <number> h/l
+        const esc = '\x1b';
+        var i: usize = 0;
+        while (i + 3 < data.len) : (i += 1) {
+            if (data[i] != esc or data[i + 1] != '[' or data[i + 2] != '?') continue;
+            // Parse the number and final byte (h = set, l = reset)
+            var j = i + 3;
+            var num: u32 = 0;
+            while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {
+                num = num * 10 + (data[j] - '0');
+            }
+            if (j >= data.len) break;
+            const final = data[j];
+            if (final == 'h' or final == 'l') {
+                const set = final == 'h';
+                switch (num) {
+                    25 => self.cursor_visible = set,
+                    1049, 47 => self.alt_screen = set,
+                    else => {},
+                }
+            }
+            i = j;
+        }
     }
 
     /// Write input bytes to PTY master (keystrokes from client).

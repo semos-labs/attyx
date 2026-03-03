@@ -48,15 +48,19 @@ pub fn decodeHeader(buf: *const [header_size]u8) !struct { msg_type: MessageType
 
 // ── Encode helpers ──
 
-/// Encode Create message payload: name_len:u16, name:[N]u8, rows:u16, cols:u16
-pub fn encodeCreate(buf: []u8, name: []const u8, rows: u16, cols: u16) ![]u8 {
+/// Encode Create message payload: name_len:u16, name:[N]u8, rows:u16, cols:u16, cwd_len:u16, cwd:[M]u8
+pub fn encodeCreate(buf: []u8, name: []const u8, rows: u16, cols: u16, cwd: []const u8) ![]u8 {
     const name_len: u16 = @intCast(@min(name.len, 64));
-    const total = 2 + name_len + 2 + 2;
+    const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
+    const total = 2 + name_len + 2 + 2 + 2 + cwd_len;
     if (buf.len < total) return error.BufferTooSmall;
     std.mem.writeInt(u16, buf[0..2], name_len, .little);
     @memcpy(buf[2 .. 2 + name_len], name[0..name_len]);
     std.mem.writeInt(u16, buf[2 + name_len ..][0..2], rows, .little);
     std.mem.writeInt(u16, buf[4 + name_len ..][0..2], cols, .little);
+    const cwd_off = 6 + @as(usize, name_len);
+    std.mem.writeInt(u16, buf[cwd_off..][0..2], cwd_len, .little);
+    @memcpy(buf[cwd_off + 2 .. cwd_off + 2 + cwd_len], cwd[0..cwd_len]);
     return buf[0..total];
 }
 
@@ -96,16 +100,26 @@ pub fn encodeError(buf: []u8, code: u8, msg: []const u8) ![]u8 {
 
 // ── Decode helpers ──
 
-pub const CreateMsg = struct { name: []const u8, rows: u16, cols: u16 };
+pub const CreateMsg = struct { name: []const u8, rows: u16, cols: u16, cwd: []const u8 };
 
 pub fn decodeCreate(payload: []const u8) !CreateMsg {
     if (payload.len < 6) return error.PayloadTooShort;
     const name_len = std.mem.readInt(u16, payload[0..2], .little);
     if (payload.len < 2 + @as(usize, name_len) + 4) return error.PayloadTooShort;
+    const after_cols = 6 + @as(usize, name_len);
+    // CWD field: cwd_len:u16, cwd:[M]u8 (optional for backward compat)
+    var cwd: []const u8 = "";
+    if (payload.len >= after_cols + 2) {
+        const cwd_len = std.mem.readInt(u16, payload[after_cols..][0..2], .little);
+        if (payload.len >= after_cols + 2 + cwd_len) {
+            cwd = payload[after_cols + 2 .. after_cols + 2 + cwd_len];
+        }
+    }
     return .{
         .name = payload[2 .. 2 + name_len],
         .rows = std.mem.readInt(u16, payload[2 + name_len ..][0..2], .little),
         .cols = std.mem.readInt(u16, payload[4 + name_len ..][0..2], .little),
+        .cwd = cwd,
     };
 }
 
@@ -431,12 +445,29 @@ test "header round-trip" {
 }
 
 test "create round-trip" {
-    var buf: [128]u8 = undefined;
-    const payload = try encodeCreate(&buf, "my-session", 24, 80);
+    var buf: [256]u8 = undefined;
+    const payload = try encodeCreate(&buf, "my-session", 24, 80, "/home/user/project");
     const msg = try decodeCreate(payload);
     try std.testing.expectEqualStrings("my-session", msg.name);
     try std.testing.expectEqual(@as(u16, 24), msg.rows);
     try std.testing.expectEqual(@as(u16, 80), msg.cols);
+    try std.testing.expectEqualStrings("/home/user/project", msg.cwd);
+}
+
+test "create round-trip without cwd (backward compat)" {
+    // Simulate old-format payload (no CWD field)
+    var buf: [128]u8 = undefined;
+    const name = "old-session";
+    std.mem.writeInt(u16, buf[0..2], @as(u16, @intCast(name.len)), .little);
+    @memcpy(buf[2 .. 2 + name.len], name);
+    std.mem.writeInt(u16, buf[2 + name.len ..][0..2], 24, .little);
+    std.mem.writeInt(u16, buf[4 + name.len ..][0..2], 80, .little);
+    const payload = buf[0 .. 6 + name.len];
+    const msg = try decodeCreate(payload);
+    try std.testing.expectEqualStrings("old-session", msg.name);
+    try std.testing.expectEqual(@as(u16, 24), msg.rows);
+    try std.testing.expectEqual(@as(u16, 80), msg.cols);
+    try std.testing.expectEqualStrings("", msg.cwd);
 }
 
 test "attach round-trip" {
