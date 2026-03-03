@@ -8,12 +8,7 @@
 #include "bridge.h"
 #include "macos_internal.h"
 
-// ---------------------------------------------------------------------------
-// C-owned globals (declared extern in bridge.h)
-// ---------------------------------------------------------------------------
-
-char g_native_tab_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX];
-volatile int g_native_tab_click = -1;
+// Globals are Zig-owned (terminal.zig) — declared extern in bridge.h.
 
 // ---------------------------------------------------------------------------
 // Constants

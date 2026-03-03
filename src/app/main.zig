@@ -90,6 +90,8 @@ export var g_tab_always_show: i32 = 0;
 export var g_native_tab_count: i32 = 1;
 export var g_native_tab_active: i32 = 0;
 export var g_native_tab_titles_changed: i32 = 0;
+export var g_native_tab_click: i32 = -1;
+export var g_native_tab_titles: [16][128]u8 = .{.{0} ** 128} ** 16;
 export fn attyx_split_drag_start(_: c_int, _: c_int) void {}
 export fn attyx_split_drag_update(_: c_int, _: c_int) void {}
 export fn attyx_split_drag_end() void {}

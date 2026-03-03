@@ -120,6 +120,8 @@ pub export var g_tab_always_show: i32 = 0;
 pub export var g_native_tab_count: i32 = 1;
 pub export var g_native_tab_active: i32 = 0;
 pub export var g_native_tab_titles_changed: i32 = 0;
+pub export var g_native_tab_click: i32 = -1;
+pub export var g_native_tab_titles: [16][128]u8 = .{.{0} ** 128} ** 16;
 
 pub export var g_split_active: i32 = 0;
 pub export var g_split_drag_active: i32 = 0;
