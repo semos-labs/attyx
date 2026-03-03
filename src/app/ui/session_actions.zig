@@ -100,6 +100,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         .border_style = .rounded,
         .border_fg = .{ 80, 80, 120 },
         .capture_stdout = true,
+        .direct_exec = true,
         .bg_color = .{ 20, 20, 30 },
         .bg_opacity = 230,
     };
@@ -189,29 +190,17 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     // Save current layout
     saveSessionLayout(ctx);
 
-    // Remember previous session for rollback on attach failure
-    const prev_id = sc.attached_session_id;
-
     // Detach from current session
     sc.detach() catch {};
 
-    // Attach to new session BEFORE tearing down tabs — if attach fails,
-    // re-attach to previous session so existing tabs remain valid and
-    // the event loop doesn't crash on activePane().
-    sc.attach(session_id, pty_rows, ctx.grid_cols) catch {
-        if (prev_id) |p| sc.attach(p, pty_rows, ctx.grid_cols) catch {};
-        return;
-    };
-    const attach_result = sc.waitForAttach(3000) catch {
-        sc.detach() catch {};
-        if (prev_id) |p| sc.attach(p, pty_rows, ctx.grid_cols) catch {};
-        return;
-    };
-
-    // Attach succeeded — now safe to teardown old tabs
+    // Teardown current tabs
     ctx.tab_mgr.reset();
     terminal.g_engine = null;
     terminal.g_pty_master = -1;
+
+    // Attach to new session
+    sc.attach(session_id, pty_rows, ctx.grid_cols) catch return;
+    const attach_result = sc.waitForAttach(3000) catch return;
 
     // Reconstruct tabs from layout blob
     if (sc.layout_len > 0) {
