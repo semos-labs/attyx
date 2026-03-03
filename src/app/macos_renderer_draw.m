@@ -119,6 +119,12 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             g_title_changed = 0;
         }
 
+        // Native tab manager sync (process tab ops + update titles)
+        if (g_native_tabs_enabled) {
+            AttyxNativeTabManager* ntm = [(id)[NSApp delegate] valueForKey:@"nativeTabMgr"];
+            if (ntm) [ntm sync];
+        }
+
         if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !g_popup_trail_active && !imagesChanged && !overlayChanged && !popupChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;

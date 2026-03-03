@@ -131,6 +131,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_popup.m"),      .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = macos_flags });
         if (std.mem.eql(u8, env, "production")) {
             exe.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = macos_flags });
         } else {
@@ -233,6 +234,7 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = app_macos_flags });
         if (std.mem.eql(u8, env, "production")) {
             app.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = app_macos_flags });
         } else {

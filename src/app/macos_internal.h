@@ -159,6 +159,25 @@ static inline int dirtyAny(const uint64_t dirty[4]) {
 // Search bar is now grid-based (overlay system). No native UI needed.
 
 // ---------------------------------------------------------------------------
+// Native tab manager (macos_native_tabs.m)
+// ---------------------------------------------------------------------------
+
+@interface AttyxNativeTabManager : NSObject <NSWindowDelegate>
+@property (nonatomic, strong) NSMutableArray<NSWindow*>* tabWindows;
+@property (nonatomic, strong) NSMutableSet<NSWindow*>* pendingClose;
+@property (nonatomic, strong) id<MTLDevice> device;
+@property (nonatomic, assign) GlyphCache glyphCache;
+@property (nonatomic, strong) AttyxRenderer* sharedRenderer;
+@property (nonatomic, strong) NSString* tabbingId;
+
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                      renderer:(AttyxRenderer*)renderer
+                    glyphCache:(GlyphCache)gc;
+- (NSWindow*)createTabWindowWithSize:(NSSize)size;
+- (void)sync;
+@end
+
+// ---------------------------------------------------------------------------
 // Overlay rendering (macos_overlay.m)
 // ---------------------------------------------------------------------------
 

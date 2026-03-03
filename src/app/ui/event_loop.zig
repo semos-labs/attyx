@@ -289,6 +289,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Native tab click handling (main thread → PTY thread)
+        {
+            const native_click = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_native_tab_click))), .Xchg, -1, .seq_cst);
+            if (native_click >= 0 and native_click < ctx.tab_mgr.count) {
+                const idx: u8 = @intCast(native_click);
+                if (idx != ctx.tab_mgr.active) {
+                    ctx.tab_mgr.switchTo(idx);
+                    actions.switchActiveTab(ctx);
+                }
+            }
+        }
+
         // Popup toggle handling
         actions.processPopupToggle(ctx);
 
@@ -576,6 +588,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             publish.generateAnchorDemo(ctx);
             publish.generateTabBar(ctx);
             publish.generateStatusbar(ctx);
+            publish.publishNativeTabTitles(ctx);
             publish.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publish.publishState(ctx);
