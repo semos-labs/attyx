@@ -71,6 +71,11 @@ pub const PtyThreadCtx = struct {
     last_focus_count: u8 = 0,
     // Session picker popup active flag
     session_picker_active: bool = false,
+    // Configurable session picker icons
+    session_icon_filter: []const u8 = ">",
+    session_icon_session: []const u8 = "",
+    session_icon_new: []const u8 = "+",
+    session_icon_active: []const u8 = "(active)",
 };
 
 // ---------------------------------------------------------------------------
@@ -579,6 +584,10 @@ pub fn run(
         .statusbar = if (statusbar) |*sb| sb else null,
         .session_client = heap_session_client,
         .sessions_enabled = sessions_enabled,
+        .session_icon_filter = config.session_icon_filter,
+        .session_icon_session = config.session_icon_session,
+        .session_icon_new = config.session_icon_new,
+        .session_icon_active = config.session_icon_active,
         .last_focus_panes = initial_focus_panes,
         .last_focus_count = initial_focus_count,
     };

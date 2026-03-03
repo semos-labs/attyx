@@ -524,6 +524,24 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    inline for (.{
+        .{ "icon_filter", &config.session_icon_filter, &config._owned_session_icon_filter },
+        .{ "icon_session", &config.session_icon_session, &config._owned_session_icon_session },
+        .{ "icon_new", &config.session_icon_new, &config._owned_session_icon_new },
+        .{ "icon_active", &config.session_icon_active, &config._owned_session_icon_active },
+    }) |kv| {
+        if (Lookup.get(root, "sessions", kv[0])) |v| {
+            if (v == .string) {
+                const dupe = try allocator.dupe(u8, v.string);
+                if (kv[2].*) |old| allocator.free(old);
+                kv[1].* = dupe;
+                kv[2].* = dupe;
+            } else {
+                std.debug.print("error: {s}: sessions.{s} must be a string\n", .{ path, kv[0] });
+                return error.ConfigValidationError;
+            }
+        }
+    }
 
     // [updates]
     if (Lookup.get(root, "updates", "check_updates")) |v| {

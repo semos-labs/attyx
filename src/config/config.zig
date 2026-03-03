@@ -166,6 +166,14 @@ pub const AppConfig = struct {
 
     // [sessions]
     sessions_enabled: bool = false,
+    session_icon_filter: []const u8 = ">",
+    session_icon_session: []const u8 = "",
+    session_icon_new: []const u8 = "+",
+    session_icon_active: []const u8 = "(active)",
+    _owned_session_icon_filter: ?[]const u8 = null,
+    _owned_session_icon_session: ?[]const u8 = null,
+    _owned_session_icon_new: ?[]const u8 = null,
+    _owned_session_icon_active: ?[]const u8 = null,
 
     // [updates]
     check_updates: bool = true,
@@ -200,6 +208,10 @@ pub const AppConfig = struct {
         }
         if (self._owned_log_level) |s| alloc.free(s);
         if (self._owned_log_file)  |s| alloc.free(s);
+        if (self._owned_session_icon_filter) |s| alloc.free(s);
+        if (self._owned_session_icon_session) |s| alloc.free(s);
+        if (self._owned_session_icon_new) |s| alloc.free(s);
+        if (self._owned_session_icon_active) |s| alloc.free(s);
         if (self._owned_statusbar) {
             if (self.statusbar) |*sb| statusbar_config.deinitStatusbar(alloc, sb);
         }

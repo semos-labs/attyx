@@ -16,6 +16,12 @@ const actions = @import("actions.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
+fn setenvSlice(allocator: std.mem.Allocator, name: [*:0]const u8, value: []const u8) void {
+    const z = allocator.dupeZ(u8, value) catch return;
+    defer allocator.free(z);
+    _ = setenv(name, z, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Layout persistence
 // ---------------------------------------------------------------------------
@@ -96,12 +102,12 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
     const cfg = popup_mod.PopupConfig{
         .command = cmd,
         .width_pct = 50,
-        .height_pct = 40,
+        .height_pct = 50,
         .border_style = .rounded,
         .border_fg = .{ 80, 80, 120 },
         .capture_stdout = true,
         .direct_exec = true,
-        .pad = .{ .top = 1, .bottom = 1, .left = 1, .right = 1 },
+        .pad = .{ .top = 0, .bottom = 0, .left = 1, .right = 1 },
         .bg_color = .{ 20, 20, 30 },
         .bg_opacity = 230,
     };
@@ -135,6 +141,25 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
             defer ctx.allocator.free(z);
             _ = setenv("ATTYX_PICKER_CWD", z, 1);
         }
+    }
+
+    // Pass icon config to the picker subprocess
+    setenvSlice(ctx.allocator, "ATTYX_ICON_FILTER", ctx.session_icon_filter);
+    setenvSlice(ctx.allocator, "ATTYX_ICON_SESSION", ctx.session_icon_session);
+    setenvSlice(ctx.allocator, "ATTYX_ICON_NEW", ctx.session_icon_new);
+    setenvSlice(ctx.allocator, "ATTYX_ICON_ACTIVE", ctx.session_icon_active);
+
+    // Pass cursor config — DECSCUSR value: block=1/2, underline=3/4, bar=5/6 (odd=blink)
+    {
+        const base: u8 = switch (ctx.applied_cursor_shape) {
+            .block => 1,
+            .underline => 3,
+            .beam => 5,
+        };
+        const decscusr = if (ctx.applied_cursor_blink) base else base + 1;
+        var cbuf: [4]u8 = undefined;
+        const cstr = std.fmt.bufPrint(&cbuf, "{d}", .{decscusr}) catch "1";
+        setenvSlice(ctx.allocator, "ATTYX_CURSOR_STYLE", cstr);
     }
 
     ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {

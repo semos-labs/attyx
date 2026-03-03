@@ -13,6 +13,24 @@ const conn = @import("session_connect.zig");
 extern "c" fn tcgetattr(fd: c_int, termios: *Termios) c_int;
 extern "c" fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) c_int;
 extern "c" fn isatty(fd: c_int) c_int;
+extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+
+const TIOCGWINSZ: c_ulong = 0x40087468; // macOS
+
+const Winsize = extern struct {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+};
+
+fn getTermRows() u16 {
+    var ws: Winsize = .{ .ws_row = 0, .ws_col = 0, .ws_xpixel = 0, .ws_ypixel = 0 };
+    if (ioctl(STDERR_FD, TIOCGWINSZ, &ws) == 0 and ws.ws_row > 0) {
+        return ws.ws_row;
+    }
+    return 24; // fallback
+}
 
 const TCSANOW: c_int = 0;
 const STDIN_FD: posix.fd_t = 0;
@@ -106,6 +124,12 @@ pub fn run(allocator: std.mem.Allocator) !void {
         break :blk std.fmt.parseInt(u32, env_val, 10) catch null;
     };
 
+    // Read configurable icons from env (set by parent via config)
+    const icon_filter = std.posix.getenv("ATTYX_ICON_FILTER") orelse ">";
+    const icon_session = std.posix.getenv("ATTYX_ICON_SESSION") orelse "";
+    const icon_new = std.posix.getenv("ATTYX_ICON_NEW") orelse "+";
+    const icon_active = std.posix.getenv("ATTYX_ICON_ACTIVE") orelse "(active)";
+
     // Get current working directory for "create" action
     var cwd_buf: [4096]u8 = undefined;
     const cwd = std.posix.getenv("ATTYX_PICKER_CWD") orelse (std.posix.getcwd(&cwd_buf) catch "/tmp");
@@ -123,11 +147,18 @@ pub fn run(allocator: std.mem.Allocator) !void {
         _ = tcsetattr(STDIN_FD, TCSANOW, &orig_termios);
     };
 
-    // Show cursor (popup renderer draws the real terminal cursor)
+    // Show cursor and apply configured cursor style (DECSCUSR)
     writeStderr("\x1b[?25h");
+    {
+        const style = std.posix.getenv("ATTYX_CURSOR_STYLE") orelse "1";
+        var seq_buf: [8]u8 = undefined;
+        const seq = std.fmt.bufPrint(&seq_buf, "\x1b[{s} q", .{style}) catch "\x1b[1 q";
+        writeStderr(seq);
+    }
 
     // Main loop state
     var selected: u8 = 0;
+    var scroll_offset: u8 = 0;
     var filter_buf: [64]u8 = .{0} ** 64;
     var filter_len: u8 = 0;
     var filtered_indices: [max_entries]u8 = undefined;
@@ -149,7 +180,9 @@ pub fn run(allocator: std.mem.Allocator) !void {
         }
     }
 
-    render(&entries, entry_count, &filtered_indices, filtered_count, selected, filter_buf[0..filter_len], current_session_id);
+    const term_rows = getTermRows();
+    scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
+    render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active);
 
     while (true) {
         var key_buf: [16]u8 = undefined;
@@ -234,8 +267,37 @@ pub fn run(allocator: std.mem.Allocator) !void {
             std.process.exit(1);
         }
 
-        render(&entries, entry_count, &filtered_indices, filtered_count, selected, filter_buf[0..filter_len], current_session_id);
+        scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
+        render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active);
     }
+}
+
+/// Compute visible list rows: term_rows minus filter (row 1) and footer (last row).
+fn listCapacity(term_rows: u16) u8 {
+    if (term_rows <= 2) return 1;
+    return @intCast(@min(term_rows - 2, 255));
+}
+
+/// Adjust scroll_offset so `selected` is visible within the viewport.
+fn adjustScroll(selected: u8, current_offset: u8, total_count: u8, term_rows: u16) u8 {
+    const cap = listCapacity(term_rows);
+    var offset = current_offset;
+    // Ensure selected is not above the visible window
+    if (selected < offset) {
+        offset = selected;
+    }
+    // Ensure selected is not below the visible window
+    if (selected >= offset +| cap) {
+        offset = selected -| (cap -| 1);
+    }
+    // Clamp so we don't scroll past the end
+    if (total_count > cap) {
+        const max_offset = total_count - cap;
+        if (offset > max_offset) offset = max_offset;
+    } else {
+        offset = 0;
+    }
+    return offset;
 }
 
 fn applyFilter(entries: *const [max_entries]Entry, count: u8, filter: []const u8, out: *[max_entries]u8) u8 {
@@ -275,8 +337,14 @@ fn render(
     filtered_indices: *const [max_entries]u8,
     filtered_count: u8,
     selected: u8,
+    scroll_offset: u8,
+    term_rows: u16,
     filter: []const u8,
     current_session_id: ?u32,
+    icon_filter: []const u8,
+    icon_session: []const u8,
+    icon_new: []const u8,
+    icon_active: []const u8,
 ) void {
     var buf: [4096]u8 = undefined;
     var pos: usize = 0;
@@ -284,8 +352,21 @@ fn render(
     // Clear screen and move home
     pos += writeSlice(&buf, pos, "\x1b[2J\x1b[H");
 
-    // Title / filter line — "  > " prefix = 4 visual cols
-    pos += writeSlice(&buf, pos, "  \x1b[90m>\x1b[0m ");
+    // Row 1: filter line — icon left-aligned, filter text starts at col 5
+    // (same column as session names after "    " or "  • ")
+    pos += writeSlice(&buf, pos, "  \x1b[90m");
+    pos += writeSlice(&buf, pos, icon_filter);
+    pos += writeSlice(&buf, pos, "\x1b[0m");
+    // Pad so text starts at col 5: we've used 2 + icon_width cols so far
+    const icon_width = displayWidth(icon_filter);
+    const used = 2 + icon_width;
+    if (used < 4) {
+        const pad_needed = 4 - used;
+        const spaces = "    "; // 4 spaces max
+        pos += writeSlice(&buf, pos, spaces[0..pad_needed]);
+    } else {
+        pos += writeSlice(&buf, pos, " "); // at least one space separator
+    }
     if (filter.len > 0) {
         pos += writeSlice(&buf, pos, filter);
     } else {
@@ -293,57 +374,104 @@ fn render(
     }
     pos += writeSlice(&buf, pos, "\r\n");
 
-    // Session entries
-    for (0..filtered_count) |i| {
-        const e = &entries[filtered_indices[i]];
-        const is_selected = (i == selected);
-        const is_current = if (current_session_id) |cid| e.id == cid else false;
+    // Visible window of list items (sessions + "New session")
+    const total_items: u8 = filtered_count +| 1; // +1 for "New session"
+    const cap = listCapacity(term_rows);
+    const vis_end: u8 = @intCast(@min(@as(u16, scroll_offset) + cap, total_items));
 
-        // Selection bullet or indent
-        if (is_selected) {
-            pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
+    // rows_used tracks how many rows we've emitted (filter = 1, each item = +1)
+    var rows_used: u16 = 1; // filter line already emitted
+
+    for (scroll_offset..vis_end) |item_idx| {
+        if (item_idx < filtered_count) {
+            // Session entry
+            const e = &entries[filtered_indices[item_idx]];
+            const is_selected = (item_idx == selected);
+            const is_current = if (current_session_id) |cid| e.id == cid else false;
+
+            if (is_selected) {
+                pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
+            } else {
+                pos += writeSlice(&buf, pos, "    ");
+            }
+
+            if (icon_session.len > 0) {
+                pos += writeSlice(&buf, pos, "\x1b[90m");
+                pos += writeSlice(&buf, pos, icon_session);
+                pos += writeSlice(&buf, pos, "\x1b[0m ");
+            }
+
+            if (is_current) {
+                pos += writeSlice(&buf, pos, "\x1b[1m");
+                pos += writeSlice(&buf, pos, e.getName());
+                pos += writeSlice(&buf, pos, "\x1b[0m");
+                pos += writeSlice(&buf, pos, " \x1b[90m");
+                pos += writeSlice(&buf, pos, icon_active);
+                pos += writeSlice(&buf, pos, "\x1b[0m");
+            } else if (!e.alive) {
+                pos += writeSlice(&buf, pos, "\x1b[90m");
+                pos += writeSlice(&buf, pos, e.getName());
+                pos += writeSlice(&buf, pos, "\x1b[0m");
+            } else {
+                pos += writeSlice(&buf, pos, e.getName());
+            }
         } else {
-            pos += writeSlice(&buf, pos, "    ");
-        }
-
-        // Window icon
-        pos += writeSlice(&buf, pos, "\x1b[90m\xe2\x8a\x9e\x1b[0m "); // ⊞ dim
-
-        // Session name — bold if current, dim if dead
-        if (is_current) {
-            pos += writeSlice(&buf, pos, "\x1b[1m");
-            pos += writeSlice(&buf, pos, e.getName());
-            pos += writeSlice(&buf, pos, "\x1b[0m");
-            pos += writeSlice(&buf, pos, " \x1b[90m(active)\x1b[0m");
-        } else if (!e.alive) {
+            // "New session" entry (last item)
+            if (item_idx == selected) {
+                pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
+            } else {
+                pos += writeSlice(&buf, pos, "    ");
+            }
             pos += writeSlice(&buf, pos, "\x1b[90m");
-            pos += writeSlice(&buf, pos, e.getName());
-            pos += writeSlice(&buf, pos, "\x1b[0m");
-        } else {
-            pos += writeSlice(&buf, pos, e.getName());
+            pos += writeSlice(&buf, pos, icon_new);
+            pos += writeSlice(&buf, pos, "\x1b[0m New session");
         }
-
         pos += writeSlice(&buf, pos, "\r\n");
+        rows_used += 1;
     }
 
-    // "+ New session" entry (always last)
-    if (selected == filtered_count) {
-        pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
-    } else {
-        pos += writeSlice(&buf, pos, "    ");
+    // Pad with empty lines so footer lands on the last row
+    while (rows_used + 1 < term_rows) {
+        pos += writeSlice(&buf, pos, "\r\n");
+        rows_used += 1;
     }
-    pos += writeSlice(&buf, pos, "\x1b[90m+\x1b[0m New session\r\n");
 
-    // Footer
-    pos += writeSlice(&buf, pos, "\r\n  \x1b[90m\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 esc close \xe2\x80\xa2 enter select \xe2\x80\xa2 del kill\x1b[0m\r\n");
+    // Footer on last row (no trailing \r\n)
+    pos += writeSlice(&buf, pos, "  \x1b[90m\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 esc close \xe2\x80\xa2 enter select \xe2\x80\xa2 del kill\x1b[0m");
 
-    // Position cursor on filter line (row 1, after "  > " = 4 visual cols)
+    // Position cursor on filter line (row 1)
+    // Text starts at col 5 (matching session name indent), cursor after last char
     var cursor_buf: [16]u8 = undefined;
-    const cursor_col = 5 + filter.len; // 1-indexed
+    const cursor_col = 5 + filter.len + 1; // col 5 (text start) + filter length + 1 (CUP 1-based)
     const cursor_seq = std.fmt.bufPrint(&cursor_buf, "\x1b[1;{d}H", .{cursor_col}) catch "";
     pos += writeSlice(&buf, pos, cursor_seq);
 
     _ = posix.write(STDERR_FD, buf[0..pos]) catch {};
+}
+
+/// Count display width of a UTF-8 string (1 cell per codepoint).
+fn displayWidth(s: []const u8) usize {
+    var width: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const byte = s[i];
+        if (byte < 0x80) {
+            width += 1;
+            i += 1;
+        } else if (byte < 0xC0) {
+            i += 1; // continuation byte
+        } else if (byte < 0xE0) {
+            width += 1;
+            i += 2;
+        } else if (byte < 0xF0) {
+            width += 1;
+            i += 3;
+        } else {
+            width += 1;
+            i += 4;
+        }
+    }
+    return width;
 }
 
 fn writeSlice(buf: *[4096]u8, pos: usize, data: []const u8) usize {
