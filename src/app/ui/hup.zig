@@ -6,6 +6,7 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
+const session_actions = @import("session_actions.zig");
 const Pane = @import("../pane.zig").Pane;
 
 /// Handle POLLHUP on the active focused pane. Closes the pane (or tab)
@@ -26,6 +27,7 @@ pub fn handleActiveHup(
                 if (lay.pane_count <= 1) {
                     ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
                     if (ctx.tab_mgr.count == 0) {
+                        if (session_actions.switchToNextSession(ctx)) break;
                         c.attyx_request_quit();
                         break;
                     }
@@ -35,6 +37,7 @@ pub fn handleActiveHup(
                     if (result == .last_pane) {
                         ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
                         if (ctx.tab_mgr.count == 0) {
+                            if (session_actions.switchToNextSession(ctx)) break;
                             c.attyx_request_quit();
                             break;
                         }

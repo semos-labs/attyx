@@ -75,6 +75,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var sessions: [max_sessions]?DaemonSession = .{null} ** max_sessions;
     var session_count: usize = 0;
     var next_session_id: u32 = 1;
+    var next_pane_id: u32 = 1;
 
     var clients: [max_clients]?DaemonClient = .{null} ** max_clients;
     var client_count: usize = 0;
@@ -242,7 +243,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     }
                     // Process complete messages
                     while (cl.nextMessage()) |msg| {
-                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, allocator);
+                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator);
                     }
                     if (cl.dead) {
                         cl.deinit();

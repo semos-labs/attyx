@@ -189,17 +189,29 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     // Save current layout
     saveSessionLayout(ctx);
 
+    // Remember previous session for rollback on attach failure
+    const prev_id = sc.attached_session_id;
+
     // Detach from current session
     sc.detach() catch {};
 
-    // Teardown current tabs
+    // Attach to new session BEFORE tearing down tabs — if attach fails,
+    // re-attach to previous session so existing tabs remain valid and
+    // the event loop doesn't crash on activePane().
+    sc.attach(session_id, pty_rows, ctx.grid_cols) catch {
+        if (prev_id) |p| sc.attach(p, pty_rows, ctx.grid_cols) catch {};
+        return;
+    };
+    const attach_result = sc.waitForAttach(3000) catch {
+        sc.detach() catch {};
+        if (prev_id) |p| sc.attach(p, pty_rows, ctx.grid_cols) catch {};
+        return;
+    };
+
+    // Attach succeeded — now safe to teardown old tabs
     ctx.tab_mgr.reset();
     terminal.g_engine = null;
     terminal.g_pty_master = -1;
-
-    // Attach to new session
-    sc.attach(session_id, pty_rows, ctx.grid_cols) catch return;
-    const attach_result = sc.waitForAttach(3000) catch return;
 
     // Reconstruct tabs from layout blob
     if (sc.layout_len > 0) {
@@ -230,12 +242,11 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
         terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
     }
 
-    // Resize daemon PTYs to match each pane's actual split rect.
-    // pane.resize() only resizes the local engine (pty.master = -1 for daemon panes),
-    // so we must explicitly tell the daemon the correct dimensions.
+    // Compute rects and resize daemon PTYs to match each pane's dimensions.
     if (ctx.tab_mgr.count > 0) {
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             if (maybe_layout.*) |*lay| {
+                lay.layout(pty_rows, ctx.grid_cols);
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
@@ -246,6 +257,8 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
             }
         }
     }
+
+    if (ctx.tab_mgr.count == 0) return;
 
     ctx.last_focus_count = 0;
     actions.switchActiveTab(ctx);
@@ -283,6 +296,22 @@ pub fn createSessionDirect(ctx: *PtyThreadCtx) void {
     defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
     const cwd = fg_cwd orelse "/tmp";
     doSessionCreate(ctx, cwd);
+}
+
+/// Try to switch to another alive session. Returns true if switched, false if
+/// no other sessions exist (caller should quit).
+pub fn switchToNextSession(ctx: *PtyThreadCtx) bool {
+    const sc = ctx.session_client orelse return false;
+    const current_id = sc.attached_session_id orelse return false;
+    sc.requestListSync(2000) catch return false;
+    for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+        if (entry.alive and entry.id != current_id) {
+            doSessionSwitch(ctx, entry.id);
+            if (ctx.tab_mgr.count > 0) return true;
+            // Switch failed (attach error), try next session
+        }
+    }
+    return false;
 }
 
 fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {

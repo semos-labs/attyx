@@ -108,6 +108,9 @@ pub export var g_theme_sel_fg_set: i32 = 0;
 pub export var g_theme_sel_fg_r: i32 = 0;
 pub export var g_theme_sel_fg_g: i32 = 0;
 pub export var g_theme_sel_fg_b: i32 = 0;
+pub export var g_theme_bg_r: i32 = 30;
+pub export var g_theme_bg_g: i32 = 30;
+pub export var g_theme_bg_b: i32 = 36;
 
 const _icon_bytes = @import("app_icon").data;
 pub export var g_icon_png: [*]const u8 = _icon_bytes.ptr;
@@ -474,6 +477,7 @@ pub fn run(
     }
 
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
+    @memset(render_cells, std.mem.zeroes(c.AttyxCell));
     defer allocator.free(render_cells);
 
     const active_eng = &tab_mgr.activePane().engine;

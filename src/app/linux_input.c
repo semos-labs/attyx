@@ -1039,6 +1039,53 @@ static void errorCallback(int error, const char* description) {
 }
 
 // ---------------------------------------------------------------------------
+// Drag and Drop — file path insertion
+// ---------------------------------------------------------------------------
+
+static void dropCallback(GLFWwindow* w, int count, const char** paths) {
+    (void)w;
+    if (count <= 0 || !paths) return;
+
+    // Compute buffer size: each char could be ' (becomes 4 chars), plus quotes and spaces
+    int totalMax = 0;
+    for (int i = 0; i < count; i++)
+        totalMax += (int)strlen(paths[i]) * 4 + 3; // worst case + surrounding quotes + space
+
+    char* buf = (char*)malloc(totalMax);
+    if (!buf) return;
+    int pos = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (i > 0) buf[pos++] = ' ';
+        // Shell-escape: wrap in single quotes, replace ' with '\''
+        buf[pos++] = '\'';
+        for (const char* p = paths[i]; *p; p++) {
+            if (*p == '\'') {
+                buf[pos++] = '\'';
+                buf[pos++] = '\\';
+                buf[pos++] = '\'';
+                buf[pos++] = '\'';
+            } else {
+                buf[pos++] = *p;
+            }
+        }
+        buf[pos++] = '\'';
+    }
+    buf[pos] = '\0';
+
+    void (*send_fn)(const uint8_t*, int) =
+        g_popup_active ? attyx_popup_send_input : attyx_send_input;
+    if (g_bracketed_paste) {
+        send_fn((const uint8_t*)"\x1b[200~", 6);
+        send_fn((const uint8_t*)buf, pos);
+        send_fn((const uint8_t*)"\x1b[201~", 6);
+    } else {
+        send_fn((const uint8_t*)buf, pos);
+    }
+    free(buf);
+}
+
+// ---------------------------------------------------------------------------
 // Callback registration — called from attyx_run in platform_linux.c
 // ---------------------------------------------------------------------------
 
@@ -1055,4 +1102,5 @@ void linux_register_callbacks(GLFWwindow* win) {
     glfwSetMouseButtonCallback(win, mouseButtonCallback);
     glfwSetCursorPosCallback(win, cursorPosCallback);
     glfwSetScrollCallback(win, scrollCallback);
+    glfwSetDropCallback(win, dropCallback);
 }

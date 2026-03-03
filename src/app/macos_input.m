@@ -191,6 +191,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         _markedText = [[NSMutableString alloc] init];
         _markedRange = NSMakeRange(NSNotFound, 0);
         _selectedRange = NSMakeRange(0, 0);
+        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     }
     return self;
 }

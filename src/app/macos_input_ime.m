@@ -242,6 +242,46 @@
     }
 }
 
+// ---------------------------------------------------------------------------
+// Drag and Drop — file path insertion
+// ---------------------------------------------------------------------------
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    (void)sender;
+    return NSDragOperationCopy;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSPasteboard* pb = [sender draggingPasteboard];
+    NSArray<NSURL*>* urls = [pb readObjectsForClasses:@[[NSURL class]]
+                                              options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+    if (!urls || urls.count == 0) return NO;
+
+    NSMutableString* result = [NSMutableString string];
+    for (NSUInteger i = 0; i < urls.count; i++) {
+        if (i > 0) [result appendString:@" "];
+        // Shell-escape: wrap in single quotes, replace ' with '\''
+        NSString* escaped = [urls[i].path stringByReplacingOccurrencesOfString:@"'"
+                                                                   withString:@"'\\''"];
+        [result appendFormat:@"'%@'", escaped];
+    }
+
+    const char* utf8 = [result UTF8String];
+    if (!utf8) return NO;
+    int len = (int)strlen(utf8);
+
+    void (*send_fn)(const uint8_t*, int) =
+        g_popup_active ? attyx_popup_send_input : attyx_send_input;
+    if (g_bracketed_paste) {
+        send_fn((const uint8_t*)"\x1b[200~", 6);
+        send_fn((const uint8_t*)utf8, len);
+        send_fn((const uint8_t*)"\x1b[201~", 6);
+    } else {
+        send_fn((const uint8_t*)utf8, len);
+    }
+    return YES;
+}
+
 @end
 
 // ---------------------------------------------------------------------------

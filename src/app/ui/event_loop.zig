@@ -69,7 +69,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         ai.g_update_checker = null;
     }
 
-    while (c.attyx_should_quit() == 0) {
+    outer: while (c.attyx_should_quit() == 0) {
         // Config reload check (atomic read-and-reset)
         if (@atomicRmw(i32, &terminal.g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
             actions.doReloadConfig(ctx);
@@ -242,6 +242,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         if (result == .last_pane) {
                             ctx.tab_mgr.closeTab(ti);
                             if (ctx.tab_mgr.count == 0) {
+                                if (session_actions.switchToNextSession(ctx)) continue :outer;
                                 c.attyx_request_quit();
                                 return;
                             }
@@ -365,6 +366,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                             if (close_result == .last_pane) {
                                                 ctx.tab_mgr.closeTab(result.tab_idx);
                                                 if (ctx.tab_mgr.count == 0) {
+                                                    if (session_actions.switchToNextSession(ctx)) continue :outer;
                                                     c.attyx_request_quit();
                                                     return;
                                                 }

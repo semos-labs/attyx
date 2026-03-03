@@ -14,7 +14,6 @@ pub const DaemonSession = struct {
     name_len: u8 = 0,
     panes: [max_panes_per_session]?DaemonPane = .{null} ** max_panes_per_session,
     pane_count: u8 = 0,
-    next_pane_id: u32 = 1,
     layout_data: [4096]u8 = undefined,
     layout_len: u16 = 0,
     alive: bool = true,
@@ -23,7 +22,8 @@ pub const DaemonSession = struct {
     rows: u16,
     cols: u16,
 
-    /// Spawn a session with one initial pane.
+    /// Spawn a session with one initial pane. Pane ID is assigned by the caller
+    /// (global counter) to ensure uniqueness across sessions.
     pub fn spawn(
         allocator: std.mem.Allocator,
         id: u32,
@@ -32,6 +32,7 @@ pub const DaemonSession = struct {
         cols: u16,
         replay_capacity: usize,
         cwd: ?[*:0]const u8,
+        initial_pane_id: u32,
     ) !DaemonSession {
         var session = DaemonSession{
             .id = id,
@@ -41,19 +42,16 @@ pub const DaemonSession = struct {
         const nlen = @min(name.len, 64);
         @memcpy(session.name[0..nlen], name[0..nlen]);
         session.name_len = @intCast(nlen);
-
-        // Create initial pane (backward compat with V1 protocol)
-        const pane_id = session.next_pane_id;
-        session.next_pane_id += 1;
-        session.panes[0] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd);
+        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd);
         session.pane_count = 1;
         return session;
     }
 
-    /// Add a new pane to the session. Returns the new pane's ID.
-    pub fn addPane(
+    /// Add a new pane with a caller-assigned ID (globally unique).
+    pub fn addPaneWithId(
         self: *DaemonSession,
         allocator: std.mem.Allocator,
+        pane_id: u32,
         rows: u16,
         cols: u16,
         replay_capacity: usize,
@@ -61,9 +59,6 @@ pub const DaemonSession = struct {
         const slot_idx = for (&self.panes, 0..) |*slot, i| {
             if (slot.* == null) break i;
         } else return error.TooManyPanes;
-
-        const pane_id = self.next_pane_id;
-        self.next_pane_id += 1;
         self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, null);
         self.pane_count += 1;
         return pane_id;

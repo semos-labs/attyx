@@ -146,6 +146,7 @@ pub fn parseStatusbar(
             const val_str: ?[]const u8 = switch (wentry.value_ptr.*) {
                 .string => |s| s,
                 .int => |v| std.fmt.bufPrint(&int_buf, "{d}", .{v}) catch null,
+                .bool => |v| if (v) "true" else "false",
                 else => null,
             };
             if (val_str) |vs| {

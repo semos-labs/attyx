@@ -13,10 +13,11 @@ pub fn handleMessage(
     sessions: *[max_sessions]?DaemonSession,
     session_count: *usize,
     next_id: *u32,
+    next_pane_id: *u32,
     allocator: std.mem.Allocator,
 ) void {
     switch (msg.msg_type) {
-        .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, allocator),
+        .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
         .list => cl.sendSessionListFromSlots(sessions),
         .attach => handleAttach(cl, msg.payload, sessions),
         .detach => {
@@ -26,7 +27,7 @@ pub fn handleMessage(
         .kill => handleKill(msg.payload, sessions, session_count),
 
         // V2 pane-multiplexed messages
-        .create_pane => handleCreatePane(cl, msg.payload, sessions, allocator),
+        .create_pane => handleCreatePane(cl, msg.payload, sessions, next_pane_id, allocator),
         .close_pane => handleClosePane(cl, msg.payload, sessions),
         .focus_panes => handleFocusPanes(cl, msg.payload, sessions),
         .pane_input => handlePaneInput(cl, msg.payload, sessions),
@@ -44,6 +45,7 @@ fn handleCreate(
     sessions: *[max_sessions]?DaemonSession,
     session_count: *usize,
     next_id: *u32,
+    next_pane_id: *u32,
     allocator: std.mem.Allocator,
 ) void {
     const create = protocol.decodeCreate(payload) catch {
@@ -69,6 +71,8 @@ fn handleCreate(
         cwd_z_buf[create.cwd.len] = 0;
         break :blk @ptrCast(&cwd_z_buf);
     } else null;
+    const initial_pane_id = next_pane_id.*;
+    next_pane_id.* += 1;
     sessions[slot_idx] = DaemonSession.spawn(
         allocator,
         id,
@@ -77,6 +81,7 @@ fn handleCreate(
         create.cols,
         replay_capacity,
         cwd_z,
+        initial_pane_id,
     ) catch {
         cl.sendError(3, "spawn failed");
         return;
@@ -133,6 +138,7 @@ fn handleCreatePane(
     cl: *DaemonClient,
     payload: []const u8,
     sessions: *[max_sessions]?DaemonSession,
+    next_pane_id: *u32,
     allocator: std.mem.Allocator,
 ) void {
     const msg = protocol.decodeCreatePane(payload) catch {
@@ -140,7 +146,9 @@ fn handleCreatePane(
         return;
     };
     const session = getAttachedSession(cl, sessions) orelse return;
-    const pane_id = session.addPane(allocator, msg.rows, msg.cols, replay_capacity) catch {
+    const pane_id_val = next_pane_id.*;
+    next_pane_id.* += 1;
+    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity) catch {
         cl.sendError(3, "create pane failed");
         return;
     };

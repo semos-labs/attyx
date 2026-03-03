@@ -11,6 +11,19 @@ const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
 const git_widget = @import("git_widget.zig");
 const tab_bar_mod = @import("tab_bar.zig");
 
+const CTime = extern struct {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
+};
+extern "c" fn localtime_r(timep: *const i64, result: *CTime) ?*CTime;
+
 pub const max_widgets = statusbar_config.max_widgets;
 pub const max_output_len = 256;
 
@@ -215,14 +228,21 @@ pub const Statusbar = struct {
     }
 
     fn refreshTime(ws: *WidgetState, wc: *const StatusbarWidgetConfig) void {
-        _ = wc; // format param can be used later for custom strftime
-        const epoch = std.time.timestamp();
-        const es = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch) };
-        const day_secs = es.getDaySeconds();
-        const hours = day_secs.getHoursIntoDay();
-        const minutes = day_secs.getMinutesIntoHour();
-        const len = std.fmt.bufPrint(&ws.output, "{d:0>2}:{d:0>2}", .{ hours, minutes }) catch return;
-        ws.output_len = @intCast(len.len);
+        var epoch = std.time.timestamp();
+        var tm: CTime = undefined;
+        if (localtime_r(&epoch, &tm) == null) return;
+        const h24: u8 = @intCast(tm.tm_hour);
+        const minutes: u8 = @intCast(tm.tm_min);
+        const use_24h = if (wc.getParam("24h")) |v| !std.mem.eql(u8, v, "false") else true;
+        if (use_24h) {
+            const len = std.fmt.bufPrint(&ws.output, "{d:0>2}:{d:0>2}", .{ h24, minutes }) catch return;
+            ws.output_len = @intCast(len.len);
+        } else {
+            const suffix: []const u8 = if (h24 >= 12) "PM" else "AM";
+            const h12 = if (h24 == 0) @as(u8, 12) else if (h24 > 12) h24 - 12 else h24;
+            const len = std.fmt.bufPrint(&ws.output, "{d}:{d:0>2} {s}", .{ h12, minutes, suffix }) catch return;
+            ws.output_len = @intCast(len.len);
+        }
     }
 
     fn refreshScript(self: *Statusbar, wc: *const StatusbarWidgetConfig, ws: *WidgetState) void {
@@ -576,13 +596,25 @@ test "generate: active tab uses tab_bar highlight colors" {
     try std.testing.expectEqual(tb_style.num_highlight_bg, result.cells[10].bg);
 }
 
-test "refreshTime: formats hours and minutes" {
+test "refreshTime: formats hours and minutes in 24h" {
     var ws = WidgetState{};
     const wc = StatusbarWidgetConfig{ .name = "time" };
     Statusbar.refreshTime(&ws, &wc);
-    // Should have produced something like "HH:MM"
+    // Should have produced "HH:MM"
     try std.testing.expect(ws.output_len == 5);
     try std.testing.expectEqual(@as(u8, ':'), ws.output[2]);
+}
+
+test "refreshTime: 12h format with AM/PM" {
+    var ws = WidgetState{};
+    var wc = StatusbarWidgetConfig{ .name = "time" };
+    wc.params[0] = .{ .key = "24h", .value = "false" };
+    wc.param_count = 1;
+    Statusbar.refreshTime(&ws, &wc);
+    // Should have produced something like "H:MM AM" or "HH:MM PM"
+    const output = ws.output[0..ws.output_len];
+    try std.testing.expect(ws.output_len >= 7 and ws.output_len <= 8);
+    try std.testing.expect(std.mem.endsWith(u8, output, "AM") or std.mem.endsWith(u8, output, "PM"));
 }
 
 test "truncatePath: keeps last N components" {

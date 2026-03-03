@@ -247,6 +247,11 @@ extern volatile int g_theme_sel_fg_r;
 extern volatile int g_theme_sel_fg_g;
 extern volatile int g_theme_sel_fg_b;
 
+// Theme background color (0–255), used for gap/padding quads.
+extern volatile int g_theme_bg_r;
+extern volatile int g_theme_bg_g;
+extern volatile int g_theme_bg_b;
+
 // Window padding in logical pixels (written by Zig at startup)
 extern volatile int g_padding_left;
 extern volatile int g_padding_right;
