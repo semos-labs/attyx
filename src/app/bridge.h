@@ -44,6 +44,11 @@ int attyx_should_quit(void);
 // Implemented in Zig (terminal.zig).
 void attyx_send_input(const uint8_t* bytes, int len);
 
+// Clear screen and scrollback (Cmd+K / Ctrl+Shift+K).
+// Signals the PTY thread to clear the engine state directly and send
+// a form feed to the shell for prompt redraw.
+void attyx_clear_screen(void);
+
 // Copy text to system clipboard (callable from any thread).
 void attyx_clipboard_copy(const char* text, int len);
 
@@ -410,6 +415,7 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_PANE_RESIZE_RIGHT 63
 #define ATTYX_ACTION_TAB_SELECT_1     64
 #define ATTYX_ACTION_TAB_SELECT_9     72
+#define ATTYX_ACTION_CLEAR_SCREEN     73
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.

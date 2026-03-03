@@ -215,6 +215,9 @@ static int dispatchAction(uint8_t act) {
         case ATTYX_ACTION_CLOSE_WINDOW:
             glfwSetWindowShouldClose(g_window, 1);
             return 1;
+        case ATTYX_ACTION_CLEAR_SCREEN:
+            attyx_clear_screen();
+            return 1;
         case ATTYX_ACTION_SEND_SEQUENCE:
             if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
                 void (*send_fn)(const uint8_t*, int) =
@@ -313,6 +316,19 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         uint8_t m = buildGlfwMods(mods);
         uint8_t act = attyx_keybind_match(matchKey, m, matchCp);
         if (act != ATTYX_ACTION_NONE && dispatchAction(act)) {
+            g_suppress_char = 1;
+            return;
+        }
+    }
+
+    // Alt+Arrow: send word movement sequences (ESC b / ESC f)
+    if (alt && !ctrl && !(mods & GLFW_MOD_SUPER)) {
+        if (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) {
+            const uint8_t *seq = (key == GLFW_KEY_LEFT)
+                ? (const uint8_t *)"\x1b" "b" : (const uint8_t *)"\x1b" "f";
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(seq, 2);
             g_suppress_char = 1;
             return;
         }
@@ -587,6 +603,11 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                 attyx_split_click(col, row);
             }
 
+            // Adjust row to content space for selection and cell access.
+            // Tab bar, statusbar, overlay, and split all use grid-space row above.
+            row -= g_grid_top_offset;
+            if (row < 0) row = 0;
+
             // Ctrl+click opens hyperlink
             if (mods & GLFW_MOD_CONTROL) {
                 int cols = g_cols, nrows = g_rows;
@@ -766,6 +787,8 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
 
         int col, row;
         mouseToCell(mx, my, &col, &row);
+        row -= g_grid_top_offset;
+        if (row < 0) row = 0;
         if (col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (g_click_count >= 3) {
@@ -794,6 +817,8 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     if (!g_mouse_tracking && !g_left_down) {
         int col, row;
         mouseToCell(mx, my, &col, &row);
+        row -= g_grid_top_offset;
+        if (row < 0) row = 0;
         int cols = g_cols, nrows = g_rows;
 
         // OSC 8 link check
