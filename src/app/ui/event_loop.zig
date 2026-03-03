@@ -118,6 +118,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // AI explain toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_ai_explain, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.isVisible(.ai_demo)) {
+                    ai.cancelAi(ctx);
+                } else {
+                    mgr.show(.ai_demo);
+                    ai.startExplainInvocation(ctx);
+                }
+                publish.publishOverlays(ctx);
+            }
+        }
+
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
 
@@ -170,7 +183,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         },
                         .context => ai.toggleContextPreview(ctx),
                         .insert => if (ai.g_ai_edit != null) ai.handleEditInsertAction(ctx) else ai.handleInsertAction(ctx),
-                        .copy => if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
+                        .copy => if (ai.g_ai_explain != null) ai.handleExplainCopyAction(ctx) else if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
                         .retry => ai.handleRetryAction(ctx),
                         .accept => ai.handleEditAcceptAction(ctx),
                         .reject => ai.handleEditRejectAction(ctx),
@@ -203,7 +216,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             },
                             .context => ai.toggleContextPreview(ctx),
                             .insert => ai.handleInsertAction(ctx),
-                            .copy => if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
+                            .copy => if (ai.g_ai_explain != null) ai.handleExplainCopyAction(ctx) else if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
                             .retry => ai.handleRetryAction(ctx),
                             .custom_0 => ai.handleRewriteReplaceAction(ctx),
                             else => {},

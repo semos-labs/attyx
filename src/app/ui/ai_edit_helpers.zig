@@ -247,6 +247,10 @@ pub fn cancelAi(ctx: *PtyThreadCtx) void {
         rw.deinit();
         ai.g_ai_rewrite = null;
     }
+    if (ai.g_ai_explain) |*ex| {
+        ex.deinit();
+        ai.g_ai_explain = null;
+    }
     terminal.g_ai_prompt_active = 0;
 }
 
@@ -447,6 +451,14 @@ pub fn handleRewriteCopyAction(_: *PtyThreadCtx) void {
 // ---------------------------------------------------------------------------
 
 pub fn handleOverlayEsc(ctx: *PtyThreadCtx) void {
+    // Explain mode Esc handling
+    if (ai.g_ai_explain) |*ex| {
+        _ = ex;
+        cancelAi(ctx);
+        publish.publishOverlays(ctx);
+        return;
+    }
+
     // Rewrite mode Esc handling
     if (ai.g_ai_rewrite) |*rw| {
         switch (rw.state) {

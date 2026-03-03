@@ -113,6 +113,7 @@ pub export var g_statusbar_position: i32 = 0; // 0=top, 1=bottom
 pub export var g_toggle_debug_overlay: i32 = 0;
 pub export var g_toggle_anchor_demo: i32 = 0;
 pub export var g_toggle_ai_demo: i32 = 0;
+pub export var g_toggle_ai_explain: i32 = 0;
 pub export var g_overlay_has_actions: i32 = 0;
 pub export var g_tab_bar_visible: i32 = 0;
 pub var g_tab_count: i32 = 1;
@@ -141,6 +142,9 @@ export fn attyx_toggle_anchor_demo() void {
 }
 export fn attyx_toggle_ai_demo() void {
     @atomicStore(i32, &g_toggle_ai_demo, 1, .seq_cst);
+}
+export fn attyx_toggle_ai_explain() void {
+    @atomicStore(i32, &g_toggle_ai_explain, 1, .seq_cst);
 }
 export fn attyx_overlay_esc() void { input.overlayEsc(); }
 export fn attyx_overlay_tab() void { input.overlayTab(); }

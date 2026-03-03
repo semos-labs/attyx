@@ -28,6 +28,7 @@ pub fn actionString(inv: InvocationType) []const u8 {
         .general => "summarize_output",
         .edit_selection => "edit_selection",
         .command_rewrite => "command_rewrite",
+        .command_explain => "command_explain",
     };
 }
 
@@ -50,6 +51,62 @@ pub fn serializeRewriteRequest(allocator: std.mem.Allocator, command: []const u8
     try writeJsonString(w, "user_request");
     try w.writeAll(":");
     try writeJsonString(w, user_request);
+    try w.writeAll("}");
+
+    return list.toOwnedSlice(allocator);
+}
+
+/// Serialize an explain-mode request body for POST /v1/ai/execute.
+/// Caller owns the returned slice.
+pub fn serializeExplainRequest(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .{};
+    errdefer list.deinit(allocator);
+    const w = list.writer(allocator);
+
+    try w.writeAll("{");
+    try writeJsonString(w, "action");
+    try w.writeAll(":");
+    try writeJsonString(w, "command_explain");
+
+    // context object
+    try w.writeAll(",");
+    try writeJsonString(w, "context");
+    try w.writeAll(":{");
+    try writeJsonString(w, "command");
+    try w.writeAll(":");
+    try writeJsonString(w, command);
+    try w.writeAll(",");
+    try writeJsonString(w, "os");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // client object
+    try w.writeAll(",");
+    try writeJsonString(w, "client");
+    try w.writeAll(":{");
+    try writeJsonString(w, "app");
+    try w.writeAll(":");
+    try writeJsonString(w, "attyx");
+    try w.writeAll(",");
+    try writeJsonString(w, "version");
+    try w.writeAll(":");
+    try writeJsonString(w, "0.1.0");
+    try w.writeAll(",");
+    try writeJsonString(w, "platform");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // options
+    try w.writeAll(",");
+    try writeJsonString(w, "options");
+    try w.writeAll(":{");
+    try writeJsonString(w, "verbosity");
+    try w.writeAll(":");
+    try writeJsonString(w, "normal");
+    try w.writeAll("}");
+
     try w.writeAll("}");
 
     return list.toOwnedSlice(allocator);
@@ -340,4 +397,18 @@ test "serializeRequest: null fields omitted" {
     // os and client should still be present
     try std.testing.expect(std.mem.indexOf(u8, json, "\"os\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
+}
+
+test "serializeExplainRequest: JSON structure" {
+    const alloc = std.testing.allocator;
+    const json = try serializeExplainRequest(alloc, "find . -name '*.zig'");
+    defer alloc.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"action\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command_explain\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "find . -name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"options\"") != null);
 }

@@ -16,6 +16,7 @@ const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_content = attyx.overlay_ai_content;
 const overlay_ai_error = attyx.overlay_ai_error;
 const overlay_ai_edit = attyx.overlay_ai_edit;
+const overlay_ai_explain = attyx.overlay_ai_explain;
 const update_check = attyx.overlay_update_check;
 const OverlayManager = overlay_mod.OverlayManager;
 
@@ -25,8 +26,7 @@ const c = terminal.c;
 const input = @import("input.zig");
 const publish = @import("publish.zig");
 const ai_edit = @import("ai_edit_helpers.zig");
-
-/// Re-export edit helper functions for callers that import ai.zig.
+const ai_explain_helpers = @import("ai_explain_helpers.zig");
 pub const renderEditPromptCard = ai_edit.renderEditPromptCard;
 pub const consumeAiPromptInput = ai_edit.consumeAiPromptInput;
 pub const handleEditAcceptAction = ai_edit.handleEditAcceptAction;
@@ -36,14 +36,15 @@ pub const handleNormalDoneResponse = ai_edit.handleNormalDoneResponse;
 pub const handleEditRejectAction = ai_edit.handleEditRejectAction;
 pub const handleRetryAction = ai_edit.handleRetryAction;
 pub const cancelAi = ai_edit.cancelAi;
-
-/// Re-export rewrite helper functions.
 pub const renderRewritePromptCard = ai_edit.renderRewritePromptCard;
 pub const consumeRewritePromptInput = ai_edit.consumeRewritePromptInput;
 pub const handleRewriteReplaceAction = ai_edit.handleRewriteReplaceAction;
 pub const handleRewriteCopyAction = ai_edit.handleRewriteCopyAction;
 pub const handleOverlayEsc = ai_edit.handleOverlayEsc;
 pub const pollPromptInput = ai_edit.pollPromptInput;
+pub const startExplainInvocation = ai_explain_helpers.startExplainInvocation;
+pub const handleExplainDoneResponse = ai_explain_helpers.handleExplainDoneResponse;
+pub const handleExplainCopyAction = ai_explain_helpers.handleExplainCopyAction;
 
 pub var g_streaming: ?overlay_streaming.StreamingOverlay = null;
 pub var g_context_bundle: ?overlay_context.ContextBundle = null;
@@ -55,6 +56,7 @@ pub var g_ai_request_body: ?[]u8 = null;
 const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
 pub var g_ai_edit: ?overlay_ai_edit.EditContext = null;
 pub var g_ai_rewrite: ?overlay_ai_edit.RewriteContext = null;
+pub var g_ai_explain: ?overlay_ai_explain.ExplainContext = null;
 pub var g_update_checker: ?update_check.UpdateChecker = null;
 
 pub fn captureAiContext(ctx: *PtyThreadCtx) void {
@@ -133,7 +135,7 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
 
     // Build URL — edit/rewrite modes use non-streaming endpoint
     var url_buf: [512]u8 = undefined;
-    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite)
+    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite or bundle.invocation == .command_explain)
         "/v1/ai/execute"
     else
         "/v1/ai/execute/stream";
@@ -326,10 +328,13 @@ pub fn tickAi(ctx: *PtyThreadCtx) void {
             .done => {
                 const is_edit = if (g_ai_edit) |*edit| edit.state == .streaming else false;
                 const is_rewrite = if (g_ai_rewrite) |*rw| rw.state == .streaming else false;
+                const is_explain = if (g_ai_explain) |*ex| ex.state == .streaming else false;
                 if (is_edit) {
                     handleEditDoneResponse(ctx, sse);
                 } else if (is_rewrite) {
                     ai_edit.handleRewriteDoneResponse(ctx, sse);
+                } else if (is_explain) {
+                    handleExplainDoneResponse(ctx, sse);
                 } else {
                     handleNormalDoneResponse(ctx, sse, mgr);
                 }
@@ -438,6 +443,7 @@ pub fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_conte
         .general => "AI Response",
         .edit_selection => "Edit Selection",
         .command_rewrite => "Rewrite Command",
+        .command_explain => "Explain Command",
     } else "AI Response";
 
     var bar = attyx.overlay_action.ActionBar{};

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ai_auth = @import("ai_auth.zig");
+const ai_stream_format = @import("ai_stream_format.zig");
 
 pub const ring_size: u32 = 16384;
 
@@ -374,7 +375,7 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
                 self.setStatus(.errored);
             },
             .final_event => {
-                formatFinalResponse(self, data);
+                ai_stream_format.formatFinalResponse(self, data);
                 self.setStatus(.done);
             },
             else => {},
@@ -382,111 +383,10 @@ fn processSseLine(self: *SseThread, line: []const u8, current_event: *SseEventTy
     }
 }
 
-fn formatFinalResponse(self: *SseThread, data: []const u8) void {
-    // Edit/rewrite response: edited_text or rewritten_command → push raw replacement + \0 + summary
-    if (ai_auth.extractJsonString(data, "edited_text") orelse ai_auth.extractJsonString(data, "rewritten_command")) |replacement| {
-        _ = self.delta_ring.push(replacement);
-        _ = self.delta_ring.push(&[_]u8{0}); // null separator
-        if (ai_auth.extractJsonString(data, "summary")) |s| {
-            _ = self.delta_ring.push(s);
-        }
-        return;
-    }
-
-    if (ai_auth.extractJsonString(data, "summary")) |summary| {
-        _ = self.delta_ring.push(summary);
-        _ = self.delta_ring.push("\n");
-    }
-    if (ai_auth.extractJsonString(data, "explanation")) |explanation| {
-        _ = self.delta_ring.push("\n");
-        _ = self.delta_ring.push(explanation);
-        _ = self.delta_ring.push("\n");
-    }
-    pushJsonStringArray(self, data, "highlights", "Highlights");
-    pushJsonStringArray(self, data, "causes", "Causes");
-    pushJsonStringArray(self, data, "key_points", "Key Points");
-    pushJsonStringArray(self, data, "errors", "Errors");
-    pushJsonStringArray(self, data, "warnings", "Warnings");
-    pushJsonStringArray(self, data, "next_steps", "Next Steps");
-    pushJsonStringArray(self, data, "notes", "Notes");
-    pushJsonCommandArray(self, data);
-}
-fn findJsonArrayStart(json: []const u8, key: []const u8) ?usize {
-    var pos: usize = 0;
-    while (pos + key.len + 4 < json.len) : (pos += 1) {
-        if (json[pos] == '"' and
-            pos + 1 + key.len < json.len and
-            std.mem.eql(u8, json[pos + 1 .. pos + 1 + key.len], key) and
-            json[pos + 1 + key.len] == '"')
-        {
-            var vpos = pos + 2 + key.len;
-            while (vpos < json.len and (json[vpos] == ' ' or json[vpos] == ':')) vpos += 1;
-            if (vpos < json.len and json[vpos] == '[') return vpos + 1;
-        }
-    }
-    return null;
-}
-
-fn pushJsonStringArray(self: *SseThread, json: []const u8, key: []const u8, header: []const u8) void {
-    const start = findJsonArrayStart(json, key) orelse return;
-    var header_pushed = false;
-    var i = start;
-    while (i < json.len) {
-        if (json[i] == ']') break;
-        if (json[i] == '"') {
-            const s = i + 1;
-            var e = s;
-            while (e < json.len and json[e] != '"') {
-                if (json[e] == '\\') e += 1;
-                e += 1;
-            }
-            if (e > s) {
-                if (!header_pushed) {
-                    _ = self.delta_ring.push("\n");
-                    _ = self.delta_ring.push(header);
-                    _ = self.delta_ring.push(":\n");
-                    header_pushed = true;
-                }
-                _ = self.delta_ring.push("- ");
-                _ = self.delta_ring.push(json[s..e]);
-                _ = self.delta_ring.push("\n");
-            }
-            i = e + 1;
-        } else i += 1;
-    }
-}
-
-fn pushJsonCommandArray(self: *SseThread, json: []const u8) void {
-    const start = findJsonArrayStart(json, "commands") orelse return;
-    var header_pushed = false;
-    var i = start;
-    while (i < json.len) {
-        if (json[i] == ']') break;
-        if (json[i] == '{') {
-            var depth: usize = 1;
-            var e = i + 1;
-            while (e < json.len and depth > 0) : (e += 1) {
-                if (json[e] == '{') depth += 1 else if (json[e] == '}') depth -= 1;
-            }
-            const obj = json[i..e];
-            if (ai_auth.extractJsonString(obj, "command")) |cmd| {
-                if (!header_pushed) {
-                    _ = self.delta_ring.push("\nCommands:\n");
-                    header_pushed = true;
-                }
-                _ = self.delta_ring.push("```\n");
-                _ = self.delta_ring.push(cmd);
-                _ = self.delta_ring.push("\n```\n");
-                if (ai_auth.extractJsonString(obj, "risk")) |risk| {
-                    _ = self.delta_ring.push("Risk: ");
-                    _ = self.delta_ring.push(risk);
-                    _ = self.delta_ring.push("\n");
-                }
-            }
-            i = e;
-        } else i += 1;
-    }
-}
+// Format helpers (formatFinalResponse, findJsonArrayStart, pushJsonStringArray,
+// pushJsonCommandArray, pushExplainBreakdown) are in ai_stream_format.zig.
+const formatFinalResponse = ai_stream_format.formatFinalResponse;
+const findJsonArrayStart = ai_stream_format.findJsonArrayStart;
 
 test "DeltaRing: basic, partial drain, reset, wraparound" {
     var ring = DeltaRing{};
