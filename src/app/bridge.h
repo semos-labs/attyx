@@ -336,13 +336,10 @@ extern volatile int g_toggle_ai_demo;
 void attyx_toggle_ai_demo(void);
 
 extern volatile int g_toggle_session_switcher;
-extern volatile int g_session_switcher_active;
 void attyx_toggle_session_switcher(void);
 
-// Session switcher navigation (input thread -> PTY thread via Zig functions)
-void attyx_session_switcher_nav_up(void);
-void attyx_session_switcher_nav_down(void);
-void attyx_session_switcher_action(int action); // 1=switch, 2=new, 3=kill
+extern volatile int g_create_session_direct;
+void attyx_create_session_direct(void);
 
 // Overlay interaction (PTY thread -> input thread: read-only signal)
 extern volatile int g_overlay_has_actions;
@@ -426,6 +423,8 @@ extern volatile int        g_popup_image_placement_count;
 #define ATTYX_ACTION_TAB_SELECT_9     72
 #define ATTYX_ACTION_CLEAR_SCREEN     73
 #define ATTYX_ACTION_SESSION_SWITCHER 74
+#define ATTYX_ACTION_SESSION_CREATE  75
+#define ATTYX_ACTION_SESSION_KILL    76
 
 // Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
 // g_keybind_matched_seq/len are set before returning.

@@ -14,19 +14,14 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const input = @import("input.zig");
+const session_actions = @import("session_actions.zig");
 
 /// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
 pub var g_force_full_redraw: bool = false;
 
-/// Persist the current tab/split layout to the daemon.
-pub fn saveSessionLayout(ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse return;
-    var buf: [4096]u8 = undefined;
-    const len = ctx.tab_mgr.serializeLayout(&buf) catch return;
-    if (len > 0) {
-        sc.sendSaveLayout(buf[0..len]) catch {};
-    }
-}
+/// Re-exports from session_actions (consumed by other modules).
+pub const saveSessionLayout = session_actions.saveSessionLayout;
+pub const sendActiveFocusPanes = session_actions.sendActiveFocusPanes;
 
 // ---------------------------------------------------------------------------
 // Tab lifecycle helpers
@@ -137,36 +132,17 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
 
     switch (action) {
         .split_vertical => {
-            layout.splitPane(.vertical, ctx.allocator, publish.ctxPty(ctx).master) catch |err| {
-                logging.err("split", "splitPane(vertical) failed: {}", .{err});
-                return;
-            };
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-            layout.layout(pty_rows, ctx.grid_cols);
-            updateSplitActive(ctx);
-            switchActiveTab(ctx);
-            saveSessionLayout(ctx);
-            logging.info("split", "vertical split, {d} panes", .{layout.pane_count});
+            doSplit(ctx, layout, .vertical);
         },
         .split_horizontal => {
-            layout.splitPane(.horizontal, ctx.allocator, publish.ctxPty(ctx).master) catch |err| {
-                logging.err("split", "splitPane(horizontal) failed: {}", .{err});
-                return;
-            };
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-            layout.layout(pty_rows, ctx.grid_cols);
-            updateSplitActive(ctx);
-            switchActiveTab(ctx);
-            saveSessionLayout(ctx);
-            logging.info("split", "horizontal split, {d} panes", .{layout.pane_count});
+            doSplit(ctx, layout, .horizontal);
         },
         .pane_close => {
+            if (ctx.session_client) |sc|
+                if (layout.focusedPane().daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
             const result = layout.closePane(ctx.allocator);
             if (result == .last_pane) {
-                if (ctx.tab_mgr.count <= 1) {
-                    c.attyx_request_quit();
-                    return;
-                }
+                if (ctx.tab_mgr.count <= 1) { c.attyx_request_quit(); return; }
                 ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
                 publish.updateGridTopOffset(ctx);
             } else {
@@ -176,7 +152,6 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
             }
             switchActiveTab(ctx);
             saveSessionLayout(ctx);
-            logging.info("split", "pane closed", .{});
         },
         .pane_focus_up => { layout.navigate(.up); switchActiveTab(ctx); },
         .pane_focus_down => { layout.navigate(.down); switchActiveTab(ctx); },
@@ -257,48 +232,6 @@ pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
     }
 }
 
-/// Send focus_panes for all daemon-backed panes in the active tab.
-/// Reinitializes engines for panes that weren't in the previous focus set,
-/// since the daemon will replay their scrollback into the engine.
-pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse return;
-    const layout = ctx.tab_mgr.activeLayout();
-    var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
-    var count: usize = 0;
-    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-    const lc = layout.collectLeaves(&leaves);
-    for (leaves[0..lc]) |leaf| {
-        if (leaf.pane.daemon_pane_id) |dpid| {
-            pane_ids[count] = dpid;
-            count += 1;
-
-            // If this pane wasn't in the previous focus set, the daemon will
-            // replay its scrollback. Reinit the engine so replay doesn't
-            // stack on top of stale content from a prior focus cycle.
-            var was_focused = false;
-            for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
-                if (old_id == dpid) {
-                    was_focused = true;
-                    break;
-                }
-            }
-            if (!was_focused) {
-                leaf.pane.needs_engine_reinit = true;
-            }
-        }
-    }
-
-    // Update tracking
-    for (0..count) |i| {
-        ctx.last_focus_panes[i] = pane_ids[i];
-    }
-    ctx.last_focus_count = @intCast(count);
-
-    if (count > 0) {
-        sc.sendFocusPanes(pane_ids[0..count]) catch {};
-    }
-}
-
 /// Compute split gap sizes from window padding and cell dimensions.
 pub fn computeSplitGaps() struct { h: u16, v: u16 } {
     const cell_w: f32 = c.g_cell_w_pts;
@@ -316,6 +249,36 @@ pub fn computeSplitGaps() struct { h: u16, v: u16 } {
 pub fn updateSplitActive(ctx: *PtyThreadCtx) void {
     const layout = ctx.tab_mgr.activeLayout();
     @atomicStore(i32, &terminal.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
+}
+
+fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.Direction) void {
+    const Pane = @import("../pane.zig").Pane;
+
+    if (ctx.sessions_enabled) {
+        const sc = ctx.session_client orelse return;
+        const sz = layout.splitChildSize(dir, layout.pool[layout.focused].rect) orelse return;
+        sc.sendCreatePane(sz.rows, sz.cols) catch return;
+        const pane_id = sc.waitForPaneCreated(5000) catch return;
+        const new_pane = ctx.allocator.create(Pane) catch return;
+        new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols) catch {
+            ctx.allocator.destroy(new_pane);
+            return;
+        };
+        new_pane.daemon_pane_id = pane_id;
+        layout.splitPaneWith(dir, new_pane) catch {
+            new_pane.deinit();
+            ctx.allocator.destroy(new_pane);
+            return;
+        };
+    } else {
+        layout.splitPane(dir, ctx.allocator, publish.ctxPty(ctx).master) catch return;
+    }
+
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    layout.layout(pty_rows, ctx.grid_cols);
+    updateSplitActive(ctx);
+    switchActiveTab(ctx);
+    saveSessionLayout(ctx);
 }
 
 /// Update global routing pointers and refresh the cell buffer after a tab switch.
@@ -409,8 +372,8 @@ pub fn processPopupToggle(ctx: *PtyThreadCtx) void {
             }
             const cfg = ctx.popup_configs[i];
             logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
-            const grid_cols: u16 = @intCast(publish.ctxEngine(ctx).state.grid.cols);
-            const grid_rows: u16 = @intCast(publish.ctxEngine(ctx).state.grid.rows);
+            const grid_cols: u16 = ctx.grid_cols;
+            const grid_rows: u16 = ctx.grid_rows;
             const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
             defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
@@ -459,6 +422,21 @@ pub fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
     logging.info("popup", "exit code={d} stdout_fd={d} alt_active={}", .{
         code, ps.pane.pty.stdout_read_fd, publish.ctxEngine(ctx).state.alt_active,
     });
+
+    // Session picker: intercept exit and handle captured stdout
+    if (ctx.session_picker_active) {
+        if (code == 0) {
+            const captured = popup_mod.readCapturedStdout(ctx.allocator, ps.pane.pty.stdout_read_fd);
+            if (captured) |text| {
+                defer ctx.allocator.free(text);
+                session_actions.handleSessionPickerResult(ctx, text);
+            }
+        }
+        ctx.session_picker_active = false;
+        closePopup(ctx);
+        return;
+    }
+
     if (code == 0) {
         const pcfg = ctx.popup_configs[ps.config_index];
         if (pcfg.on_return_cmd) |cmd| {
@@ -587,21 +565,13 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
         }
     }
 
-    // Tab always_show (hot-reloadable; tab_appearance is NOT hot-reloadable)
-    {
-        const new_always: i32 = if (new_cfg.tab_always_show) 1 else 0;
-        if (new_always != terminal.g_tab_always_show) {
-            terminal.g_tab_always_show = new_always;
-            publish.updateGridOffsets(ctx);
-        }
+    // Tab always_show
+    const new_always: i32 = if (new_cfg.tab_always_show) 1 else 0;
+    if (new_always != terminal.g_tab_always_show) {
+        terminal.g_tab_always_show = new_always;
+        publish.updateGridOffsets(ctx);
     }
-
-    // Reflow
-    if (new_cfg.reflow_enabled != publish.ctxEngine(ctx).state.reflow_on_resize) {
-        publish.ctxEngine(ctx).state.reflow_on_resize = new_cfg.reflow_enabled;
-    }
-
-    // Keybindings
+    publish.ctxEngine(ctx).state.reflow_on_resize = new_cfg.reflow_enabled;
     {
         var ph: [4]keybinds_mod.PopupHotkey = undefined;
         var ph_count: u8 = 0;
@@ -618,9 +588,7 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
             ph[0..ph_count],
         );
         keybinds_mod.installTable(&new_table);
-        logging.info("keybinds", "reloaded {d} keybind(s)", .{new_table.count});
     }
-
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }

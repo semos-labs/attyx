@@ -64,22 +64,6 @@ pub fn overlayScroll(col: c_int, row: c_int, delta: c_int) c_int {
 }
 
 // ---------------------------------------------------------------------------
-// Session switcher navigation
-// ---------------------------------------------------------------------------
-
-const session_switcher = @import("session_switcher.zig");
-
-pub fn sessionSwitcherNavUp() void {
-    session_switcher.sessionNavUp();
-}
-pub fn sessionSwitcherNavDown() void {
-    session_switcher.sessionNavDown();
-}
-pub fn sessionSwitcherAction(action: c_int) void {
-    session_switcher.sessionAction(action);
-}
-
-// ---------------------------------------------------------------------------
 // Grid-based search bar input rings
 // ---------------------------------------------------------------------------
 

@@ -156,6 +156,70 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
     stdout.writeAll("\n") catch {};
 }
 
+pub fn doKillDaemon() void {
+    const stdout = std.fs.File.stdout();
+    const home = std.posix.getenv("HOME") orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+    var path_buf: [256]u8 = undefined;
+    const socket_path = std.fmt.bufPrint(&path_buf, "{s}/.config/attyx/sessions.sock", .{home}) catch {
+        stdout.writeAll("error: path too long\n") catch {};
+        return;
+    };
+
+    // Try to connect and get the daemon's PID
+    const fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+        return;
+    };
+    defer std.posix.close(fd);
+
+    const addr = std.net.Address.initUnix(socket_path) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+        return;
+    };
+    std.posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
+        stdout.writeAll("No daemon running (stale socket removed).\n") catch {};
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+        return;
+    };
+
+    // Get peer PID via platform-specific socket option
+    const pid = getPeerPid(fd);
+    if (pid) |p| {
+        std.posix.kill(p, std.posix.SIG.TERM) catch {};
+        // Wait briefly for daemon to exit and clean up
+        std.posix.nanosleep(0, 100_000_000);
+        stdout.writeAll("Daemon killed.\n") catch {};
+    } else {
+        stdout.writeAll("Connected but could not determine daemon PID.\n") catch {};
+    }
+
+    // Remove socket file (daemon's defer may have already done this)
+    std.fs.deleteFileAbsolute(socket_path) catch {};
+}
+
+fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
+    if (comptime @import("builtin").os.tag == .macos) {
+        // macOS: SOL_LOCAL=0, LOCAL_PEERPID=2
+        var pid: c_int = 0;
+        var len: std.posix.socklen_t = @sizeOf(c_int);
+        const rc = std.c.getsockopt(fd, 0, 2, @ptrCast(&pid), &len);
+        if (rc == 0 and pid > 0) return @intCast(pid);
+    } else if (comptime @import("builtin").os.tag == .linux) {
+        // Linux: SOL_SOCKET=1, SO_PEERCRED=17
+        const Ucred = extern struct { pid: c_int, uid: c_uint, gid: c_uint };
+        var cred: Ucred = undefined;
+        var len: std.posix.socklen_t = @sizeOf(Ucred);
+        const rc = std.c.getsockopt(fd, 1, 17, @ptrCast(&cred), &len);
+        if (rc == 0 and cred.pid > 0) return @intCast(cred.pid);
+    }
+    return null;
+}
+
 pub fn doUninstall() void {
     const stdout = std.fs.File.stdout();
     const home = std.posix.getenv("HOME") orelse {

@@ -57,7 +57,8 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
 
     ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
 
-    // Forward resize to each session-backed pane on the daemon
+    // Forward resize to each session-backed pane on the daemon.
+    // Use each pane's actual split rect dimensions, not the full terminal size.
     if (ctx.session_client) |sc| {
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             if (maybe_layout.*) |*lay| {
@@ -65,7 +66,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
                 const rlc = lay.collectLeaves(&rleaves);
                 for (rleaves[0..rlc]) |rleaf| {
                     if (rleaf.pane.daemon_pane_id) |dpid| {
-                        sc.sendPaneResize(dpid, pty_rows, @intCast(rc)) catch {};
+                        sc.sendPaneResize(dpid, rleaf.rect.rows, rleaf.rect.cols) catch {};
                     }
                 }
             }

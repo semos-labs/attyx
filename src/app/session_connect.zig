@@ -87,7 +87,7 @@ fn startDaemon() !void {
     _ = posix.waitpid(pid, 0);
 }
 
-fn getExePath(buf: *[1024]u8) ?[]const u8 {
+pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
     if (comptime @import("builtin").os.tag == .macos) {
         var size: u32 = buf.len;
         if (_NSGetExecutablePath(buf, &size) == 0) {

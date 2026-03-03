@@ -103,6 +103,8 @@ pub const Action = enum(u8) {
     tab_select_9 = 72,
     clear_screen = 73,
     session_switcher_toggle = 74,
+    session_create = 75,
+    session_kill = 76,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -305,6 +307,8 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "tab_select_9", Action.tab_select_9 },
         .{ "clear_screen", Action.clear_screen },
         .{ "session_switcher_toggle", Action.session_switcher_toggle },
+        .{ "session_create", Action.session_create },
+        .{ "session_kill", Action.session_kill },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -327,10 +331,11 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'r' }, .config_reload),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'd' }, .debug_toggle),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'a' }, .anchor_demo_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .new_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 's' }, .session_switcher_toggle),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .session_create),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'd' }, .session_kill),
         };
         // Tab management (cross-platform)
         list = list ++ &[_]Keybind{
