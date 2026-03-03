@@ -123,9 +123,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
         _ = tcsetattr(STDIN_FD, TCSANOW, &orig_termios);
     };
 
-    // Hide cursor
-    writeStderr("\x1b[?25l");
-    defer writeStderr("\x1b[?25h");
+    // Show cursor (popup renderer draws the real terminal cursor)
+    writeStderr("\x1b[?25h");
 
     // Main loop state
     var selected: u8 = 0;
@@ -285,13 +284,12 @@ fn render(
     // Clear screen and move home
     pos += writeSlice(&buf, pos, "\x1b[2J\x1b[H");
 
-    // Title / filter line
+    // Title / filter line — "  > " prefix = 4 visual cols
+    pos += writeSlice(&buf, pos, "  \x1b[90m>\x1b[0m ");
     if (filter.len > 0) {
-        pos += writeSlice(&buf, pos, "  \x1b[90m\xe2\x9a\xa1\x1b[0m "); // ⚡
         pos += writeSlice(&buf, pos, filter);
-        pos += writeSlice(&buf, pos, "\x1b[90m\xe2\x96\x8f\x1b[0m"); // ▏ cursor
     } else {
-        pos += writeSlice(&buf, pos, "  \x1b[90m\xe2\x9a\xa1 Pick a sesh\x1b[0m");
+        pos += writeSlice(&buf, pos, "\x1b[90mfilter...\x1b[0m");
     }
     pos += writeSlice(&buf, pos, "\r\n");
 
@@ -338,6 +336,12 @@ fn render(
 
     // Footer
     pos += writeSlice(&buf, pos, "\r\n  \x1b[90m\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 esc close \xe2\x80\xa2 enter select \xe2\x80\xa2 del kill\x1b[0m\r\n");
+
+    // Position cursor on filter line (row 1, after "  > " = 4 visual cols)
+    var cursor_buf: [16]u8 = undefined;
+    const cursor_col = 5 + filter.len; // 1-indexed
+    const cursor_seq = std.fmt.bufPrint(&cursor_buf, "\x1b[1;{d}H", .{cursor_col}) catch "";
+    pos += writeSlice(&buf, pos, cursor_seq);
 
     _ = posix.write(STDERR_FD, buf[0..pos]) catch {};
 }

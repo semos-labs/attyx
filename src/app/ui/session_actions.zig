@@ -101,6 +101,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         .border_fg = .{ 80, 80, 120 },
         .capture_stdout = true,
         .direct_exec = true,
+        .pad = .{ .top = 1, .bottom = 1, .left = 1, .right = 1 },
         .bg_color = .{ 20, 20, 30 },
         .bg_opacity = 230,
     };
