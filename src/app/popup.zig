@@ -465,47 +465,75 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
 }
 
 /// Read captured stdout from the popup's pipe fd.
-/// Returns allocated text (caller owns) with trailing whitespace trimmed,
-/// or null if nothing was captured. Only works when capture_stdout was set.
+/// Returns allocated text (caller owns) with escape sequences stripped
+/// and whitespace trimmed, or null if nothing was captured.
+/// Takes only the last non-empty line to skip shell init noise
+/// (OSC 7 from shell integration, MOTD, etc.).
 pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
     if (fd == -1) return null;
-    var result: std.ArrayList(u8) = .{};
+    var raw: std.ArrayList(u8) = .{};
     var buf: [4096]u8 = undefined;
     while (true) {
         const n = posix.read(fd, &buf) catch break;
         if (n == 0) break;
-        result.appendSlice(allocator, buf[0..n]) catch {
-            result.deinit(allocator);
-            return null;
-        };
+        raw.appendSlice(allocator, buf[0..n]) catch { raw.deinit(allocator); return null; };
     }
-    // Trim trailing whitespace/newlines
-    while (result.items.len > 0) {
-        const ch = result.items[result.items.len - 1];
-        if (ch == '\n' or ch == '\r' or ch == ' ' or ch == '\t') {
-            result.items.len -= 1;
-        } else break;
+    defer raw.deinit(allocator);
+    if (raw.items.len == 0) return null;
+
+    // Last non-empty line — skip trailing newlines, then find line start.
+    var end = raw.items.len;
+    while (end > 0 and (raw.items[end - 1] == '\n' or raw.items[end - 1] == '\r')) end -= 1;
+    if (end == 0) return null;
+    var line_start = end;
+    while (line_start > 0 and raw.items[line_start - 1] != '\n' and raw.items[line_start - 1] != '\r') line_start -= 1;
+    const line = raw.items[line_start..end];
+
+    // Strip escape sequences (CSI, OSC, single-char) and control characters.
+    var result: std.ArrayList(u8) = .{};
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == 0x1B) {
+            i = skipEscape(line, i);
+        } else if (line[i] < 0x20 or line[i] == 0x7F) {
+            i += 1;
+        } else {
+            result.append(allocator, line[i]) catch { result.deinit(allocator); return null; };
+            i += 1;
+        }
     }
-    // Trim leading whitespace
+    // Trim whitespace
+    while (result.items.len > 0 and
+        (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t'))
+        result.items.len -= 1;
     var start: usize = 0;
-    while (start < result.items.len) {
-        const ch = result.items[start];
-        if (ch == ' ' or ch == '\t') {
-            start += 1;
-        } else break;
-    }
+    while (start < result.items.len and (result.items[start] == ' ' or result.items[start] == '\t'))
+        start += 1;
     if (start > 0) {
         std.mem.copyForwards(u8, result.items[0..result.items.len - start], result.items[start..result.items.len]);
         result.items.len -= start;
     }
-    if (result.items.len == 0) {
-        result.deinit(allocator);
-        return null;
-    }
-    return result.toOwnedSlice(allocator) catch {
-        result.deinit(allocator);
-        return null;
-    };
+    if (result.items.len == 0) { result.deinit(allocator); return null; }
+    return result.toOwnedSlice(allocator) catch { result.deinit(allocator); return null; };
+}
+
+/// Skip an escape sequence starting at data[start] (ESC byte).
+fn skipEscape(data: []const u8, start: usize) usize {
+    var i = start + 1;
+    if (i >= data.len) return i;
+    if (data[i] == '[') { // CSI: ESC [ <params> <final>
+        i += 1;
+        while (i < data.len and data[i] >= 0x20 and data[i] <= 0x3F) : (i += 1) {}
+        if (i < data.len and data[i] >= 0x40 and data[i] <= 0x7E) i += 1;
+    } else if (data[i] == ']') { // OSC: ESC ] ... BEL or ESC ] ... ESC backslash
+        i += 1;
+        while (i < data.len) {
+            if (data[i] == 0x07) { i += 1; break; }
+            if (data[i] == 0x1B and i + 1 < data.len and data[i + 1] == '\\') { i += 2; break; }
+            i += 1;
+        }
+    } else i += 1; // single-char escape
+    return i;
 }
 
 // C functions for detached subprocess execution
@@ -518,8 +546,8 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 /// Execute `cmd_prefix value` in a detached subprocess (fire-and-forget).
-/// Uses double-fork to avoid zombies. Used when the main terminal is in
-/// alt screen and PTY injection would go to a TUI app instead of a shell.
+/// Uses double-fork to avoid zombies. The command runs invisibly — no PTY
+/// echo, nothing appears in the terminal grid or scrollback.
 pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value: []const u8) void {
     const full_slice = std.fmt.allocPrint(allocator, "{s} {s}", .{ cmd_prefix, value }) catch return;
     defer allocator.free(full_slice);
@@ -531,11 +559,9 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
 
     const pid = posix.fork() catch return;
     if (pid == 0) {
-        // First child: double-fork to detach
         const pid2 = posix.fork() catch _exit(1);
         if (pid2 != 0) _exit(0);
 
-        // Grandchild: set up env and exec the command.
         // Detect tmux socket so tools like sesh can switch sessions
         // even when attyx itself wasn't launched from tmux.
         if (getenv("TMUX") == null) {
@@ -559,7 +585,6 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
         _ = execvp(argv_ptrs[0].?, @ptrCast(&argv_ptrs));
         _exit(127);
     }
-    // Parent: wait for first child (exits immediately)
     _ = waitpid(pid, null, 0);
 }
 

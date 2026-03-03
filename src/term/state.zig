@@ -92,8 +92,8 @@ pub const TerminalState = struct {
     /// Whether to reflow content on resize (configurable, default true).
     reflow_on_resize: bool = true,
 
-    /// When true, apply() drops all actions until a line-feed arrives.
-    /// Used to suppress the shell echo of injected commands (e.g. popup on_return_cmd).
+    /// When true, apply() drops all actions until a CR or LF arrives.
+    /// Used to suppress the shell echo of injected commands.
     suppress_echo: bool = false,
 
     /// Kitty keyboard protocol flags stack (max 16 entries).
@@ -147,9 +147,9 @@ pub const TerminalState = struct {
 
     /// Apply a single Action to the terminal state.
     pub fn apply(self: *TerminalState, action: Action) void {
-        // Suppress echoed command text until a line-feed signals acceptance.
+        // Suppress echoed command text until a CR or LF signals acceptance.
         if (self.suppress_echo) {
-            if (action == .control and action.control == .lf) {
+            if (action == .control and (action.control == .lf or action.control == .cr)) {
                 self.suppress_echo = false;
             }
             return;

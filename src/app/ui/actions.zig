@@ -524,3 +524,4 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }
+
