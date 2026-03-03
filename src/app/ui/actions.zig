@@ -371,10 +371,10 @@ pub fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
                 if (publish.ctxEngine(ctx).state.alt_active and !pcfg.inject_alt) {
                     popup_mod.execDetached(ctx.allocator, cmd, text);
                 } else {
-                    _ = publish.ctxPty(ctx).writeToPty(cmd) catch {};
-                    _ = publish.ctxPty(ctx).writeToPty(" ") catch {};
-                    _ = publish.ctxPty(ctx).writeToPty(text) catch {};
-                    _ = publish.ctxPty(ctx).writeToPty("\n") catch {};
+                    const full = std.fmt.allocPrint(ctx.allocator, "{s} {s}\r", .{ cmd, text }) catch return;
+                    defer ctx.allocator.free(full);
+                    publish.ctxEngine(ctx).state.suppress_echo = true;
+                    _ = publish.ctxPty(ctx).writeToPty(full) catch {};
                 }
             } else {
                 logging.info("popup", "on_return_cmd: no captured stdout", .{});
@@ -524,3 +524,4 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }
+
