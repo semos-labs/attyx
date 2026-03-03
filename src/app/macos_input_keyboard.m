@@ -165,6 +165,13 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_CLOSE_WINDOW:
             [NSApp.keyWindow close];
             return 1;
+        case ATTYX_ACTION_CLEAR_SCREEN: {
+            const uint8_t seq[] = "\x1b[H\x1b[2J\x1b[3J";
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(seq, sizeof(seq) - 1);
+            return 1;
+        }
         case ATTYX_ACTION_SEND_SEQUENCE:
             if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
                 void (*send_fn)(const uint8_t*, int) =

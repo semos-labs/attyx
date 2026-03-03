@@ -252,6 +252,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         attyx_split_click(col, row);
     }
 
+    // Adjust row to content space for selection and cell access.
+    // Tab bar, statusbar, overlay, and split all use grid-space row above.
+    row -= g_grid_top_offset;
+    if (row < 0) row = 0;
+
     if (event.modifierFlags & NSEventModifierFlagCommand) {
         int cols = g_cols, rows_n = g_rows;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
@@ -431,6 +436,8 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
         int col, row;
         mouseCell0(event, self, &col, &row);
+        row -= g_grid_top_offset;
+        if (row < 0) row = 0;
         if (col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (_clickCount >= 3) {
@@ -499,6 +506,8 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (!tracking) {
         int col, row;
         mouseCell0(event, self, &col, &row);
+        row -= g_grid_top_offset;
+        if (row < 0) row = 0;
         int cols = g_cols, rows_n = g_rows;
 
         uint32_t lid = 0;

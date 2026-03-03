@@ -146,9 +146,16 @@ pub const Statusbar = struct {
         }
         const truncate = parseTruncate(wc);
         if (truncate > 0) {
+            const orig_path = path;
             path = truncatePath(path, truncate);
-            if (prefix.len > 0 or path.len < cwd.len - (if (home) |h| h.len else 0))
-                prefix = ".../";
+            // If truncation removed components and we're under HOME, add "/" after "~"
+            if (path.len < orig_path.len and prefix.len > 0) {
+                prefix = "~/";
+            }
+        }
+        // Root filesystem: ensure we output "/" not empty string
+        if (prefix.len == 0 and path.len == 0) {
+            prefix = "/";
         }
         const plen = @min(prefix.len, max_output_len);
         @memcpy(ws.output[0..plen], prefix[0..plen]);
