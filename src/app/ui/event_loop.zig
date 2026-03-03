@@ -70,6 +70,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     }
 
     outer: while (c.attyx_should_quit() == 0) {
+        // Safety: if tab_mgr has no tabs (e.g. failed session attach after
+        // reset), quit gracefully rather than crashing on activePane().
+        if (ctx.tab_mgr.count == 0) {
+            c.attyx_request_quit();
+            return;
+        }
+
         // Config reload check (atomic read-and-reset)
         if (@atomicRmw(i32, &terminal.g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
             actions.doReloadConfig(ctx);
