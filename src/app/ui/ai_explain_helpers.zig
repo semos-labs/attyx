@@ -86,7 +86,8 @@ pub fn handleExplainDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.Sse
 fn renderExplainResultCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const explain = &(ai.g_ai_explain orelse return);
-    const result = overlay_ai_explain.layoutExplainResultCard(mgr.allocator, explain, 52) catch return;
+    const style = ai.contentStyleFromTheme(ctx);
+    const result = overlay_ai_explain.layoutExplainResultCard(mgr.allocator, explain, 52, style) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.copy, "Copy");
     bar.add(.dismiss, "Close");

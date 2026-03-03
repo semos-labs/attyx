@@ -5,6 +5,7 @@ const overlay_ai_edit = attyx.overlay_ai_edit;
 const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_content = attyx.overlay_ai_content;
 const overlay_ai_config = attyx.overlay_ai_config;
+const overlay_ai_safety = attyx.overlay_ai_safety;
 const overlay_context = attyx.overlay_context;
 
 const terminal = @import("../terminal.zig");
@@ -13,16 +14,16 @@ const c = terminal.c;
 const publish = @import("publish.zig");
 const input = @import("input.zig");
 const ai = @import("ai.zig");
+const ai_gen = @import("ai_generate_helpers.zig");
+const ai_menu_helpers = @import("ai_menu_helpers.zig");
+const ai_explain = @import("ai_explain_helpers.zig");
 const cmd_capture_mod = @import("../cmd_capture.zig");
-
-// ---------------------------------------------------------------------------
-// Edit mode helpers
-// ---------------------------------------------------------------------------
 
 pub fn renderEditPromptCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const edit = &(ai.g_ai_edit orelse return);
-    const result = overlay_ai_edit.layoutPromptCard(mgr.allocator, edit, 52) catch return;
+    const style = ai.contentStyleFromTheme(ctx);
+    const result = overlay_ai_edit.layoutPromptCard(mgr.allocator, edit, 52, style) catch return;
 
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.accept, "Submit");
@@ -43,7 +44,8 @@ pub fn renderEditPromptCard(ctx: *PtyThreadCtx) void {
 fn renderEditProposalCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const edit = &(ai.g_ai_edit orelse return);
-    const result = overlay_ai_edit.layoutProposalCard(mgr.allocator, edit, 52) catch return;
+    const style = ai.contentStyleFromTheme(ctx);
+    const result = overlay_ai_edit.layoutProposalCard(mgr.allocator, edit, 52, style) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.accept, "Accept");
     bar.add(.reject, "Reject");
@@ -251,12 +253,33 @@ pub fn cancelAi(ctx: *PtyThreadCtx) void {
         ex.deinit();
         ai.g_ai_explain = null;
     }
+    if (ai.g_ai_generate) |*gen| {
+        gen.deinit();
+        ai.g_ai_generate = null;
+    }
+    if (ai.g_ai_menu) |_| {
+        ai.g_ai_menu = null;
+    }
     terminal.g_ai_prompt_active = 0;
 }
 
-// ---------------------------------------------------------------------------
-// Rewrite mode helpers
-// ---------------------------------------------------------------------------
+fn startRewriteFromMenu(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+
+    ai.captureAiContext(ctx);
+
+    if (resolveRewriteTarget(ctx)) |target| {
+        if (ai.g_ai_rewrite == null) ai.g_ai_rewrite = overlay_ai_edit.RewriteContext.init(mgr.allocator);
+        var rw = &(ai.g_ai_rewrite.?);
+        rw.open(target) catch {
+            mgr.allocator.free(target);
+            return;
+        };
+        mgr.allocator.free(target);
+        terminal.g_ai_prompt_active = 1;
+        renderRewritePromptCard(ctx);
+    }
+}
 
 /// Resolve a rewrite target command from CmdCapture state.
 /// Returns an owned slice (caller must free) or null if no command available.
@@ -300,7 +323,8 @@ pub fn resolveRewriteTarget(ctx: *PtyThreadCtx) ?[]const u8 {
 pub fn renderRewritePromptCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const rw = &(ai.g_ai_rewrite orelse return);
-    const result = overlay_ai_edit.layoutRewritePromptCard(mgr.allocator, rw, 52) catch return;
+    const style = ai.contentStyleFromTheme(ctx);
+    const result = overlay_ai_edit.layoutRewritePromptCard(mgr.allocator, rw, 52, style) catch return;
 
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.accept, "Submit");
@@ -321,9 +345,27 @@ pub fn renderRewritePromptCard(ctx: *PtyThreadCtx) void {
 fn renderRewriteResultCard(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const rw = &(ai.g_ai_rewrite orelse return);
-    const result = overlay_ai_edit.layoutRewriteResultCard(mgr.allocator, rw, 52) catch return;
+
+    // Compute safety for the rewritten command
+    const safety: ?overlay_ai_safety.SafetyResult = if (rw.rewritten_command) |cmd|
+        overlay_ai_safety.analyzeCommand(cmd)
+    else
+        null;
+
+    const style = ai.contentStyleFromTheme(ctx);
+    const result = overlay_ai_edit.layoutRewriteResultCard(mgr.allocator, rw, 52, safety, style) catch return;
     var bar = attyx.overlay_action.ActionBar{};
-    bar.add(.custom_0, "Replace");
+
+    // Danger commands need confirmation before replace
+    if (safety) |s| {
+        if (s.risk_level == .danger and !rw.danger_confirmed) {
+            bar.add(.custom_0, "Confirm Replace");
+        } else {
+            bar.add(.custom_0, "Replace");
+        }
+    } else {
+        bar.add(.custom_0, "Replace");
+    }
     bar.add(.copy, "Copy");
     bar.add(.dismiss, "Close");
     ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
@@ -419,8 +461,16 @@ pub fn handleRewriteDoneResponse(ctx: *PtyThreadCtx, sse: *overlay_ai_stream.Sse
 }
 
 pub fn handleRewriteReplaceAction(ctx: *PtyThreadCtx) void {
-    const rw = &(ai.g_ai_rewrite orelse return);
+    var rw = &(ai.g_ai_rewrite orelse return);
     const rewritten = rw.rewritten_command orelse return;
+
+    // Safety gate: danger commands require confirmation step
+    const safety = overlay_ai_safety.analyzeCommand(rewritten);
+    if (safety.risk_level == .danger and !rw.danger_confirmed) {
+        rw.danger_confirmed = true;
+        renderRewriteResultCard(ctx);
+        return;
+    }
 
     // Clear current input: Ctrl-A (home) + Ctrl-K (kill to end of line)
     c.attyx_send_input("\x01", 1); // Ctrl-A
@@ -446,27 +496,36 @@ pub fn handleRewriteCopyAction(_: *PtyThreadCtx) void {
     c.attyx_clipboard_copy(rewritten.ptr, @intCast(rewritten.len));
 }
 
-// ---------------------------------------------------------------------------
-// Extracted event_loop handlers (Esc + prompt polling)
-// ---------------------------------------------------------------------------
-
 pub fn handleOverlayEsc(ctx: *PtyThreadCtx) void {
-    // Explain mode Esc handling
-    if (ai.g_ai_explain) |*ex| {
-        _ = ex;
+    if (ai.g_ai_menu) |_| {
+        ai.g_ai_menu = null;
+        terminal.g_ai_prompt_active = 0;
         cancelAi(ctx);
         publish.publishOverlays(ctx);
         return;
     }
-
-    // Rewrite mode Esc handling
-    if (ai.g_ai_rewrite) |*rw| {
-        switch (rw.state) {
-            .result_ready => {
-                // Close result card, clean up
+    if (ai.g_ai_generate) |*gen| {
+        switch (gen.state) {
+            .result_ready => { cancelAi(ctx); publish.publishOverlays(ctx); },
+            .prompt_input => {
+                gen.close();
+                ai.g_ai_generate = null;
+                terminal.g_ai_prompt_active = 0;
                 cancelAi(ctx);
                 publish.publishOverlays(ctx);
             },
+            else => {},
+        }
+        return;
+    }
+    if (ai.g_ai_explain) |_| {
+        cancelAi(ctx);
+        publish.publishOverlays(ctx);
+        return;
+    }
+    if (ai.g_ai_rewrite) |*rw| {
+        switch (rw.state) {
+            .result_ready => { cancelAi(ctx); publish.publishOverlays(ctx); },
             .prompt_input => {
                 rw.close();
                 ai.g_ai_rewrite = null;
@@ -478,8 +537,6 @@ pub fn handleOverlayEsc(ctx: *PtyThreadCtx) void {
         }
         return;
     }
-
-    // Edit mode Esc handling
     if (ai.g_ai_edit) |*edit| {
         switch (edit.state) {
             .proposal_ready => {
@@ -514,7 +571,31 @@ pub fn handleOverlayEsc(ctx: *PtyThreadCtx) void {
 }
 
 pub fn pollPromptInput(ctx: *PtyThreadCtx) void {
-    // Rewrite prompt polling
+    if (ai.g_ai_menu) |*menu| {
+        if (menu.state == .open) {
+            if (ai_menu_helpers.consumeMenuInput(ctx)) |sel| {
+                menu.close();
+                ai.g_ai_menu = null;
+                terminal.g_ai_prompt_active = 0;
+                switch (sel) {
+                    .rewrite_command => startRewriteFromMenu(ctx),
+                    .explain_command => ai_explain.startExplainInvocation(ctx),
+                    .generate_command => ai_gen.startGenerateInvocation(ctx),
+                }
+            } else if (ai.g_ai_menu != null) {
+                ai_menu_helpers.renderMenuCard(ctx);
+            }
+            return;
+        }
+    }
+    if (ai.g_ai_generate) |*gen| {
+        if (gen.state == .prompt_input) {
+            if (ai_gen.consumeGeneratePromptInput(ctx)) {
+                if (ai.g_ai_generate) |*g2| if (g2.state == .prompt_input) ai_gen.renderGeneratePromptCard(ctx);
+            }
+            return;
+        }
+    }
     if (ai.g_ai_rewrite) |*rw| {
         if (rw.state == .prompt_input) {
             if (consumeRewritePromptInput(ctx)) {

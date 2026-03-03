@@ -114,6 +114,7 @@ pub export var g_toggle_debug_overlay: i32 = 0;
 pub export var g_toggle_anchor_demo: i32 = 0;
 pub export var g_toggle_ai_demo: i32 = 0;
 pub export var g_toggle_ai_explain: i32 = 0;
+pub export var g_toggle_ai_menu: i32 = 0;
 pub export var g_overlay_has_actions: i32 = 0;
 pub export var g_tab_bar_visible: i32 = 0;
 pub var g_tab_count: i32 = 1;
@@ -145,6 +146,9 @@ export fn attyx_toggle_ai_demo() void {
 }
 export fn attyx_toggle_ai_explain() void {
     @atomicStore(i32, &g_toggle_ai_explain, 1, .seq_cst);
+}
+export fn attyx_toggle_ai_menu() void {
+    @atomicStore(i32, &g_toggle_ai_menu, 1, .seq_cst);
 }
 export fn attyx_overlay_esc() void { input.overlayEsc(); }
 export fn attyx_overlay_tab() void { input.overlayTab(); }

@@ -17,6 +17,8 @@ const overlay_ai_content = attyx.overlay_ai_content;
 const overlay_ai_error = attyx.overlay_ai_error;
 const overlay_ai_edit = attyx.overlay_ai_edit;
 const overlay_ai_explain = attyx.overlay_ai_explain;
+const overlay_ai_generate = attyx.overlay_ai_generate;
+const overlay_ai_menu = attyx.overlay_ai_menu;
 const update_check = attyx.overlay_update_check;
 const OverlayManager = overlay_mod.OverlayManager;
 
@@ -27,24 +29,56 @@ const input = @import("input.zig");
 const publish = @import("publish.zig");
 const ai_edit = @import("ai_edit_helpers.zig");
 const ai_explain_helpers = @import("ai_explain_helpers.zig");
-pub const renderEditPromptCard = ai_edit.renderEditPromptCard;
-pub const consumeAiPromptInput = ai_edit.consumeAiPromptInput;
+const ai_generate_helpers = @import("ai_generate_helpers.zig");
+const ai_menu_helpers = @import("ai_menu_helpers.zig");
 pub const handleEditAcceptAction = ai_edit.handleEditAcceptAction;
 pub const handleEditInsertAction = ai_edit.handleEditInsertAction;
-pub const handleEditDoneResponse = ai_edit.handleEditDoneResponse;
-pub const handleNormalDoneResponse = ai_edit.handleNormalDoneResponse;
 pub const handleEditRejectAction = ai_edit.handleEditRejectAction;
 pub const handleRetryAction = ai_edit.handleRetryAction;
 pub const cancelAi = ai_edit.cancelAi;
-pub const renderRewritePromptCard = ai_edit.renderRewritePromptCard;
-pub const consumeRewritePromptInput = ai_edit.consumeRewritePromptInput;
 pub const handleRewriteReplaceAction = ai_edit.handleRewriteReplaceAction;
 pub const handleRewriteCopyAction = ai_edit.handleRewriteCopyAction;
 pub const handleOverlayEsc = ai_edit.handleOverlayEsc;
 pub const pollPromptInput = ai_edit.pollPromptInput;
 pub const startExplainInvocation = ai_explain_helpers.startExplainInvocation;
-pub const handleExplainDoneResponse = ai_explain_helpers.handleExplainDoneResponse;
 pub const handleExplainCopyAction = ai_explain_helpers.handleExplainCopyAction;
+pub const handleGenerateInsertAction = ai_generate_helpers.handleGenerateInsertAction;
+pub const handleGenerateCopyAction = ai_generate_helpers.handleGenerateCopyAction;
+pub const submitGeneratePrompt = ai_generate_helpers.submitGeneratePrompt;
+pub const startAiMenu = ai_menu_helpers.startAiMenu;
+
+const Rgb = overlay_mod.Rgb;
+const ContentStyle = overlay_content.ContentStyle;
+
+/// Build a ContentStyle that inherits the terminal's active theme colors.
+pub fn contentStyleFromTheme(ctx: *PtyThreadCtx) ContentStyle {
+    const t = ctx.active_theme;
+    const bg = Rgb{ .r = t.background.r, .g = t.background.g, .b = t.background.b };
+    const fg = Rgb{ .r = t.foreground.r, .g = t.foreground.g, .b = t.foreground.b };
+    // Derive accent colors by blending with the theme bg
+    const code_bg = Rgb{
+        .r = if (bg.r > 10) bg.r - 10 else 0,
+        .g = if (bg.g > 10) bg.g - 10 else 0,
+        .b = if (bg.b > 6) bg.b - 6 else 0,
+    };
+    const border_fg = Rgb{
+        .r = @as(u8, @intCast((@as(u16, bg.r) + @as(u16, fg.r)) / 3)),
+        .g = @as(u8, @intCast((@as(u16, bg.g) + @as(u16, fg.g)) / 3)),
+        .b = @as(u8, @intCast((@as(u16, bg.b) + @as(u16, fg.b)) / 3)),
+    };
+    return .{
+        .base = .{
+            .bg = bg,
+            .fg = fg,
+            .border_color = border_fg,
+        },
+        .code_bg = code_bg,
+        .code_fg = .{ .r = 130, .g = 200, .b = 130 },
+        .code_border_fg = .{ .r = 80, .g = 140, .b = 80 },
+        .header_fg = .{ .r = 120, .g = 160, .b = 255 },
+        .bullet_fg = .{ .r = 150, .g = 130, .b = 200 },
+    };
+}
 
 pub var g_streaming: ?overlay_streaming.StreamingOverlay = null;
 pub var g_context_bundle: ?overlay_context.ContextBundle = null;
@@ -57,6 +91,8 @@ const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
 pub var g_ai_edit: ?overlay_ai_edit.EditContext = null;
 pub var g_ai_rewrite: ?overlay_ai_edit.RewriteContext = null;
 pub var g_ai_explain: ?overlay_ai_explain.ExplainContext = null;
+pub var g_ai_generate: ?overlay_ai_generate.GenerateContext = null;
+pub var g_ai_menu: ?overlay_ai_menu.MenuContext = null;
 pub var g_update_checker: ?update_check.UpdateChecker = null;
 
 pub fn captureAiContext(ctx: *PtyThreadCtx) void {
@@ -97,7 +133,6 @@ pub fn captureAiContext(ctx: *PtyThreadCtx) void {
         eng.state.alt_active,
     ) catch null;
 }
-
 pub fn showAiOverlayCard(ctx: *PtyThreadCtx, cells: []overlay_mod.OverlayCell, width: u16, height: u16, bar: attyx.overlay_action.ActionBar) void {
     const mgr = ctx.overlay_mgr orelse return;
     const vp = publish.viewportInfoFromCtx(ctx);
@@ -120,7 +155,6 @@ pub fn showAiOverlayCard(ctx: *PtyThreadCtx, cells: []overlay_mod.OverlayCell, w
 
     publishAiStreamingFrame(ctx);
 }
-
 fn spawnSseStream(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const bundle = &(g_context_bundle orelse return);
@@ -135,7 +169,7 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
 
     // Build URL — edit/rewrite modes use non-streaming endpoint
     var url_buf: [512]u8 = undefined;
-    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite or bundle.invocation == .command_explain)
+    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite or bundle.invocation == .command_explain or bundle.invocation == .command_generate)
         "/v1/ai/execute"
     else
         "/v1/ai/execute/stream";
@@ -153,7 +187,7 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
     }
 
     // Show connecting card
-    const connecting_result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48) catch return;
+    const connecting_result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48, contentStyleFromTheme(ctx)) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Cancel");
     showAiOverlayCard(ctx, connecting_result.cells, connecting_result.width, connecting_result.height, bar);
@@ -164,7 +198,6 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
         return;
     };
 }
-
 pub fn loadTokensAndStream(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (g_token_store == null) {
@@ -180,13 +213,9 @@ pub fn loadTokensAndStream(ctx: *PtyThreadCtx) void {
         startAuthFlow(ctx, null);
     }
 }
-
 pub fn startAiInvocation(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
-
-    // Capture terminal context
     captureAiContext(ctx);
-
     // If selection exists, enter edit mode
     if (g_context_bundle) |*bundle| {
         if (bundle.selection_text != null) {
@@ -197,7 +226,7 @@ pub fn startAiInvocation(ctx: *PtyThreadCtx) void {
                 return;
             };
             terminal.g_ai_prompt_active = 1;
-            renderEditPromptCard(ctx);
+            ai_edit.renderEditPromptCard(ctx);
             return;
         }
     }
@@ -212,7 +241,7 @@ pub fn startAiInvocation(ctx: *PtyThreadCtx) void {
         };
         mgr.allocator.free(target);
         terminal.g_ai_prompt_active = 1;
-        renderRewritePromptCard(ctx);
+        ai_edit.renderRewritePromptCard(ctx);
         return;
     }
 
@@ -232,7 +261,7 @@ fn startAuthFlow(ctx: *PtyThreadCtx, refresh_token: ?[]const u8) void {
     };
 
     // Show connecting/refreshing card
-    const result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48) catch return;
+    const result = overlay_ai_error.layoutConnectingCard(mgr.allocator, 48, contentStyleFromTheme(ctx)) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Cancel");
     showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
@@ -240,7 +269,7 @@ fn startAuthFlow(ctx: *PtyThreadCtx, refresh_token: ?[]const u8) void {
 
 fn showAiErrorCard(ctx: *PtyThreadCtx, code: []const u8, msg: []const u8) void {
     const mgr = ctx.overlay_mgr orelse return;
-    const result = overlay_ai_error.layoutErrorCard(mgr.allocator, code, msg, 48) catch return;
+    const result = overlay_ai_error.layoutErrorCard(mgr.allocator, code, msg, 48, contentStyleFromTheme(ctx)) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.retry, "Retry");
     bar.add(.copy, "Copy diagnostics");
@@ -250,7 +279,7 @@ fn showAiErrorCard(ctx: *PtyThreadCtx, code: []const u8, msg: []const u8) void {
 
 fn showDeviceCodeCard(ctx: *PtyThreadCtx, user_code: []const u8) void {
     const mgr = ctx.overlay_mgr orelse return;
-    const result = overlay_ai_error.layoutDeviceCodeCard(mgr.allocator, user_code, 48) catch return;
+    const result = overlay_ai_error.layoutDeviceCodeCard(mgr.allocator, user_code, 48, contentStyleFromTheme(ctx)) catch return;
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Cancel");
     showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
@@ -329,14 +358,17 @@ pub fn tickAi(ctx: *PtyThreadCtx) void {
                 const is_edit = if (g_ai_edit) |*edit| edit.state == .streaming else false;
                 const is_rewrite = if (g_ai_rewrite) |*rw| rw.state == .streaming else false;
                 const is_explain = if (g_ai_explain) |*ex| ex.state == .streaming else false;
+                const is_generate = if (g_ai_generate) |*gen| gen.state == .streaming else false;
                 if (is_edit) {
-                    handleEditDoneResponse(ctx, sse);
+                    ai_edit.handleEditDoneResponse(ctx, sse);
                 } else if (is_rewrite) {
                     ai_edit.handleRewriteDoneResponse(ctx, sse);
                 } else if (is_explain) {
-                    handleExplainDoneResponse(ctx, sse);
+                    ai_explain_helpers.handleExplainDoneResponse(ctx, sse);
+                } else if (is_generate) {
+                    ai_generate_helpers.handleGenerateDoneResponse(ctx, sse);
                 } else {
-                    handleNormalDoneResponse(ctx, sse, mgr);
+                    ai_edit.handleNormalDoneResponse(ctx, sse, mgr);
                 }
                 _ = sse.tryJoin();
                 g_sse_thread = null;
@@ -449,12 +481,13 @@ pub fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_conte
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Cancel");
 
+    const style = contentStyleFromTheme(ctx);
     const result = overlay_content.layoutStructuredCard(
         mgr.allocator,
         title,
         blocks,
         48,
-        .{},
+        style,
         bar,
     ) catch return;
 

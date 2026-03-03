@@ -131,6 +131,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // AI menu toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_ai_menu, .Xchg, 0, .seq_cst) != 0) {
+            if (ctx.overlay_mgr) |mgr| {
+                if (mgr.isVisible(.ai_demo)) {
+                    ai.cancelAi(ctx);
+                } else {
+                    mgr.show(.ai_demo);
+                    ai.startAiMenu(ctx);
+                }
+                publish.publishOverlays(ctx);
+            }
+        }
+
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
 
@@ -182,10 +195,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             }
                         },
                         .context => ai.toggleContextPreview(ctx),
-                        .insert => if (ai.g_ai_edit != null) ai.handleEditInsertAction(ctx) else ai.handleInsertAction(ctx),
-                        .copy => if (ai.g_ai_explain != null) ai.handleExplainCopyAction(ctx) else if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
+                        .insert => if (ai.g_ai_generate != null) ai.handleGenerateInsertAction(ctx) else if (ai.g_ai_edit != null) ai.handleEditInsertAction(ctx) else ai.handleInsertAction(ctx),
+                        .copy => if (ai.g_ai_generate != null) ai.handleGenerateCopyAction(ctx) else if (ai.g_ai_explain != null) ai.handleExplainCopyAction(ctx) else if (ai.g_ai_rewrite != null) ai.handleRewriteCopyAction(ctx) else ai.handleCopyAction(ctx),
                         .retry => ai.handleRetryAction(ctx),
-                        .accept => ai.handleEditAcceptAction(ctx),
+                        .accept => if (ai.g_ai_generate != null) ai.submitGeneratePrompt(ctx) else ai.handleEditAcceptAction(ctx),
                         .reject => ai.handleEditRejectAction(ctx),
                         .custom_0 => ai.handleRewriteReplaceAction(ctx),
                         else => {},

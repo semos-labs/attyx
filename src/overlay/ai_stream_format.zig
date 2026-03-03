@@ -19,6 +19,18 @@ pub fn formatFinalResponse(self: *SseThread, data: []const u8) void {
         return;
     }
 
+    // Generate response: "command" field present without "summary" (general responses have summary)
+    if (ai_auth.extractJsonString(data, "command")) |cmd| {
+        if (ai_auth.extractJsonString(data, "summary") == null) {
+            _ = self.delta_ring.push(cmd);
+            _ = self.delta_ring.push(&[_]u8{0}); // null separator
+            if (ai_auth.extractJsonString(data, "notes")) |n| {
+                _ = self.delta_ring.push(n);
+            }
+            return;
+        }
+    }
+
     // Explain response: breakdown array present → push summary \0 breakdown_lines \0 notes
     if (findJsonArrayStart(data, "breakdown") != null) {
         if (ai_auth.extractJsonString(data, "summary")) |s| {
@@ -190,4 +202,28 @@ test "formatFinalResponse: explain without notes" {
     const sep2 = std.mem.indexOfScalar(u8, rest, 0) orelse unreachable;
     // Notes section should be empty
     try std.testing.expectEqual(rest.len, sep2 + 1);
+}
+
+test "formatFinalResponse: generate response" {
+    var sse = SseThread.init();
+    const json = "{\"data\":{\"command\":\"docker ps -a\",\"notes\":\"Lists all containers\"}}";
+    formatFinalResponse(&sse, json);
+    var out: [512]u8 = undefined;
+    const drained = sse.delta_ring.drain(&out);
+    const sep = std.mem.indexOfScalar(u8, drained, 0) orelse unreachable;
+    try std.testing.expectEqualStrings("docker ps -a", drained[0..sep]);
+    const notes = drained[sep + 1 ..];
+    try std.testing.expectEqualStrings("Lists all containers", notes);
+}
+
+test "formatFinalResponse: generate without notes" {
+    var sse = SseThread.init();
+    const json = "{\"data\":{\"command\":\"ls -la\"}}";
+    formatFinalResponse(&sse, json);
+    var out: [512]u8 = undefined;
+    const drained = sse.delta_ring.drain(&out);
+    const sep = std.mem.indexOfScalar(u8, drained, 0) orelse unreachable;
+    try std.testing.expectEqualStrings("ls -la", drained[0..sep]);
+    // Notes section should be empty
+    try std.testing.expectEqual(drained.len, sep + 1);
 }

@@ -17,6 +17,7 @@ pub fn layoutErrorCard(
     error_code: []const u8,
     error_msg: []const u8,
     max_width: u16,
+    base_style: ContentStyle,
 ) !CardResult {
     // Build error message text
     var msg_buf: [512]u8 = undefined;
@@ -46,10 +47,8 @@ pub fn layoutErrorCard(
     bar.add(.copy, "Copy diagnostics");
     bar.add(.dismiss, "Dismiss");
 
-    const style = ContentStyle{
-        .base = .{},
-        .header_fg = .{ .r = 230, .g = 80, .b = 80 },
-    };
+    var style = base_style;
+    style.header_fg = .{ .r = 230, .g = 80, .b = 80 };
 
     return content_mod.layoutStructuredCard(
         allocator,
@@ -65,6 +64,7 @@ pub fn layoutErrorCard(
 pub fn layoutConnectingCard(
     allocator: std.mem.Allocator,
     max_width: u16,
+    style: ContentStyle,
 ) !CardResult {
     const blocks = [_]ContentBlock{
         .{ .tag = .paragraph, .text = "Connecting to AI backend..." },
@@ -78,7 +78,7 @@ pub fn layoutConnectingCard(
         "Attyx AI",
         &blocks,
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -88,6 +88,7 @@ pub fn layoutDeviceCodeCard(
     allocator: std.mem.Allocator,
     user_code: []const u8,
     max_width: u16,
+    style: ContentStyle,
 ) !CardResult {
     const blocks = [_]ContentBlock{
         .{ .tag = .paragraph, .text = "Sign in to use AI features" },
@@ -104,7 +105,7 @@ pub fn layoutDeviceCodeCard(
         "Attyx AI",
         &blocks,
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -119,6 +120,7 @@ test "layoutErrorCard: basic dimensions" {
         "401",
         "Unauthorized",
         40,
+        .{},
     );
     defer std.testing.allocator.free(result.cells);
 
@@ -134,6 +136,7 @@ test "layoutErrorCard: empty code" {
         "",
         "Something went wrong",
         40,
+        .{},
     );
     defer std.testing.allocator.free(result.cells);
 
@@ -145,6 +148,7 @@ test "layoutConnectingCard: dimensions" {
     const result = try layoutConnectingCard(
         std.testing.allocator,
         40,
+        .{},
     );
     defer std.testing.allocator.free(result.cells);
 
@@ -157,6 +161,7 @@ test "layoutDeviceCodeCard: contains user code" {
         std.testing.allocator,
         "ABCD-EFGH",
         40,
+        .{},
     );
     defer std.testing.allocator.free(result.cells);
 

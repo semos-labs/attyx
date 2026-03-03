@@ -112,6 +112,66 @@ pub fn serializeExplainRequest(allocator: std.mem.Allocator, command: []const u8
     return list.toOwnedSlice(allocator);
 }
 
+/// Serialize a generate-command request body for POST /v1/ai/execute.
+/// Caller owns the returned slice.
+pub fn serializeGenerateRequest(allocator: std.mem.Allocator, intent: []const u8, shell: ?[]const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .{};
+    errdefer list.deinit(allocator);
+    const w = list.writer(allocator);
+
+    try w.writeAll("{");
+    try writeJsonString(w, "action");
+    try w.writeAll(":");
+    try writeJsonString(w, "command_generate");
+
+    // context object
+    try w.writeAll(",");
+    try writeJsonString(w, "context");
+    try w.writeAll(":{");
+    try writeJsonString(w, "intent");
+    try w.writeAll(":");
+    try writeJsonString(w, intent);
+    try w.writeAll(",");
+    try writeJsonString(w, "shell");
+    try w.writeAll(":");
+    try writeJsonString(w, shell orelse "unknown");
+    try w.writeAll(",");
+    try writeJsonString(w, "os");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // client object
+    try w.writeAll(",");
+    try writeJsonString(w, "client");
+    try w.writeAll(":{");
+    try writeJsonString(w, "app");
+    try w.writeAll(":");
+    try writeJsonString(w, "attyx");
+    try w.writeAll(",");
+    try writeJsonString(w, "version");
+    try w.writeAll(":");
+    try writeJsonString(w, "0.1.0");
+    try w.writeAll(",");
+    try writeJsonString(w, "platform");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // options
+    try w.writeAll(",");
+    try writeJsonString(w, "options");
+    try w.writeAll(":{");
+    try writeJsonString(w, "verbosity");
+    try w.writeAll(":");
+    try writeJsonString(w, "normal");
+    try w.writeAll("}");
+
+    try w.writeAll("}");
+
+    return list.toOwnedSlice(allocator);
+}
+
 // ---------------------------------------------------------------------------
 // JSON serialization
 // ---------------------------------------------------------------------------
@@ -397,6 +457,26 @@ test "serializeRequest: null fields omitted" {
     // os and client should still be present
     try std.testing.expect(std.mem.indexOf(u8, json, "\"os\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
+}
+
+test "serializeGenerateRequest: JSON structure" {
+    const alloc = std.testing.allocator;
+    const json = try serializeGenerateRequest(alloc, "list running containers", "zsh");
+    defer alloc.free(json);
+
+    try std.testing.expect(json.len > 0);
+    try std.testing.expectEqual(@as(u8, '{'), json[0]);
+    try std.testing.expectEqual(@as(u8, '}'), json[json.len - 1]);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"action\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command_generate\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"intent\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"list running containers\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"zsh\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"os\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"options\"") != null);
 }
 
 test "serializeExplainRequest: JSON structure" {

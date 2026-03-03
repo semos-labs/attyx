@@ -58,6 +58,8 @@ export var g_toggle_ai_demo: i32 = 0;
 export fn attyx_toggle_ai_demo() void {}
 export var g_toggle_ai_explain: i32 = 0;
 export fn attyx_toggle_ai_explain() void {}
+export var g_toggle_ai_menu: i32 = 0;
+export fn attyx_toggle_ai_menu() void {}
 export var g_overlay_has_actions: i32 = 0;
 export fn attyx_overlay_esc() void {}
 export fn attyx_overlay_tab() void {}

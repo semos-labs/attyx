@@ -162,6 +162,9 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_AI_EXPLAIN_TOGGLE:
             attyx_toggle_ai_explain();
             return 1;
+        case ATTYX_ACTION_AI_MENU_TOGGLE:
+            attyx_toggle_ai_menu();
+            return 1;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;
@@ -278,6 +281,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_RightArrow)               { attyx_ai_prompt_cmd(4); return YES; }
         if (kc == kVK_Home)                     { attyx_ai_prompt_cmd(5); return YES; }
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
+        if (kc == kVK_UpArrow)                  { attyx_ai_prompt_cmd(11); return YES; }
+        if (kc == kVK_DownArrow)                { attyx_ai_prompt_cmd(12); return YES; }
     }
 
     // Overlay interaction keys (contextual, not user-configurable)

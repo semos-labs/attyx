@@ -86,6 +86,7 @@ pub fn layoutExplainResultCard(
     allocator: std.mem.Allocator,
     explain: *const ExplainContext,
     max_width: u16,
+    style: content_mod.ContentStyle,
 ) !CardResult {
     var blocks_buf: [4]content_mod.ContentBlock = undefined;
     var block_count: usize = 0;
@@ -123,7 +124,7 @@ pub fn layoutExplainResultCard(
         "Explain Command",
         blocks_buf[0..block_count],
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -178,7 +179,7 @@ test "layoutExplainResultCard: produces card" {
     const items = [_][]const u8{"pwd \u{2014} print working directory"};
     try ctx.receiveResponse("Shows current directory", &items, null);
 
-    const result = try layoutExplainResultCard(allocator, &ctx, 60);
+    const result = try layoutExplainResultCard(allocator, &ctx, 60, .{});
     defer allocator.free(result.cells);
 
     try std.testing.expect(result.width > 0);

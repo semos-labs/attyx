@@ -61,7 +61,7 @@ fn utf8CharCount(text: []const u8) usize {
     return count;
 }
 
-pub const BlockTag = enum(u8) { header, paragraph, code_block, bullet_list, diff_add, diff_remove, diff_context };
+pub const BlockTag = enum(u8) { header, paragraph, code_block, bullet_list, diff_add, diff_remove, diff_context, warning_caution, warning_danger };
 
 pub const ContentBlock = struct {
     tag: BlockTag,
@@ -87,6 +87,8 @@ pub const ContentStyle = struct {
     diff_add_fg: Rgb = .{ .r = 80, .g = 250, .b = 123 },
     diff_remove_fg: Rgb = .{ .r = 255, .g = 85, .b = 85 },
     diff_context_fg: Rgb = .{ .r = 140, .g = 140, .b = 150 },
+    caution_fg: Rgb = .{ .r = 230, .g = 180, .b = 40 },
+    danger_fg: Rgb = .{ .r = 255, .g = 70, .b = 70 },
 };
 
 const max_lines_buf = 128;
@@ -99,6 +101,7 @@ pub fn measureBlock(block: ContentBlock, inner_w: u16) u16 {
         .code_block => measureCodeBlock(block.text),
         .bullet_list => measureBulletList(block.items, inner_w),
         .diff_add, .diff_remove, .diff_context => 1,
+        .warning_caution, .warning_danger => measureWarning(block.text, block.items, inner_w),
     };
 }
 
@@ -127,6 +130,19 @@ fn measureBulletList(items: []const []const u8, inner_w: u16) u16 {
     const bullet_prefix_len: u16 = 4; // "  • "
     const wrap_w = if (inner_w > bullet_prefix_len) inner_w - bullet_prefix_len else 1;
     var total: u16 = 0;
+    for (items) |item| {
+        var buf: [max_lines_buf]LineRange = undefined;
+        const n = layout.wrapText(item, wrap_w, &buf);
+        total += if (n > 0) n else 1;
+    }
+    return total;
+}
+
+fn measureWarning(label: []const u8, items: []const []const u8, inner_w: u16) u16 {
+    // Label row + bullet items (compact, no separator between them)
+    var total: u16 = measureParagraph(label, inner_w);
+    const bullet_prefix_len: u16 = 4;
+    const wrap_w = if (inner_w > bullet_prefix_len) inner_w - bullet_prefix_len else 1;
     for (items) |item| {
         var buf: [max_lines_buf]LineRange = undefined;
         const n = layout.wrapText(item, wrap_w, &buf);
@@ -202,6 +218,9 @@ pub fn layoutStructuredCard(
             },
             .diff_add, .diff_remove, .diff_context => {
                 cur_row = fillDiffLine(cells, stride, text_col, cur_row, inner_w, block.text, block.tag, style);
+            },
+            .warning_caution, .warning_danger => {
+                cur_row = fillWarning(cells, stride, text_col, cur_row, inner_w, block.text, block.items, block.tag, style);
             },
         }
         // Separator row (blank — already filled with bg)
@@ -429,6 +448,71 @@ fn fillDiffLine(
     const max_chars: usize = if (inner_w > 1) inner_w - 1 else 1;
     _ = fillCellsUtf8(cells, stride, row, text_col, text, max_chars, fg, style.base.bg, style.base.bg_alpha);
     return start_row + 1;
+}
+
+fn fillWarning(
+    cells: []OverlayCell,
+    stride: u16,
+    start_col: u16,
+    start_row: u16,
+    inner_w: u16,
+    label: []const u8,
+    items: []const []const u8,
+    tag: BlockTag,
+    style: ContentStyle,
+) u16 {
+    const warn_fg: Rgb = switch (tag) {
+        .warning_caution => style.caution_fg,
+        .warning_danger => style.danger_fg,
+        else => style.base.fg,
+    };
+    var cur_row = start_row;
+
+    // Render label in warning color
+    {
+        var buf: [max_lines_buf]LineRange = undefined;
+        const n = layout.wrapText(label, inner_w, &buf);
+        const lines = if (n > 0) n else 1;
+        for (buf[0..@min(n, lines)], 0..) |lr, li| {
+            const row = @as(usize, cur_row) + li;
+            _ = fillCellsUtf8(cells, stride, row, start_col, label[lr.start..lr.end], inner_w, warn_fg, style.base.bg, style.base.bg_alpha);
+        }
+        cur_row += lines;
+    }
+
+    // Render bullet items in warning color (compact, no separator)
+    const bullet_prefix_len: u16 = 4;
+    const wrap_w = if (inner_w > bullet_prefix_len) inner_w - bullet_prefix_len else 1;
+    for (items) |item| {
+        var buf: [max_lines_buf]LineRange = undefined;
+        const n = layout.wrapText(item, wrap_w, &buf);
+        const lines = if (n > 0) n else 1;
+
+        // Bullet marker
+        const bullet_chars = [_]u21{ ' ', ' ', 0x2022, ' ' };
+        const row0 = @as(usize, cur_row);
+        for (bullet_chars, 0..) |bch, bi| {
+            const col = @as(usize, start_col) + bi;
+            const idx = row0 * @as(usize, stride) + col;
+            if (idx >= cells.len) break;
+            cells[idx] = .{
+                .char = bch,
+                .fg = warn_fg,
+                .bg = style.base.bg,
+                .bg_alpha = style.base.bg_alpha,
+            };
+        }
+
+        // Text
+        for (buf[0..@min(n, lines)], 0..) |lr, li| {
+            const row = @as(usize, cur_row) + li;
+            const text_start = @as(usize, start_col) + bullet_prefix_len;
+            _ = fillCellsUtf8(cells, stride, row, text_start, item[lr.start..lr.end], wrap_w, warn_fg, style.base.bg, style.base.bg_alpha);
+        }
+        cur_row += lines;
+    }
+
+    return cur_row;
 }
 
 fn fillBorder(cells: []OverlayCell, width: u16, height: u16, style: OverlayStyle) void {

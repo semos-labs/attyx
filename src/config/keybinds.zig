@@ -102,6 +102,7 @@ pub const Action = enum(u8) {
     tab_select_8 = 71,
     tab_select_9 = 72,
     ai_explain_toggle = 73,
+    ai_menu_toggle = 74,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -303,6 +304,7 @@ pub fn actionFromString(s: []const u8) ?Action {
         .{ "tab_select_8", Action.tab_select_8 },
         .{ "tab_select_9", Action.tab_select_9 },
         .{ "ai_explain_toggle", Action.ai_explain_toggle },
+        .{ "ai_menu_toggle", Action.ai_menu_toggle },
     };
     inline for (map) |entry| {
         if (eql(s, entry[0])) return entry[1];
@@ -327,8 +329,7 @@ fn defaultKeybinds() []const Keybind {
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'a' }, .anchor_demo_toggle),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .new_window),
             kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'e' }, .ai_explain_toggle),
+            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_menu_toggle),
         };
         // Tab management (cross-platform)
         list = list ++ &[_]Keybind{

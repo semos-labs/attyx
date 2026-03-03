@@ -4,6 +4,7 @@ const overlay = @import("overlay.zig");
 const layout = @import("layout.zig");
 const action_mod = @import("action.zig");
 const content_mod = @import("content.zig");
+const ai_safety = @import("ai_safety.zig");
 const OverlayCell = overlay.OverlayCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
@@ -187,6 +188,7 @@ pub const RewriteContext = struct {
     prompt: PromptBuffer = .{},
     target_command: ?[]u8 = null,
     rewritten_command: ?[]u8 = null,
+    danger_confirmed: bool = false,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) RewriteContext {
@@ -205,6 +207,7 @@ pub const RewriteContext = struct {
         if (self.target_command) |t| self.allocator.free(t);
         if (self.rewritten_command) |r| self.allocator.free(r);
         self.rewritten_command = null;
+        self.danger_confirmed = false;
         self.target_command = try self.allocator.dupe(u8, command);
         self.prompt.clear();
         self.state = .prompt_input;
@@ -216,6 +219,7 @@ pub const RewriteContext = struct {
 
     pub fn receiveResponse(self: *RewriteContext, text: []const u8) !void {
         if (self.rewritten_command) |r| self.allocator.free(r);
+        self.danger_confirmed = false;
         self.rewritten_command = try self.allocator.dupe(u8, text);
         self.state = .result_ready;
     }
@@ -233,6 +237,7 @@ pub fn layoutRewritePromptCard(
     allocator: std.mem.Allocator,
     rewrite: *const RewriteContext,
     max_width: u16,
+    style: content_mod.ContentStyle,
 ) !CardResult {
     var blocks_buf: [4]content_mod.ContentBlock = undefined;
     var block_count: usize = 0;
@@ -261,7 +266,7 @@ pub fn layoutRewritePromptCard(
         "Rewrite Command",
         blocks_buf[0..block_count],
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -274,6 +279,8 @@ pub fn layoutRewriteResultCard(
     allocator: std.mem.Allocator,
     rewrite: *const RewriteContext,
     max_width: u16,
+    safety: ?ai_safety.SafetyResult,
+    style: content_mod.ContentStyle,
 ) !CardResult {
     var blocks_buf: [4]content_mod.ContentBlock = undefined;
     var block_count: usize = 0;
@@ -290,6 +297,19 @@ pub fn layoutRewriteResultCard(
         block_count += 1;
     }
 
+    // Safety section (skip for safe)
+    if (safety) |s| {
+        if (s.risk_level != .safe) {
+            const warn_tag: content_mod.BlockTag = switch (s.risk_level) {
+                .caution => .warning_caution,
+                .danger => .warning_danger,
+                .safe => unreachable,
+            };
+            blocks_buf[block_count] = .{ .tag = warn_tag, .text = s.badge(), .items = s.reasons[0..s.reason_count] };
+            block_count += 1;
+        }
+    }
+
     var bar = action_mod.ActionBar{};
     bar.add(.custom_0, "Replace");
     bar.add(.copy, "Copy");
@@ -300,7 +320,7 @@ pub fn layoutRewriteResultCard(
         "Rewrite Command",
         blocks_buf[0..block_count],
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -313,6 +333,7 @@ pub fn layoutPromptCard(
     allocator: std.mem.Allocator,
     edit: *const EditContext,
     max_width: u16,
+    style: content_mod.ContentStyle,
 ) !CardResult {
     // Build blocks for the card
     var blocks_buf: [4]content_mod.ContentBlock = undefined;
@@ -356,7 +377,7 @@ pub fn layoutPromptCard(
         "Edit Selection",
         blocks_buf[0..block_count],
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -369,6 +390,7 @@ pub fn layoutProposalCard(
     allocator: std.mem.Allocator,
     edit: *const EditContext,
     max_width: u16,
+    style: content_mod.ContentStyle,
 ) !CardResult {
     var blocks_buf: [64]content_mod.ContentBlock = undefined;
     var block_count: usize = 0;
@@ -430,7 +452,7 @@ pub fn layoutProposalCard(
         "Edit Proposal",
         blocks_buf[0..block_count],
         max_width,
-        .{},
+        style,
         bar,
     );
 }
@@ -529,7 +551,7 @@ test "layoutPromptCard: basic" {
     defer edit.deinit();
 
     try edit.open("line1\nline2");
-    const result = try layoutPromptCard(alloc, &edit, 48);
+    const result = try layoutPromptCard(alloc, &edit, 48, .{});
     defer alloc.free(result.cells);
 
     try std.testing.expect(result.width > 0);
@@ -543,7 +565,7 @@ test "layoutProposalCard: diff view" {
 
     try edit.open("old line");
     try edit.receiveResponse("new line", "Changed content");
-    const result = try layoutProposalCard(alloc, &edit, 48);
+    const result = try layoutProposalCard(alloc, &edit, 48, .{});
     defer alloc.free(result.cells);
 
     try std.testing.expect(result.width > 0);
@@ -572,11 +594,24 @@ test "layoutRewritePromptCard and layoutRewriteResultCard" {
     var rw = RewriteContext.init(alloc);
     defer rw.deinit();
     try rw.open("git status");
-    const p = try layoutRewritePromptCard(alloc, &rw, 48);
+    const p = try layoutRewritePromptCard(alloc, &rw, 48, .{});
     defer alloc.free(p.cells);
     try std.testing.expect(p.width > 0 and p.height > 0);
     try rw.receiveResponse("git status --short");
-    const r = try layoutRewriteResultCard(alloc, &rw, 48);
+    const r = try layoutRewriteResultCard(alloc, &rw, 48, null, .{});
+    defer alloc.free(r.cells);
+    try std.testing.expect(r.width > 0 and r.height > 0);
+}
+
+test "layoutRewriteResultCard: with caution safety" {
+    const alloc = std.testing.allocator;
+    var rw = RewriteContext.init(alloc);
+    defer rw.deinit();
+    try rw.open("git status");
+    try rw.receiveResponse("git reset --hard HEAD");
+    const safety = ai_safety.analyzeCommand("git reset --hard HEAD");
+    try std.testing.expectEqual(ai_safety.RiskLevel.caution, safety.risk_level);
+    const r = try layoutRewriteResultCard(alloc, &rw, 48, safety, .{});
     defer alloc.free(r.cells);
     try std.testing.expect(r.width > 0 and r.height > 0);
 }

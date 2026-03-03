@@ -212,6 +212,9 @@ static int dispatchAction(uint8_t act) {
         case ATTYX_ACTION_AI_EXPLAIN_TOGGLE:
             attyx_toggle_ai_explain();
             return 1;
+        case ATTYX_ACTION_AI_MENU_TOGGLE:
+            attyx_toggle_ai_menu();
+            return 1;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;
@@ -348,6 +351,8 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         if (key == GLFW_KEY_RIGHT)        { attyx_ai_prompt_cmd(4); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_HOME)         { attyx_ai_prompt_cmd(5); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_END)          { attyx_ai_prompt_cmd(6); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_UP)           { attyx_ai_prompt_cmd(11); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DOWN)         { attyx_ai_prompt_cmd(12); g_suppress_char = 1; return; }
         g_suppress_char = 0;
         return;
     }
