@@ -431,8 +431,6 @@ extern volatile int    g_keybind_matched_seq_len;
 
 extern volatile int g_native_tabs_enabled;    // Zig-owned: 1 = use native window tabs
 extern volatile int g_tab_always_show;         // Zig-owned: 1 = show tab bar with 1 tab
-extern volatile int g_native_tab_op;           // PTY→main: 0=none, 1=new, 2=close, 3=switch
-extern volatile int g_native_tab_target;       // PTY→main: target tab index for switch
 extern volatile int g_native_tab_count;        // PTY→main: current tab count
 extern volatile int g_native_tab_active;       // PTY→main: current active index
 
