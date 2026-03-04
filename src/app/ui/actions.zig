@@ -16,6 +16,7 @@ const publish = @import("publish.zig");
 const input = @import("input.zig");
 const session_actions = @import("session_actions.zig");
 const split_actions_mod = @import("split_actions.zig");
+const statusbar = @import("../statusbar.zig");
 
 /// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
 pub var g_force_full_redraw: bool = false;
@@ -40,14 +41,13 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             const eng = publish.ctxEngine(ctx);
             const rows: u16 = @intCast(eng.state.grid.rows);
             const cols: u16 = @intCast(eng.state.grid.cols);
+            var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+            const resolved = resolveFocusedCwd(ctx, &osc7_buf);
+            defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
             if (ctx.sessions_enabled) {
-                // Session mode: daemon owns the PTY. Pass the user's current
-                // working directory so the new pane starts there.
+                // Session mode: daemon owns the PTY.
                 const sc = ctx.session_client orelse return;
-                const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-                defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-                const pane_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "";
-                sc.sendCreatePane(rows, cols, pane_cwd) catch {
+                sc.sendCreatePane(rows, cols, resolved.cwd orelse "") catch {
                     logging.err("tabs", "send create_pane failed", .{});
                     return;
                 };
@@ -63,9 +63,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
             } else {
                 // Non-session mode: spawn a local PTY with foreground CWD.
-                const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-                defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-                const cwd_z: ?[:0]u8 = if (fg_cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+                const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
                 defer if (cwd_z) |z| ctx.allocator.free(z);
                 ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null) catch |err| {
                     logging.err("tabs", "addTab failed: {}", .{err});
@@ -354,6 +352,30 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
 }
 
 // ---------------------------------------------------------------------------
+// CWD resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the focused pane's current working directory.
+/// Tries platform CWD lookup (local PTY) first, then falls back to the
+/// engine's OSC 7 working_directory (works for daemon-backed panes).
+/// Returns an allocator-owned slice or a static slice into `osc7_buf`.
+/// `owned` is set to true when the caller must free the result.
+pub fn resolveFocusedCwd(ctx: *PtyThreadCtx, osc7_buf: *[statusbar.max_output_len]u8) struct { cwd: ?[]const u8, owned: bool } {
+    const pane = ctx.tab_mgr.activePane();
+    // Local PTY: use platform lookup (handles tmux, fg process, etc.)
+    if (pane.daemon_pane_id == null and pane.pty.master >= 0) {
+        if (platform.getForegroundCwd(ctx.allocator, pane.pty.master)) |cwd|
+            return .{ .cwd = cwd, .owned = true };
+    }
+    // Fallback: OSC 7 working directory from engine state
+    if (pane.engine.state.working_directory) |uri| {
+        if (statusbar.parseFileUri(uri, osc7_buf)) |path|
+            return .{ .cwd = path, .owned = false };
+    }
+    return .{ .cwd = null, .owned = false };
+}
+
+// ---------------------------------------------------------------------------
 // Popup lifecycle helpers
 // ---------------------------------------------------------------------------
 
@@ -370,11 +392,12 @@ pub fn processPopupToggle(ctx: *PtyThreadCtx) void {
             logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
             const grid_cols: u16 = ctx.grid_cols;
             const grid_rows: u16 = ctx.grid_rows;
-            const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
+            var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+            const resolved = resolveFocusedCwd(ctx, &osc7_buf);
+            defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
             const main_shell_path = publish.ctxEngine(ctx).state.shell_path;
-            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd, main_shell_path) catch |err| {
+            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, resolved.cwd, main_shell_path) catch |err| {
                 logging.err("popup", "spawn failed: {}", .{err});
                 ctx.allocator.destroy(ps);
                 return;

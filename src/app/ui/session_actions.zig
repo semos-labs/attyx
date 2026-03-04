@@ -1,7 +1,6 @@
 /// Session picker lifecycle — popup-based session switching, creation, and killing.
 const std = @import("std");
 const logging = @import("../../logging/log.zig");
-const platform = @import("../../platform/platform.zig");
 const popup_mod = @import("../popup.zig");
 const split_layout_mod = @import("../split_layout.zig");
 const layout_codec = @import("../layout_codec.zig");
@@ -13,6 +12,7 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
+const statusbar = @import("../statusbar.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -114,8 +114,9 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
 
     const grid_cols: u16 = ctx.grid_cols;
     const grid_rows: u16 = ctx.grid_rows;
-    const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-    defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
 
     var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
 
@@ -135,8 +136,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         }
     }
     // ATTYX_PICKER_CWD tells the picker what CWD to use for "create"
-    const picker_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory;
-    if (picker_cwd) |cwd| {
+    if (resolved.cwd) |cwd| {
         const cwd_z = ctx.allocator.dupeZ(u8, cwd) catch null;
         if (cwd_z) |z| {
             defer ctx.allocator.free(z);
@@ -163,7 +163,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         setenvSlice(ctx.allocator, "ATTYX_CURSOR_STYLE", cstr);
     }
 
-    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd, null) catch |err| {
+    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, resolved.cwd, null) catch |err| {
         logging.err("session-picker", "spawn failed: {}", .{err});
         ctx.allocator.destroy(ps);
         return;
@@ -308,10 +308,10 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
 
 /// Create a new session directly (from keybind, without picker).
 pub fn createSessionDirect(ctx: *PtyThreadCtx) void {
-    const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-    defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-    const cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "/tmp";
-    doSessionCreate(ctx, cwd);
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+    doSessionCreate(ctx, resolved.cwd orelse "/tmp");
 }
 
 /// Try to switch to another alive session. Returns true if switched, false if

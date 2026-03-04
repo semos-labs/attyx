@@ -3,7 +3,7 @@
 const std = @import("std");
 const posix = std.posix;
 const logging = @import("../../logging/log.zig");
-const platform = @import("../../platform/platform.zig");
+
 
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -12,6 +12,7 @@ const publish = @import("publish.zig");
 const input = @import("input.zig");
 const session_actions = @import("session_actions.zig");
 const actions = @import("actions.zig");
+const statusbar = @import("../statusbar.zig");
 
 const attyx = @import("attyx");
 const picker_state_mod = attyx.overlay_session_picker;
@@ -122,10 +123,10 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
         },
         .create_session => {
             closeSessionPicker(ctx);
-            const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-            const cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "/tmp";
-            session_actions.doSessionCreate(ctx, cwd);
+            var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+            const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+            defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+            session_actions.doSessionCreate(ctx, resolved.cwd orelse "/tmp");
             return true;
         },
         .kill_session => |id| {
