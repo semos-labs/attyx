@@ -122,17 +122,16 @@ pub const PopupState = struct {
                 return err;
             };
         } else {
-            // Shell-wrapped: $SHELL -i -c '<command>'
-            // Interactive shell (-i) ensures .zshrc / .bashrc are sourced so
-            // PATH includes homebrew, nix, and other user-configured additions.
+            // Shell-wrapped: $SHELL -c '<command>'
+            // Non-interactive: inherits parent's PATH (already has homebrew,
+            // nix, etc.) and skips slow .zshrc/.bashrc init.
             const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
             const shell_z = try allocator.dupeZ(u8, shell_env);
             defer allocator.free(shell_z);
-            const i_flag: [:0]const u8 = "-i";
             const c_flag: [:0]const u8 = "-c";
             const cmd_z = try allocator.dupeZ(u8, cfg.command);
             defer allocator.free(cmd_z);
-            const shell_argv = [_][:0]const u8{ shell_z, i_flag, c_flag, cmd_z };
+            const shell_argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
             pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,

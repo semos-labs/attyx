@@ -437,25 +437,29 @@ pub fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
         return;
     }
 
-    if (code == 0) {
-        const pcfg = ctx.popup_configs[ps.config_index];
-        if (pcfg.on_return_cmd) |cmd| {
-            const captured = popup_mod.readCapturedStdout(ctx.allocator, ps.pane.pty.stdout_read_fd);
-            if (captured) |text| {
-                logging.info("popup", "on_return_cmd: cmd=\"{s}\" value=\"{s}\" alt={}", .{
-                    cmd, text, publish.ctxEngine(ctx).state.alt_active,
-                });
-                defer ctx.allocator.free(text);
-                if (publish.ctxEngine(ctx).state.alt_active and !pcfg.inject_alt) {
-                    popup_mod.execDetached(ctx.allocator, cmd, text);
+    // Close on success (0) or user cancellation (130 = 128+SIGINT, 1 = fzf Esc).
+    // Only run on_return_cmd for exit code 0 with captured output.
+    if (code == 0 or code == 1 or code == 130) {
+        if (code == 0) {
+            const pcfg = ctx.popup_configs[ps.config_index];
+            if (pcfg.on_return_cmd) |cmd| {
+                const captured = popup_mod.readCapturedStdout(ctx.allocator, ps.pane.pty.stdout_read_fd);
+                if (captured) |text| {
+                    logging.info("popup", "on_return_cmd: cmd=\"{s}\" value=\"{s}\" alt={}", .{
+                        cmd, text, publish.ctxEngine(ctx).state.alt_active,
+                    });
+                    defer ctx.allocator.free(text);
+                    if (publish.ctxEngine(ctx).state.alt_active and !pcfg.inject_alt) {
+                        popup_mod.execDetached(ctx.allocator, cmd, text);
+                    } else {
+                        const full = std.fmt.allocPrint(ctx.allocator, "{s} {s}\r", .{ cmd, text }) catch return;
+                        defer ctx.allocator.free(full);
+                        publish.ctxEngine(ctx).state.suppress_echo = true;
+                        _ = publish.ctxPty(ctx).writeToPty(full) catch {};
+                    }
                 } else {
-                    const full = std.fmt.allocPrint(ctx.allocator, "{s} {s}\r", .{ cmd, text }) catch return;
-                    defer ctx.allocator.free(full);
-                    publish.ctxEngine(ctx).state.suppress_echo = true;
-                    _ = publish.ctxPty(ctx).writeToPty(full) catch {};
+                    logging.info("popup", "on_return_cmd: no captured stdout", .{});
                 }
-            } else {
-                logging.info("popup", "on_return_cmd: no captured stdout", .{});
             }
         }
         closePopup(ctx);
