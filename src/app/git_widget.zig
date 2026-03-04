@@ -208,9 +208,13 @@ fn appendCountColored(buf: []u8, pos: usize, icon: []const u8, count: u16, color
 }
 
 /// Full refresh: run git commands, parse output, format into WidgetState.
-pub fn refresh(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: std.mem.Allocator, master_fd: posix.fd_t, ansi_palette: *const [16]Rgb) void {
-    const cwd = platform.getForegroundCwd(allocator, master_fd) orelse return;
-    defer allocator.free(cwd);
+/// `osc7_cwd` is the terminal's working_directory from OSC 7 (if any) — used for instant refresh.
+pub fn refresh(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: std.mem.Allocator, master_fd: posix.fd_t, osc7_cwd: ?[]const u8, ansi_palette: *const [16]Rgb) void {
+    // Try OSC 7 working directory first (instant), fall back to platform polling
+    var osc7_path_buf: [statusbar.max_output_len]u8 = undefined;
+    const osc7_path = if (osc7_cwd) |uri| statusbar.parseFileUri(uri, &osc7_path_buf) else null;
+    const cwd = osc7_path orelse (platform.getForegroundCwd(allocator, master_fd) orelse return);
+    defer if (osc7_path == null) allocator.free(cwd);
 
     // Run git status --porcelain=v2 --branch
     const status_result = std.process.Child.run(.{

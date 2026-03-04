@@ -54,6 +54,21 @@ pub const default_ansi_palette = [16]Rgb{
     .{ .r = 255, .g = 255, .b = 255 }, // 15 bright white
 };
 
+/// Parse a file:// URI to extract the path component.
+/// Returns a slice into `buf` on success, null on failure.
+pub fn parseFileUri(uri: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
+    const prefix = "file://";
+    if (!std.mem.startsWith(u8, uri, prefix)) return null;
+    const after_scheme = uri[prefix.len..];
+    // Skip hostname: find next '/'
+    const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
+    const path = after_scheme[slash_idx..];
+    if (path.len == 0) return null;
+    const len = @min(path.len, buf.len);
+    @memcpy(buf[0..len], path[0..len]);
+    return buf[0..len];
+}
+
 /// Column offset where tabs begin in the statusbar (for click detection).
 pub var tab_col_offset: u16 = 0;
 
@@ -117,9 +132,10 @@ pub const Statusbar = struct {
         for (self.config.widgets[0..self.config.widget_count], 0..) |wc, i| {
             const ws = &self.widgets[i];
 
-            // For cwd widget: detect OSC 7 changes for instant refresh
+            // For cwd/git widgets: detect OSC 7 changes for instant refresh
             const is_cwd = std.mem.eql(u8, wc.name, "cwd");
-            const osc7_changed = is_cwd and cwdPtrChanged(ws, osc7_cwd);
+            const is_git = std.mem.eql(u8, wc.name, "git");
+            const osc7_changed = (is_cwd or is_git) and cwdPtrChanged(ws, osc7_cwd);
 
             if (!osc7_changed and now_s - ws.last_tick < @as(i64, wc.interval_s)) continue;
             ws.last_tick = now_s;
@@ -127,8 +143,8 @@ pub const Statusbar = struct {
 
             if (is_cwd) {
                 refreshCwd(ws, &wc, self.allocator, master_fd, osc7_cwd);
-            } else if (std.mem.eql(u8, wc.name, "git")) {
-                git_widget.refresh(ws, &wc, self.allocator, master_fd, &self.ansi_palette);
+            } else if (is_git) {
+                git_widget.refresh(ws, &wc, self.allocator, master_fd, osc7_cwd, &self.ansi_palette);
             } else if (std.mem.eql(u8, wc.name, "time")) {
                 refreshTime(ws, &wc);
             } else {
@@ -190,21 +206,6 @@ pub const Statusbar = struct {
         const rlen = @min(path.len, max_output_len - plen);
         @memcpy(ws.output[plen .. plen + rlen], path[0..rlen]);
         ws.output_len = @intCast(plen + rlen);
-    }
-
-    /// Parse a file:// URI to extract the path component.
-    /// Returns a slice into `buf` on success, null on failure.
-    fn parseFileUri(uri: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
-        const prefix = "file://";
-        if (!std.mem.startsWith(u8, uri, prefix)) return null;
-        const after_scheme = uri[prefix.len..];
-        // Skip hostname: find next '/'
-        const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
-        const path = after_scheme[slash_idx..];
-        if (path.len == 0) return null;
-        const len = @min(path.len, buf.len);
-        @memcpy(buf[0..len], path[0..len]);
-        return buf[0..len];
     }
 
     fn parseTruncate(wc: *const StatusbarWidgetConfig) u16 {
