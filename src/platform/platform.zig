@@ -17,6 +17,7 @@ pub const getConfigPaths = impl.getConfigPaths;
 
 extern "c" fn tcgetsid(fd: c_int) std.posix.pid_t;
 extern "c" fn getsid(pid: std.posix.pid_t) std.posix.pid_t;
+extern "c" fn attyx_should_quit() c_int;
 
 /// Well-known tmux binary locations (Homebrew Apple Silicon, Homebrew Intel,
 /// system, MacPorts). Checked in order so we don't depend on PATH.
@@ -82,6 +83,10 @@ pub fn getForegroundProcessName(master_fd: std.posix.fd_t, buf: *[256]u8) ?[]con
 /// running inside our PTY session and resolves the active pane's CWD.
 /// Falls back to a direct pid-to-cwd lookup for plain shells.
 pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t) ?[]const u8 {
+    // Bail out during shutdown — forking a child while the parent is
+    // tearing down causes "os_once_t is corrupt" crashes on macOS.
+    if (attyx_should_quit() != 0) return null;
+
     const fg_pid = impl.getPtyForegroundPid(master_fd) orelse return null;
 
     // Scope tmux lookup to our PTY session only.
