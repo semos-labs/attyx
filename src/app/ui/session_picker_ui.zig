@@ -181,6 +181,48 @@ pub fn closeSessionPicker(ctx: *PtyThreadCtx) void {
     logging.info("session-picker", "closed overlay picker", .{});
 }
 
+/// Re-render the session picker at the current grid size without publishing.
+/// Called from handleResize so the panel re-centers after window size changes.
+pub fn relayout(ctx: *PtyThreadCtx) void {
+    const state = &(g_picker_state orelse return);
+    const mgr = ctx.overlay_mgr orelse return;
+
+    // Recompute visible rows from new grid size
+    const panel_h = @as(u16, @intCast(@max(3, ctx.grid_rows))) / 2;
+    state.visible_rows = if (panel_h > 5) @as(u8, @intCast(panel_h - 5)) else 3;
+    state.adjustScroll();
+
+    const overlay_mod = @import("attyx").overlay_mod;
+
+    const icons = picker_panel.Icons{
+        .filter = ctx.session_icon_filter,
+        .session = ctx.session_icon_session,
+        .new = ctx.session_icon_new,
+        .active = ctx.session_icon_active,
+    };
+
+    const result = picker_panel.renderSessionPicker(
+        ctx.allocator,
+        state,
+        ctx.grid_cols,
+        ctx.grid_rows,
+        icons,
+    ) catch return;
+
+    if (result.width == 0 or result.height == 0) return;
+
+    mgr.setContent(
+        .session_picker,
+        result.col,
+        result.row,
+        result.width,
+        result.height,
+        result.cells,
+    ) catch {};
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.session_picker)].backdrop_alpha = 100;
+    ctx.allocator.free(result.cells);
+}
+
 fn renderAndPublish(ctx: *PtyThreadCtx) void {
     const state = &(g_picker_state orelse return);
     const mgr = ctx.overlay_mgr orelse return;
@@ -211,6 +253,7 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
         result.cells,
     ) catch {};
     mgr.show(.session_picker);
+    mgr.layers[@intFromEnum(@import("attyx").overlay_mod.OverlayId.session_picker)].backdrop_alpha = 100;
     ctx.allocator.free(result.cells);
 
     publish.publishOverlays(ctx);

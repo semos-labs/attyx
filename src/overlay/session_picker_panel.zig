@@ -5,6 +5,7 @@ const ui = @import("ui.zig");
 const panel_mod = @import("panel.zig");
 const picker_state = @import("session_picker.zig");
 
+const ui_cell = @import("ui_cell.zig");
 const Element = ui.Element;
 const Style = ui.Style;
 const Rgb = ui.Rgb;
@@ -114,19 +115,17 @@ pub fn renderSessionPicker(
         else => "filter...",
     };
     const filter_label: []const u8 = switch (state.mode) {
-        .renaming => "  rename: ",
+        .renaming => "rename: ",
         else => blk: {
-            // Build "  <icon> " label from configured filter icon
+            // Build "<icon> " label from configured filter icon
             var fl_buf: [32]u8 = undefined;
-            var fl_len: usize = 2; // leading spaces
-            fl_buf[0] = ' ';
-            fl_buf[1] = ' ';
+            var fl_len: usize = 0;
             const icon_len = @min(icons.filter.len, fl_buf.len - fl_len - 1);
             @memcpy(fl_buf[fl_len..][0..icon_len], icons.filter[0..icon_len]);
             fl_len += icon_len;
             fl_buf[fl_len] = ' ';
             fl_len += 1;
-            break :blk tmp.dupe(u8, fl_buf[0..fl_len]) catch "  > ";
+            break :blk tmp.dupe(u8, fl_buf[0..fl_len]) catch "> ";
         },
     };
     const cursor_pos: u16 = switch (state.mode) {
@@ -154,8 +153,9 @@ pub fn renderSessionPicker(
         .fill_width = true,
     } };
 
-    // Menu (session list)
-    const menu = Element{ .menu = .{
+    // Menu (session list), indented to align with the filter input
+    const label_cols = ui_cell.utf8Count(filter_label);
+    const menu_inner = Element{ .menu = .{
         .items = menu_items[0..menu_count],
         .selected = if (state.selected >= state.scroll_offset)
             state.selected - state.scroll_offset
@@ -167,6 +167,12 @@ pub fn renderSessionPicker(
             .bg = .{ .r = 60, .g = 60, .b = 100 },
             .fg = .{ .r = 255, .g = 255, .b = 255 },
         },
+    } };
+    const menu_children = [_]Element{menu_inner};
+    const menu = Element{ .box = .{
+        .children = &menu_children,
+        .padding = .{ .left = label_cols },
+        .fill_width = true,
     } };
 
     // Hint row

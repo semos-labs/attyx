@@ -36,6 +36,41 @@
         if (!desc.visible) continue;
         if (desc.cell_count <= 0) continue;
 
+        // Backdrop: flush accumulated verts, then draw full-screen dim rect
+        if (desc.backdrop_alpha > 0) {
+            if (bi > 0) {
+                id<MTLBuffer> bgBuf = [self.device newBufferWithBytes:bgVerts
+                                                               length:sizeof(Vertex) * bi
+                                                              options:MTLResourceStorageModeShared];
+                [enc setRenderPipelineState:self.bgPipeline];
+                [enc setVertexBuffer:bgBuf offset:0 atIndex:0];
+                [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:bi];
+                bi = 0;
+            }
+            if (ti > 0) {
+                id<MTLBuffer> textBuf = [self.device newBufferWithBytes:textVerts
+                                                                length:sizeof(Vertex) * ti
+                                                               options:MTLResourceStorageModeShared];
+                [enc setRenderPipelineState:self.textPipeline];
+                [enc setVertexBuffer:textBuf offset:0 atIndex:0];
+                [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+                [enc setFragmentTexture:_glyphCache.texture atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:ti];
+                ti = 0;
+            }
+            float ba = desc.backdrop_alpha / 255.0f;
+            Vertex dimVerts[6];
+            emitRect(dimVerts, 0, 0, 0, viewport[0], viewport[1], 0, 0, 0, ba);
+            id<MTLBuffer> dimBuf = [self.device newBufferWithBytes:dimVerts
+                                                            length:sizeof(Vertex) * 6
+                                                           options:MTLResourceStorageModeShared];
+            [enc setRenderPipelineState:self.bgPipeline];
+            [enc setVertexBuffer:dimBuf offset:0 atIndex:0];
+            [enc setVertexBytes:viewport length:sizeof(float) * 2 atIndex:1];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+        }
+
         int w = desc.width;
         int h = desc.height;
         int cellCount = desc.cell_count;
@@ -79,8 +114,39 @@
 
             // Text glyph (skip spaces and control chars)
             if (cell.character > 32 && ti + 6 <= OVERLAY_MAX_TEXT_VERTS) {
-                ti = emitGlyph(textVerts, ti, &_glyphCache, cell.character,
-                               x, y, gw, gh, fgR, fgG, fgB);
+                uint32_t ch = cell.character;
+                bool hasCombining = (cell.combining[0] != 0);
+                uint32_t key = hasCombining ? combiningKey(ch, cell.combining[0], cell.combining[1]) : ch;
+
+                int rawSlot = glyphCacheLookup(&_glyphCache, key);
+                if (rawSlot < 0) {
+                    rawSlot = hasCombining
+                        ? glyphCacheRasterizeCombined(&_glyphCache, ch, cell.combining[0], cell.combining[1])
+                        : glyphCacheRasterize(&_glyphCache, ch);
+                }
+
+                int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
+                int slot = rawSlot & ~(GLYPH_WIDE_BIT | GLYPH_COLOR_BIT);
+                float glyphW = _glyphCache.glyph_w;
+                float glyphH = _glyphCache.glyph_h;
+                float atlasW = (float)_glyphCache.atlas_w;
+                float atlasH = (float)_glyphCache.atlas_h;
+                int atlasCols = _glyphCache.atlas_cols;
+                int ac = slot % atlasCols;
+                int ar = slot / atlasCols;
+                float u0 = ac * glyphW / atlasW;
+                float v0 = ar * glyphH / atlasH;
+                float u1 = (ac + 1 + wide) * glyphW / atlasW;
+                float v1 = (ar + 1) * glyphH / atlasH;
+                float drawW = wide ? 2.0f * gw : gw;
+
+                textVerts[ti+0] = (Vertex){ x,        y,    u0,v0, fgR,fgG,fgB,1 };
+                textVerts[ti+1] = (Vertex){ x+drawW,  y,    u1,v0, fgR,fgG,fgB,1 };
+                textVerts[ti+2] = (Vertex){ x,        y+gh, u0,v1, fgR,fgG,fgB,1 };
+                textVerts[ti+3] = (Vertex){ x+drawW,  y,    u1,v0, fgR,fgG,fgB,1 };
+                textVerts[ti+4] = (Vertex){ x+drawW,  y+gh, u1,v1, fgR,fgG,fgB,1 };
+                textVerts[ti+5] = (Vertex){ x,        y+gh, u0,v1, fgR,fgG,fgB,1 };
+                ti += 6;
             }
 
             // Underline decoration (1px line at bottom of cell)

@@ -7,6 +7,7 @@ pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
 pub const StyledCell = struct {
     char: u21 = ' ',
+    combining: [2]u21 = .{ 0, 0 },
     fg: Rgb = .{ .r = 220, .g = 220, .b = 220 },
     bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
     bg_alpha: u8 = 230,

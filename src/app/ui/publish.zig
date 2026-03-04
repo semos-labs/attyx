@@ -169,6 +169,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
         for (0..cell_count) |ci| {
             c.g_overlay_cells[idx][ci] = .{
                 .character = cells[ci].char,
+                .combining = .{ cells[ci].combining[0], cells[ci].combining[1] },
                 .fg_r = cells[ci].fg.r,
                 .fg_g = cells[ci].fg.g,
                 .fg_b = cells[ci].fg.b,
@@ -188,6 +189,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
             .height = @intCast(layer.height),
             .cell_count = @intCast(cell_count),
             .z_order = @intCast(li),
+            .backdrop_alpha = @intCast(layer.backdrop_alpha),
         };
 
         out_count += 1;

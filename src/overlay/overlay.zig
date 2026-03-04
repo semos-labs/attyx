@@ -26,6 +26,7 @@ pub const OverlayLayer = struct {
     cells: ?[]StyledCell = null,
     style: OverlayStyle = .{},
     z_order: u8 = 0,
+    backdrop_alpha: u8 = 0, // 0 = no backdrop, >0 = full-screen dim (0-255)
     anchor: ?anchor_mod.Anchor = null,
     placement_constraints: anchor_mod.PlacementConstraints = .{},
     action_bar: ?action_mod.ActionBar = null,

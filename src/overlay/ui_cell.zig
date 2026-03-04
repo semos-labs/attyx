@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const ui = @import("ui.zig");
+const unicode = @import("../term/unicode.zig");
 const StyledCell = ui.StyledCell;
 const Rgb = ui.Rgb;
 const ResolvedStyle = ui.ResolvedStyle;
@@ -56,9 +57,36 @@ pub fn writeStr(
             4 => std.unicode.utf8Decode4(text[pos..][0..4].*) catch { pos += 4; continue; },
             else => { pos += 1; continue; },
         };
-        setCell(cells, stride, buf_h, x + col_off, y, cp, fg, bg, bg_alpha, flags);
-        col_off += 1;
         pos += seq_len;
+
+        // Zero-width characters: skip without advancing
+        if (unicode.isZeroWidth(cp)) continue;
+
+        // Combining marks: store in previous cell's combining slot
+        if (unicode.isCombiningMark(cp)) {
+            if (col_off > 0) {
+                const col = x + col_off - 1;
+                if (col < stride and y < buf_h) {
+                    const idx = cellIndex(stride, col, y);
+                    if (idx < cells.len) {
+                        if (cells[idx].combining[0] == 0) {
+                            cells[idx].combining[0] = cp;
+                        } else if (cells[idx].combining[1] == 0) {
+                            cells[idx].combining[1] = cp;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        const w: u16 = unicode.charDisplayWidth(cp);
+        setCell(cells, stride, buf_h, x + col_off, y, cp, fg, bg, bg_alpha, flags);
+        if (w == 2) {
+            // Place a space continuation in the next cell for wide chars
+            setCell(cells, stride, buf_h, x + col_off + 1, y, ' ', fg, bg, bg_alpha, flags);
+        }
+        col_off += w;
     }
 }
 
@@ -119,7 +147,8 @@ pub fn drawBorder(
     }
 }
 
-/// Count the number of codepoints in a UTF-8 string.
+/// Count the total display width (in columns) of a UTF-8 string.
+/// Wide chars count as 2, combining/zero-width count as 0.
 pub fn utf8Count(text: []const u8) u16 {
     var count: u16 = 0;
     var pos: usize = 0;
@@ -129,23 +158,44 @@ pub fn utf8Count(text: []const u8) u16 {
             continue;
         };
         if (pos + seq_len > text.len) break;
-        count += 1;
+        const cp: u21 = switch (seq_len) {
+            1 => @intCast(text[pos]),
+            2 => std.unicode.utf8Decode2(text[pos..][0..2].*) catch { pos += 2; continue; },
+            3 => std.unicode.utf8Decode3(text[pos..][0..3].*) catch { pos += 3; continue; },
+            4 => std.unicode.utf8Decode4(text[pos..][0..4].*) catch { pos += 4; continue; },
+            else => { pos += 1; continue; },
+        };
+        if (!unicode.isZeroWidth(cp) and !unicode.isCombiningMark(cp)) {
+            count += unicode.charDisplayWidth(cp);
+        }
         pos += seq_len;
     }
     return count;
 }
 
-/// Return byte offset at which the Nth codepoint ends (for truncation).
-pub fn utf8ByteOffset(text: []const u8, max_codepoints: u16) u16 {
-    var count: u16 = 0;
+/// Return byte offset at which the accumulated display width reaches max_cols.
+/// Combining/zero-width chars don't count toward width.
+pub fn utf8ByteOffset(text: []const u8, max_cols: u16) u16 {
+    var width: u16 = 0;
     var pos: usize = 0;
-    while (pos < text.len and count < max_codepoints) {
+    while (pos < text.len and width < max_cols) {
         const seq_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
             pos += 1;
             continue;
         };
         if (pos + seq_len > text.len) break;
-        count += 1;
+        const cp: u21 = switch (seq_len) {
+            1 => @intCast(text[pos]),
+            2 => std.unicode.utf8Decode2(text[pos..][0..2].*) catch { pos += 2; continue; },
+            3 => std.unicode.utf8Decode3(text[pos..][0..3].*) catch { pos += 3; continue; },
+            4 => std.unicode.utf8Decode4(text[pos..][0..4].*) catch { pos += 4; continue; },
+            else => { pos += 1; continue; },
+        };
+        if (!unicode.isZeroWidth(cp) and !unicode.isCombiningMark(cp)) {
+            const w: u16 = unicode.charDisplayWidth(cp);
+            if (width + w > max_cols) break;
+            width += w;
+        }
         pos += seq_len;
     }
     return @intCast(pos);

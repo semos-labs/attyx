@@ -314,6 +314,7 @@ typedef struct {
     int width, height;
     int cell_count;
     int z_order;
+    int backdrop_alpha; // 0 = none, >0 = full-screen dim (0-255)
 } AttyxOverlayDesc;
 
 extern AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];
