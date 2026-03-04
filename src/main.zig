@@ -5,6 +5,7 @@ const config_mod = @import("config/config.zig");
 const terminal = @import("app/terminal.zig");
 const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
+const daemon = @import("app/daemon/daemon.zig");
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
     "https://app.semos.sh"
@@ -50,6 +51,28 @@ pub fn main() !void {
         },
         .uninstall => {
             cli_commands.doUninstall();
+            return;
+        },
+        .daemon => {
+            daemon.run(allocator) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: daemon failed: {s}\n", .{@errorName(err)}) catch "error: daemon failed\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
+            return;
+        },
+        .kill_daemon => {
+            cli_commands.doKillDaemon();
+            return;
+        },
+        ._session_picker => {
+            @import("app/session_picker.zig").run(allocator) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: session picker failed: {s}\n", .{@errorName(err)}) catch "error: session picker failed\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
             return;
         },
         .print_config => {

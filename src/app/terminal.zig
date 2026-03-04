@@ -17,7 +17,9 @@ const keybinds_mod = @import("../config/keybinds.zig");
 const TabManager = @import("tab_manager.zig").TabManager;
 const Pane = @import("pane.zig").Pane;
 const Pty = @import("pty.zig").Pty;
+const layout_codec = @import("layout_codec.zig");
 const SessionLog = @import("session_log.zig").SessionLog;
+const SessionClient = @import("session_client.zig").SessionClient;
 const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
 const platform = @import("../platform/platform.zig");
@@ -61,6 +63,19 @@ pub const PtyThreadCtx = struct {
     grid_rows: u16 = 0,
     grid_cols: u16 = 0,
     statusbar: ?*Statusbar = null,
+    // Session mode (daemon-backed, single shared socket)
+    session_client: ?*SessionClient = null,
+    sessions_enabled: bool = false,
+    // Track last-sent focus_panes IDs to avoid stale replay on refocus.
+    last_focus_panes: [split_layout_mod.max_panes]u32 = .{0} ** split_layout_mod.max_panes,
+    last_focus_count: u8 = 0,
+    // Session picker popup active flag
+    session_picker_active: bool = false,
+    // Configurable session picker icons
+    session_icon_filter: []const u8 = ">",
+    session_icon_session: []const u8 = "",
+    session_icon_new: []const u8 = "+",
+    session_icon_active: []const u8 = "(active)",
 };
 
 // ---------------------------------------------------------------------------
@@ -70,6 +85,8 @@ pub var g_pty_master: posix.fd_t = -1;
 pub var g_engine: ?*attyx.Engine = null;
 pub var g_popup_pty_master: posix.fd_t = -1;
 pub var g_popup_engine: ?*attyx.Engine = null;
+pub var g_session_client: ?*SessionClient = null;
+pub var g_active_daemon_pane_id: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
@@ -132,6 +149,8 @@ pub export var g_split_drag_direction: i32 = 0;
 pub export var g_popup_active: i32 = 0;
 pub export var g_popup_trail_active: i32 = 0;
 pub export var g_ai_prompt_active: i32 = 0;
+pub export var g_toggle_session_switcher: i32 = 0;
+pub export var g_create_session_direct: i32 = 0;
 
 // Ensure keybind exports are linked
 comptime {
@@ -151,6 +170,12 @@ export fn attyx_toggle_anchor_demo() void {
 }
 export fn attyx_toggle_ai_demo() void {
     @atomicStore(i32, &g_toggle_ai_demo, 1, .seq_cst);
+}
+export fn attyx_toggle_session_switcher() void {
+    @atomicStore(i32, &g_toggle_session_switcher, 1, .seq_cst);
+}
+export fn attyx_create_session_direct() void {
+    @atomicStore(i32, &g_create_session_direct, 1, .seq_cst);
 }
 export fn attyx_overlay_esc() void { input.overlayEsc(); }
 export fn attyx_overlay_tab() void { input.overlayTab(); }
@@ -244,6 +269,14 @@ pub fn run(
     };
     posix.sigaction(posix.SIG.USR1, &sa, null);
 
+    // Ignore SIGPIPE — writes to dead daemon sockets must return EPIPE, not kill us.
+    const sa_ign = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.IGN },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.PIPE, &sa_ign, null);
+
     const program_argv: ?[]const [:0]const u8 = if (config.program) |prog|
         try buildProgramArgv(allocator, prog, config.program_args)
     else
@@ -267,11 +300,102 @@ pub fn run(
         }
     }
     const initial_pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - g_grid_top_offset - g_grid_bottom_offset));
+
+    // Session mode: connect to daemon. On failure, fall back to direct PTY.
+    // Ownership transfers to the initial pane's heap-allocated copy below.
+    var session_client: ?SessionClient = null;
+    defer if (session_client) |*sc| sc.deinit();
+    var sessions_enabled = false;
+
+    if (config.sessions_enabled) {
+        if (SessionClient.connect(allocator)) |sc| {
+            session_client = sc;
+            sessions_enabled = true;
+            logging.info("session", "connected to daemon", .{});
+        } else |err| {
+            logging.err("session", "daemon connect failed (falling back to direct PTY): {}", .{err});
+        }
+    }
+
+    // In session mode: attach to last active session, or create a new one.
+    var initial_pane_ids: [32]u32 = .{0} ** 32;
+    var initial_pane_count: u8 = 0;
+    if (session_client) |*sc| attach_or_create: {
+        // Helper: attach and get V2 response with pane IDs
+        const doAttach = struct {
+            fn call(client: *SessionClient, sid: u32, rows: u16, cols: u16, pids: *[32]u32, pcnt: *u8) bool {
+                client.attach(sid, rows, cols) catch return false;
+                if (client.waitForAttach(5000)) |resp| {
+                    pids.* = resp.pane_ids;
+                    pcnt.* = resp.pane_count;
+                    return true;
+                } else |_| return true; // attached but V1 fallback
+            }
+        }.call;
+
+        // Try to get existing sessions
+        sc.requestListSync(2000) catch {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
+                logging.err("session", "create session failed: {}", .{err});
+                sc.deinit();
+                session_client = null;
+                break :attach_or_create;
+            };
+            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            logging.info("session", "created and attached to session {d}", .{sid});
+            break :attach_or_create;
+        };
+
+        // Look for an alive session to reattach to
+        var found_alive: ?u32 = null;
+        for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+            if (entry.alive) {
+                found_alive = entry.id;
+                break;
+            }
+        }
+
+        if (found_alive) |sid| {
+            if (!doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count)) {
+                logging.err("session", "attach to session {d} failed", .{sid});
+                const new_sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err2| {
+                    logging.err("session", "create session failed: {}", .{err2});
+                    sc.deinit();
+                    session_client = null;
+                    break :attach_or_create;
+                };
+                _ = doAttach(sc, new_sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            }
+            logging.info("session", "reattached to session {d}", .{found_alive.?});
+        } else {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
+                logging.err("session", "create session failed: {}", .{err});
+                sc.deinit();
+                session_client = null;
+                break :attach_or_create;
+            };
+            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            logging.info("session", "created and attached to session {d}", .{sid});
+        }
+    }
+
+    // Always spawn a local Pane (provides Engine + TabManager integration).
+    // In session mode, the Pane's PTY is idle — I/O goes through the daemon socket.
     initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     if (config.scrollback_lines != 20_000) {
         initial_pane.engine.state.scrollback.max_lines = config.scrollback_lines;
+    }
+
+    // Transfer SessionClient to heap — shared by all panes via ctx.
+    // Assign daemon_pane_id to the initial pane and send focus_panes.
+    var heap_session_client: ?*SessionClient = null;
+    if (session_client) |sc_val| {
+        const heap_sc = try allocator.create(SessionClient);
+        heap_sc.* = sc_val;
+        heap_session_client = heap_sc;
+        session_client = null; // prevent defer from double-closing
     }
 
     var tab_mgr = TabManager.init(allocator, initial_pane);
@@ -281,20 +405,90 @@ pub fn run(
         tab_mgr.updateGaps(gaps.h, gaps.v);
     }
 
-    g_pty_master = initial_pane.pty.master;
-    g_engine = &initial_pane.engine;
+    // Track initial focus pane IDs so PtyThreadCtx starts with correct replay tracking.
+    var initial_focus_panes: [split_layout_mod.max_panes]u32 = .{0} ** split_layout_mod.max_panes;
+    var initial_focus_count: u8 = 0;
+
+    // Session mode: try to reconstruct tabs from saved layout, else single pane fallback.
+    if (heap_session_client) |heap_sc| {
+        var reconstructed = false;
+        if (heap_sc.layout_len > 0) {
+            if (layout_codec.deserialize(heap_sc.layout_buf[0..heap_sc.layout_len])) |info| {
+                if (info.tab_count > 0) {
+                    tab_mgr.reset(); // tear down initial pane
+                    tab_mgr.reconstructFromLayout(&info, initial_pty_rows, config.cols) catch {
+                        logging.err("session", "layout reconstruction failed", .{});
+                    };
+                    if (tab_mgr.count > 0) {
+                        reconstructed = true;
+                        logging.info("session", "reconstructed {d} tab(s) from layout", .{tab_mgr.count});
+                    }
+                }
+            } else |_| {
+                logging.warn("session", "layout deserialization failed, using single pane", .{});
+            }
+        }
+
+        // Fallback: no layout or reconstruction failed — use initial pane with first daemon pane ID
+        if (!reconstructed) {
+            if (initial_pane_count > 0) {
+                initial_pane.daemon_pane_id = initial_pane_ids[0];
+            }
+        }
+
+        // Set active daemon pane ID and send focus_panes
+        const active_pane = tab_mgr.activePane();
+        g_active_daemon_pane_id = active_pane.daemon_pane_id orelse 0;
+
+        // Collect all daemon pane IDs in the active tab and send focus_panes
+        const active_layout = tab_mgr.activeLayout();
+        var focus_ids: [split_layout_mod.max_panes]u32 = undefined;
+        var focus_count: usize = 0;
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = active_layout.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            if (leaf.pane.daemon_pane_id) |dpid| {
+                focus_ids[focus_count] = dpid;
+                focus_count += 1;
+            }
+        }
+        if (focus_count > 0) {
+            heap_sc.sendFocusPanes(focus_ids[0..focus_count]) catch {};
+        }
+        // Seed the focus tracking so switchActiveTab won't re-replay these panes.
+        for (0..focus_count) |i| {
+            initial_focus_panes[i] = focus_ids[i];
+        }
+        initial_focus_count = @intCast(focus_count);
+    }
+
+    g_pty_master = tab_mgr.activePane().pty.master;
+    g_engine = &tab_mgr.activePane().engine;
+    g_session_client = heap_session_client;
+
+    // Set split-active flag so input dispatch enables pane navigation keybinds.
+    {
+        const init_layout = tab_mgr.activeLayout();
+        @atomicStore(i32, &g_split_active, if (init_layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
+    }
     defer {
         g_pty_master = -1;
         g_engine = null;
+        if (heap_session_client) |hsc| {
+            hsc.deinit();
+            allocator.destroy(hsc);
+        }
+        g_session_client = null;
     }
 
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     @memset(render_cells, std.mem.zeroes(c.AttyxCell));
     defer allocator.free(render_cells);
 
+    const active_eng = &tab_mgr.activePane().engine;
     const total: usize = @as(usize, initial_pty_rows) * @as(usize, config.cols);
-    publish.fillCells(render_cells[0..total], &initial_pane.engine, total, &initial_theme);
-    c.attyx_set_cursor(@intCast(initial_pane.engine.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))), @intCast(initial_pane.engine.state.cursor.col));
+    publish.fillCells(render_cells[0..total], active_eng, total, &initial_theme);
+    c.attyx_set_cursor(@intCast(active_eng.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))), @intCast(active_eng.state.cursor.col));
 
     var session = try SessionLog.init(allocator);
     defer session.deinit();
@@ -378,7 +572,7 @@ pub fn run(
         .applied_cursor_shape = config.cursor_shape,
         .applied_cursor_blink = config.cursor_blink,
         .applied_cursor_trail = config.cursor_trail,
-        .applied_scrollback_lines = @intCast(initial_pane.engine.state.scrollback.max_lines),
+        .applied_scrollback_lines = @intCast(tab_mgr.activePane().engine.state.scrollback.max_lines),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
         .overlay_mgr = &overlay_mgr,
@@ -388,6 +582,14 @@ pub fn run(
         .grid_rows = config.rows,
         .grid_cols = config.cols,
         .statusbar = if (statusbar) |*sb| sb else null,
+        .session_client = heap_session_client,
+        .sessions_enabled = sessions_enabled,
+        .session_icon_filter = config.session_icon_filter,
+        .session_icon_session = config.session_icon_session,
+        .session_icon_new = config.session_icon_new,
+        .session_icon_active = config.session_icon_active,
+        .last_focus_panes = initial_focus_panes,
+        .last_focus_count = initial_focus_count,
     };
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});

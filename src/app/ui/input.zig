@@ -285,8 +285,16 @@ pub fn popupHandleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_
 }
 
 pub fn sendInput(bytes: [*]const u8, len: c_int) void {
-    if (terminal.g_pty_master < 0 or len <= 0) return;
+    if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
+
+    // Session mode: route input through daemon to active pane
+    if (terminal.g_session_client) |sc| {
+        sc.sendPaneInput(terminal.g_active_daemon_pane_id, data) catch {};
+        return;
+    }
+
+    if (terminal.g_pty_master < 0) return;
     const chunk_size: usize = 4096;
     var offset: usize = 0;
     while (offset < data.len) {
@@ -303,7 +311,6 @@ pub fn sendInput(bytes: [*]const u8, len: c_int) void {
 }
 
 pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: u32) void {
-    if (terminal.g_pty_master < 0) return;
     const eng = terminal.g_engine orelse return;
     const key_encode = attyx.key_encode;
 
@@ -324,7 +331,14 @@ pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: 
     );
 
     if (encoded.len > 0) {
-        _ = posix.write(terminal.g_pty_master, encoded) catch {};
+        // Session mode: route through daemon to active pane
+        if (terminal.g_session_client) |sc| {
+            sc.sendPaneInput(terminal.g_active_daemon_pane_id, encoded) catch {};
+            return;
+        }
+        if (terminal.g_pty_master >= 0) {
+            _ = posix.write(terminal.g_pty_master, encoded) catch {};
+        }
     }
 }
 

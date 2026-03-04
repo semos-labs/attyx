@@ -71,6 +71,8 @@ pub const PopupConfig = struct {
     pad: Padding = .{},
     on_return_cmd: ?[]const u8 = null, // command prefix run with grid text on exit 0
     inject_alt: bool = false, // inject on_return_cmd even when alt screen is active
+    capture_stdout: bool = false, // capture child stdout via pipe (independent of on_return_cmd)
+    direct_exec: bool = false, // exec command directly, no shell wrap (instant startup)
     bg_opacity: u8 = 255, // 0 (transparent) – 255 (opaque)
     bg_color: ?[3]u8 = null, // override background color (r, g, b); null = use theme
 };
@@ -90,30 +92,55 @@ pub const PopupState = struct {
     pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
 
-        // Build argv: $SHELL -i -c '<command>'
-        // Interactive shell (-i) ensures .zshrc / .bashrc are sourced so
-        // PATH includes homebrew, nix, and other user-configured additions.
-        const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
-        const shell_z = try allocator.dupeZ(u8, shell_env);
-        defer allocator.free(shell_z);
-        const i_flag: [:0]const u8 = "-i";
-        const c_flag: [:0]const u8 = "-c";
-        const cmd_z = try allocator.dupeZ(u8, cfg.command);
-        defer allocator.free(cmd_z);
-
-        const argv = [_][:0]const u8{ shell_z, i_flag, c_flag, cmd_z };
-
         const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| allocator.free(z);
 
         const pane = try allocator.create(Pane);
-        pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &argv, if (cwd_z) |z| z.ptr else null, .{
-            .capture_stdout = cfg.on_return_cmd != null,
-            .preserve_tmux = true,
-        }) catch |err| {
-            allocator.destroy(pane);
-            return err;
-        };
+
+        if (cfg.direct_exec) {
+            // Direct exec: tokenize command, skip shell wrapper.
+            // Avoids shell init overhead for built-in tools (e.g. session picker).
+            var tokens: [8][:0]u8 = undefined;
+            var tc: usize = 0;
+            defer for (tokens[0..tc]) |t| allocator.free(t);
+            var iter = std.mem.tokenizeScalar(u8, cfg.command, ' ');
+            while (iter.next()) |tok| {
+                if (tc >= tokens.len) break;
+                tokens[tc] = allocator.dupeZ(u8, tok) catch {
+                    allocator.destroy(pane);
+                    return error.OutOfMemory;
+                };
+                tc += 1;
+            }
+            var argv: [8][:0]const u8 = undefined;
+            for (tokens[0..tc], 0..) |t, i| argv[i] = t;
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, .{
+                .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
+                .preserve_tmux = true,
+            }) catch |err| {
+                allocator.destroy(pane);
+                return err;
+            };
+        } else {
+            // Shell-wrapped: $SHELL -i -c '<command>'
+            // Interactive shell (-i) ensures .zshrc / .bashrc are sourced so
+            // PATH includes homebrew, nix, and other user-configured additions.
+            const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
+            const shell_z = try allocator.dupeZ(u8, shell_env);
+            defer allocator.free(shell_z);
+            const i_flag: [:0]const u8 = "-i";
+            const c_flag: [:0]const u8 = "-c";
+            const cmd_z = try allocator.dupeZ(u8, cfg.command);
+            defer allocator.free(cmd_z);
+            const shell_argv = [_][:0]const u8{ shell_z, i_flag, c_flag, cmd_z };
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, .{
+                .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
+                .preserve_tmux = true,
+            }) catch |err| {
+                allocator.destroy(pane);
+                return err;
+            };
+        }
 
         return .{
             .pane = pane,
@@ -142,6 +169,11 @@ pub const PopupState = struct {
         self.outer_w = dims.outer_w;
         self.outer_h = dims.outer_h;
         self.pane.resize(dims.rows, dims.cols);
+        // Clear the engine grid via escape sequences so publishCells sees a
+        // clean state while the child re-renders in response to SIGWINCH.
+        // Raw cell clearing is insufficient — the engine's cursor/scroll
+        // state also needs resetting.
+        self.pane.feed("\x1b[2J\x1b[H\x1b[?25l");
     }
 
     pub fn feed(self: *PopupState, data: []const u8) void {
@@ -471,6 +503,16 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
 /// (OSC 7 from shell integration, MOTD, etc.).
 pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
     if (fd == -1) return null;
+    // Set non-blocking: shell background processes (.zshrc plugins, nix hooks)
+    // may inherit the pipe write end, preventing EOF even after the main child
+    // exits. Since we only call this after waitForExit(), any data the child
+    // wrote is already in the kernel pipe buffer.
+    const platform = @import("../platform/platform.zig");
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    const flags = std.posix.fcntl(fd, F_GETFL, 0) catch 0;
+    _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
+
     var raw: std.ArrayList(u8) = .{};
     var buf: [4096]u8 = undefined;
     while (true) {

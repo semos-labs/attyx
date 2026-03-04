@@ -98,9 +98,22 @@ pub const Statusbar = struct {
         if (self.config_dir) |d| self.allocator.free(d);
     }
 
+    /// Reset all widget cached state so they refresh on the next tick.
+    /// Call this after a session switch to avoid stale CWD/git output.
+    pub fn resetWidgets(self: *Statusbar) void {
+        for (&self.widgets) |*ws| {
+            ws.output_len = 0;
+            ws.last_tick = 0;
+            ws.last_cwd_ptr = null;
+            ws.span_count = 0;
+        }
+    }
+
     /// Tick all widgets — refresh any whose interval has elapsed.
     /// `osc7_cwd` is the terminal's working_directory from OSC 7 (if any).
-    pub fn tick(self: *Statusbar, now_s: i64, master_fd: posix.fd_t, osc7_cwd: ?[]const u8) void {
+    /// Returns true if any widget was refreshed (caller should re-generate overlay).
+    pub fn tick(self: *Statusbar, now_s: i64, master_fd: posix.fd_t, osc7_cwd: ?[]const u8) bool {
+        var any_refreshed = false;
         for (self.config.widgets[0..self.config.widget_count], 0..) |wc, i| {
             const ws = &self.widgets[i];
 
@@ -110,6 +123,7 @@ pub const Statusbar = struct {
 
             if (!osc7_changed and now_s - ws.last_tick < @as(i64, wc.interval_s)) continue;
             ws.last_tick = now_s;
+            any_refreshed = true;
 
             if (is_cwd) {
                 refreshCwd(ws, &wc, self.allocator, master_fd, osc7_cwd);
@@ -121,6 +135,7 @@ pub const Statusbar = struct {
                 refreshScript(self, &wc, ws);
             }
         }
+        return any_refreshed;
     }
 
     /// Check if the OSC 7 cwd pointer has changed since last refresh.

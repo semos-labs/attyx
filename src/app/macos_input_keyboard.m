@@ -159,6 +159,24 @@ static int dispatchAction(uint8_t action) {
         case ATTYX_ACTION_AI_DEMO_TOGGLE:
             attyx_toggle_ai_demo();
             return 1;
+        case ATTYX_ACTION_SESSION_SWITCHER:
+            attyx_toggle_session_switcher();
+            return 1;
+        case ATTYX_ACTION_SESSION_CREATE:
+            if (g_popup_active) {
+                uint8_t b = 0x0e; // Ctrl-N byte
+                attyx_popup_send_input(&b, 1);
+                return 1;
+            }
+            attyx_create_session_direct();
+            return 1;
+        case ATTYX_ACTION_SESSION_KILL:
+            if (g_popup_active) {
+                uint8_t b = 0x04; // Ctrl-D byte
+                attyx_popup_send_input(&b, 1);
+                return 1;
+            }
+            return 0;
         case ATTYX_ACTION_NEW_WINDOW:
             attyx_spawn_new_window();
             return 1;
