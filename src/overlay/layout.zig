@@ -1,6 +1,8 @@
 const std = @import("std");
 const overlay = @import("overlay.zig");
 const action_mod = @import("action.zig");
+const ui = @import("ui.zig");
+const ui_render = @import("ui_render.zig");
 const OverlayCell = overlay.OverlayCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
@@ -205,66 +207,65 @@ pub fn layoutDebugCard(
     lines: []const []const u8,
     style: OverlayStyle,
 ) !CardResult {
-    // Find widest line to determine card width
-    var max_line_w: u16 = 0;
+    // Compute minimum width to fit title in border
+    var min_content_w: u16 = 0;
     for (lines) |line| {
         const len: u16 = @intCast(@min(line.len, std.math.maxInt(u16)));
-        if (len > max_line_w) max_line_w = len;
+        min_content_w = @max(min_content_w, len);
     }
-    // Also account for title in top border
     const title_w: u16 = @intCast(@min(title.len, std.math.maxInt(u16)));
-    if (title_w + 4 > max_line_w) max_line_w = title_w + 4; // "─ Title ─"
+    if (title_w + 4 > min_content_w) min_content_w = title_w + 4;
 
-    const content_h: u16 = @intCast(lines.len);
-    const total_w = max_line_w + 4; // border + padding on each side
-    const total_h = content_h + 2; // top + bottom border
-
-    const cell_count: usize = @as(usize, total_w) * @as(usize, total_h);
-    const cells = try allocator.alloc(OverlayCell, cell_count);
-
-    // Fill with background
-    for (cells) |*cell| {
-        cell.* = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    // Build element tree: bordered box with text children
+    const children = try allocator.alloc(ui.Element, lines.len);
+    defer allocator.free(children);
+    for (lines, 0..) |line, i| {
+        children[i] = .{ .text = .{ .content = line, .wrap = false } };
     }
 
-    // Draw border
-    fillBorder(cells, total_w, total_h, style);
+    const theme = themeFromStyle(style);
+    const total_w = min_content_w + 4; // border(2) + padding(2)
+    const elem = ui.Element{ .box = .{
+        .children = children,
+        .border = .single,
+        .padding = .{ .left = 1, .right = 1 },
+        .width = .{ .cells = total_w },
+        .style = .{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha },
+    } };
 
-    // Place title in top border: ┌─ Title ─────┐
-    if (title.len > 0) {
-        const title_start: usize = 2; // after "┌─"
-        // Place space before title
-        setCell(cells, 0, title_start, total_w, ' ', style.border_color, style);
-        // Place title text
-        for (title, 0..) |ch, i| {
-            const col = title_start + 1 + i;
-            if (col >= total_w - 1) break;
-            setCell(cells, 0, col, total_w, ch, style.fg, style);
-        }
-        // Place space after title
-        const after = title_start + 1 + title.len;
-        if (after < total_w - 1) {
-            setCell(cells, 0, after, total_w, ' ', style.border_color, style);
-        }
+    const r = try ui_render.renderAlloc(allocator, elem, total_w, theme);
+    placeTitle(r.cells, r.result.width, title, style);
+    return .{ .cells = r.cells, .width = r.result.width, .height = r.result.height };
+}
+
+fn themeFromStyle(style: OverlayStyle) ui.OverlayTheme {
+    return .{
+        .fg = style.fg,
+        .bg = style.bg,
+        .bg_alpha = style.bg_alpha,
+        .border_color = style.border_color,
+    };
+}
+
+fn placeTitle(cells: []OverlayCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
+    if (title_text.len == 0) return;
+    const w: usize = width;
+    const title_start: usize = 2;
+    setCellFlat(cells, title_start, w, ' ', style.border_color, style);
+    for (title_text, 0..) |ch, i| {
+        const col = title_start + 1 + i;
+        if (col >= w - 1) break;
+        setCellFlat(cells, col, w, ch, style.fg, style);
     }
-
-    // Fill content lines
-    for (lines, 0..) |line, li| {
-        const row = li + 1; // skip top border
-        for (line, 0..) |ch, ci| {
-            const col = ci + 2; // border + padding
-            const idx = row * @as(usize, total_w) + col;
-            if (idx >= cells.len) break;
-            cells[idx] = .{
-                .char = ch,
-                .fg = style.fg,
-                .bg = style.bg,
-                .bg_alpha = style.bg_alpha,
-            };
-        }
+    const after = title_start + 1 + title_text.len;
+    if (after < w - 1) {
+        setCellFlat(cells, after, w, ' ', style.border_color, style);
     }
+}
 
-    return .{ .cells = cells, .width = total_w, .height = total_h };
+fn setCellFlat(cells: []OverlayCell, idx: usize, max: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
+    if (idx >= max or idx >= cells.len) return;
+    cells[idx] = .{ .char = char, .fg = fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
 }
 
 pub const ActionBarStyle = struct {
@@ -351,85 +352,59 @@ pub fn layoutActionCard(
     style: OverlayStyle,
     action_bar: action_mod.ActionBar,
 ) !CardResult {
-    // Find widest line to determine card width
-    var max_line_w: u16 = 0;
+    // Compute minimum width from lines, title, and action bar
+    var min_content_w: u16 = 0;
     for (lines) |line| {
         const len: u16 = @intCast(@min(line.len, std.math.maxInt(u16)));
-        if (len > max_line_w) max_line_w = len;
+        min_content_w = @max(min_content_w, len);
     }
-    // Account for title in top border
     const title_w: u16 = @intCast(@min(title.len, std.math.maxInt(u16)));
-    if (title_w + 4 > max_line_w) max_line_w = title_w + 4;
-
-    // Account for action bar width: each button = "[ label ] " + gap
-    var action_w: u16 = 1; // left margin
+    if (title_w + 4 > min_content_w) min_content_w = title_w + 4;
+    var action_w: u16 = 1;
     for (0..action_bar.count) |i| {
         const label_len: u16 = @intCast(@min(action_bar.actions[i].label.len, std.math.maxInt(u16)));
-        action_w += 4 + label_len + 1; // "[ " + label + " ]" + gap
+        action_w += 4 + label_len + 1;
     }
-    if (action_w > max_line_w) max_line_w = action_w;
+    min_content_w = @max(min_content_w, action_w);
 
+    // Build element tree: bordered box with text children + blank action row
+    const child_count = lines.len + 1; // +1 for action bar placeholder
+    const children = try allocator.alloc(ui.Element, child_count);
+    defer allocator.free(children);
+    for (lines, 0..) |line, i| {
+        children[i] = .{ .text = .{ .content = line, .wrap = false } };
+    }
+    children[lines.len] = .{ .text = .{ .content = " ", .wrap = false } }; // action bar row
+
+    const theme = themeFromStyle(style);
+    const total_w = min_content_w + 4;
+    const elem = ui.Element{ .box = .{
+        .children = children,
+        .border = .single,
+        .padding = .{ .left = 1, .right = 1 },
+        .width = .{ .cells = total_w },
+        .style = .{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha },
+    } };
+
+    const r = try ui_render.renderAlloc(allocator, elem, total_w, theme);
+    placeTitle(r.cells, r.result.width, title, style);
+
+    // Fill action bar in the second-to-last row
     const content_h: u16 = @intCast(lines.len);
-    const total_w = max_line_w + 4; // border + padding on each side
-    const total_h = content_h + 3; // top border + content + action row + bottom border
-
-    const cell_count: usize = @as(usize, total_w) * @as(usize, total_h);
-    const cells = try allocator.alloc(OverlayCell, cell_count);
-
-    // Fill with background
-    for (cells) |*cell| {
-        cell.* = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-    }
-
-    // Draw border (uses total_h, so bottom border is at the right place)
-    fillBorder(cells, total_w, total_h, style);
-
-    // Place title in top border
-    if (title.len > 0) {
-        const title_start: usize = 2;
-        setCell(cells, 0, title_start, total_w, ' ', style.border_color, style);
-        for (title, 0..) |ch, i| {
-            const col = title_start + 1 + i;
-            if (col >= total_w - 1) break;
-            setCell(cells, 0, col, total_w, ch, style.fg, style);
-        }
-        const after = title_start + 1 + title.len;
-        if (after < total_w - 1) {
-            setCell(cells, 0, after, total_w, ' ', style.border_color, style);
-        }
-    }
-
-    // Fill content lines
-    for (lines, 0..) |line, li| {
-        const row = li + 1; // skip top border
-        for (line, 0..) |ch, ci| {
-            const col = ci + 2; // border + padding
-            const idx = row * @as(usize, total_w) + col;
-            if (idx >= cells.len) break;
-            cells[idx] = .{
-                .char = ch,
-                .fg = style.fg,
-                .bg = style.bg,
-                .bg_alpha = style.bg_alpha,
-            };
-        }
-    }
-
-    // Fill action bar row (between content and bottom border)
-    const action_row: u16 = content_h + 1; // after top border + content lines
+    const action_row: u16 = content_h + 1;
     fillActionBar(
-        cells,
-        total_w,
+        r.cells,
+        r.result.width,
         action_row,
-        1, // start after left border
-        total_w - 1, // end before right border
+        1,
+        r.result.width - 1,
         action_bar.actions[0..action_bar.count],
         action_bar.focused,
         .{},
         style,
     );
 
-    return .{ .cells = cells, .width = total_w, .height = total_h };
+    return .{ .cells = r.cells, .width = r.result.width, .height = r.result.height };
 }
 
 // -------------------------------------------------------------------------

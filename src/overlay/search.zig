@@ -1,6 +1,8 @@
 const std = @import("std");
 const overlay = @import("overlay.zig");
 const layout = @import("layout.zig");
+const ui = @import("ui.zig");
+const ui_render = @import("ui_render.zig");
 const OverlayCell = overlay.OverlayCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
@@ -140,7 +142,7 @@ pub const SearchBarStyle = struct {
 // Layout
 // ---------------------------------------------------------------------------
 
-/// Layout: " Find: [___query___]  3/12  < > x "
+/// Layout: " Find: [___query___]  3/12  ◀ ▶ x "
 pub fn layoutSearchBar(
     allocator: std.mem.Allocator,
     grid_cols: u16,
@@ -149,145 +151,105 @@ pub fn layoutSearchBar(
 ) !CardResult {
     if (grid_cols == 0) return error.InvalidWidth;
 
-    const width = grid_cols;
-    const height: u16 = 1;
-    const cell_count: usize = @as(usize, width);
-    const cells = try allocator.alloc(OverlayCell, cell_count);
-
-    // Fill all cells with bar background
-    for (cells) |*cell| {
-        cell.* = .{
-            .char = ' ',
-            .fg = style.fg,
-            .bg = style.bg,
-            .bg_alpha = style.bg_alpha,
-        };
-    }
-
-    var col: u16 = 0;
-
-    // " Find: " prefix (7 chars)
-    const label = " Find: ";
-    for (label) |ch| {
-        if (col >= width) break;
-        cells[col] = .{ .char = ch, .fg = style.label_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-        col += 1;
-    }
-
-    // Calculate layout regions
-    // Right side: "  N/M  < > x " needs about 16-20 chars depending on match count
-    const right_reserved: u16 = computeRightWidth(search);
-    const input_start = col;
-    const input_end: u16 = if (width > right_reserved + col) width - right_reserved else col;
-    const input_width = if (input_end > input_start) input_end - input_start else 0;
-
-    // Input area background
-    for (input_start..input_end) |i| {
-        cells[i] = .{ .char = ' ', .fg = style.fg, .bg = style.input_bg, .bg_alpha = style.bg_alpha };
-    }
-
-    // Query text or placeholder
-    if (search.query_len == 0) {
-        const placeholder = "type to search...";
-        var pi: u16 = 0;
-        for (placeholder) |ch| {
-            const ci = input_start + pi;
-            if (ci >= input_end) break;
-            cells[ci] = .{ .char = ch, .fg = style.placeholder_fg, .bg = style.input_bg, .bg_alpha = style.bg_alpha };
-            pi += 1;
-        }
-        // Cursor at position 0: opaque with cursor colors
-        if (input_start < input_end) {
-            cells[input_start] = .{
-                .char = ' ',
-                .fg = style.cursor_fg,
-                .bg = style.cursor_bg,
-                .bg_alpha = style.bg_alpha,
-            };
-        }
-    } else {
-        // Render query chars (decode UTF-8 codepoints)
-        const q = search.query[0..search.query_len];
-        var byte_pos: u16 = 0;
-        var char_col: u16 = 0;
-        while (byte_pos < q.len) {
-            const ci = input_start + char_col;
-            if (ci >= input_end) break;
-
-            const cp_len = std.unicode.utf8ByteSequenceLength(q[byte_pos]) catch 1;
-            const cp = std.unicode.utf8Decode(q[byte_pos..@min(byte_pos + cp_len, q.len)]) catch '?';
-
-            const is_cursor = (byte_pos == search.cursor_pos);
-            if (is_cursor) {
-                // Opaque cursor cell (overlay draws on top of terminal cursor quad)
-                cells[ci] = .{
-                    .char = cp,
-                    .fg = style.cursor_fg,
-                    .bg = style.cursor_bg,
-                    .bg_alpha = style.bg_alpha,
-                };
-            } else {
-                cells[ci] = .{
-                    .char = cp,
-                    .fg = style.fg,
-                    .bg = style.input_bg,
-                    .bg_alpha = style.bg_alpha,
-                };
-            }
-            byte_pos += @intCast(cp_len);
-            char_col += 1;
-        }
-
-        // If cursor is at end of query (append position)
-        if (search.cursor_pos >= search.query_len) {
-            const ci = input_start + char_col;
-            if (ci < input_end) {
-                // Opaque cursor cell
-                cells[ci] = .{
-                    .char = ' ',
-                    .fg = style.cursor_fg,
-                    .bg = style.cursor_bg,
-                    .bg_alpha = style.bg_alpha,
-                };
-            }
-        }
-    }
-
-    // Right section: match count + nav buttons + close
-    col = input_end;
-    if (col < width) {
-        cells[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-        col += 1;
-    }
-
-    // Match counter
+    // Compute right section text: " N/M ◀ ▶ x "
+    var right_buf: [32]u8 = undefined;
+    var right_stream = std.io.fixedBufferStream(&right_buf);
+    const rw = right_stream.writer();
+    rw.writeByte(' ') catch {};
     if (search.query_len > 0) {
-        var count_buf: [20]u8 = undefined;
-        const count_str = if (search.total_matches > 0)
-            std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ search.current_match + 1, search.total_matches }) catch ""
+        if (search.total_matches > 0)
+            rw.print("{d}/{d}", .{ search.current_match + 1, search.total_matches }) catch {}
         else
-            std.fmt.bufPrint(&count_buf, "-/0", .{}) catch "";
-
-        const match_fg = if (search.total_matches > 0) style.match_fg else style.no_match_fg;
-        for (count_str) |ch| {
-            if (col >= width) break;
-            cells[col] = .{ .char = ch, .fg = match_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-            col += 1;
-        }
+            rw.writeAll("-/0") catch {};
     }
+    const right_text = right_buf[0..right_stream.pos];
+    const right_text_len: u16 = @intCast(right_text.len);
 
-    // Space + nav buttons: " < > x "
-    if (col < width) { cells[col].char = ' '; col += 1; }
+    // Compute input width: total - label(7) - right_text - nav(7)
+    const label = " Find: ";
+    const label_len: u16 = @intCast(label.len);
+    const nav_width: u16 = 7; // " ◀ ▶ x " (7 cell positions: space + 3 buttons with spaces)
+    const input_width = if (grid_cols > label_len + right_text_len + nav_width)
+        grid_cols - label_len - right_text_len - nav_width
+    else
+        1;
 
-    const nav_chars = [_]u21{ 0x25C0, ' ', 0x25B6, ' ', 'x', ' ' }; // ◀ ▶ x
-    for (nav_chars) |ch| {
+    // Build element tree: horizontal box with label + input + right info
+    const children = [_]ui.Element{
+        .{ .text = .{
+            .content = label,
+            .style = .{ .fg = style.label_fg },
+            .wrap = false,
+        } },
+        .{ .input = .{
+            .value = search.query[0..search.query_len],
+            .cursor_pos = charCountUpTo(search.query[0..search.query_len], search.cursor_pos),
+            .placeholder = "type to search...",
+            .style = .{ .bg = style.input_bg },
+            .cursor_style = .{ .fg = style.cursor_fg, .bg = style.cursor_bg },
+            .width = .{ .cells = input_width },
+        } },
+    };
+
+    const theme = ui.OverlayTheme{
+        .fg = style.fg,
+        .bg = style.bg,
+        .bg_alpha = style.bg_alpha,
+        .cursor_fg = style.cursor_fg,
+        .cursor_bg = style.cursor_bg,
+        .hint_fg = style.placeholder_fg,
+    };
+
+    const r = try ui_render.renderAlloc(allocator, .{ .box = .{
+        .children = &children,
+        .direction = .horizontal,
+        .width = .{ .cells = grid_cols },
+        .fill_width = true,
+        .style = .{ .bg = style.bg, .fg = style.fg, .bg_alpha = style.bg_alpha },
+    } }, grid_cols, theme);
+
+    // Post-process: fill right section (match counter + nav buttons)
+    const cells = r.cells;
+    const width = r.result.width;
+    var col: u16 = label_len + input_width;
+
+    // Match counter with correct coloring
+    const match_fg = if (search.total_matches > 0 or search.query_len == 0) style.match_fg else style.no_match_fg;
+    for (right_text) |ch| {
         if (col >= width) break;
-        cells[col] = .{ .char = ch, .fg = style.button_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+        cells[col] = .{ .char = ch, .fg = match_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
         col += 1;
     }
 
-    _ = input_width;
-    return .{ .cells = cells, .width = width, .height = height };
+    // Nav buttons: " ◀ ▶ x " (using display-width chars)
+    const nav_items = [_]struct { char: u21, fg: Rgb }{
+        .{ .char = ' ', .fg = style.button_fg },
+        .{ .char = 0x25C0, .fg = style.button_fg }, // ◀
+        .{ .char = ' ', .fg = style.button_fg },
+        .{ .char = 0x25B6, .fg = style.button_fg }, // ▶
+        .{ .char = ' ', .fg = style.button_fg },
+        .{ .char = 'x', .fg = style.button_fg },
+        .{ .char = ' ', .fg = style.button_fg },
+    };
+    for (nav_items) |ni| {
+        if (col >= width) break;
+        cells[col] = .{ .char = ni.char, .fg = ni.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+        col += 1;
+    }
+
+    return .{ .cells = cells, .width = width, .height = r.result.height };
+}
+
+/// Count display-width characters in UTF-8 data up to byte_pos.
+fn charCountUpTo(data: []const u8, byte_pos: u16) u16 {
+    var count: u16 = 0;
+    var pos: u16 = 0;
+    while (pos < byte_pos and pos < data.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(data[pos]) catch 1;
+        pos += @intCast(cp_len);
+        count += 1;
+    }
+    return count;
 }
 
 fn computeRightWidth(search: *const SearchBarState) u16 {

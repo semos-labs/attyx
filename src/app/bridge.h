@@ -300,6 +300,7 @@ typedef struct {
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
     uint8_t bg_alpha;
+    uint8_t flags; // bit 0=bold, 1=underline, 3=dim, 4=italic, 5=strikethrough
 } AttyxOverlayCell;
 
 typedef struct {

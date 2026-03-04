@@ -176,6 +176,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
                 .bg_g = cells[ci].bg.g,
                 .bg_b = cells[ci].bg.b,
                 .bg_alpha = cells[ci].bg_alpha,
+                .flags = cells[ci].flags,
             };
         }
 

@@ -20,6 +20,7 @@ pub const OverlayCell = struct {
     fg: Rgb = .{ .r = 220, .g = 220, .b = 220 },
     bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
     bg_alpha: u8 = 230,
+    flags: u8 = 0, // bit 0=bold, 1=underline, 3=dim, 4=italic, 5=strikethrough
 };
 
 pub const OverlayLayer = struct {
