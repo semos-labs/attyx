@@ -49,6 +49,8 @@ pub const overlay_components = @import("overlay/components.zig");
 pub const overlay_panel = @import("overlay/panel.zig");
 pub const overlay_session_picker = @import("overlay/session_picker.zig");
 pub const overlay_session_picker_panel = @import("overlay/session_picker_panel.zig");
+pub const overlay_command_palette = @import("overlay/command_palette.zig");
+pub const overlay_command_palette_panel = @import("overlay/command_palette_panel.zig");
 
 pub const version = @import("build_options").version;
 pub const env = @import("build_options").env;
@@ -127,4 +129,6 @@ test {
     _ = @import("overlay/panel.zig");
     _ = @import("overlay/session_picker.zig");
     _ = @import("overlay/session_picker_panel.zig");
+    _ = @import("overlay/command_palette.zig");
+    _ = @import("overlay/command_palette_panel.zig");
 }

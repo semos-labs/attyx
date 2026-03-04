@@ -177,8 +177,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
     }
 
-    // Session picker key routing
-    if (g_session_picker_active) {
+    // Session picker / command palette key routing
+    if (g_session_picker_active || g_command_palette_active) {
         unsigned short kc = event.keyCode;
         if (kc == kVK_Escape)              { attyx_picker_cmd(7); return YES; }
         if (kc == kVK_Return)              { attyx_picker_cmd(8); return YES; }

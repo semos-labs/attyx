@@ -187,6 +187,10 @@ extern volatile int g_ai_prompt_active;  // 1 = AI edit prompt has focus (Zig-ow
 void attyx_ai_prompt_insert_char(uint32_t codepoint);
 void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=home 6=end 7=cancel 8=submit
 
+// Command palette: input thread -> PTY thread (Zig-side)
+extern volatile int g_command_palette_active;  // 1 = command palette overlay has focus
+void attyx_toggle_command_palette(void);
+
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
 void attyx_picker_insert_char(uint32_t codepoint);

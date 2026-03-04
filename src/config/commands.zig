@@ -76,6 +76,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .session_switcher_toggle, .name = "session_switcher_toggle", .description = "Toggle session switcher", .scope = .global, .mac_hotkey = "ctrl+shift+s", .linux_hotkey = "ctrl+shift+s" },
     .{ .action = .session_create, .name = "session_create", .description = "Create new session", .scope = .global, .mac_hotkey = "ctrl+shift+n", .linux_hotkey = "ctrl+shift+n" },
     .{ .action = .session_kill, .name = "session_kill", .description = "Kill current session", .scope = .global, .mac_hotkey = "ctrl+d", .linux_hotkey = "ctrl+d" },
+    .{ .action = .command_palette_toggle, .name = "command_palette_toggle", .description = "Toggle command palette", .scope = .global, .mac_hotkey = "cmd+shift+p", .linux_hotkey = "ctrl+shift+p" },
     // Tab select by number
     .{ .action = .tab_select_1, .name = "tab_select_1", .description = "Switch to tab 1", .scope = .global, .mac_hotkey = "cmd+1", .linux_hotkey = "alt+1" },
     .{ .action = .tab_select_2, .name = "tab_select_2", .description = "Switch to tab 2", .scope = .global, .mac_hotkey = "cmd+2", .linux_hotkey = "alt+2" },

@@ -134,6 +134,10 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
             c.attyx_toggle_session_switcher();
             return 1;
         },
+        .command_palette_toggle => {
+            c.attyx_toggle_command_palette();
+            return 1;
+        },
         .session_create => {
             if (c.g_popup_active != 0) {
                 const b = [_]u8{0x0e}; // Ctrl-N byte

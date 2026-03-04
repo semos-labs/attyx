@@ -112,6 +112,11 @@ export fn attyx_toggle_session_switcher() void {}
 export var g_create_session_direct: i32 = 0;
 export fn attyx_create_session_direct() void {}
 
+// Command palette stubs (terminal.zig provides the real implementations)
+export var g_command_palette_active: i32 = 0;
+export var g_toggle_command_palette: i32 = 0;
+export fn attyx_toggle_command_palette() void {}
+
 // Popup terminal stubs (terminal.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;

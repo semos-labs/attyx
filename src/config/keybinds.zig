@@ -106,6 +106,7 @@ pub const Action = enum(u8) {
     session_switcher_toggle = 74,
     session_create = 75,
     session_kill = 76,
+    command_palette_toggle = 77,
     _,
 
     /// Return the popup index if this is a popup_toggle action.

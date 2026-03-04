@@ -20,6 +20,7 @@ const resize_mod = @import("resize.zig");
 const hup_mod = @import("hup.zig");
 const overlay_input = @import("overlay_input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
+const command_palette_ui = @import("command_palette_ui.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -144,6 +145,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Command palette toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_command_palette, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_command_palette_active != 0) {
+                command_palette_ui.closeCommandPalette(ctx);
+            } else {
+                command_palette_ui.openCommandPalette(ctx);
+            }
+        }
+
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);
@@ -168,6 +178,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Session picker input polling
         if (terminal.g_session_picker_active != 0) {
             _ = session_picker_ui.consumePickerInput(ctx);
+        }
+
+        // Command palette input polling
+        if (terminal.g_command_palette_active != 0) {
+            _ = command_palette_ui.consumePaletteInput(ctx);
         }
 
         // Tick update check notification

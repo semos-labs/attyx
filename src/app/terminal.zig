@@ -153,6 +153,8 @@ pub export var g_ai_prompt_active: i32 = 0;
 pub export var g_toggle_session_switcher: i32 = 0;
 pub export var g_create_session_direct: i32 = 0;
 pub export var g_session_picker_active: i32 = 0;
+pub export var g_toggle_command_palette: i32 = 0;
+pub export var g_command_palette_active: i32 = 0;
 
 // Ensure keybind and dispatch exports are linked
 comptime {
@@ -176,6 +178,9 @@ export fn attyx_toggle_ai_demo() void {
 }
 export fn attyx_toggle_session_switcher() void {
     @atomicStore(i32, &g_toggle_session_switcher, 1, .seq_cst);
+}
+export fn attyx_toggle_command_palette() void {
+    @atomicStore(i32, &g_toggle_command_palette, 1, .seq_cst);
 }
 export fn attyx_create_session_direct() void {
     @atomicStore(i32, &g_create_session_direct, 1, .seq_cst);
