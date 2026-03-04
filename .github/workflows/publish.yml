@@ -1,0 +1,197 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
+env:
+  GITHUB_REPO: semos-labs/attyx
+  HOMEBREW_TAP: semos-labs/homebrew-tap
+
+permissions:
+  contents: write
+
+jobs:
+  homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Download release assets
+        run: |
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPO" \
+            --pattern "attyx-*" \
+            --dir assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        run: |
+          cd assets
+          echo "darwin_arm64=$(sha256sum attyx-darwin-arm64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin_x64=$(sha256sum attyx-darwin-x64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha256sum attyx-linux-x64.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum attyx-linux-arm64.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch Homebrew tap update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: ${{ env.HOMEBREW_TAP }}
+          event-type: update-formula-attyx
+          client-payload: |
+            {
+              "version": "${{ steps.version.outputs.version }}",
+              "tag": "${{ github.event.release.tag_name }}",
+              "darwin_arm64_sha256": "${{ steps.checksums.outputs.darwin_arm64 }}",
+              "darwin_x64_sha256": "${{ steps.checksums.outputs.darwin_x64 }}",
+              "linux_x64_sha256": "${{ steps.checksums.outputs.linux_x64 }}",
+              "linux_arm64_sha256": "${{ steps.checksums.outputs.linux_arm64 }}"
+            }
+
+      - name: Step summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Release ${{ github.event.release.tag_name }}
+
+          | Platform | SHA256 |
+          |----------|--------|
+          | darwin-arm64 | \`${{ steps.checksums.outputs.darwin_arm64 }}\` |
+          | darwin-x64 | \`${{ steps.checksums.outputs.darwin_x64 }}\` |
+          | linux-x64 | \`${{ steps.checksums.outputs.linux_x64 }}\` |
+          | linux-arm64 | \`${{ steps.checksums.outputs.linux_arm64 }}\` |
+          EOF
+
+  appcast:
+    runs-on: ubuntu-latest
+    env:
+      SEMOS_WEBSITE: semos-labs/semos
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${TAG#v}"
+          BUNDLE_VERSION="${VERSION%%-rc*}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "bundle_version=$BUNDLE_VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Download Sparkle signatures from release
+        run: |
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPO" \
+            --pattern "sparkle-signature-*.txt" \
+            --dir signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Download macOS release zips
+        run: |
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPO" \
+            --pattern "attyx-darwin-*.zip" \
+            --dir assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Generate appcast XML files
+        run: |
+          ARM64_SIG=$(cat signatures/sparkle-signature-darwin-arm64.txt)
+          X64_SIG=$(cat signatures/sparkle-signature-darwin-x64.txt)
+          ARM64_SIZE=$(stat -c%s assets/attyx-darwin-arm64.zip)
+          X64_SIZE=$(stat -c%s assets/attyx-darwin-x64.zip)
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE_VERSION="${{ steps.version.outputs.bundle_version }}"
+          PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
+          TAG="${{ github.event.release.tag_name }}"
+          DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download/${TAG}"
+
+          cat > appcast-arm64.xml <<FEED
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>Attyx (Apple Silicon)</title>
+              <link>https://semos.sh</link>
+              <description>Attyx auto-update feed for Apple Silicon</description>
+              <language>en</language>
+              <item>
+                <title>Attyx v${VERSION}</title>
+                <pubDate>${PUB_DATE}</pubDate>
+                <sparkle:releaseNotesLink>https://semos.sh/attyx/release-notes?version=${VERSION}&amp;mode=sparkle</sparkle:releaseNotesLink>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="${DOWNLOAD_BASE}/attyx-darwin-arm64.zip"
+                  sparkle:version="${BUNDLE_VERSION}"
+                  sparkle:shortVersionString="${VERSION}"
+                  sparkle:edSignature="${ARM64_SIG}"
+                  length="${ARM64_SIZE}"
+                  type="application/octet-stream" />
+              </item>
+            </channel>
+          </rss>
+          FEED
+
+          cat > appcast-x64.xml <<FEED
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>Attyx (Intel)</title>
+              <link>https://semos.sh</link>
+              <description>Attyx auto-update feed for Intel</description>
+              <language>en</language>
+              <item>
+                <title>Attyx v${VERSION}</title>
+                <pubDate>${PUB_DATE}</pubDate>
+                <sparkle:releaseNotesLink>https://semos.sh/attyx/release-notes?version=${VERSION}&amp;mode=sparkle</sparkle:releaseNotesLink>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="${DOWNLOAD_BASE}/attyx-darwin-x64.zip"
+                  sparkle:version="${BUNDLE_VERSION}"
+                  sparkle:shortVersionString="${VERSION}"
+                  sparkle:edSignature="${X64_SIG}"
+                  length="${X64_SIZE}"
+                  type="application/octet-stream" />
+              </item>
+            </channel>
+          </rss>
+          FEED
+
+      - name: Generate release notes markdown
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release view "$TAG" --repo "$GITHUB_REPO" --json body -q .body > "${VERSION}.md"
+
+      - name: Push appcast and release notes to semos website
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${SEMOS_WEBSITE}.git" semos-site
+          cp appcast-arm64.xml semos-site/public/appcast-arm64.xml
+          cp appcast-x64.xml semos-site/public/appcast-x64.xml
+          mkdir -p semos-site/src/content/attyx/release-notes
+          cp "${VERSION}.md" "semos-site/src/content/attyx/release-notes/${VERSION}.md"
+          cd semos-site
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/appcast-arm64.xml public/appcast-x64.xml "src/content/attyx/release-notes/${VERSION}.md"
+          git diff --cached --quiet || git commit -m "chore: update appcast and release notes for ${TAG}"
+          git push
