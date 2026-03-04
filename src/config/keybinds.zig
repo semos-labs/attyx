@@ -7,6 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const logging = @import("../logging/log.zig");
+const commands = @import("commands.zig");
 
 // ---------------------------------------------------------------------------
 // KeyCode constants (must match C enums in macos_input_keyboard.m / linux_input.c
@@ -55,7 +56,7 @@ pub const MOD_CTRL: u8 = 4;
 pub const MOD_SUPER: u8 = 8;
 
 // ---------------------------------------------------------------------------
-// Action enum — values mirrored as ATTYX_ACTION_* in bridge.h
+// Action enum — values used by attyx_dispatch_action() from C and Zig
 // ---------------------------------------------------------------------------
 
 pub const Action = enum(u8) {
@@ -261,156 +262,16 @@ fn resolveKeyName(name: []const u8) ?ResolvedKey {
 }
 
 // ---------------------------------------------------------------------------
-// Action name mapping
+// Action name mapping (delegated to commands.zig)
 // ---------------------------------------------------------------------------
 
-pub fn actionFromString(s: []const u8) ?Action {
-    const map = .{
-        .{ "copy", Action.copy },
-        .{ "paste", Action.paste },
-        .{ "search_toggle", Action.search_toggle },
-        .{ "search_next", Action.search_next },
-        .{ "search_prev", Action.search_prev },
-        .{ "scroll_page_up", Action.scroll_page_up },
-        .{ "scroll_page_down", Action.scroll_page_down },
-        .{ "scroll_to_top", Action.scroll_to_top },
-        .{ "scroll_to_bottom", Action.scroll_to_bottom },
-        .{ "config_reload", Action.config_reload },
-        .{ "debug_toggle", Action.debug_toggle },
-        .{ "anchor_demo_toggle", Action.anchor_demo_toggle },
-        .{ "new_window", Action.new_window },
-        .{ "close_window", Action.close_window },
-        .{ "ai_demo_toggle", Action.ai_demo_toggle },
-        .{ "tab_new", Action.tab_new },
-        .{ "tab_close", Action.tab_close },
-        .{ "tab_next", Action.tab_next },
-        .{ "tab_prev", Action.tab_prev },
-        .{ "split_vertical", Action.split_vertical },
-        .{ "split_horizontal", Action.split_horizontal },
-        .{ "pane_close", Action.pane_close },
-        .{ "pane_focus_up", Action.pane_focus_up },
-        .{ "pane_focus_down", Action.pane_focus_down },
-        .{ "pane_focus_left", Action.pane_focus_left },
-        .{ "pane_focus_right", Action.pane_focus_right },
-        .{ "pane_resize_up", Action.pane_resize_up },
-        .{ "pane_resize_down", Action.pane_resize_down },
-        .{ "pane_resize_left", Action.pane_resize_left },
-        .{ "pane_resize_right", Action.pane_resize_right },
-        .{ "tab_select_1", Action.tab_select_1 },
-        .{ "tab_select_2", Action.tab_select_2 },
-        .{ "tab_select_3", Action.tab_select_3 },
-        .{ "tab_select_4", Action.tab_select_4 },
-        .{ "tab_select_5", Action.tab_select_5 },
-        .{ "tab_select_6", Action.tab_select_6 },
-        .{ "tab_select_7", Action.tab_select_7 },
-        .{ "tab_select_8", Action.tab_select_8 },
-        .{ "tab_select_9", Action.tab_select_9 },
-        .{ "clear_screen", Action.clear_screen },
-        .{ "session_switcher_toggle", Action.session_switcher_toggle },
-        .{ "session_create", Action.session_create },
-        .{ "session_kill", Action.session_kill },
-    };
-    inline for (map) |entry| {
-        if (eql(s, entry[0])) return entry[1];
-    }
-    return null;
-}
+pub const actionFromString = commands.actionFromName;
 
 // ---------------------------------------------------------------------------
-// Platform-aware defaults
+// Platform-aware defaults (delegated to commands.zig)
 // ---------------------------------------------------------------------------
 
-fn defaultKeybinds() []const Keybind {
-    const is_macos = comptime builtin.os.tag == .macos;
-    const defaults = comptime blk: {
-        var list: []const Keybind = &.{
-            kb(.{ .key = KC_PAGE_UP, .mods = MOD_SHIFT, .codepoint = 0 }, .scroll_page_up),
-            kb(.{ .key = KC_PAGE_DOWN, .mods = MOD_SHIFT, .codepoint = 0 }, .scroll_page_down),
-            kb(.{ .key = KC_HOME, .mods = MOD_SHIFT, .codepoint = 0 }, .scroll_to_top),
-            kb(.{ .key = KC_END, .mods = MOD_SHIFT, .codepoint = 0 }, .scroll_to_bottom),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'r' }, .config_reload),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'd' }, .debug_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'a' }, .anchor_demo_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .close_window),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'i' }, .ai_demo_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 's' }, .session_switcher_toggle),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'n' }, .session_create),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'd' }, .session_kill),
-        };
-        // Tab management (cross-platform)
-        list = list ++ &[_]Keybind{
-            kb(.{ .key = KC_TAB, .mods = MOD_CTRL, .codepoint = 0 }, .tab_next),
-            kb(.{ .key = KC_TAB, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
-        };
-        // Tab select by number: Cmd+1..9 on macOS, Alt+1..9 on Linux
-        {
-            const tab_mod = if (is_macos) MOD_SUPER else MOD_ALT;
-            list = list ++ &[_]Keybind{
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '1' }, .tab_select_1),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '2' }, .tab_select_2),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '3' }, .tab_select_3),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '4' }, .tab_select_4),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '5' }, .tab_select_5),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '6' }, .tab_select_6),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '7' }, .tab_select_7),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '8' }, .tab_select_8),
-                kb(.{ .key = KC_CODEPOINT, .mods = tab_mod, .codepoint = '9' }, .tab_select_9),
-            };
-        }
-        // Split pane navigation (cross-platform, only active when splits exist)
-        list = list ++ &[_]Keybind{
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'h' }, .pane_focus_left),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'j' }, .pane_focus_down),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'k' }, .pane_focus_up),
-            kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'l' }, .pane_focus_right),
-        };
-        if (is_macos) {
-            list = list ++ &[_]Keybind{
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'f' }, .search_toggle),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'g' }, .search_next),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 't' }, .tab_new),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'w' }, .tab_close),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'k' }, .clear_screen),
-                kb(.{ .key = KC_LEFT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 0 }, .tab_prev),
-                kb(.{ .key = KC_RIGHT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 0 }, .tab_next),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER, .codepoint = 'd' }, .split_vertical),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'd' }, .split_horizontal),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_SHIFT, .codepoint = 'w' }, .pane_close),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'h' }, .pane_resize_left),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'j' }, .pane_resize_down),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'k' }, .pane_resize_up),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_SUPER | MOD_CTRL, .codepoint = 'l' }, .pane_resize_right),
-            };
-        } else {
-            list = list ++ &[_]Keybind{
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'c' }, .copy),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'v' }, .paste),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'f' }, .search_toggle),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL, .codepoint = 'g' }, .search_next),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'g' }, .search_prev),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 't' }, .tab_new),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'w' }, .tab_close),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'k' }, .clear_screen),
-                kb(.{ .key = KC_LEFT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 0 }, .tab_prev),
-                kb(.{ .key = KC_RIGHT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 0 }, .tab_next),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'd' }, .split_vertical),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'e' }, .split_horizontal),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_SHIFT, .codepoint = 'q' }, .pane_close),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'h' }, .pane_resize_left),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'j' }, .pane_resize_down),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'k' }, .pane_resize_up),
-                kb(.{ .key = KC_CODEPOINT, .mods = MOD_CTRL | MOD_ALT, .codepoint = 'l' }, .pane_resize_right),
-            };
-        }
-        break :blk list;
-    };
-    return defaults;
-}
-
-fn kb(combo: KeyCombo, action: Action) Keybind {
-    return .{ .combo = combo, .action = action };
-}
+const defaultKeybinds = commands.defaultKeybinds;
 
 // ---------------------------------------------------------------------------
 // Table building: merge defaults + overrides + sequences + popup hotkeys

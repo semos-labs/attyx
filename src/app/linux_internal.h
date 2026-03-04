@@ -274,7 +274,8 @@ int utf8Encode(uint32_t cp, uint8_t* buf);
 // Clipboard
 // ---------------------------------------------------------------------------
 
-void doCopy(void);
+void attyx_platform_copy(void);
+void attyx_platform_paste(void);
 void clipboardCopy(const char* text);
 const char* clipboardPaste(void);
 

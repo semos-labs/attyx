@@ -390,54 +390,32 @@ extern volatile int        g_popup_image_placement_count;
 // Configurable keybindings (implemented in Zig keybinds.zig)
 // ---------------------------------------------------------------------------
 
-// Action constants (must match Action enum in keybinds.zig)
-#define ATTYX_ACTION_NONE              0
-#define ATTYX_ACTION_COPY              1
-#define ATTYX_ACTION_PASTE             2
-#define ATTYX_ACTION_SEARCH_TOGGLE     3
-#define ATTYX_ACTION_SEARCH_NEXT       4
-#define ATTYX_ACTION_SEARCH_PREV       5
-#define ATTYX_ACTION_SCROLL_PAGE_UP    6
-#define ATTYX_ACTION_SCROLL_PAGE_DOWN  7
-#define ATTYX_ACTION_SCROLL_TO_TOP     8
-#define ATTYX_ACTION_SCROLL_TO_BOTTOM  9
-#define ATTYX_ACTION_CONFIG_RELOAD    10
-#define ATTYX_ACTION_DEBUG_TOGGLE     11
-#define ATTYX_ACTION_ANCHOR_DEMO      12
-#define ATTYX_ACTION_NEW_WINDOW       13
-#define ATTYX_ACTION_CLOSE_WINDOW     14
-#define ATTYX_ACTION_POPUP_TOGGLE_0   15
-#define ATTYX_ACTION_SEND_SEQUENCE    47
-#define ATTYX_ACTION_AI_DEMO_TOGGLE   48
-#define ATTYX_ACTION_TAB_NEW          49
-#define ATTYX_ACTION_TAB_CLOSE        50
-#define ATTYX_ACTION_TAB_NEXT         51
-#define ATTYX_ACTION_TAB_PREV         52
-#define ATTYX_ACTION_SPLIT_VERTICAL   53
-#define ATTYX_ACTION_SPLIT_HORIZONTAL 54
-#define ATTYX_ACTION_PANE_CLOSE       55
-#define ATTYX_ACTION_PANE_FOCUS_UP    56
-#define ATTYX_ACTION_PANE_FOCUS_DOWN  57
-#define ATTYX_ACTION_PANE_FOCUS_LEFT  58
-#define ATTYX_ACTION_PANE_FOCUS_RIGHT 59
-#define ATTYX_ACTION_PANE_RESIZE_UP    60
-#define ATTYX_ACTION_PANE_RESIZE_DOWN  61
-#define ATTYX_ACTION_PANE_RESIZE_LEFT  62
-#define ATTYX_ACTION_PANE_RESIZE_RIGHT 63
-#define ATTYX_ACTION_TAB_SELECT_1     64
-#define ATTYX_ACTION_TAB_SELECT_9     72
-#define ATTYX_ACTION_CLEAR_SCREEN     73
-#define ATTYX_ACTION_SESSION_SWITCHER 74
-#define ATTYX_ACTION_SESSION_CREATE  75
-#define ATTYX_ACTION_SESSION_KILL    76
+#define ATTYX_ACTION_NONE      0
 
-// Returns action ID (0 = no match). For ATTYX_ACTION_SEND_SEQUENCE,
+// Returns action ID (0 = no match). For send_sequence actions,
 // g_keybind_matched_seq/len are set before returning.
 uint8_t attyx_keybind_match(uint16_t key, uint8_t mods, uint32_t codepoint);
 
-// Sequence result (valid after attyx_keybind_match returns SEND_SEQUENCE)
+// Sequence result (valid after attyx_keybind_match returns send_sequence)
 extern const uint8_t* g_keybind_matched_seq;
 extern volatile int    g_keybind_matched_seq_len;
+
+// ---------------------------------------------------------------------------
+// Unified action dispatch (implemented in Zig dispatch.zig)
+// ---------------------------------------------------------------------------
+
+// Dispatch a keybind action. Returns 1 if consumed, 0 if key should pass through.
+uint8_t attyx_dispatch_action(uint8_t action);
+
+// Platform-specific callbacks (implemented in platform_macos.m / platform_linux.c)
+void attyx_platform_close_window(void);
+
+// ---------------------------------------------------------------------------
+// Globals used by dispatch (defined in platform C files)
+// ---------------------------------------------------------------------------
+
+extern volatile int g_mouse_tracking;
+extern int g_rows;
 
 // ---------------------------------------------------------------------------
 // Native macOS tabs
