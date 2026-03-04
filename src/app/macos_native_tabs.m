@@ -312,11 +312,11 @@ static const CGFloat kPlusWidth    = 28.0;
 
 - (void)handleCloseClick:(NSNumber*)index {
     g_native_tab_click = [index intValue];
-    attyx_tab_action(ATTYX_ACTION_TAB_CLOSE);
+    attyx_dispatch_action(50);
 }
 
 - (void)handleNewTab {
-    attyx_tab_action(ATTYX_ACTION_TAB_NEW);
+    attyx_dispatch_action(49);
 }
 
 - (void)sync {

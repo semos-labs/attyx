@@ -112,6 +112,11 @@ export fn attyx_toggle_session_switcher() void {}
 export var g_create_session_direct: i32 = 0;
 export fn attyx_create_session_direct() void {}
 
+// Command palette stubs (terminal.zig provides the real implementations)
+export var g_command_palette_active: i32 = 0;
+export var g_toggle_command_palette: i32 = 0;
+export fn attyx_toggle_command_palette() void {}
+
 // Popup terminal stubs (terminal.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;
@@ -119,8 +124,9 @@ export fn attyx_popup_toggle(_: c_int) void {}
 export fn attyx_popup_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_popup_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 
-// Keybind stubs (keybinds.zig provides real implementations)
+// Keybind and dispatch stubs (keybinds.zig / dispatch.zig provide real implementations)
 export fn attyx_keybind_match(_: u16, _: u8, _: u32) u8 { return 0; }
+export fn attyx_dispatch_action(_: u8) u8 { return 0; }
 var _seq_stub: u8 = 0;
 export var g_keybind_matched_seq: [*]const u8 = @ptrCast(&_seq_stub);
 export var g_keybind_matched_seq_len: c_int = 0;

@@ -8,6 +8,7 @@ const publish = @import("publish.zig");
 const input = @import("input.zig");
 const ai = @import("ai.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
+const command_palette_ui = @import("command_palette_ui.zig");
 
 /// Process all overlay interactions (dismiss, focus cycling, activate, clicks, scroll).
 pub fn processOverlayInteractions(ctx: *PtyThreadCtx) void {
@@ -20,6 +21,12 @@ pub fn processOverlayInteractions(ctx: *PtyThreadCtx) void {
 
 fn processDismiss(ctx: *PtyThreadCtx) void {
     if (@atomicRmw(i32, &input.g_overlay_dismiss, .Xchg, 0, .seq_cst) == 0) return;
+
+    // Command palette dismiss
+    if (terminal.g_command_palette_active != 0) {
+        command_palette_ui.closeCommandPalette(ctx);
+        return;
+    }
 
     // Session picker dismiss (picker handles its own Esc via cmd ring,
     // but overlay Esc also comes through here)
