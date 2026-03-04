@@ -175,9 +175,13 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 
 int cellIsSelected(int row, int col) {
     if (!g_sel_active) return 0;
+    // In copy mode with splits, clip selection to focused pane rect
+    if (g_copy_mode && g_pane_rect_rows > 0) {
+        int pr = g_pane_rect_row, pc = g_pane_rect_col;
+        if (row < pr || row >= pr + g_pane_rect_rows || col < pc || col >= pc + g_pane_rect_cols) return 0;
+    }
     int sr = g_sel_start_row, sc = g_sel_start_col;
     int er = g_sel_end_row, ec = g_sel_end_col;
-    // Block selection: rectangular region
     if (g_sel_block) {
         int minR = sr < er ? sr : er, maxR = sr > er ? sr : er;
         int minC = sc < ec ? sc : ec, maxC = sc > ec ? sc : ec;

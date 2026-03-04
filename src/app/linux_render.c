@@ -296,12 +296,17 @@ int drawFrame(void) {
         bgVertCount += 6;
     }
 
-    // Copy-mode search match highlighting
+    // Copy-mode search match highlighting (only within focused pane)
     if (g_copy_mode && g_copy_search_len > 0) {
         int qlen = g_copy_search_len;
-        for (int row = 0; row < visibleRows; row++) {
-            int base = row * cols;
-            for (int col = 0; col <= cols - qlen; col++) {
+        int pr = g_pane_rect_row, pc = g_pane_rect_col;
+        int prows = g_pane_rect_rows, pcols = g_pane_rect_cols;
+        if (prows <= 0) { prows = visibleRows; pr = 0; }
+        if (pcols <= 0) { pcols = cols; pc = 0; }
+        for (int row = 0; row < prows && (row + pr) < visibleRows; row++) {
+            int absRow = row + pr;
+            int base = absRow * cols + pc;
+            for (int col = 0; col <= pcols - qlen; col++) {
                 int match = 1;
                 for (int k = 0; k < qlen; k++) {
                     uint32_t ch = g_cells[base + col + k].character;
@@ -312,8 +317,8 @@ int drawFrame(void) {
                 }
                 if (match) {
                     for (int k = 0; k < qlen; k++) {
-                        float mx0 = offX + (col + k) * gw;
-                        float my0 = offY + row * gh;
+                        float mx0 = offX + (pc + col + k) * gw;
+                        float my0 = offY + absRow * gh;
                         bgVertCount = emitRect(g_bg_verts, bgVertCount, mx0, my0, gw, gh, 0.6f, 0.4f, 0.1f, 0.7f);
                     }
                 }

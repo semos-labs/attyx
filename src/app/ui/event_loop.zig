@@ -526,6 +526,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     &ctx.active_theme,
                 );
                 const rect = layout.pool[layout.focused].rect;
+                terminal.g_pane_rect_row = @intCast(rect.row);
+                terminal.g_pane_rect_col = @intCast(rect.col);
+                terminal.g_pane_rect_rows = @intCast(rect.rows);
+                terminal.g_pane_rect_cols = @intCast(rect.cols);
                 const eng = publish.ctxEngine(ctx);
                 const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
                 c.attyx_set_cursor(
@@ -535,6 +539,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 c.attyx_mark_all_dirty();
                 actions.g_force_full_redraw = false;
             } else {
+                const pty_rows_s: i32 = @max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset);
+                terminal.g_pane_rect_row = 0;
+                terminal.g_pane_rect_col = 0;
+                terminal.g_pane_rect_rows = pty_rows_s;
+                terminal.g_pane_rect_cols = @intCast(ctx.grid_cols);
                 const total = publish.ctxEngine(ctx).state.grid.rows * publish.ctxEngine(ctx).state.grid.cols;
                 publish.fillCells(ctx.cells[0..total], publish.ctxEngine(ctx), total, &ctx.active_theme);
                 const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);

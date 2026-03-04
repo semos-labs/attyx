@@ -471,6 +471,11 @@ void attyx_statusbar_tab_click(int col, int grid_cols);
 void attyx_split_action(int action);
 void attyx_split_click(int col, int row);
 extern volatile int g_split_active; // 1 when active tab has >1 pane
+// Focused pane rect in grid coordinates (set by PTY thread)
+extern volatile int g_pane_rect_row;
+extern volatile int g_pane_rect_col;
+extern volatile int g_pane_rect_rows;
+extern volatile int g_pane_rect_cols;
 
 // Split pane drag resize (called from input thread mouse handlers)
 void attyx_split_drag_start(int col, int row);

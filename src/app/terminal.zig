@@ -148,6 +148,11 @@ pub export var g_native_tab_titles: [16][128]u8 = .{.{0} ** 128} ** 16;
 pub export var g_split_active: i32 = 0;
 pub export var g_split_drag_active: i32 = 0;
 pub export var g_split_drag_direction: i32 = 0;
+// Focused pane rect (grid-relative, set by PTY thread for copy mode)
+pub export var g_pane_rect_row: i32 = 0;
+pub export var g_pane_rect_col: i32 = 0;
+pub export var g_pane_rect_rows: i32 = 0;
+pub export var g_pane_rect_cols: i32 = 0;
 pub export var g_popup_active: i32 = 0;
 pub export var g_popup_trail_active: i32 = 0;
 pub export var g_ai_prompt_active: i32 = 0;

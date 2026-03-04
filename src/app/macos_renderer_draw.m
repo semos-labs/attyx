@@ -9,9 +9,14 @@
 
 static BOOL cellIsSelected(int row, int col) {
     if (!g_sel_active) return NO;
+    // In copy mode with splits, clip selection to focused pane rect
+    if (g_copy_mode && g_pane_rect_rows > 0) {
+        int pr = g_pane_rect_row, pc = g_pane_rect_col;
+        int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+        if (row < pr || row >= pe || col < pc || col >= pce) return NO;
+    }
     int sr = g_sel_start_row, sc = g_sel_start_col;
     int er = g_sel_end_row,   ec = g_sel_end_col;
-    // Block selection: rectangular region (no normalization swap needed)
     if (g_sel_block) {
         int minR = sr < er ? sr : er, maxR = sr > er ? sr : er;
         int minC = sc < ec ? sc : ec, maxC = sc > ec ? sc : ec;
@@ -271,12 +276,17 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             bgVertCount += 6;
         }
 
-        // Copy-mode search match highlighting
+        // Copy-mode search match highlighting (only within focused pane)
         if (g_copy_mode && g_copy_search_len > 0) {
             int qlen = g_copy_search_len;
-            for (int row = 0; row < visibleRows; row++) {
-                int base = row * cols;
-                for (int col = 0; col <= cols - qlen; col++) {
+            int pr = g_pane_rect_row, pc = g_pane_rect_col;
+            int prows = g_pane_rect_rows, pcols = g_pane_rect_cols;
+            if (prows <= 0) { prows = visibleRows; pr = 0; }
+            if (pcols <= 0) { pcols = cols; pc = 0; }
+            for (int row = 0; row < prows && (row + pr) < visibleRows; row++) {
+                int absRow = row + pr;
+                int base = absRow * cols + pc;
+                for (int col = 0; col <= pcols - qlen; col++) {
                     if (bgVertCount + qlen * 6 > _metalBufCapBg) break;
                     int match = 1;
                     for (int k = 0; k < qlen; k++) {
@@ -289,8 +299,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                     if (match) {
                         for (int k = 0; k < qlen; k++) {
                             if (bgVertCount + 6 > _metalBufCapBg) break;
-                            float mx0 = offX + (col + k) * gw;
-                            float my0 = offY + row * gh;
+                            float mx0 = offX + (pc + col + k) * gw;
+                            float my0 = offY + absRow * gh;
                             bgVertCount = emitRectV(_bgVerts, bgVertCount, mx0, my0, gw, gh, 0.6f, 0.4f, 0.1f, 0.7f);
                         }
                     }
