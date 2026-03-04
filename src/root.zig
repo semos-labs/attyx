@@ -42,6 +42,13 @@ pub const overlay_ai_error = @import("overlay/ai_error.zig");
 pub const overlay_ai_edit = @import("overlay/ai_edit.zig");
 pub const overlay_diff = @import("overlay/diff.zig");
 pub const overlay_update_check = @import("overlay/update_check.zig");
+pub const overlay_ui = @import("overlay/ui.zig");
+pub const overlay_ui_render = @import("overlay/ui_render.zig");
+pub const overlay_ui_cell = @import("overlay/ui_cell.zig");
+pub const overlay_components = @import("overlay/components.zig");
+pub const overlay_panel = @import("overlay/panel.zig");
+pub const overlay_session_picker = @import("overlay/session_picker.zig");
+pub const overlay_session_picker_panel = @import("overlay/session_picker_panel.zig");
 
 pub const version = @import("build_options").version;
 pub const env = @import("build_options").env;
@@ -113,4 +120,11 @@ test {
     _ = @import("overlay/ai_edit.zig");
     _ = @import("overlay/diff.zig");
     _ = @import("overlay/update_check.zig");
+    _ = @import("overlay/ui.zig");
+    _ = @import("overlay/ui_render.zig");
+    _ = @import("overlay/ui_cell.zig");
+    _ = @import("overlay/components.zig");
+    _ = @import("overlay/panel.zig");
+    _ = @import("overlay/session_picker.zig");
+    _ = @import("overlay/session_picker_panel.zig");
 }

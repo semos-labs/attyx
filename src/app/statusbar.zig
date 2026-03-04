@@ -2,7 +2,7 @@ const std = @import("std");
 const posix = std.posix;
 const attyx = @import("attyx");
 const overlay_mod = attyx.overlay_mod;
-const OverlayCell = overlay_mod.OverlayCell;
+const StyledCell = overlay_mod.StyledCell;
 pub const Rgb = overlay_mod.Rgb;
 const platform = @import("../platform/platform.zig");
 const statusbar_config = @import("../config/statusbar_config.zig");
@@ -75,7 +75,7 @@ pub const Style = struct {
 };
 
 pub const RenderResult = struct {
-    cells: []OverlayCell,
+    cells: []StyledCell,
     width: u16,
     height: u16,
 };
@@ -293,7 +293,7 @@ pub const Statusbar = struct {
 
 /// Generate statusbar overlay cells into a caller-provided buffer.
 pub fn generate(
-    buf: []OverlayCell,
+    buf: []StyledCell,
     bar: *const Statusbar,
     tab_count: u8,
     active_tab: u8,
@@ -333,7 +333,7 @@ pub fn generate(
     tab_col_offset = col;
     if (tab_count > 1) {
         const remaining = grid_cols - col;
-        var tab_buf: [512]OverlayCell = undefined;
+        var tab_buf: [512]StyledCell = undefined;
         if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, .{}, titles)) |tb_result| {
             for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
@@ -381,7 +381,7 @@ pub fn generate(
 }
 
 /// Write UTF-8 text into overlay cells, decoding codepoints. Returns new column.
-fn writeUtf8(cells: []OverlayCell, start: u16, limit: u16, text: []const u8, fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
+fn writeUtf8(cells: []StyledCell, start: u16, limit: u16, text: []const u8, fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
     var col = start;
     var i: usize = 0;
     while (i < text.len and col < limit) {
@@ -418,7 +418,7 @@ fn writeUtf8(cells: []OverlayCell, start: u16, limit: u16, text: []const u8, fg:
 }
 
 /// Write UTF-8 text into overlay cells with per-byte color spans. Returns new column.
-fn writeUtf8Colored(cells: []OverlayCell, start: u16, limit: u16, text: []const u8, spans: []const ColorSpan, default_fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
+fn writeUtf8Colored(cells: []StyledCell, start: u16, limit: u16, text: []const u8, spans: []const ColorSpan, default_fg: Rgb, bg: Rgb, bg_alpha: u8) u16 {
     var col = start;
     var i: usize = 0;
     while (i < text.len and col < limit) {
@@ -489,7 +489,7 @@ test "generate: returns null when disabled" {
     var bar = Statusbar.init(std.testing.allocator, config);
     defer bar.deinit();
 
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) == null);
 }
 
@@ -499,7 +499,7 @@ test "generate: returns cells when enabled" {
     var bar = Statusbar.init(std.testing.allocator, config);
     defer bar.deinit();
 
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u16, 80), result.width);
@@ -519,7 +519,7 @@ test "generate: left widget text appears at start" {
     @memcpy(bar.widgets[0].output[0..text.len], text);
     bar.widgets[0].output_len = text.len;
 
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     // First cell is space padding, then "~/Projects"
@@ -540,7 +540,7 @@ test "generate: right widget is right-aligned" {
     @memcpy(bar.widgets[0].output[0..text.len], text);
     bar.widgets[0].output_len = text.len;
 
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
         return error.TestUnexpectedResult;
     // Right widget: " 12:34 " = 7 chars, starts at col 33
@@ -564,7 +564,7 @@ test "generate: tabs with titles appear when count > 1" {
     titles[1] = "vim";
     titles[2] = "htop";
 
-    var buf: [512]OverlayCell = undefined;
+    var buf: [512]StyledCell = undefined;
     const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles) orelse
         return error.TestUnexpectedResult;
     // Tab bar starts at col 0 (no left widgets), cells should include tab content
@@ -586,7 +586,7 @@ test "generate: active tab uses tab_bar highlight colors" {
     titles[1] = "b";
 
     const sb_style = Style{};
-    var buf: [512]OverlayCell = undefined;
+    var buf: [512]StyledCell = undefined;
     const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles) orelse
         return error.TestUnexpectedResult;
     const tb_style = tab_bar_mod.Style{};

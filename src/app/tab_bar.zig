@@ -1,11 +1,11 @@
 // Attyx — Tab bar overlay generator
 //
-// Produces a single row of OverlayCells representing the tab bar.
+// Produces a single row of StyledCell values representing the tab bar.
 // Each tab shows " title  N " with the active tab's number highlighted.
 
 const std = @import("std");
 const attyx = @import("attyx");
-const OverlayCell = attyx.overlay_mod.OverlayCell;
+const StyledCell = attyx.overlay_mod.StyledCell;
 const Rgb = attyx.overlay_mod.Rgb;
 const tab_manager = @import("tab_manager.zig");
 pub const max_tabs = tab_manager.max_tabs;
@@ -19,7 +19,7 @@ pub const Style = struct {
 };
 
 pub const Result = struct {
-    cells: []OverlayCell,
+    cells: []StyledCell,
     width: u16,
     height: u16, // always 1
 };
@@ -79,7 +79,7 @@ fn resolveTitle(titles: *const TabTitles, i: usize, fallback_buf: *[20]u8) []con
 /// Returns the number of cells written, or null if buffer is too small.
 /// `titles` provides per-tab display names; falls back to "Tab N" when null.
 pub fn generate(
-    buf: []OverlayCell,
+    buf: []StyledCell,
     tab_count: u8,
     active: u8,
     grid_cols: u16,
@@ -207,22 +207,22 @@ pub fn tabIndexAtCol(col: u16, tab_count: u8, grid_cols: u16) ?u8 {
 const no_titles: TabTitles = .{null} ** max_tabs;
 
 test "generate: null on 0 cols" {
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     try std.testing.expect(generate(&buf, 2, 0, 0, .{}, &no_titles) == null);
 }
 
 test "generate: null on 0 tabs" {
-    var buf: [100]OverlayCell = undefined;
+    var buf: [100]StyledCell = undefined;
     try std.testing.expect(generate(&buf, 0, 0, 40, .{}, &no_titles) == null);
 }
 
 test "generate: null on small buffer" {
-    var buf: [5]OverlayCell = undefined;
+    var buf: [5]StyledCell = undefined;
     try std.testing.expect(generate(&buf, 1, 0, 10, .{}, &no_titles) == null);
 }
 
 test "generate: tab layout is ' title ' + ' N '" {
-    var buf: [80]OverlayCell = undefined;
+    var buf: [80]StyledCell = undefined;
     const style = Style{};
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "vim";
@@ -246,7 +246,7 @@ test "generate: tab layout is ' title ' + ' N '" {
 }
 
 test "generate: inactive number area uses tab_bg, active uses num_highlight_bg" {
-    var buf: [80]OverlayCell = undefined;
+    var buf: [80]StyledCell = undefined;
     const style = Style{};
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "zsh";
@@ -282,7 +282,7 @@ test "generate: two-digit tab numbers" {
 }
 
 test "generate: gap between tabs is transparent" {
-    var buf: [80]OverlayCell = undefined;
+    var buf: [80]StyledCell = undefined;
     const style = Style{};
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "a";
@@ -295,7 +295,7 @@ test "generate: gap between tabs is transparent" {
 }
 
 test "tabIndexAtCol: variable width tabs with gaps" {
-    var buf: [80]OverlayCell = undefined;
+    var buf: [80]StyledCell = undefined;
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "vim"; // " vim " + " 1 " = 5+3 = 8
     titles[1] = "long-process"; // " long-process " + " 2 " = 14+3 = 17
@@ -320,7 +320,7 @@ test "tabIndexAtCol: variable width tabs with gaps" {
 }
 
 test "generate: utf-8 title renders codepoints not bytes" {
-    var buf: [80]OverlayCell = undefined;
+    var buf: [80]StyledCell = undefined;
     var titles: TabTitles = .{null} ** max_tabs;
     // "café" = 4 codepoints (5 bytes: c a f 0xC3 0xA9)
     titles[0] = "caf\xc3\xa9";

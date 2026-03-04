@@ -187,6 +187,11 @@ extern volatile int g_ai_prompt_active;  // 1 = AI edit prompt has focus (Zig-ow
 void attyx_ai_prompt_insert_char(uint32_t codepoint);
 void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=home 6=end 7=cancel 8=submit
 
+// Session picker input: input thread -> PTY thread (Zig-side)
+extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
+void attyx_picker_insert_char(uint32_t codepoint);
+void attyx_picker_cmd(int cmd);  // 1=bs 7=esc 8=enter 9=up 10=down 11=ctrl_r 12=ctrl_x 13=ctrl_u
+
 // ---------------------------------------------------------------------------
 // Config reload
 // ---------------------------------------------------------------------------
@@ -300,6 +305,7 @@ typedef struct {
     uint8_t fg_r, fg_g, fg_b;
     uint8_t bg_r, bg_g, bg_b;
     uint8_t bg_alpha;
+    uint8_t flags; // bit 0=bold, 1=underline, 3=dim, 4=italic, 5=strikethrough
 } AttyxOverlayCell;
 
 typedef struct {
@@ -308,6 +314,7 @@ typedef struct {
     int width, height;
     int cell_count;
     int z_order;
+    int backdrop_alpha; // 0 = none, >0 = full-screen dim (0-255)
 } AttyxOverlayDesc;
 
 extern AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];

@@ -2,10 +2,12 @@ const std = @import("std");
 const anchor_mod = @import("anchor.zig");
 const action_mod = @import("action.zig");
 const layout_mod = @import("layout.zig");
+const ui = @import("ui.zig");
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7 };
+pub const Rgb = ui.Rgb;
+pub const StyledCell = ui.StyledCell;
 
-pub const Rgb = struct { r: u8, g: u8, b: u8 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7, session_picker = 8 };
 
 pub const OverlayStyle = struct {
     bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
@@ -15,22 +17,16 @@ pub const OverlayStyle = struct {
     bg_alpha: u8 = 230,
 };
 
-pub const OverlayCell = struct {
-    char: u21 = ' ',
-    fg: Rgb = .{ .r = 220, .g = 220, .b = 220 },
-    bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
-    bg_alpha: u8 = 230,
-};
-
 pub const OverlayLayer = struct {
     visible: bool = false,
     col: u16 = 0,
     row: u16 = 0,
     width: u16 = 0,
     height: u16 = 0,
-    cells: ?[]OverlayCell = null,
+    cells: ?[]StyledCell = null,
     style: OverlayStyle = .{},
     z_order: u8 = 0,
+    backdrop_alpha: u8 = 0, // 0 = no backdrop, >0 = full-screen dim (0-255)
     anchor: ?anchor_mod.Anchor = null,
     placement_constraints: anchor_mod.PlacementConstraints = .{},
     action_bar: ?action_mod.ActionBar = null,
@@ -88,7 +84,7 @@ pub const OverlayManager = struct {
         row: u16,
         width: u16,
         height: u16,
-        cells: []OverlayCell,
+        cells: []StyledCell,
     ) !void {
         const idx = @intFromEnum(id);
         const layer = &self.layers[idx];
@@ -97,7 +93,7 @@ pub const OverlayManager = struct {
             self.allocator.free(old);
         }
 
-        const new_cells = try self.allocator.alloc(OverlayCell, cells.len);
+        const new_cells = try self.allocator.alloc(StyledCell, cells.len);
         @memcpy(new_cells, cells);
 
         layer.col = col;
@@ -353,7 +349,7 @@ test "OverlayManager: setContent" {
     var mgr = OverlayManager.init(std.testing.allocator);
     defer mgr.deinit();
 
-    var cells = [_]OverlayCell{
+    var cells = [_]StyledCell{
         .{ .char = 'H' },
         .{ .char = 'i' },
     };
@@ -372,7 +368,7 @@ test "OverlayManager: relayout clamps position" {
     var mgr = OverlayManager.init(std.testing.allocator);
     defer mgr.deinit();
 
-    var cells: [6]OverlayCell = undefined;
+    var cells: [6]StyledCell = undefined;
     for (&cells) |*cell| cell.* = .{};
     try mgr.setContent(.debug_card, 78, 22, 3, 2, &cells);
     mgr.show(.debug_card);

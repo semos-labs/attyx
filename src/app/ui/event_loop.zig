@@ -19,6 +19,7 @@ const session_actions = @import("session_actions.zig");
 const resize_mod = @import("resize.zig");
 const hup_mod = @import("hup.zig");
 const overlay_input = @import("overlay_input.zig");
+const session_picker_ui = @import("session_picker_ui.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -134,9 +135,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Session switcher toggle check (popup-based)
+        // Session switcher toggle check (overlay-based)
         if (@atomicRmw(i32, &terminal.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
-            session_actions.spawnSessionPicker(ctx);
+            if (terminal.g_session_picker_active != 0) {
+                session_picker_ui.closeSessionPicker(ctx);
+            } else {
+                session_picker_ui.openSessionPicker(ctx);
+            }
         }
 
         // Direct session create (Ctrl+Shift+N without picker)
@@ -158,6 +163,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     }
                 }
             }
+        }
+
+        // Session picker input polling
+        if (terminal.g_session_picker_active != 0) {
+            _ = session_picker_ui.consumePickerInput(ctx);
         }
 
         // Tick update check notification
