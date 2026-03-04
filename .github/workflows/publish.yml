@@ -3,6 +3,12 @@ name: Publish
 on:
   release:
     types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.1)"
+        required: true
+        type: string
 
 concurrency:
   group: publish
@@ -11,30 +17,28 @@ concurrency:
 env:
   GITHUB_REPO: semos-labs/attyx
   HOMEBREW_TAP: semos-labs/homebrew-tap
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
 
 permissions:
   contents: write
 
 jobs:
   homebrew:
-    if: "!github.event.release.prerelease"
+    if: ${{ inputs.tag || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - name: Extract version from tag
         id: version
-        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-        env:
-          TAG: ${{ github.event.release.tag_name }}
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download release assets
         run: |
-          gh release download "$TAG" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPO" \
             --pattern "attyx-*" \
             --dir assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
 
       - name: Calculate SHA256 checksums
         id: checksums
@@ -54,7 +58,7 @@ jobs:
           client-payload: |
             {
               "version": "${{ steps.version.outputs.version }}",
-              "tag": "${{ github.event.release.tag_name }}",
+              "tag": "${{ env.RELEASE_TAG }}",
               "darwin_arm64_sha256": "${{ steps.checksums.outputs.darwin_arm64 }}",
               "darwin_x64_sha256": "${{ steps.checksums.outputs.darwin_x64 }}",
               "linux_x64_sha256": "${{ steps.checksums.outputs.linux_x64 }}",
@@ -64,7 +68,7 @@ jobs:
       - name: Step summary
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Release ${{ github.event.release.tag_name }}
+          ## Release ${{ env.RELEASE_TAG }}
 
           | Platform | SHA256 |
           |----------|--------|
@@ -75,7 +79,7 @@ jobs:
           EOF
 
   appcast:
-    if: "!github.event.release.prerelease"
+    if: ${{ inputs.tag || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     env:
       SEMOS_WEBSITE: semos-labs/semos
@@ -83,32 +87,28 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          VERSION="${TAG#v}"
+          VERSION="${RELEASE_TAG#v}"
           BUNDLE_VERSION="${VERSION%%-rc*}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "bundle_version=$BUNDLE_VERSION" >> "$GITHUB_OUTPUT"
-        env:
-          TAG: ${{ github.event.release.tag_name }}
 
       - name: Download Sparkle signatures from release
         run: |
-          gh release download "$TAG" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPO" \
             --pattern "sparkle-signature-*.txt" \
             --dir signatures
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
 
       - name: Download macOS release zips
         run: |
-          gh release download "$TAG" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPO" \
             --pattern "attyx-darwin-*.zip" \
             --dir assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
 
       - name: Generate appcast XML files
         run: |
@@ -119,8 +119,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE_VERSION="${{ steps.version.outputs.bundle_version }}"
           PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
-          TAG="${{ github.event.release.tag_name }}"
-          DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download/${TAG}"
+          DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
 
           cat > appcast-arm64.xml <<FEED
           <?xml version="1.0" encoding="utf-8"?>
@@ -175,15 +174,13 @@ jobs:
       - name: Generate release notes markdown
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          gh release view "$TAG" --repo "$GITHUB_REPO" --json body -q .body > "${VERSION}.md"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPO" --json body -q .body > "${VERSION}.md"
 
       - name: Push appcast and release notes to semos website
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${SEMOS_WEBSITE}.git" semos-site
@@ -195,5 +192,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add public/appcast-arm64.xml public/appcast-x64.xml "src/content/attyx/release-notes/${VERSION}.md"
-          git diff --cached --quiet || git commit -m "chore: update appcast and release notes for ${TAG}"
+          git diff --cached --quiet || git commit -m "chore: update appcast and release notes for ${RELEASE_TAG}"
           git push
