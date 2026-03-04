@@ -117,24 +117,38 @@ pub const PopupState = struct {
             pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
+                .skip_shell_integration = true,
             }) catch |err| {
                 allocator.destroy(pane);
                 return err;
             };
         } else {
             // Shell-wrapped: $SHELL -c '<command>'
-            // Non-interactive: inherits parent's PATH (already has homebrew,
-            // nix, etc.) and skips slow .zshrc/.bashrc init.
+            // The attyx process (launched as .app) has a minimal PATH.
+            // Shell integration writes the interactive shell's PATH to
+            // ~/.config/attyx/.shell_path via precmd hook. Read it and
+            // prepend an export to restore the full PATH before the command.
             const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
             const shell_z = try allocator.dupeZ(u8, shell_env);
             defer allocator.free(shell_z);
             const c_flag: [:0]const u8 = "-c";
-            const cmd_z = try allocator.dupeZ(u8, cfg.command);
+
+            const shell_path = readShellPath(allocator);
+            defer if (shell_path) |sp| allocator.free(sp);
+
+            const cmd_z = if (shell_path) |sp| blk: {
+                const w = std.fmt.allocPrint(allocator,
+                    "export PATH='{s}'; {s}", .{ sp, cfg.command }) catch break :blk try allocator.dupeZ(u8, cfg.command);
+                defer allocator.free(w);
+                break :blk try allocator.dupeZ(u8, w);
+            } else try allocator.dupeZ(u8, cfg.command);
             defer allocator.free(cmd_z);
+
             const shell_argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
             pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
+                .skip_shell_integration = true,
             }) catch |err| {
                 allocator.destroy(pane);
                 return err;
@@ -461,6 +475,28 @@ fn borderCell(r: usize, col: usize, w: usize, h: usize, style: BorderStyle, fg: 
         .bg_b = 40,
         .bg_alpha = 255,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Shell PATH reading
+// ---------------------------------------------------------------------------
+
+/// Read the interactive shell's PATH from ~/.config/attyx/.shell_path.
+/// Written by shell integration's precmd hook. Returns null if unavailable.
+fn readShellPath(allocator: std.mem.Allocator) ?[]u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    var path_buf: [512]u8 = undefined;
+    const file_path = std.fmt.bufPrint(&path_buf, "{s}/.config/attyx/.shell_path", .{home}) catch return null;
+    const file = std.fs.openFileAbsolute(file_path, .{}) catch return null;
+    defer file.close();
+    var buf: [8192]u8 = undefined;
+    const n = file.read(&buf) catch return null;
+    if (n == 0) return null;
+    // Trim trailing whitespace/newlines
+    var end = n;
+    while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r' or buf[end - 1] == ' ')) end -= 1;
+    if (end == 0) return null;
+    return allocator.dupe(u8, buf[0..end]) catch null;
 }
 
 // ---------------------------------------------------------------------------

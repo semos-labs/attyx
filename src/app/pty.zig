@@ -48,6 +48,10 @@ pub const Pty = struct {
         /// When true, keep TMUX/TMUX_PANE env vars in the child.
         /// Popup commands need these to interact with tmux.
         preserve_tmux: bool = false,
+        /// When true, skip ZDOTDIR override and shell integration setup.
+        /// Popup one-shot commands don't need integration hooks, and the
+        /// ZDOTDIR trick can cause init scripts to rebuild PATH.
+        skip_shell_integration: bool = false,
     };
 
     pub fn spawn(opts: SpawnOpts) !Pty {
@@ -100,12 +104,14 @@ pub const Pty = struct {
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
 
-            // Shell integration: inject attyx binary dir into PATH via
-            // ZDOTDIR override. Setting PATH directly doesn't survive
-            // shell init scripts (.zshenv, nix, path_helper) that rebuild
-            // PATH from scratch. The ZDOTDIR approach runs our .zshenv
-            // first, which appends the binary dir before anything else.
-            setupShellIntegration();
+            if (!opts.skip_shell_integration) {
+                // Shell integration: inject attyx binary dir into PATH via
+                // ZDOTDIR override. Setting PATH directly doesn't survive
+                // shell init scripts (.zshenv, nix, path_helper) that rebuild
+                // PATH from scratch. The ZDOTDIR approach runs our .zshenv
+                // first, which appends the binary dir before anything else.
+                setupShellIntegration();
+            }
 
             // Prevent main shell children from thinking they're inside tmux.
             // When Attyx is launched from a tmux session, TMUX is inherited
@@ -312,6 +318,9 @@ pub const Pty = struct {
             \\# OSC 7: report cwd on every directory change
             \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
             \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
+            \\# Export shell PATH for popup commands (precmd fires after all init)
+            \\__attyx_export_path() { printf '%s' "$PATH" > "$HOME/.config/attyx/.shell_path" 2>/dev/null }
+            \\[[ -z "${precmd_functions[(r)__attyx_export_path]}" ]] && precmd_functions+=(__attyx_export_path)
             \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
             \\__attyx_chpwd
             \\

@@ -43,6 +43,7 @@ pub const Pane = struct {
     pub const SpawnOpts = struct {
         capture_stdout: bool = false,
         preserve_tmux: bool = false,
+        skip_shell_integration: bool = false,
     };
 
     pub fn spawnOpts(
@@ -63,6 +64,7 @@ pub const Pane = struct {
             .cwd = cwd,
             .capture_stdout = opts.capture_stdout,
             .preserve_tmux = opts.preserve_tmux,
+            .skip_shell_integration = opts.skip_shell_integration,
         });
 
         return .{
