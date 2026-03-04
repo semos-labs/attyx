@@ -345,6 +345,10 @@ pub fn run(
         }
     }
 
+    // Capture process CWD for session creation (defaults to $HOME).
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const initial_cwd: []const u8 = posix.getcwd(&cwd_buf) catch if (std.posix.getenv("HOME")) |h| h else "/";
+
     // In session mode: attach to last active session, or create a new one.
     var initial_pane_ids: [32]u32 = .{0} ** 32;
     var initial_pane_count: u8 = 0;
@@ -363,7 +367,7 @@ pub fn run(
 
         // Try to get existing sessions
         sc.requestListSync(2000) catch {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd) catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
@@ -386,7 +390,7 @@ pub fn run(
         if (found_alive) |sid| {
             if (!doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count)) {
                 logging.err("session", "attach to session {d} failed", .{sid});
-                const new_sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err2| {
+                const new_sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd) catch |err2| {
                     logging.err("session", "create session failed: {}", .{err2});
                     sc.deinit();
                     session_client = null;
@@ -396,7 +400,7 @@ pub fn run(
             }
             logging.info("session", "reattached to session {d}", .{found_alive.?});
         } else {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols, "") catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd) catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;

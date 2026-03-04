@@ -75,6 +75,22 @@ pub const TabManager = struct {
         errdefer self.allocator.destroy(pane);
         pane.* = try Pane.spawn(self.allocator, rows, cols, null, cwd);
 
+        self.insertTab(pane, rows, cols);
+    }
+
+    /// Add a new tab backed by a daemon PTY (no local PTY spawn).
+    pub fn addDaemonTab(self: *TabManager, rows: u16, cols: u16) !*Pane {
+        if (self.count >= max_tabs) return error.TooManyTabs;
+
+        const pane = try self.allocator.create(Pane);
+        errdefer self.allocator.destroy(pane);
+        pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols);
+
+        self.insertTab(pane, rows, cols);
+        return pane;
+    }
+
+    fn insertTab(self: *TabManager, pane: *Pane, rows: u16, cols: u16) void {
         // Insert after active tab: shift everything right
         const insert_at: u8 = self.active + 1;
         var i: u8 = self.count;

@@ -80,9 +80,9 @@ pub const SessionClient = struct {
     // ── V2 pane-multiplexed methods ──
 
     /// Create a new pane in the attached session.
-    pub fn sendCreatePane(self: *SessionClient, rows: u16, cols: u16) !void {
-        var payload_buf: [4]u8 = undefined;
-        const payload = try protocol.encodeCreatePane(&payload_buf, rows, cols);
+    pub fn sendCreatePane(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8) !void {
+        var payload_buf: [4102]u8 = undefined;
+        const payload = try protocol.encodeCreatePane(&payload_buf, rows, cols, cwd);
         try self.sendMessage(.create_pane, payload);
     }
 

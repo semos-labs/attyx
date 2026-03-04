@@ -18,6 +18,10 @@ pub const DaemonSession = struct {
     layout_len: u16 = 0,
     alive: bool = true,
 
+    /// Session working directory — used as default CWD for new panes.
+    cwd: [1024]u8 = .{0} ** 1024,
+    cwd_len: u16 = 0,
+
     /// Backward-compat: the original "rows/cols" for the initial pane / session-level resize.
     rows: u16,
     cols: u16,
@@ -42,12 +46,22 @@ pub const DaemonSession = struct {
         const nlen = @min(name.len, 64);
         @memcpy(session.name[0..nlen], name[0..nlen]);
         session.name_len = @intCast(nlen);
+
+        // Store session CWD so new panes inherit it.
+        if (cwd) |c| {
+            const cwd_slice = std.mem.sliceTo(c, 0);
+            const clen = @min(cwd_slice.len, 1024);
+            @memcpy(session.cwd[0..clen], cwd_slice[0..clen]);
+            session.cwd_len = @intCast(clen);
+        }
+
         session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd);
         session.pane_count = 1;
         return session;
     }
 
     /// Add a new pane with a caller-assigned ID (globally unique).
+    /// Uses the provided CWD if given, otherwise falls back to session CWD.
     pub fn addPaneWithId(
         self: *DaemonSession,
         allocator: std.mem.Allocator,
@@ -55,11 +69,13 @@ pub const DaemonSession = struct {
         rows: u16,
         cols: u16,
         replay_capacity: usize,
+        cwd_override: ?[*:0]const u8,
     ) !u32 {
         const slot_idx = for (&self.panes, 0..) |*slot, i| {
             if (slot.* == null) break i;
         } else return error.TooManyPanes;
-        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, null);
+        const cwd: ?[*:0]const u8 = cwd_override orelse if (self.cwd_len > 0) @as([*:0]const u8, self.cwd[0..self.cwd_len :0]) else null;
+        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd);
         self.pane_count += 1;
         return pane_id;
     }

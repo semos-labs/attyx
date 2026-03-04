@@ -160,7 +160,14 @@ fn handleCreatePane(
     const session = getAttachedSession(cl, sessions) orelse return;
     const pane_id_val = next_pane_id.*;
     next_pane_id.* += 1;
-    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity) catch {
+    // Use CWD from message if provided, otherwise fall back to session CWD.
+    var cwd_z_buf: [4097]u8 = undefined;
+    const cwd_z: ?[*:0]const u8 = if (msg.cwd.len > 0 and msg.cwd.len < cwd_z_buf.len) blk: {
+        @memcpy(cwd_z_buf[0..msg.cwd.len], msg.cwd);
+        cwd_z_buf[msg.cwd.len] = 0;
+        break :blk @ptrCast(&cwd_z_buf);
+    } else null;
+    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z) catch {
         cl.sendError(3, "create pane failed");
         return;
     };

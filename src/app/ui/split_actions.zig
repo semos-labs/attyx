@@ -7,6 +7,7 @@ const SplitLayout = split_layout_mod.SplitLayout;
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
+const platform = @import("../../platform/platform.zig");
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 
@@ -29,7 +30,10 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
     if (ctx.sessions_enabled) {
         const sc = ctx.session_client orelse return;
         const sz = layout.splitChildSize(dir, layout.pool[layout.focused].rect) orelse return;
-        sc.sendCreatePane(sz.rows, sz.cols) catch return;
+        const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
+        defer if (fg_cwd) |cwd_alloc| ctx.allocator.free(cwd_alloc);
+        const pane_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "";
+        sc.sendCreatePane(sz.rows, sz.cols, pane_cwd) catch return;
         const pane_id = sc.waitForPaneCreated(5000) catch return;
         const new_pane = ctx.allocator.create(Pane) catch return;
         new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols) catch {

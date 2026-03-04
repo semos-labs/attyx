@@ -357,8 +357,8 @@ pub fn generate(
             for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
                 if (tc.bg_alpha > 0) {
-                    // Tab cell — use tab_bar styling but keep statusbar bg_alpha
-                    buf[col] = .{ .char = tc.char, .fg = tc.fg, .bg = tc.bg, .bg_alpha = style.bg_alpha };
+                    // Tab cell — keep tab_bar's own bg_alpha
+                    buf[col] = .{ .char = tc.char, .fg = tc.fg, .bg = tc.bg, .bg_alpha = tc.bg_alpha };
                 } else {
                     // Transparent gap — keep statusbar background
                     buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };

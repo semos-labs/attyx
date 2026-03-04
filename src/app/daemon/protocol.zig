@@ -248,11 +248,15 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
 // ── V2 Encode helpers (pane-multiplexed) ──
 
 /// Encode CreatePane payload: rows:u16, cols:u16
-pub fn encodeCreatePane(buf: []u8, rows: u16, cols: u16) ![]u8 {
-    if (buf.len < 4) return error.BufferTooSmall;
+pub fn encodeCreatePane(buf: []u8, rows: u16, cols: u16, cwd: []const u8) ![]u8 {
+    const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
+    const total: usize = 4 + 2 + cwd_len;
+    if (buf.len < total) return error.BufferTooSmall;
     std.mem.writeInt(u16, buf[0..2], rows, .little);
     std.mem.writeInt(u16, buf[2..4], cols, .little);
-    return buf[0..4];
+    std.mem.writeInt(u16, buf[4..6], cwd_len, .little);
+    if (cwd_len > 0) @memcpy(buf[6 .. 6 + cwd_len], cwd[0..cwd_len]);
+    return buf[0..total];
 }
 
 /// Encode ClosePane payload: pane_id:u32
@@ -335,14 +339,20 @@ pub fn encodeAttachedV2(
 
 // ── V2 Decode helpers ──
 
-pub const CreatePaneMsg = struct { rows: u16, cols: u16 };
+pub const CreatePaneMsg = struct { rows: u16, cols: u16, cwd: []const u8 };
 
 pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
     if (payload.len < 4) return error.PayloadTooShort;
-    return .{
-        .rows = std.mem.readInt(u16, payload[0..2], .little),
-        .cols = std.mem.readInt(u16, payload[2..4], .little),
-    };
+    const rows = std.mem.readInt(u16, payload[0..2], .little);
+    const cols = std.mem.readInt(u16, payload[2..4], .little);
+    // CWD field is optional for backward compat with old clients.
+    if (payload.len >= 6) {
+        const cwd_len = std.mem.readInt(u16, payload[4..6], .little);
+        if (payload.len >= 6 + @as(usize, cwd_len)) {
+            return .{ .rows = rows, .cols = cols, .cwd = payload[6 .. 6 + cwd_len] };
+        }
+    }
+    return .{ .rows = rows, .cols = cols, .cwd = "" };
 }
 
 pub fn decodeClosePane(payload: []const u8) !u32 {
@@ -530,10 +540,11 @@ test "session list round-trip" {
 
 test "create_pane round-trip" {
     var buf: [128]u8 = undefined;
-    const payload = try encodeCreatePane(&buf, 24, 80);
+    const payload = try encodeCreatePane(&buf, 24, 80, "/tmp/test");
     const msg = try decodeCreatePane(payload);
     try std.testing.expectEqual(@as(u16, 24), msg.rows);
     try std.testing.expectEqual(@as(u16, 80), msg.cols);
+    try std.testing.expectEqualStrings("/tmp/test", msg.cwd);
 }
 
 test "focus_panes round-trip" {

@@ -99,7 +99,10 @@ pub const Pty = struct {
             posix.dup2(slave, 2) catch posix.abort();
             if (slave > 2) posix.close(slave);
 
-            if (opts.cwd) |dir| _ = chdir(dir);
+            if (opts.cwd) |dir|
+                _ = chdir(dir)
+            else if (getenv("HOME")) |home|
+                _ = chdir(home);
 
             _ = setenv("TERM", "xterm-256color", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);

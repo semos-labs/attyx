@@ -40,33 +40,37 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             const eng = publish.ctxEngine(ctx);
             const rows: u16 = @intCast(eng.state.grid.rows);
             const cols: u16 = @intCast(eng.state.grid.cols);
-            const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
-            defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-            const cwd_z: ?[:0]u8 = if (fg_cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
-            defer if (cwd_z) |z| ctx.allocator.free(z);
-            ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null) catch |err| {
-                logging.err("tabs", "addTab failed: {}", .{err});
-                return;
-            };
-            // In session mode, create a daemon pane for the new tab.
             if (ctx.sessions_enabled) {
-                if (ctx.session_client) |sc| {
-                    sc.sendCreatePane(rows, cols) catch {
-                        logging.err("tabs", "send create_pane failed", .{});
-                        publish.updateGridTopOffset(ctx);
-                        switchActiveTab(ctx);
-                        return;
-                    };
-                    const pane_id = sc.waitForPaneCreated(5000) catch |err| {
-                        logging.err("tabs", "create daemon pane failed: {}", .{err});
-                        publish.updateGridTopOffset(ctx);
-                        switchActiveTab(ctx);
-                        return;
-                    };
-                    const new_pane = ctx.tab_mgr.activePane();
-                    new_pane.daemon_pane_id = pane_id;
-                    logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
-                }
+                // Session mode: daemon owns the PTY. Pass the user's current
+                // working directory so the new pane starts there.
+                const sc = ctx.session_client orelse return;
+                const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
+                defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
+                const pane_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "";
+                sc.sendCreatePane(rows, cols, pane_cwd) catch {
+                    logging.err("tabs", "send create_pane failed", .{});
+                    return;
+                };
+                const pane_id = sc.waitForPaneCreated(5000) catch |err| {
+                    logging.err("tabs", "create daemon pane failed: {}", .{err});
+                    return;
+                };
+                const new_pane = ctx.tab_mgr.addDaemonTab(rows, cols) catch |err| {
+                    logging.err("tabs", "addDaemonTab failed: {}", .{err});
+                    return;
+                };
+                new_pane.daemon_pane_id = pane_id;
+                logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
+            } else {
+                // Non-session mode: spawn a local PTY with foreground CWD.
+                const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
+                defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
+                const cwd_z: ?[:0]u8 = if (fg_cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+                defer if (cwd_z) |z| ctx.allocator.free(z);
+                ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null) catch |err| {
+                    logging.err("tabs", "addTab failed: {}", .{err});
+                    return;
+                };
             }
             publish.updateGridTopOffset(ctx);
             switchActiveTab(ctx);
