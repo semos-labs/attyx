@@ -260,6 +260,22 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
+    // Session picker key routing
+    if (g_session_picker_active) {
+        if (key == GLFW_KEY_ESCAPE)       { attyx_picker_cmd(7); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_ENTER)        { attyx_picker_cmd(8); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_BACKSPACE)    { attyx_picker_cmd(1); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DELETE)       { attyx_picker_cmd(1); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_UP)           { attyx_picker_cmd(9); g_suppress_char = 1; return; }
+        if (key == GLFW_KEY_DOWN)         { attyx_picker_cmd(10); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_R)    { attyx_picker_cmd(11); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_X)    { attyx_picker_cmd(12); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_U)    { attyx_picker_cmd(13); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_C)    { attyx_picker_cmd(7); g_suppress_char = 1; return; }
+        g_suppress_char = 0;
+        return;
+    }
+
     // When popup is active, route ALL input to popup
     if (g_popup_active && action != GLFW_RELEASE) {
         uint16_t mapped = mapGlfwKey(key);
@@ -336,6 +352,12 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     // When AI prompt is open, route chars to prompt
     if (g_ai_prompt_active) {
         if (codepoint >= 0x20) attyx_ai_prompt_insert_char(codepoint);
+        return;
+    }
+
+    // When session picker is open, route chars to picker
+    if (g_session_picker_active) {
+        if (codepoint >= 0x20) attyx_picker_insert_char(codepoint);
         return;
     }
 

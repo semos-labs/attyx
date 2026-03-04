@@ -10,6 +10,7 @@ const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 const ai = @import("ai.zig");
+const session_picker_ui = @import("session_picker_ui.zig");
 const popup_mod = @import("../popup.zig");
 
 /// Handle a window resize event. Drains old-size data, resizes all tabs,
@@ -123,6 +124,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
         publish.generateAnchorDemo(ctx);
         ai.relayoutAiDemo(ctx);
         ai.relayoutContextPreview(ctx);
+        session_picker_ui.relayout(ctx);
     }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);

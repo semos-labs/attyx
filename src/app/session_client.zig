@@ -251,6 +251,12 @@ pub const SessionClient = struct {
         try self.sendMessage(.kill, payload);
     }
 
+    pub fn renameSession(self: *SessionClient, session_id: u32, new_name: []const u8) !void {
+        var payload_buf: [70]u8 = undefined;
+        const payload = try protocol.encodeRename(&payload_buf, session_id, new_name);
+        try self.sendMessage(.rename, payload);
+    }
+
     pub fn pollFd(self: *const SessionClient) posix.fd_t {
         return self.socket_fd;
     }

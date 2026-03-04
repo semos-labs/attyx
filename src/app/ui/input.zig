@@ -124,6 +124,36 @@ pub fn aiPromptCmd(cmd: c_int) void {
 }
 
 // ---------------------------------------------------------------------------
+// Session picker input rings
+// ---------------------------------------------------------------------------
+
+pub var g_picker_char_ring: [32]u32 = .{0} ** 32;
+pub var g_picker_char_write: u32 = 0;
+pub var g_picker_char_read: u32 = 0;
+
+pub var g_picker_cmd_ring: [16]i32 = .{0} ** 16;
+pub var g_picker_cmd_write: u32 = 0;
+pub var g_picker_cmd_read: u32 = 0;
+
+pub fn pickerInsertChar(codepoint: u32) void {
+    const w = @atomicLoad(u32, &g_picker_char_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_picker_char_read, .seq_cst);
+    if (w -% r >= 32) return;
+    g_picker_char_ring[w % 32] = codepoint;
+    @atomicStore(u32, &g_picker_char_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
+}
+
+pub fn pickerCmd(cmd: c_int) void {
+    const w = @atomicLoad(u32, &g_picker_cmd_write, .seq_cst);
+    const r = @atomicLoad(u32, &g_picker_cmd_read, .seq_cst);
+    if (w -% r >= 16) return;
+    g_picker_cmd_ring[w % 16] = cmd;
+    @atomicStore(u32, &g_picker_cmd_write, w +% 1, .seq_cst);
+    c.attyx_mark_all_dirty();
+}
+
+// ---------------------------------------------------------------------------
 // Tab management atomics
 // ---------------------------------------------------------------------------
 

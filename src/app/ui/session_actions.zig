@@ -135,7 +135,8 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         }
     }
     // ATTYX_PICKER_CWD tells the picker what CWD to use for "create"
-    if (fg_cwd) |cwd| {
+    const picker_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory;
+    if (picker_cwd) |cwd| {
         const cwd_z = ctx.allocator.dupeZ(u8, cwd) catch null;
         if (cwd_z) |z| {
             defer ctx.allocator.free(z);
@@ -204,7 +205,7 @@ pub fn handleSessionPickerResult(ctx: *PtyThreadCtx, text: []const u8) void {
     }
 }
 
-fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
+pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
 
@@ -289,7 +290,7 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     logging.info("session-picker", "switched to session {d}", .{session_id});
 }
 
-fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
+pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     const name = if (std.mem.lastIndexOfScalar(u8, cwd, '/')) |i|
@@ -309,7 +310,7 @@ fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
 pub fn createSessionDirect(ctx: *PtyThreadCtx) void {
     const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
     defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-    const cwd = fg_cwd orelse "/tmp";
+    const cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "/tmp";
     doSessionCreate(ctx, cwd);
 }
 
@@ -329,7 +330,7 @@ pub fn switchToNextSession(ctx: *PtyThreadCtx) bool {
     return false;
 }
 
-fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {
+pub fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {
     const sc = ctx.session_client orelse return;
     sc.killSession(session_id) catch |err| {
         logging.err("session-picker", "kill failed: {}", .{err});

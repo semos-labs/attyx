@@ -4,8 +4,10 @@ const overlay = @import("overlay.zig");
 const layout_mod = @import("layout.zig");
 const action_mod = @import("action.zig");
 const ai_auth = @import("ai_auth.zig");
+const ui = @import("ui.zig");
+const ui_render = @import("ui_render.zig");
 
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const CardResult = layout_mod.CardResult;
 
@@ -218,7 +220,7 @@ fn writeThrottleTimestamp(path: []const u8) void {
 }
 
 pub const UpdateCardResult = struct {
-    cells: []OverlayCell,
+    cells: []StyledCell,
     width: u16,
     height: u16,
     action_bar: action_mod.ActionBar,
@@ -241,31 +243,29 @@ pub fn layoutUpdateCard(
     const line_len: u16 = @intCast(line.len);
     const btn_w: u16 = 4 + 7; // "[ Dismiss ]"
     const gap: u16 = 2;
-    const total_w = 1 + line_len + gap + btn_w + 1; // padding + text + gap + button + padding
-    const total_h: u16 = 1;
+    const total_w = 1 + line_len + gap + btn_w + 1;
 
-    const cells = try allocator.alloc(OverlayCell, @as(usize, total_w) * total_h);
+    // Build element tree: horizontal box with text
+    const children = [_]ui.Element{
+        .{ .text = .{ .content = " ", .wrap = false } }, // left padding
+        .{ .text = .{ .content = line, .wrap = false } },
+    };
+    const theme = ui.OverlayTheme{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    const r = try ui_render.renderAlloc(allocator, .{ .box = .{
+        .children = &children,
+        .direction = .horizontal,
+        .width = .{ .cells = total_w },
+        .style = .{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha },
+    } }, total_w, theme);
 
-    // Fill background
-    for (cells) |*cell| {
-        cell.* = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-    }
-
-    // Text (1 cell left padding)
-    for (line, 0..) |ch, i| {
-        const idx = 1 + i;
-        if (idx >= total_w) break;
-        cells[idx] = .{ .char = ch, .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-    }
-
-    // Button after gap
+    // Post-process: fill action bar button
     var bar = action_mod.ActionBar{};
     bar.add(.dismiss, "Dismiss");
     const btn_start = 1 + line_len + gap;
     bar.start_col = btn_start;
-    layout_mod.fillActionBar(cells, total_w, 0, btn_start, total_w, bar.actions[0..bar.count], bar.focused, .{}, style);
+    layout_mod.fillActionBar(r.cells, total_w, 0, btn_start, total_w, bar.actions[0..bar.count], bar.focused, .{}, style);
 
-    return .{ .cells = cells, .width = total_w, .height = total_h, .action_bar = bar };
+    return .{ .cells = r.cells, .width = r.result.width, .height = r.result.height, .action_bar = bar };
 }
 
 // ---------------------------------------------------------------------------

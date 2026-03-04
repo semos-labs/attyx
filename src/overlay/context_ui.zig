@@ -5,7 +5,7 @@ const content = @import("content.zig");
 const layout = @import("layout.zig");
 const context_mod = @import("context.zig");
 
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
 const CardResult = layout.CardResult;
@@ -19,7 +19,7 @@ const max_preview_lines: usize = 20;
 /// Fill a single row with a compact context summary string.
 /// Used as a footer/info line within the AI demo overlay.
 pub fn fillSummaryRow(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     row: u16,
     start_col: u16,
@@ -149,9 +149,9 @@ test "fillSummaryRow: renders into cells" {
     const width: u16 = 40;
     const height: u16 = 3;
     const cell_count = @as(usize, width) * height;
-    const cells = try alloc.alloc(OverlayCell, cell_count);
+    const cells = try alloc.alloc(StyledCell, cell_count);
     defer alloc.free(cells);
-    for (cells) |*cell| cell.* = OverlayCell{};
+    for (cells) |*cell| cell.* = StyledCell{};
 
     // Minimal bundle
     var bundle = ContextBundle{

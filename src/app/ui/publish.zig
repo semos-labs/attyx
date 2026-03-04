@@ -169,6 +169,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
         for (0..cell_count) |ci| {
             c.g_overlay_cells[idx][ci] = .{
                 .character = cells[ci].char,
+                .combining = .{ cells[ci].combining[0], cells[ci].combining[1] },
                 .fg_r = cells[ci].fg.r,
                 .fg_g = cells[ci].fg.g,
                 .fg_b = cells[ci].fg.b,
@@ -176,6 +177,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
                 .bg_g = cells[ci].bg.g,
                 .bg_b = cells[ci].bg.b,
                 .bg_alpha = cells[ci].bg_alpha,
+                .flags = cells[ci].flags,
             };
         }
 
@@ -187,6 +189,7 @@ pub fn publishOverlays(ctx: *PtyThreadCtx) void {
             .height = @intCast(layer.height),
             .cell_count = @intCast(cell_count),
             .z_order = @intCast(li),
+            .backdrop_alpha = @intCast(layer.backdrop_alpha),
         };
 
         out_count += 1;
@@ -603,7 +606,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     resolveTabTitles(ctx, &titles, &name_bufs);
 
-    var tab_cells: [512]overlay_mod.OverlayCell = undefined;
+    var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
@@ -654,7 +657,7 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     resolveTabTitles(ctx, &titles, &name_bufs);
 
-    var sb_cells: [512]overlay_mod.OverlayCell = undefined;
+    var sb_cells: [512]overlay_mod.StyledCell = undefined;
     const sb_style = statusbar_mod.Style{
         .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
         .bg_alpha = sb.config.background_opacity,

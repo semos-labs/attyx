@@ -2,7 +2,10 @@ const std = @import("std");
 const overlay = @import("overlay.zig");
 const action_mod = @import("action.zig");
 const layout = @import("layout.zig");
-const OverlayCell = overlay.OverlayCell;
+const ui = @import("ui.zig");
+const ui_render = @import("ui_render.zig");
+const ui_cell = @import("ui_cell.zig");
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
 const LineRange = layout.LineRange;
@@ -13,7 +16,7 @@ const ActionBarStyle = layout.ActionBarStyle;
 /// (row, start_col). Advances one cell per codepoint (assumes all are width 1).
 /// Stops after `max_cells` cells or end of text. Returns cells written.
 fn fillCellsUtf8(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: usize,
     row: usize,
     start_col: usize,
@@ -143,92 +146,83 @@ pub fn layoutStructuredCard(
     style: ContentStyle,
     action_bar: ?action_mod.ActionBar,
 ) !CardResult {
-    const border_w: u16 = 2; // left + right border
-    const padding_w: u16 = 2; // 1 cell padding each side
+    const border_w: u16 = 2;
+    const padding_w: u16 = 2;
     const inner_w = if (max_content_width > border_w + padding_w)
         max_content_width - border_w - padding_w
     else
         1;
 
-    // --- Measure pass ---
+    // Measure content height
     var content_h: u16 = 0;
     for (blocks, 0..) |block, bi| {
         content_h += measureBlock(block, inner_w);
-        // 1-row separator between blocks (not after last)
         if (bi + 1 < blocks.len) content_h += 1;
     }
 
     const action_row_count: u16 = if (action_bar != null) 1 else 0;
-    const total_h = 1 + content_h + action_row_count + 1; // top border + content + [action] + bottom border
+    const total_h = 1 + content_h + action_row_count + 1;
     const total_w = inner_w + border_w + padding_w;
 
-    const cell_count: usize = @as(usize, total_w) * @as(usize, total_h);
-    const cells = try allocator.alloc(OverlayCell, cell_count);
+    // Use declarative system for base layout (border + background)
+    const theme = ui.OverlayTheme{
+        .fg = style.base.fg,
+        .bg = style.base.bg,
+        .bg_alpha = style.base.bg_alpha,
+        .border_color = style.base.border_color,
+    };
+    const elem = ui.Element{ .box = .{
+        .border = .single,
+        .padding = .{ .left = 1, .right = 1 },
+        .width = .{ .cells = total_w },
+        .height = .{ .cells = total_h },
+        .style = .{ .fg = style.base.fg, .bg = style.base.bg, .bg_alpha = style.base.bg_alpha },
+    } };
 
-    // Fill all cells with background
-    for (cells) |*cell| {
-        cell.* = .{
-            .char = ' ',
-            .fg = style.base.fg,
-            .bg = style.base.bg,
-            .bg_alpha = style.base.bg_alpha,
-        };
-    }
-
-    // Draw border
-    fillBorder(cells, total_w, total_h, style.base);
+    const r = try ui_render.renderAlloc(allocator, elem, total_w, theme);
+    const cells = r.cells;
 
     // Place title in top border
-    placeTitle(cells, total_w, title, style.base);
+    placeTitleInBorder(cells, total_w, title, style.base);
 
-    // --- Fill pass: render each block ---
-    const text_col: u16 = 2; // border + padding
-    var cur_row: u16 = 1; // after top border
-    const stride = total_w;
+    // Fill content blocks
+    const text_col: u16 = 2;
+    var cur_row: u16 = 1;
 
     for (blocks, 0..) |block, bi| {
         switch (block.tag) {
-            .header => {
-                cur_row = fillHeader(cells, stride, text_col, cur_row, inner_w, block.text, style);
-            },
-            .paragraph => {
-                cur_row = fillParagraph(cells, stride, text_col, cur_row, inner_w, block.text, style);
-            },
-            .code_block => {
-                cur_row = fillCodeBlock(cells, stride, text_col, cur_row, inner_w, block.text, style);
-            },
-            .bullet_list => {
-                cur_row = fillBulletList(cells, stride, text_col, cur_row, inner_w, block.items, style);
-            },
-            .diff_add, .diff_remove, .diff_context => {
-                cur_row = fillDiffLine(cells, stride, text_col, cur_row, inner_w, block.text, block.tag, style);
-            },
+            .header => cur_row = fillHeader(cells, total_w, text_col, cur_row, inner_w, block.text, style),
+            .paragraph => cur_row = fillParagraph(cells, total_w, text_col, cur_row, inner_w, block.text, style),
+            .code_block => cur_row = fillCodeBlock(cells, total_w, text_col, cur_row, inner_w, block.text, style),
+            .bullet_list => cur_row = fillBulletList(cells, total_w, text_col, cur_row, inner_w, block.items, style),
+            .diff_add, .diff_remove, .diff_context => cur_row = fillDiffLine(cells, total_w, text_col, cur_row, inner_w, block.text, block.tag, style),
         }
-        // Separator row (blank — already filled with bg)
         if (bi + 1 < blocks.len) cur_row += 1;
     }
 
     // Fill action bar if present
     if (action_bar) |ab| {
-        const action_row = total_h - 2; // row before bottom border
-        layout.fillActionBar(
-            cells,
-            stride,
-            action_row,
-            1, // after left border
-            total_w - 1, // before right border
-            ab.actions[0..ab.count],
-            ab.focused,
-            .{},
-            style.base,
-        );
+        layout.fillActionBar(cells, total_w, total_h - 2, 1, total_w - 1, ab.actions[0..ab.count], ab.focused, .{}, style.base);
     }
 
     return .{ .cells = cells, .width = total_w, .height = total_h };
 }
 
+fn placeTitleInBorder(cells: []StyledCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
+    if (title_text.len == 0) return;
+    const w: usize = width;
+    const title_start: usize = 2;
+    setCellAt(cells, 0, title_start, w, ' ', style.border_color, style);
+    const max_title_cells = if (w > title_start + 2) w - title_start - 2 else 1;
+    const title_cells = fillCellsUtf8(cells, w, 0, title_start + 1, title_text, max_title_cells, style.fg, style.bg, style.bg_alpha);
+    const after = title_start + 1 + title_cells;
+    if (after < w - 1) {
+        setCellAt(cells, 0, after, w, ' ', style.border_color, style);
+    }
+}
+
 fn fillHeader(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -265,7 +259,7 @@ fn fillHeader(
 }
 
 fn fillParagraph(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -287,7 +281,7 @@ fn fillParagraph(
 }
 
 fn fillCodeBlock(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -349,7 +343,7 @@ fn fillCodeBlock(
 }
 
 fn fillBulletList(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -397,7 +391,7 @@ fn fillBulletList(
 }
 
 fn fillDiffLine(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -431,51 +425,10 @@ fn fillDiffLine(
     return start_row + 1;
 }
 
-fn fillBorder(cells: []OverlayCell, width: u16, height: u16, style: OverlayStyle) void {
-    const w: usize = width;
-    const h: usize = height;
-    const bc = style.border_color;
-
-    // Corners
-    setCellAt(cells, 0, 0, w, 0x250C, bc, style); // ┌
-    setCellAt(cells, 0, w - 1, w, 0x2510, bc, style); // ┐
-    setCellAt(cells, h - 1, 0, w, 0x2514, bc, style); // └
-    setCellAt(cells, h - 1, w - 1, w, 0x2518, bc, style); // ┘
-
-    // Top and bottom edges
-    for (1..w - 1) |col| {
-        setCellAt(cells, 0, col, w, 0x2500, bc, style); // ─
-        setCellAt(cells, h - 1, col, w, 0x2500, bc, style); // ─
-    }
-
-    // Left and right edges
-    for (1..h - 1) |row| {
-        setCellAt(cells, row, 0, w, 0x2502, bc, style); // │
-        setCellAt(cells, row, w - 1, w, 0x2502, bc, style); // │
-    }
-}
-
-fn setCellAt(cells: []OverlayCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
+fn setCellAt(cells: []StyledCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
     const idx = row * width + col;
     if (idx >= cells.len) return;
     cells[idx] = .{ .char = char, .fg = fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-}
-
-fn placeTitle(cells: []OverlayCell, width: u16, title: []const u8, style: OverlayStyle) void {
-    if (title.len == 0) return;
-    const w: usize = width;
-    const title_start: usize = 2; // after "┌─"
-
-    // Space before title
-    setCellAt(cells, 0, title_start, w, ' ', style.border_color, style);
-    // Title text (UTF-8 aware)
-    const max_title_cells = if (w > title_start + 2) w - title_start - 2 else 1;
-    const title_cells = fillCellsUtf8(cells, w, 0, title_start + 1, title, max_title_cells, style.fg, style.bg, style.bg_alpha);
-    // Space after title
-    const after = title_start + 1 + title_cells;
-    if (after < w - 1) {
-        setCellAt(cells, 0, after, w, ' ', style.border_color, style);
-    }
 }
 
 test "measureBlock: header" {

@@ -96,7 +96,7 @@ pub fn captureAiContext(ctx: *PtyThreadCtx) void {
     ) catch null;
 }
 
-pub fn showAiOverlayCard(ctx: *PtyThreadCtx, cells: []overlay_mod.OverlayCell, width: u16, height: u16, bar: attyx.overlay_action.ActionBar) void {
+pub fn showAiOverlayCard(ctx: *PtyThreadCtx, cells: []overlay_mod.StyledCell, width: u16, height: u16, bar: attyx.overlay_action.ActionBar) void {
     const mgr = ctx.overlay_mgr orelse return;
     const vp = publish.viewportInfoFromCtx(ctx);
     const anchor = overlay_anchor.Anchor{ .kind = .viewport_dock, .dock = .bottom_right };
@@ -253,7 +253,7 @@ pub fn publishAiStreamingFrame(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     var so = &(g_streaming orelse return);
 
-    var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
+    var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.StyledCell = undefined;
     const vis = so.buildVisibleCells(&scratch) orelse return;
 
     // Bottom-anchored: row computed from anchor_bottom_row - visible_height + 1
@@ -500,7 +500,7 @@ pub fn placeContextPreviewCard(ctx: *PtyThreadCtx) void {
         const vh: usize = vis_h;
         if (vh < 3 or w == 0) return;
         const needed = vh * w;
-        var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.OverlayCell = undefined;
+        var scratch: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.StyledCell = undefined;
         if (needed > scratch.len) return;
 
         @memcpy(scratch[0..w], result.cells[0..w]);

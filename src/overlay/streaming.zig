@@ -1,6 +1,6 @@
 const std = @import("std");
 const overlay = @import("overlay.zig");
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 
 // ---------------------------------------------------------------------------
 // Streaming state machine
@@ -10,7 +10,7 @@ pub const StreamState = enum(u8) { idle, active, complete };
 
 pub const StreamingOverlay = struct {
     state: StreamState = .idle,
-    full_cells: ?[]OverlayCell = null, // owned
+    full_cells: ?[]StyledCell = null, // owned
     full_width: u16 = 0,
     full_height: u16 = 0,
     revealed_height: u16 = 0,
@@ -28,7 +28,7 @@ pub const StreamingOverlay = struct {
     /// `bottom_row` is the grid row where the bottom border should stay anchored.
     pub fn start(
         self: *StreamingOverlay,
-        cells: []OverlayCell,
+        cells: []StyledCell,
         w: u16,
         h: u16,
         col: u16,
@@ -94,7 +94,7 @@ pub const StreamingOverlay = struct {
     /// Assemble the currently visible view into `scratch`.
     /// Layout: [top border] + [content rows, possibly scrolled] + [action bar] + [bottom border]
     /// When revealed content exceeds max_visible_height, earlier rows scroll out of view.
-    pub fn buildVisibleCells(self: *const StreamingOverlay, scratch: []OverlayCell) ?struct { width: u16, height: u16 } {
+    pub fn buildVisibleCells(self: *const StreamingOverlay, scratch: []StyledCell) ?struct { width: u16, height: u16 } {
         const fc = self.full_cells orelse return null;
         if (self.state == .idle) return null;
 
@@ -180,7 +180,7 @@ pub const StreamingOverlay = struct {
     /// Clamps revealed_height if the new card is shorter. If the new card is taller
     /// and state is .active, reveal continues from current position.
     /// Takes ownership of `new_cells`.
-    pub fn replaceContent(self: *StreamingOverlay, new_cells: []OverlayCell, new_w: u16, new_h: u16) void {
+    pub fn replaceContent(self: *StreamingOverlay, new_cells: []StyledCell, new_w: u16, new_h: u16) void {
         if (self.full_cells) |old| {
             self.allocator.free(old);
         }
@@ -209,7 +209,7 @@ test "StreamingOverlay: start sets active state" {
     var so = StreamingOverlay{ .allocator = allocator };
     defer so.cancel();
 
-    const cells = try allocator.alloc(OverlayCell, 30); // 10w x 3h
+    const cells = try allocator.alloc(StyledCell, 30); // 10w x 3h
     so.start(cells, 10, 3, 5, 7, 0, 1000); // bottom_row=7, max_vis=0 (no cap)
 
     try std.testing.expectEqual(StreamState.active, so.state);
@@ -225,7 +225,7 @@ test "StreamingOverlay: tick advances revealed_height" {
 
     const h: u16 = 8;
     const w: u16 = 5;
-    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+    const cells = try allocator.alloc(StyledCell, @as(usize, w) * h);
     for (cells) |*cell| cell.* = .{};
     so.start(cells, w, h, 0, h - 1, 0, 0);
 
@@ -250,7 +250,7 @@ test "StreamingOverlay: cancel resets to idle" {
     const allocator = std.testing.allocator;
     var so = StreamingOverlay{ .allocator = allocator };
 
-    const cells = try allocator.alloc(OverlayCell, 20);
+    const cells = try allocator.alloc(StyledCell, 20);
     so.start(cells, 5, 4, 0, 3, 0, 0);
     try std.testing.expectEqual(StreamState.active, so.state);
 
@@ -273,7 +273,7 @@ test "StreamingOverlay: buildVisibleCells correctness" {
 
     const w: u16 = 4;
     const h: u16 = 6;
-    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+    const cells = try allocator.alloc(StyledCell, @as(usize, w) * h);
 
     // Mark each row with a distinct character
     for (0..h) |r| {
@@ -284,7 +284,7 @@ test "StreamingOverlay: buildVisibleCells correctness" {
 
     so.start(cells, w, h, 0, h - 1, 0, 0); // bottom_row = 5, no cap
 
-    var scratch: [128]OverlayCell = undefined;
+    var scratch: [128]StyledCell = undefined;
 
     // Initially revealed_height = 3 (min_height)
     const v1 = so.buildVisibleCells(&scratch);
@@ -319,7 +319,7 @@ test "StreamingOverlay: bottom-anchored topRow" {
 
     const w: u16 = 4;
     const h: u16 = 8;
-    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+    const cells = try allocator.alloc(StyledCell, @as(usize, w) * h);
     for (cells) |*cell| cell.* = .{};
 
     // Anchor bottom at row 20, no height cap
@@ -342,7 +342,7 @@ test "StreamingOverlay: max_visible_height caps and scrolls" {
 
     const w: u16 = 4;
     const h: u16 = 10; // 10 rows total: border + 7 content + action + border
-    const cells = try allocator.alloc(OverlayCell, @as(usize, w) * h);
+    const cells = try allocator.alloc(StyledCell, @as(usize, w) * h);
 
     // Mark each row distinctly
     for (0..h) |r| {
@@ -354,7 +354,7 @@ test "StreamingOverlay: max_visible_height caps and scrolls" {
     // Cap at 6 rows visible
     so.start(cells, w, h, 0, 20, 6, 0);
 
-    var scratch: [128]OverlayCell = undefined;
+    var scratch: [128]StyledCell = undefined;
 
     // Tick until revealed > max_visible_height
     _ = so.tick(50_000_000); // revealed: 3 -> 5
@@ -385,7 +385,7 @@ test "StreamingOverlay: timing interval respected" {
     var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 1, .tick_interval_ns = 100 };
     defer so.cancel();
 
-    const cells = try allocator.alloc(OverlayCell, 50);
+    const cells = try allocator.alloc(StyledCell, 50);
     for (cells) |*cell| cell.* = .{};
     so.start(cells, 5, 10, 0, 9, 0, 0);
 
@@ -403,7 +403,7 @@ test "StreamingOverlay: replaceContent preserves reveal" {
     var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 2 };
     defer so.cancel();
 
-    const cells = try allocator.alloc(OverlayCell, 30); // 5w x 6h
+    const cells = try allocator.alloc(StyledCell, 30); // 5w x 6h
     for (cells) |*cell| cell.* = .{};
     so.start(cells, 5, 6, 0, 10, 0, 0);
 
@@ -412,7 +412,7 @@ test "StreamingOverlay: replaceContent preserves reveal" {
     try std.testing.expectEqual(@as(u16, 5), so.revealed_height); // 3 + 2
 
     // Replace with taller card — should re-activate
-    const new_cells = try allocator.alloc(OverlayCell, 50); // 5w x 10h
+    const new_cells = try allocator.alloc(StyledCell, 50); // 5w x 10h
     for (new_cells) |*cell| cell.* = .{};
     so.replaceContent(new_cells, 5, 10);
 
@@ -426,7 +426,7 @@ test "StreamingOverlay: replaceContent clamps on shorter card" {
     var so = StreamingOverlay{ .allocator = allocator, .rows_per_tick = 10 };
     defer so.cancel();
 
-    const cells = try allocator.alloc(OverlayCell, 50); // 5w x 10h
+    const cells = try allocator.alloc(StyledCell, 50); // 5w x 10h
     for (cells) |*cell| cell.* = .{};
     so.start(cells, 5, 10, 0, 10, 0, 0);
 
@@ -435,7 +435,7 @@ test "StreamingOverlay: replaceContent clamps on shorter card" {
     try std.testing.expectEqual(StreamState.complete, so.state);
 
     // Replace with shorter card
-    const new_cells = try allocator.alloc(OverlayCell, 20); // 5w x 4h
+    const new_cells = try allocator.alloc(StyledCell, 20); // 5w x 4h
     for (new_cells) |*cell| cell.* = .{};
     so.replaceContent(new_cells, 5, 4);
 

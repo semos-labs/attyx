@@ -177,6 +177,23 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
     }
 
+    // Session picker key routing
+    if (g_session_picker_active) {
+        unsigned short kc = event.keyCode;
+        if (kc == kVK_Escape)              { attyx_picker_cmd(7); return YES; }
+        if (kc == kVK_Return)              { attyx_picker_cmd(8); return YES; }
+        if (kc == kVK_Delete)              { attyx_picker_cmd(1); return YES; }
+        if (kc == kVK_ForwardDelete)       { attyx_picker_cmd(1); return YES; }
+        if (kc == kVK_UpArrow)             { attyx_picker_cmd(9); return YES; }
+        if (kc == kVK_DownArrow)           { attyx_picker_cmd(10); return YES; }
+        if (ctrl && kc == kVK_ANSI_R)      { attyx_picker_cmd(11); return YES; }
+        if (ctrl && kc == kVK_ANSI_X)      { attyx_picker_cmd(12); return YES; }
+        if (ctrl && kc == kVK_ANSI_U)      { attyx_picker_cmd(13); return YES; }
+        if (ctrl && kc == kVK_ANSI_C)      { attyx_picker_cmd(7); return YES; }
+        // Printable chars fall through to IME handler
+        return NO;
+    }
+
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
         unsigned short kc = event.keyCode;
