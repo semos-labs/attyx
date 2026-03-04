@@ -66,10 +66,11 @@ Every feature must include at least one of:
 
 All tests must run in headless mode. No rendering required for core tests.
 
-## Terminal Model Rules
+## Release Notes
 
-- Maintain explicit mode flags.
-- Alternate screen must be a separate buffer.
-- Scrollback belongs only to the main screen.
-- Do not mix rendering logic into state logic.
+- All release notes go in the `releases/` folder as Markdown files.
+- One file per version, named `v<version>.md` (e.g. `releases/v0.1.45.md`).
+- Focus on the user-facing side of features: what users can do, how to use it, and why it matters.
+- No technical deep dives, internal architecture details, or implementation specifics.
+- Keep descriptions concise and practical — a user reading these should immediately understand what changed and how it affects them.
 
