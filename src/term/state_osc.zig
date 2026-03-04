@@ -38,3 +38,13 @@ pub fn setCwd(self: *TerminalState, uri: []const u8) void {
     }
     self.working_directory = alloc.dupe(u8, uri) catch null;
 }
+
+pub fn setShellPath(self: *TerminalState, path: []const u8) void {
+    const alloc = self.grid.allocator;
+    if (self.shell_path) |old| alloc.free(old);
+    if (path.len == 0) {
+        self.shell_path = null;
+        return;
+    }
+    self.shell_path = alloc.dupe(u8, path) catch null;
+}

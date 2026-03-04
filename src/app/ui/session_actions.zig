@@ -163,7 +163,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         setenvSlice(ctx.allocator, "ATTYX_CURSOR_STYLE", cstr);
     }
 
-    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {
+    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd, null) catch |err| {
         logging.err("session-picker", "spawn failed: {}", .{err});
         ctx.allocator.destroy(ps);
         return;

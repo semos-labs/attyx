@@ -377,7 +377,8 @@ pub fn processPopupToggle(ctx: *PtyThreadCtx) void {
             const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
             defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
-            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd) catch |err| {
+            const main_shell_path = publish.ctxEngine(ctx).state.shell_path;
+            ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, fg_cwd, main_shell_path) catch |err| {
                 logging.err("popup", "spawn failed: {}", .{err});
                 ctx.allocator.destroy(ps);
                 return;

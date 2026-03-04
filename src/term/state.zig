@@ -54,6 +54,7 @@ pub const TerminalState = struct {
     next_link_id: u32 = 1,
     title: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
+    shell_path: ?[]const u8 = null,
 
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
@@ -128,6 +129,7 @@ pub const TerminalState = struct {
         self.link_uris.deinit(alloc);
         if (self.title) |t| alloc.free(t);
         if (self.working_directory) |wd| alloc.free(wd);
+        if (self.shell_path) |sp| alloc.free(sp);
         if (self.graphics_store) |gs| {
             gs.deinit();
             alloc.destroy(gs);
@@ -157,7 +159,7 @@ pub const TerminalState = struct {
 
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
             else => {
                 self.wrap_next = false;
             },
@@ -249,6 +251,7 @@ pub const TerminalState = struct {
             .hyperlink_end => self.endHyperlink(),
             .set_title => |t| self.setTitle(t),
             .set_cwd => |u| self.setCwd(u),
+            .set_shell_path => |p| self.setShellPath(p),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -499,6 +502,7 @@ pub const TerminalState = struct {
     const endHyperlink = @import("state_osc.zig").endHyperlink;
     pub const setTitle = @import("state_osc.zig").setTitle;
     const setCwd = @import("state_osc.zig").setCwd;
+    const setShellPath = @import("state_osc.zig").setShellPath;
 
     // -- Kitty keyboard protocol ---------------------------------------------
 

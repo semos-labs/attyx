@@ -487,9 +487,14 @@ pub const Parser = struct {
 
     fn dispatchOsc7337(rest: []const u8) Action {
         // Format: "write-main;<payload>"
-        const prefix = "write-main;";
-        if (rest.len >= prefix.len and std.mem.eql(u8, rest[0..prefix.len], prefix)) {
-            return .{ .inject_into_main = rest[prefix.len..] };
+        const write_prefix = "write-main;";
+        if (rest.len >= write_prefix.len and std.mem.eql(u8, rest[0..write_prefix.len], write_prefix)) {
+            return .{ .inject_into_main = rest[write_prefix.len..] };
+        }
+        // Format: "set-path;<PATH>"
+        const path_prefix = "set-path;";
+        if (rest.len >= path_prefix.len and std.mem.eql(u8, rest[0..path_prefix.len], path_prefix)) {
+            return .{ .set_shell_path = rest[path_prefix.len..] };
         }
         return .nop;
     }

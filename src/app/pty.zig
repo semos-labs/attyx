@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const platform = @import("../platform/platform.zig");
+const ShellIntegration = @import("shell_integration.zig");
 
 const Winsize = extern struct {
     ws_row: u16,
@@ -104,13 +105,9 @@ pub const Pty = struct {
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
 
+            var argv_override: ShellIntegration.ArgvOverride = .{};
             if (!opts.skip_shell_integration) {
-                // Shell integration: inject attyx binary dir into PATH via
-                // ZDOTDIR override. Setting PATH directly doesn't survive
-                // shell init scripts (.zshenv, nix, path_helper) that rebuild
-                // PATH from scratch. The ZDOTDIR approach runs our .zshenv
-                // first, which appends the binary dir before anything else.
-                setupShellIntegration();
+                argv_override = ShellIntegration.setup();
             }
 
             // Prevent main shell children from thinking they're inside tmux.
@@ -147,10 +144,21 @@ pub const Pty = struct {
                 std.posix.getenv("SHELL") orelse "/bin/sh",
             };
 
+            // Build argv with override entries inserted after argv[0]
             var argv_ptrs: [33]?[*:0]const u8 = .{null} ** 33;
-            for (argv, 0..) |arg, i| {
-                if (i >= 32) break;
-                argv_ptrs[i] = arg.ptr;
+            argv_ptrs[0] = argv[0].ptr;
+            var pos: usize = 1;
+            // Insert extra args from shell integration (e.g. --rcfile for bash)
+            for (0..argv_override.count) |oi| {
+                if (pos >= 32) break;
+                argv_ptrs[pos] = argv_override.extra[oi];
+                pos += 1;
+            }
+            // Append remaining original argv entries
+            for (argv[1..]) |arg| {
+                if (pos >= 32) break;
+                argv_ptrs[pos] = arg.ptr;
+                pos += 1;
             }
 
             _ = execvp(argv_ptrs[0] orelse posix.abort(), @ptrCast(&argv_ptrs));
@@ -238,147 +246,4 @@ pub const Pty = struct {
         return 1;
     }
 
-    /// Set up shell integration to inject the attyx binary dir into PATH.
-    ///
-    /// For zsh: override ZDOTDIR to point to our integration .zshenv which
-    /// appends the binary dir to PATH before chaining to the real .zshenv.
-    /// This survives shell init scripts that rebuild PATH from scratch.
-    ///
-    /// For other shells: fall back to direct PATH append (best-effort).
-    fn setupShellIntegration() void {
-        var exe_buf: [1024]u8 = undefined;
-        const exe_dir = getExeDir(&exe_buf) orelse return;
-
-        // Set __ATTYX_BIN_DIR for the integration script
-        var dir_buf: [1024]u8 = undefined;
-        const dir_z = std.fmt.bufPrintZ(&dir_buf, "{s}", .{exe_dir}) catch return;
-        _ = setenv("__ATTYX_BIN_DIR", dir_z, 1);
-
-        // Detect shell
-        const shell = std.mem.sliceTo(getenv("SHELL") orelse "/bin/sh", 0);
-        const is_zsh = std.mem.endsWith(u8, shell, "/zsh") or
-            std.mem.eql(u8, shell, "zsh");
-
-        if (is_zsh) {
-            // Write integration .zshenv to a known location
-            const home = std.mem.sliceTo(getenv("HOME") orelse return, 0);
-            var integ_dir_buf: [512]u8 = undefined;
-            const integ_dir = std.fmt.bufPrintZ(&integ_dir_buf,
-                "{s}/.config/attyx/shell-integration/zsh", .{home}) catch return;
-
-            // Ensure directory exists (ignore errors — may already exist)
-            mkdirp(integ_dir);
-
-            // Write the .zshenv integration script
-            var zshenv_buf: [600]u8 = undefined;
-            const zshenv_path = std.fmt.bufPrintZ(&zshenv_buf,
-                "{s}/.zshenv", .{integ_dir}) catch return;
-            writeIntegrationScript(zshenv_path);
-
-            // Save original ZDOTDIR so our script can restore it
-            const orig_zdotdir = getenv("ZDOTDIR");
-            if (orig_zdotdir) |zd| {
-                _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", zd, 1);
-            } else {
-                _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", "", 1);
-            }
-
-            // Point zsh to our integration directory
-            _ = setenv("ZDOTDIR", integ_dir, 1);
-        } else {
-            // Non-zsh: best-effort direct PATH append
-            appendExeDirToPath(exe_dir);
-        }
-    }
-
-    fn appendExeDirToPath(exe_dir: []const u8) void {
-        const existing = std.mem.sliceTo(getenv("PATH") orelse "/usr/bin:/bin", 0);
-        if (std.mem.indexOf(u8, existing, exe_dir) != null) return;
-        var path_buf: [4096]u8 = undefined;
-        const new_path = std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{
-            exe_dir, existing,
-        }) catch return;
-        _ = setenv("PATH", new_path, 1);
-    }
-
-    fn writeIntegrationScript(path: [*:0]const u8) void {
-        const content =
-            \\#!/bin/zsh
-            \\# Attyx shell integration
-            \\if [[ -n "$__ATTYX_ORIGINAL_ZDOTDIR" ]]; then
-            \\  ZDOTDIR="$__ATTYX_ORIGINAL_ZDOTDIR"
-            \\elif [[ -z "$__ATTYX_ORIGINAL_ZDOTDIR" ]]; then
-            \\  ZDOTDIR="$HOME"
-            \\fi
-            \\unset __ATTYX_ORIGINAL_ZDOTDIR
-            \\if [[ -n "$__ATTYX_BIN_DIR" ]] && [[ ":$PATH:" != *":$__ATTYX_BIN_DIR:"* ]]; then
-            \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
-            \\fi
-            \\unset __ATTYX_BIN_DIR
-            \\# OSC 7: report cwd on every directory change
-            \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
-            \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
-            \\# Export shell PATH for popup commands (precmd fires after all init)
-            \\__attyx_export_path() { printf '%s' "$PATH" > "$HOME/.config/attyx/.shell_path" 2>/dev/null }
-            \\[[ -z "${precmd_functions[(r)__attyx_export_path]}" ]] && precmd_functions+=(__attyx_export_path)
-            \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
-            \\__attyx_chpwd
-            \\
-        ;
-        // Use raw C open/write since we're in a fork child
-        const fd = std.posix.openatZ(std.posix.AT.FDCWD, path, .{
-            .ACCMODE = .WRONLY,
-            .CREAT = true,
-            .TRUNC = true,
-        }, 0o644) catch return;
-        defer std.posix.close(fd);
-        _ = std.posix.write(fd, content) catch {};
-    }
-
-    /// Recursively create directories (like mkdir -p). Best-effort.
-    fn mkdirp(path_z: [*:0]const u8) void {
-        const path = std.mem.sliceTo(path_z, 0);
-        // Walk through the path, creating each component
-        var i: usize = 1; // skip leading /
-        while (i < path.len) : (i += 1) {
-            if (path[i] == '/') {
-                var component_buf: [512]u8 = undefined;
-                if (i >= component_buf.len) return;
-                @memcpy(component_buf[0..i], path[0..i]);
-                component_buf[i] = 0;
-                _ = std.posix.mkdiratZ(
-                    std.posix.AT.FDCWD,
-                    @ptrCast(&component_buf),
-                    0o755,
-                ) catch {};
-            }
-        }
-        // Create the final directory
-        _ = std.posix.mkdiratZ(std.posix.AT.FDCWD, path_z, 0o755) catch {};
-    }
-
-    fn getExeDir(buf: *[1024]u8) ?[]const u8 {
-        const exe_path = getExePath(buf) orelse return null;
-        var last_slash: usize = 0;
-        for (exe_path, 0..) |ch, i| {
-            if (ch == '/') last_slash = i;
-        }
-        if (last_slash == 0) return null;
-        return exe_path[0..last_slash];
-    }
-
-    fn getExePath(buf: *[1024]u8) ?[]const u8 {
-        if (comptime @import("builtin").os.tag == .macos) {
-            var size: u32 = buf.len;
-            if (_NSGetExecutablePath(buf, &size) == 0) {
-                return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
-            }
-        } else {
-            const n = readlink("/proc/self/exe", buf, buf.len);
-            if (n > 0) {
-                return buf[0..@intCast(n)];
-            }
-        }
-        return null;
-    }
 };
