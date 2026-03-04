@@ -568,7 +568,7 @@ int drawFrame(void) {
                     fr = g_theme_sel_fg_r / 255.0f;
                     fg = g_theme_sel_fg_g / 255.0f;
                     fb = g_theme_sel_fg_b / 255.0f;
-                } else if (drawCursor && row == curRow && col == curCol
+                } else if (drawCursor && row == (curRow - g_grid_top_offset) && col == curCol
                            && (curShape == 0 || curShape == 1)) {
                     // Block cursor: use cell bg for contrast
                     fr = cell->bg_r / 255.0f;
