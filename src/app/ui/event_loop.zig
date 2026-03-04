@@ -82,7 +82,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             actions.doReloadConfig(ctx);
         }
 
-        // Tick statusbar widgets
+        // Tick statusbar widgets (skip if quitting — widget ticks fork child
+        // processes which crash if the parent is mid-teardown).
+        if (c.attyx_should_quit() != 0) break;
         var statusbar_refreshed = false;
         if (ctx.statusbar) |sb| if (sb.config.enabled) {
             // Resolve theme palette into statusbar ANSI colors
