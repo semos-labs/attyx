@@ -100,6 +100,25 @@ void attyx_mark_all_dirty(void);
 extern volatile int g_sel_start_row, g_sel_start_col;
 extern volatile int g_sel_end_row, g_sel_end_col;
 extern volatile int g_sel_active;
+extern volatile int g_sel_block;        // 1 = rectangular (block) selection
+
+// Cell buffer pointer (set by attyx_run, read by renderer and input threads)
+extern AttyxCell* g_cells;
+
+// ---------------------------------------------------------------------------
+// Copy/Visual mode (keyboard-driven selection, tmux-style)
+// ---------------------------------------------------------------------------
+extern volatile int g_copy_mode;        // 0=off,1=nav,2=vchar,3=vline,4=vblock
+extern volatile int g_copy_cursor_row;  // visual cursor row (viewport-relative)
+extern volatile int g_copy_cursor_col;  // visual cursor col
+void attyx_copy_mode_enter(void);
+uint8_t attyx_copy_mode_key(uint16_t key, uint8_t mods, uint32_t codepoint);
+void attyx_copy_mode_exit(int keep_selection);
+extern volatile int g_copy_search_active;   // 1 while search input is open
+extern volatile int g_copy_search_dir;      // 1=forward(/), -1=backward(?)
+extern volatile uint8_t g_copy_search_buf[128];
+extern volatile int g_copy_search_len;
+extern volatile int g_copy_search_dirty;    // 1 = statusbar needs refresh for search
 
 // Per-row soft-wrap flag (viewport-relative, updated inside seqlock).
 // 1 = row was soft-wrapped (auto-wrap at right edge), 0 = hard newline.
@@ -427,6 +446,7 @@ void attyx_platform_close_window(void);
 
 extern volatile int g_mouse_tracking;
 extern int g_rows;
+extern int g_cols;
 
 // ---------------------------------------------------------------------------
 // Native macOS tabs

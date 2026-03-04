@@ -11,6 +11,7 @@ const Action = keybinds.Action;
 
 const terminal = @import("../terminal.zig");
 const c = terminal.c;
+const copy_mode = @import("copy_mode.zig");
 
 // ---------------------------------------------------------------------------
 // Platform callbacks (implemented in platform C files)
@@ -178,6 +179,10 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         .clear_screen => {
             c.attyx_clear_screen();
+            return 1;
+        },
+        .copy_mode_enter => {
+            copy_mode.attyx_copy_mode_enter();
             return 1;
         },
         .send_sequence => {

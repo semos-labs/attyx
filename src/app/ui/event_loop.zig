@@ -21,6 +21,7 @@ const hup_mod = @import("hup.zig");
 const overlay_input = @import("overlay_input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
+const copy_mode = @import("copy_mode.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -568,7 +569,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Statusbar widgets may have refreshed outside the cell-update path
         // (e.g. after session switch when engine is idle). Re-generate overlay.
-        if (statusbar_refreshed and !need_update_final) {
+        const copy_search_dirty = (@atomicRmw(i32, &copy_mode.g_copy_search_dirty, .Xchg, 0, .seq_cst) != 0);
+        if ((statusbar_refreshed or copy_search_dirty) and !need_update_final) {
             publish.generateStatusbar(ctx);
             publish.publishOverlays(ctx);
         }

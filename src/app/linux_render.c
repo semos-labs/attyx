@@ -296,6 +296,50 @@ int drawFrame(void) {
         bgVertCount += 6;
     }
 
+    // Copy-mode search match highlighting
+    if (g_copy_mode && g_copy_search_len > 0) {
+        int qlen = g_copy_search_len;
+        for (int row = 0; row < visibleRows; row++) {
+            int base = row * cols;
+            for (int col = 0; col <= cols - qlen; col++) {
+                int match = 1;
+                for (int k = 0; k < qlen; k++) {
+                    uint32_t ch = g_cells[base + col + k].character;
+                    uint32_t qch = g_copy_search_buf[k];
+                    uint32_t cl = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+                    uint32_t ql = (qch >= 'A' && qch <= 'Z') ? qch + 32 : qch;
+                    if (cl != ql) { match = 0; break; }
+                }
+                if (match) {
+                    for (int k = 0; k < qlen; k++) {
+                        float mx0 = offX + (col + k) * gw;
+                        float my0 = offY + row * gh;
+                        bgVertCount = emitRect(g_bg_verts, bgVertCount, mx0, my0, gw, gh, 0.6f, 0.4f, 0.1f, 0.7f);
+                    }
+                }
+            }
+        }
+    }
+
+    // Copy-mode cursor: solid block (same style as terminal cursor)
+    if (g_copy_mode) {
+        int cmRow = g_copy_cursor_row;
+        int cmCol = g_copy_cursor_col;
+        if (cmRow >= 0 && cmRow < visibleRows && cmCol >= 0 && cmCol < cols) {
+            float cr, cg_c, cb;
+            if (g_theme_cursor_r >= 0) {
+                cr = g_theme_cursor_r / 255.0f;
+                cg_c = g_theme_cursor_g / 255.0f;
+                cb = g_theme_cursor_b / 255.0f;
+            } else {
+                cr = 0.86f; cg_c = 0.86f; cb = 0.86f;
+            }
+            bgVertCount = emitRect(g_bg_verts, bgVertCount,
+                                   offX + cmCol * gw, offY + cmRow * gh,
+                                   gw, gh, cr, cg_c, cb, 1);
+        }
+    }
+
     // Cursor trail effect (Neovide-style: stretched comet tail)
     if (g_cursor_trail && g_cursor_visible && cursorChanged && g_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);

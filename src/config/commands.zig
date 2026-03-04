@@ -79,6 +79,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .command_palette_toggle, .name = "command_palette_toggle", .description = "Toggle command palette", .scope = .global, .mac_hotkey = "cmd+shift+p", .linux_hotkey = "ctrl+shift+p" },
     .{ .action = .pane_rotate, .name = "pane_rotate", .description = "Rotate pane contents", .scope = .global, .mac_hotkey = "ctrl+shift+o", .linux_hotkey = "ctrl+shift+o" },
     .{ .action = .pane_zoom_toggle, .name = "pane_zoom_toggle", .description = "Toggle zoom on focused pane", .scope = .global, .mac_hotkey = "cmd+shift+z", .linux_hotkey = "ctrl+shift+z" },
+    .{ .action = .copy_mode_enter, .name = "copy_mode", .description = "Enter copy/visual mode", .scope = .global, .mac_hotkey = "ctrl+shift+space", .linux_hotkey = "ctrl+shift+space" },
     // Tab select by number
     .{ .action = .tab_select_1, .name = "tab_select_1", .description = "Switch to tab 1", .scope = .global, .mac_hotkey = "cmd+1", .linux_hotkey = "alt+1" },
     .{ .action = .tab_select_2, .name = "tab_select_2", .description = "Switch to tab 2", .scope = .global, .mac_hotkey = "cmd+2", .linux_hotkey = "alt+2" },

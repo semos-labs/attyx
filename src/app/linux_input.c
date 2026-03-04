@@ -25,6 +25,8 @@ enum {
 static int g_suppress_char = 0;
 
 static void snapViewport(void) {
+    // Don't snap/clear when in copy mode — selection is keyboard-driven
+    if (g_copy_mode) return;
     if (g_viewport_offset != 0) {
         g_viewport_offset = 0;
         attyx_mark_all_dirty();
@@ -204,6 +206,17 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         }
     }
 
+    // Copy/visual mode: intercept all keys when active
+    if (g_copy_mode && action != GLFW_RELEASE) {
+        uint16_t vmKey; uint32_t vmCp;
+        glfwToKeyCombo(key, mods, &vmKey, &vmCp);
+        uint8_t vmMods = buildGlfwMods(mods);
+        if (attyx_copy_mode_key(vmKey, vmMods, vmCp)) {
+            g_suppress_char = 1;
+            return;
+        }
+    }
+
     // Configurable keybind match (covers search, scroll, copy/paste, popups, etc.)
     {
         uint16_t matchKey; uint32_t matchCp;
@@ -342,6 +355,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
 static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     (void)w;
     if (g_suppress_char) { g_suppress_char = 0; return; }
+    if (g_copy_mode) return;
 
     // When search bar is open, route chars to search overlay
     if (g_search_active) {
@@ -485,6 +499,10 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
+            // Mouse click exits copy mode
+            if (g_copy_mode) {
+                attyx_copy_mode_exit(0);
+            }
             if (g_mouse_tracking && g_mouse_sgr) {
                 int col, row;
                 mouseToCell1(mx, my, &col, &row);

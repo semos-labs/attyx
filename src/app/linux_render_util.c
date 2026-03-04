@@ -177,6 +177,12 @@ int cellIsSelected(int row, int col) {
     if (!g_sel_active) return 0;
     int sr = g_sel_start_row, sc = g_sel_start_col;
     int er = g_sel_end_row, ec = g_sel_end_col;
+    // Block selection: rectangular region
+    if (g_sel_block) {
+        int minR = sr < er ? sr : er, maxR = sr > er ? sr : er;
+        int minC = sc < ec ? sc : ec, maxC = sc > ec ? sc : ec;
+        return row >= minR && row <= maxR && col >= minC && col <= maxC;
+    }
     if (sr > er || (sr == er && sc > ec)) {
         int tr = sr, tc = sc; sr = er; sc = ec; er = tr; ec = tc;
     }

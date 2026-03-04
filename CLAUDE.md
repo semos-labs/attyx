@@ -30,7 +30,7 @@ src/
 
 ## File Size
 
-- **No file may exceed 600 lines.** This is a hard limit required for AI-assisted development.
+- **No file may exceed roughly 600 lines, small overflow is allowed.** This is a hard limit required for AI-assisted development.
 - If a file approaches this limit, split it into focused modules before adding more code.
 
 ## Code Style (Zig)

@@ -215,6 +215,10 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    // Mouse click exits copy mode
+    if (g_copy_mode) {
+        attyx_copy_mode_exit(0);
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         int col, row;
         mouseCell(event, self, &col, &row);

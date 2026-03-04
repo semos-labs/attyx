@@ -11,6 +11,12 @@ static BOOL cellIsSelected(int row, int col) {
     if (!g_sel_active) return NO;
     int sr = g_sel_start_row, sc = g_sel_start_col;
     int er = g_sel_end_row,   ec = g_sel_end_col;
+    // Block selection: rectangular region (no normalization swap needed)
+    if (g_sel_block) {
+        int minR = sr < er ? sr : er, maxR = sr > er ? sr : er;
+        int minC = sc < ec ? sc : ec, maxC = sc > ec ? sc : ec;
+        return row >= minR && row <= maxR && col >= minC && col <= maxC;
+    }
     if (sr > er || (sr == er && sc > ec)) {
         int tr = sr, tc = sc;
         sr = er; sc = ec;
@@ -263,6 +269,52 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             _bgVerts[cursorSlot+4] = (Vertex){ rx1,ry1, 0,0, cr,cg_c,cb,1 };
             _bgVerts[cursorSlot+5] = (Vertex){ rx0,ry1, 0,0, cr,cg_c,cb,1 };
             bgVertCount += 6;
+        }
+
+        // Copy-mode search match highlighting
+        if (g_copy_mode && g_copy_search_len > 0) {
+            int qlen = g_copy_search_len;
+            for (int row = 0; row < visibleRows; row++) {
+                int base = row * cols;
+                for (int col = 0; col <= cols - qlen; col++) {
+                    if (bgVertCount + qlen * 6 > _metalBufCapBg) break;
+                    int match = 1;
+                    for (int k = 0; k < qlen; k++) {
+                        uint32_t ch = cells[base + col + k].character;
+                        uint32_t qch = g_copy_search_buf[k];
+                        uint32_t cl = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+                        uint32_t ql = (qch >= 'A' && qch <= 'Z') ? qch + 32 : qch;
+                        if (cl != ql) { match = 0; break; }
+                    }
+                    if (match) {
+                        for (int k = 0; k < qlen; k++) {
+                            if (bgVertCount + 6 > _metalBufCapBg) break;
+                            float mx0 = offX + (col + k) * gw;
+                            float my0 = offY + row * gh;
+                            bgVertCount = emitRectV(_bgVerts, bgVertCount, mx0, my0, gw, gh, 0.6f, 0.4f, 0.1f, 0.7f);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Copy-mode cursor: solid block (same style as terminal cursor)
+        if (g_copy_mode && bgVertCount + 6 <= _metalBufCapBg) {
+            int cmRow = g_copy_cursor_row;
+            int cmCol = g_copy_cursor_col;
+            if (cmRow >= 0 && cmRow < visibleRows && cmCol >= 0 && cmCol < cols) {
+                float cx0 = offX + cmCol * gw;
+                float cy0 = offY + cmRow * gh;
+                float cr, cg_c, cb;
+                if (g_theme_cursor_r >= 0) {
+                    cr = g_theme_cursor_r / 255.0f;
+                    cg_c = g_theme_cursor_g / 255.0f;
+                    cb = g_theme_cursor_b / 255.0f;
+                } else {
+                    cr = 0.86f; cg_c = 0.86f; cb = 0.86f;
+                }
+                bgVertCount = emitRectV(_bgVerts, bgVertCount, cx0, cy0, gw, gh, cr, cg_c, cb, 1);
+            }
         }
 
         if (!g_sel_active) {

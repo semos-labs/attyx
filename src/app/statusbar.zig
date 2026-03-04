@@ -10,6 +10,7 @@ const StatusbarConfig = statusbar_config.StatusbarConfig;
 const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
 const git_widget = @import("git_widget.zig");
 const tab_bar_mod = @import("tab_bar.zig");
+const bridge = @cImport({ @cInclude("bridge.h"); });
 
 const CTime = extern struct {
     tm_sec: c_int,
@@ -313,21 +314,37 @@ pub fn generate(
 
     var col: u16 = 0;
 
-    // 2. Left widgets
-    for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
-        if (wc.side != .left) continue;
-        const ws = &bar.widgets[i];
-        if (ws.output_len == 0) continue;
-        const text = ws.output[0..ws.output_len];
-        // Write " text "
-        if (col < grid_cols) {
-            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    // 2. Left widgets (or search prompt if copy-mode search is active)
+    if (bridge.g_copy_search_active != 0) {
+        const dir_char: u21 = if (bridge.g_copy_search_dir < 0) '?' else '/';
+        const prompt_fg = Rgb{ .r = 255, .g = 200, .b = 50 };
+        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
+        if (col < grid_cols) { buf[col] = .{ .char = dir_char, .fg = prompt_fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
+        const slen: usize = @intCast(@max(bridge.g_copy_search_len, 0));
+        for (0..slen) |si| {
+            if (col >= grid_cols) break;
+            const ch: u21 = @intCast(bridge.g_copy_search_buf[si]);
+            buf[col] = .{ .char = ch, .fg = prompt_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
             col += 1;
         }
-        col = writeUtf8Colored(buf, col, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
-        if (col < grid_cols) {
-            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-            col += 1;
+        // Block cursor at insertion point (inverted colors)
+        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.bg, .bg = prompt_fg, .bg_alpha = 255 }; col += 1; }
+        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
+    } else {
+        for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
+            if (wc.side != .left) continue;
+            const ws = &bar.widgets[i];
+            if (ws.output_len == 0) continue;
+            const text = ws.output[0..ws.output_len];
+            if (col < grid_cols) {
+                buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                col += 1;
+            }
+            col = writeUtf8Colored(buf, col, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
+            if (col < grid_cols) {
+                buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                col += 1;
+            }
         }
     }
 

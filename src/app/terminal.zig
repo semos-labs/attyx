@@ -37,6 +37,7 @@ const search = @import("ui/search.zig");
 const ai = @import("ui/ai.zig");
 const event_loop = @import("ui/event_loop.zig");
 const dispatch = @import("ui/dispatch.zig");
+const copy_mode = @import("ui/copy_mode.zig");
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
@@ -156,12 +157,24 @@ pub export var g_session_picker_active: i32 = 0;
 pub export var g_toggle_command_palette: i32 = 0;
 pub export var g_command_palette_active: i32 = 0;
 
-// Ensure keybind and dispatch exports are linked
+// Ensure keybind, dispatch, and copy mode exports are linked
 comptime {
     _ = &keybinds_mod.attyx_keybind_match;
     _ = &keybinds_mod.g_keybind_matched_seq;
     _ = &keybinds_mod.g_keybind_matched_seq_len;
     _ = &dispatch.attyx_dispatch_action;
+    _ = &copy_mode.attyx_copy_mode_enter;
+    _ = &copy_mode.attyx_copy_mode_key;
+    _ = &copy_mode.attyx_copy_mode_exit;
+    _ = &copy_mode.g_copy_mode;
+    _ = &copy_mode.g_copy_cursor_row;
+    _ = &copy_mode.g_copy_cursor_col;
+    _ = &copy_mode.g_sel_block;
+    _ = &copy_mode.g_copy_search_active;
+    _ = &copy_mode.g_copy_search_dir;
+    _ = &copy_mode.g_copy_search_buf;
+    _ = &copy_mode.g_copy_search_len;
+    _ = &copy_mode.g_copy_search_dirty;
 }
 
 // ---------------------------------------------------------------------------

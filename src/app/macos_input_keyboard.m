@@ -130,6 +130,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
 }
 
 - (void)snapViewportAndClearSelection {
+    // Don't snap/clear when in copy mode — selection is keyboard-driven
+    if (g_copy_mode) return;
     if (g_viewport_offset != 0) {
         g_viewport_offset = 0;
         attyx_mark_all_dirty();
@@ -213,6 +215,14 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             attyx_overlay_enter();
             return YES;
         }
+    }
+
+    // Copy/visual mode: intercept all keys when active
+    if (g_copy_mode) {
+        uint16_t vmKey; uint32_t vmCp;
+        eventToKeyCombo(event, &vmKey, &vmCp);
+        uint8_t vmMods = buildMods(flags);
+        if (attyx_copy_mode_key(vmKey, vmMods, vmCp)) return YES;
     }
 
     // Configurable keybind match (covers all user-bindable actions:
@@ -308,6 +318,9 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     // Handle special keys (keybinds, overlays, search) BEFORE clearing
     // selection — the AI edit keybind needs to see g_sel_active.
     if ([self handleSpecialKey:event]) return;
+
+    // In copy mode, suppress all remaining input (no IME, no PTY)
+    if (g_copy_mode) return;
 
     [self snapViewportAndClearSelection];
 

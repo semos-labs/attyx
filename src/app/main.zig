@@ -124,6 +124,20 @@ export fn attyx_popup_toggle(_: c_int) void {}
 export fn attyx_popup_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_popup_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 
+// Copy mode stubs (copy_mode.zig provides real implementations)
+export var g_copy_mode: c_int = 0;
+export var g_copy_cursor_row: c_int = 0;
+export var g_copy_cursor_col: c_int = 0;
+export var g_sel_block: c_int = 0;
+export var g_copy_search_active: c_int = 0;
+export var g_copy_search_dir: c_int = 1;
+export var g_copy_search_buf: [128]u8 = .{0} ** 128;
+export var g_copy_search_len: c_int = 0;
+export var g_copy_search_dirty: c_int = 0;
+export fn attyx_copy_mode_enter() void {}
+export fn attyx_copy_mode_key(_: u16, _: u8, _: u32) u8 { return 0; }
+export fn attyx_copy_mode_exit(_: c_int) void {}
+
 // Keybind and dispatch stubs (keybinds.zig / dispatch.zig provide real implementations)
 export fn attyx_keybind_match(_: u16, _: u8, _: u32) u8 { return 0; }
 export fn attyx_dispatch_action(_: u8) u8 { return 0; }
