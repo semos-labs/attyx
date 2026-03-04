@@ -578,6 +578,16 @@ pub fn resolveTabTitles(
     }
 }
 
+/// Compute a bitmask of which tabs are currently zoomed.
+fn computeZoomedTabs(ctx: *PtyThreadCtx) u16 {
+    var mask: u16 = 0;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        if (layout.isZoomed()) mask |= @as(u16, 1) << @intCast(i);
+    }
+    return mask;
+}
+
 /// Generate the tab bar overlay (only visible when count > 1 and statusbar is not active).
 pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
@@ -607,6 +617,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     resolveTabTitles(ctx, &titles, &name_bufs);
 
     var tab_cells: [512]overlay_mod.StyledCell = undefined;
+    const zoomed_tabs = computeZoomedTabs(ctx);
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
@@ -614,6 +625,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         ctx.grid_cols,
         .{},
         &titles,
+        zoomed_tabs,
     ) orelse return;
 
     mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;
@@ -662,10 +674,10 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
         .bg_alpha = sb.config.background_opacity,
     };
-    // When native tabs are active, hide the tab section in the statusbar
-    // by reporting a single tab (statusbar only renders tabs when count > 1).
-    const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 1 else ctx.tab_mgr.count;
-    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles) orelse return;
+    // When native tabs are active, hide the tab section in the statusbar.
+    const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 0 else ctx.tab_mgr.count;
+    const zoomed_tabs = computeZoomedTabs(ctx);
+    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs) orelse return;
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);

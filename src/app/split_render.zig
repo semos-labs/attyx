@@ -56,6 +56,14 @@ pub fn fillCellsSplit(
         };
     }
 
+    // If zoomed, render only the zoomed pane at full grid size
+    if (layout_ptr.isZoomed()) {
+        const zoomed_pane = layout_ptr.pool[layout_ptr.zoomed_leaf].pane orelse return;
+        const full_rect = Rect{ .row = 0, .col = 0, .rows = grid_rows, .cols = grid_cols };
+        fillRegion(cells, &zoomed_pane.engine, full_rect, grid_cols, theme);
+        return;
+    }
+
     // 2. Draw separator characters on branch nodes
     drawSeparators(cells, layout_ptr, grid_rows, grid_cols, theme);
 

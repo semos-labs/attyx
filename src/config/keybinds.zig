@@ -107,6 +107,8 @@ pub const Action = enum(u8) {
     session_create = 75,
     session_kill = 76,
     command_palette_toggle = 77,
+    pane_rotate = 78,
+    pane_zoom_toggle = 79,
     _,
 
     /// Return the popup index if this is a popup_toggle action.

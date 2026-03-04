@@ -1,8 +1,5 @@
 // Attyx — SplitLayout: binary tree split pane manager
-//
-// Each tab holds a SplitLayout. A leaf node wraps a *Pane; a branch node
-// splits its rectangle into two children. Fixed-size node pool (max 15
-// nodes = 8 leaves + 7 branches). No heap allocation for the tree itself.
+// Fixed-size node pool (max 15 nodes = 8 leaves + 7 branches).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -51,6 +48,7 @@ pub const SplitLayout = struct {
     pane_count: u8 = 0,
     gap_h: u16 = 1, // gap columns for vertical splits (horizontal spacing)
     gap_v: u16 = 1, // gap rows for horizontal splits (vertical spacing)
+    zoomed_leaf: u8 = null_index, // set when a pane is zoomed to fill the whole area
 
     pub fn setGaps(self: *SplitLayout, h: u16, v: u16) void {
         self.gap_h = h;
@@ -69,8 +67,7 @@ pub const SplitLayout = struct {
         return sl;
     }
 
-    /// Split the focused pane in the given direction. Creates a new pane
-    /// (spawning a shell inheriting the focused pane's cwd).
+    /// Split the focused pane, spawning a shell inheriting the focused pane's cwd.
     pub fn splitPane(
         self: *SplitLayout,
         dir: Direction,
@@ -99,7 +96,6 @@ pub const SplitLayout = struct {
     }
 
     /// Split the focused pane, inserting a pre-created pane as the new child.
-    /// Used by session mode where the daemon creates the pane.
     pub fn splitPaneWith(self: *SplitLayout, dir: Direction, new_pane: *Pane) !void {
         if (self.pane_count >= max_panes) return error.TooManyPanes;
         const focus_idx = self.focused;
@@ -173,7 +169,6 @@ pub const SplitLayout = struct {
         self.focused = right_idx;
     }
 
-    /// Compute the right/bottom child size for a split. Returns null if too small.
     pub fn splitChildSize(self: *SplitLayout, dir: Direction, rect: Rect) ?struct { rows: u16, cols: u16 } {
         switch (dir) {
             .vertical => {
@@ -194,6 +189,9 @@ pub const SplitLayout = struct {
         if (self.pane_count <= 1) return .last_pane;
         const focus_idx = self.focused;
         if (focus_idx == null_index) return .last_pane;
+
+        // Clear zoom if we're closing the zoomed pane
+        if (self.zoomed_leaf == focus_idx) self.zoomed_leaf = null_index;
 
         // Deinit and free the focused pane
         if (self.pool[focus_idx].pane) |pane| {
@@ -232,11 +230,18 @@ pub const SplitLayout = struct {
         return .closed;
     }
 
-    /// Recursively compute rects for all nodes given the total available area.
     pub fn layout(self: *SplitLayout, total_rows: u16, total_cols: u16) void {
         if (self.root == null_index) return;
         const root_rect = Rect{ .row = 0, .col = 0, .rows = total_rows, .cols = total_cols };
         self.layoutNode(self.root, root_rect);
+        // When zoomed, also resize the zoomed pane to fill the entire area
+        if (self.isZoomed()) {
+            if (self.pool[self.zoomed_leaf].pane) |pane| {
+                if (total_rows > 0 and total_cols > 0) {
+                    pane.resize(total_rows, total_cols);
+                }
+            }
+        }
     }
 
     fn layoutNode(self: *SplitLayout, idx: u8, rect: Rect) void {
@@ -322,8 +327,6 @@ pub const SplitLayout = struct {
     }
 
     /// Navigate focus in the given direction using center-ray projection.
-    /// If the center point lands in a gap between sub-panes on the target
-    /// side, scans outward along the perpendicular axis to find a pane.
     pub fn navigate(self: *SplitLayout, dir: NavDirection) void {
         if (self.pane_count <= 1) return;
         if (self.focused == null_index) return;
@@ -360,8 +363,6 @@ pub const SplitLayout = struct {
         }
     }
 
-    /// Try the target point, then scan outward along the perpendicular axis
-    /// to handle the case where the center lands in a gap between sub-panes.
     fn probeForPane(self: *SplitLayout, row: u16, col: u16, dir: NavDirection, src: Rect) ?u8 {
         // Try exact center first
         if (self.paneAt(row, col)) |idx| return idx;
@@ -395,7 +396,6 @@ pub const SplitLayout = struct {
         return self.pool[self.focused].pane.?;
     }
 
-    /// Collect all leaf entries (pane + rect) into the output buffer.
     pub fn collectLeaves(self: *SplitLayout, out: []LeafEntry) u8 {
         var count: u8 = 0;
         self.collectLeavesNode(self.root, out, &count);
@@ -423,7 +423,6 @@ pub const SplitLayout = struct {
         }
     }
 
-    /// Deinit and free all panes in the tree.
     pub fn deinitAll(self: *SplitLayout, allocator: Allocator) void {
         for (&self.pool) |*node| {
             if (node.tag == .leaf) {
@@ -440,8 +439,7 @@ pub const SplitLayout = struct {
         self.focused = null_index;
     }
 
-    /// Check all leaf panes for child exit. Returns the index of the first
-    /// exited pane, or null if none.
+    /// Check all leaf panes for child exit. Returns index of first exited, or null.
     pub fn findExitedPane(self: *SplitLayout) ?u8 {
         for (&self.pool, 0..) |*node, i| {
             if (node.tag == .leaf) {
@@ -466,7 +464,6 @@ pub const SplitLayout = struct {
     }
 
     /// Hit-test: find the branch node whose separator gap contains (row, col).
-    /// Returns the pool index of the branch, or null if no separator at that position.
     pub fn separatorAt(self: *SplitLayout, row: u16, col: u16) ?u8 {
         for (&self.pool, 0..) |*node, i| {
             if (node.tag != .branch) continue;
@@ -494,7 +491,6 @@ pub const SplitLayout = struct {
     }
 
     /// Adjust a branch node's ratio by delta, clamped to [0.05, 0.95].
-    /// Re-layouts the tree and returns true if the ratio actually changed.
     pub fn resizeNode(self: *SplitLayout, branch_idx: u8, delta: f32, total_rows: u16, total_cols: u16) bool {
         if (branch_idx >= max_nodes or self.pool[branch_idx].tag != .branch) return false;
         const old = self.pool[branch_idx].ratio;
@@ -506,8 +502,7 @@ pub const SplitLayout = struct {
         return true;
     }
 
-    /// Walk up from focused leaf to find the nearest ancestor branch
-    /// matching the given split direction. For keyboard resize.
+    /// Walk up from focused leaf to find the nearest ancestor branch matching dir.
     pub fn findResizeTarget(self: *SplitLayout, dir: Direction) ?u8 {
         var cur = self.focused;
         if (cur == null_index) return null;
@@ -516,6 +511,48 @@ pub const SplitLayout = struct {
             if (parent == null_index) return null;
             if (self.pool[parent].direction == dir) return parent;
             cur = parent;
+        }
+    }
+
+    pub fn isZoomed(self: *const SplitLayout) bool {
+        return self.zoomed_leaf != null_index;
+    }
+
+    /// Toggle zoom on the focused pane. No-op if only one pane.
+    pub fn toggleZoom(self: *SplitLayout) void {
+        if (self.pane_count <= 1) return;
+        if (self.isZoomed()) {
+            self.zoomed_leaf = null_index;
+        } else {
+            self.zoomed_leaf = self.focused;
+        }
+    }
+
+    /// Cycle pane pointers forward through leaf positions.
+    /// The last leaf's pane moves to the first position; all others shift right.
+    /// Focus follows the originally-focused pane.
+    pub fn rotatePanes(self: *SplitLayout) void {
+        if (self.pane_count <= 1) return;
+
+        var leaves: [max_panes]LeafEntry = undefined;
+        const count = self.collectLeaves(&leaves);
+        if (count <= 1) return;
+
+        const last_pane = leaves[count - 1].pane;
+        const focused_pane = self.pool[self.focused].pane;
+
+        // Shift pane pointers: each leaf gets the pane from its left neighbor
+        var i: u8 = count - 1;
+        while (i > 0) : (i -= 1) {
+            self.pool[leaves[i].index].pane = self.pool[leaves[i - 1].index].pane;
+        }
+        self.pool[leaves[0].index].pane = last_pane;
+
+        for (leaves[0..count]) |leaf| {
+            if (self.pool[leaf.index].pane == focused_pane) {
+                self.focused = leaf.index;
+                break;
+            }
         }
     }
 
@@ -557,76 +594,7 @@ pub const SplitLayout = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-test "SplitLayout: init creates single-pane layout" {
-    const allocator = std.testing.allocator;
-    var pane_stub = try createTestPane(allocator);
-    defer destroyTestPane(allocator, &pane_stub);
-
-    const layout = SplitLayout.init(&pane_stub);
-    try std.testing.expectEqual(@as(u8, 1), layout.pane_count);
-    try std.testing.expectEqual(@as(u8, 0), layout.root);
-    try std.testing.expectEqual(@as(u8, 0), layout.focused);
-    try std.testing.expectEqual(NodeTag.leaf, layout.pool[0].tag);
-}
-
-test "SplitLayout: layout sets rect on single pane" {
-    const allocator = std.testing.allocator;
-    var pane_stub = try createTestPane(allocator);
-    defer destroyTestPane(allocator, &pane_stub);
-
-    var layout = SplitLayout.init(&pane_stub);
-    layout.layout(24, 80);
-
-    try std.testing.expectEqual(@as(u16, 0), layout.pool[0].rect.row);
-    try std.testing.expectEqual(@as(u16, 0), layout.pool[0].rect.col);
-    try std.testing.expectEqual(@as(u16, 24), layout.pool[0].rect.rows);
-    try std.testing.expectEqual(@as(u16, 80), layout.pool[0].rect.cols);
-}
-
-test "SplitLayout: collectLeaves returns all leaves" {
-    const allocator = std.testing.allocator;
-    var pane_stub = try createTestPane(allocator);
-    defer destroyTestPane(allocator, &pane_stub);
-    var layout = SplitLayout.init(&pane_stub);
-    layout.layout(24, 80);
-    var leaves: [max_panes]LeafEntry = undefined;
-    try std.testing.expectEqual(@as(u8, 1), layout.collectLeaves(&leaves));
-    try std.testing.expectEqual(&pane_stub, leaves[0].pane);
-}
-
-test "SplitLayout: paneAt finds leaf" {
-    const allocator = std.testing.allocator;
-    var pane_stub = try createTestPane(allocator);
-    defer destroyTestPane(allocator, &pane_stub);
-
-    var layout = SplitLayout.init(&pane_stub);
-    layout.layout(24, 80);
-
-    const found = layout.paneAt(10, 40);
-    try std.testing.expect(found != null);
-    try std.testing.expectEqual(@as(u8, 0), found.?);
-
-    // Out of bounds
-    try std.testing.expect(layout.paneAt(25, 40) == null);
-}
-
-// Test helper: create a minimal Pane for unit tests (engine-only, no PTY spawn)
-const attyx = @import("attyx");
-const Engine = attyx.Engine;
-
-fn createTestPane(allocator: Allocator) !Pane {
-    const engine = try Engine.init(allocator, 24, 80);
-    return Pane{
-        .engine = engine,
-        .pty = undefined, // Not used in layout tests
-        .allocator = allocator,
-    };
-}
-
-fn destroyTestPane(_: Allocator, pane: *Pane) void {
-    pane.engine.deinit();
+// Tests are in split_layout_test.zig
+test {
+    _ = @import("split_layout_test.zig");
 }

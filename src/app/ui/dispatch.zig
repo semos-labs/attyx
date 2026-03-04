@@ -55,6 +55,7 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         .pane_focus_up, .pane_focus_down, .pane_focus_left, .pane_focus_right,
         .pane_resize_up, .pane_resize_down, .pane_resize_left, .pane_resize_right,
+        .pane_rotate, .pane_zoom_toggle,
         => {
             if (c.g_split_active != 0) {
                 c.attyx_split_action(action_raw);

@@ -91,7 +91,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
 
     c.attyx_begin_cell_update();
     const resize_layout = ctx.tab_mgr.activeLayout();
-    if (resize_layout.pane_count > 1) {
+    if (resize_layout.pane_count > 1 and !resize_layout.isZoomed()) {
         split_render.fillCellsSplit(
             @ptrCast(ctx.cells),
             resize_layout,

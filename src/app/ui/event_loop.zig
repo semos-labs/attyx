@@ -515,7 +515,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (need_update_final) {
             c.attyx_begin_cell_update();
             const layout = ctx.tab_mgr.activeLayout();
-            if (layout.pane_count > 1) {
+            if (layout.pane_count > 1 and !layout.isZoomed()) {
                 const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
                 split_render.fillCellsSplit(
                     @ptrCast(ctx.cells),

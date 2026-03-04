@@ -301,6 +301,7 @@ pub fn generate(
     grid_cols: u16,
     style: Style,
     titles: *const tab_bar_mod.TabTitles,
+    zoomed_tabs: u16,
 ) ?RenderResult {
     if (!bar.config.enabled or grid_cols == 0) return null;
     if (buf.len < grid_cols) return null;
@@ -330,12 +331,12 @@ pub fn generate(
         }
     }
 
-    // 3. Tabs (only when count > 1) — delegate to tab_bar for full titles
+    // 3. Tabs — always render in statusbar (even for a single tab)
     tab_col_offset = col;
-    if (tab_count > 1) {
+    {
         const remaining = grid_cols - col;
         var tab_buf: [512]StyledCell = undefined;
-        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, .{}, titles)) |tb_result| {
+        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, .{}, titles, zoomed_tabs)) |tb_result| {
             for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
                 if (tc.bg_alpha > 0) {
@@ -491,7 +492,7 @@ test "generate: returns null when disabled" {
     defer bar.deinit();
 
     var buf: [100]StyledCell = undefined;
-    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) == null);
+    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0) == null);
 }
 
 test "generate: returns cells when enabled" {
@@ -501,7 +502,7 @@ test "generate: returns cells when enabled" {
     defer bar.deinit();
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles) orelse
+    const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u16, 80), result.width);
     try std.testing.expectEqual(@as(u16, 1), result.height);
@@ -521,7 +522,7 @@ test "generate: left widget text appears at start" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
         return error.TestUnexpectedResult;
     // First cell is space padding, then "~/Projects"
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
@@ -542,7 +543,7 @@ test "generate: right widget is right-aligned" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
         return error.TestUnexpectedResult;
     // Right widget: " 12:34 " = 7 chars, starts at col 33
     try std.testing.expectEqual(@as(u21, ' '), result.cells[33].char);
@@ -566,7 +567,7 @@ test "generate: tabs with titles appear when count > 1" {
     titles[2] = "htop";
 
     var buf: [512]StyledCell = undefined;
-    const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles) orelse
+    const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles, 0) orelse
         return error.TestUnexpectedResult;
     // Tab bar starts at col 0 (no left widgets), cells should include tab content
     // First tab: " zsh " + " 1 " = 5+3 = 8 cells
@@ -588,7 +589,7 @@ test "generate: active tab uses tab_bar highlight colors" {
 
     const sb_style = Style{};
     var buf: [512]StyledCell = undefined;
-    const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles) orelse
+    const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles, 0) orelse
         return error.TestUnexpectedResult;
     const tb_style = tab_bar_mod.Style{};
     // Tab 0 (" a " + " 1 " = 3+3 = 6), gap at 6, Tab 1 starts at 7
