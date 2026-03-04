@@ -2,9 +2,8 @@
 // Shared between ui_render.zig and overlay migration code.
 
 const ui = @import("ui.zig");
-const overlay_mod = @import("overlay.zig");
-const OverlayCell = overlay_mod.OverlayCell;
-const Rgb = overlay_mod.Rgb;
+const StyledCell = ui.StyledCell;
+const Rgb = ui.Rgb;
 const ResolvedStyle = ui.ResolvedStyle;
 
 pub fn cellIndex(stride: u16, col: u16, row: u16) usize {
@@ -12,7 +11,7 @@ pub fn cellIndex(stride: u16, col: u16, row: u16) usize {
 }
 
 pub fn setCell(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     col: u16,
@@ -30,7 +29,7 @@ pub fn setCell(
 }
 
 pub fn writeStr(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -48,7 +47,7 @@ pub fn writeStr(
 }
 
 pub fn fillRect(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -67,7 +66,7 @@ pub fn fillRect(
 }
 
 pub fn drawBorder(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,

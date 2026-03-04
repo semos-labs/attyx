@@ -7,7 +7,7 @@ const ai_auth = @import("ai_auth.zig");
 const ui = @import("ui.zig");
 const ui_render = @import("ui_render.zig");
 
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const CardResult = layout_mod.CardResult;
 
@@ -220,7 +220,7 @@ fn writeThrottleTimestamp(path: []const u8) void {
 }
 
 pub const UpdateCardResult = struct {
-    cells: []OverlayCell,
+    cells: []StyledCell,
     width: u16,
     height: u16,
     action_bar: action_mod.ActionBar,

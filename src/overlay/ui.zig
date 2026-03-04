@@ -2,8 +2,16 @@
 // Element tree primitives for building overlay content declaratively.
 
 const std = @import("std");
-const overlay_mod = @import("overlay.zig");
-pub const Rgb = overlay_mod.Rgb;
+
+pub const Rgb = struct { r: u8, g: u8, b: u8 };
+
+pub const StyledCell = struct {
+    char: u21 = ' ',
+    fg: Rgb = .{ .r = 220, .g = 220, .b = 220 },
+    bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
+    bg_alpha: u8 = 230,
+    flags: u8 = 0, // bit 0=bold, 1=underline, 3=dim, 4=italic, 5=strikethrough
+};
 
 // ---------------------------------------------------------------------------
 // Size values (cells or percent of available space)
@@ -22,7 +30,7 @@ pub const SizeValue = union(enum) {
 };
 
 // ---------------------------------------------------------------------------
-// Text flags (packed, matches OverlayCell.flags bit layout)
+// Text flags (packed, matches StyledCell.flags bit layout)
 // ---------------------------------------------------------------------------
 
 pub const TextFlags = packed struct(u8) {

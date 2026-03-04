@@ -3,12 +3,11 @@
 
 const std = @import("std");
 const ui = @import("ui.zig");
-const overlay_mod = @import("overlay.zig");
 const layout_mod = @import("layout.zig");
 const ui_cell = @import("ui_cell.zig");
 
-const OverlayCell = overlay_mod.OverlayCell;
-const Rgb = overlay_mod.Rgb;
+const StyledCell = ui.StyledCell;
+const Rgb = ui.Rgb;
 const Element = ui.Element;
 const Style = ui.Style;
 const ResolvedStyle = ui.ResolvedStyle;
@@ -149,7 +148,7 @@ fn measureHint(h: Element.Hint, max_w: u16) Size {
 // ---------------------------------------------------------------------------
 
 pub fn render(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     max_h: u16,
     elem: Element,
@@ -160,7 +159,7 @@ pub fn render(
 }
 
 fn renderElem(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -182,7 +181,7 @@ fn renderElem(
 }
 
 fn renderBox(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -260,7 +259,7 @@ fn renderBox(
 }
 
 fn renderText(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -300,7 +299,7 @@ fn renderText(
 }
 
 fn renderInput(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -356,7 +355,7 @@ fn renderInput(
 }
 
 fn renderList(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -387,7 +386,7 @@ fn renderList(
 }
 
 fn renderMenu(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -438,7 +437,7 @@ fn renderMenu(
 }
 
 fn renderHint(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     buf_h: u16,
     x: u16,
@@ -464,7 +463,7 @@ pub fn renderAlloc(
     elem: Element,
     max_w: u16,
     theme: OverlayTheme,
-) !struct { cells: []OverlayCell, result: RenderResult } {
+) !struct { cells: []StyledCell, result: RenderResult } {
     const sz = measure(elem, max_w, theme);
     if (sz.width == 0 or sz.height == 0) {
         return .{
@@ -473,7 +472,7 @@ pub fn renderAlloc(
         };
     }
     const total: usize = @as(usize, sz.width) * sz.height;
-    const out = try allocator.alloc(OverlayCell, total);
+    const out = try allocator.alloc(StyledCell, total);
     // Initialize all cells to default (space, theme bg)
     const rs = theme.rootStyle();
     for (out) |*cell| {
@@ -529,7 +528,7 @@ test "measure text and box" {
 
 test "render text into cells" {
     const theme = OverlayTheme{};
-    const out = try std.testing.allocator.alloc(OverlayCell, 10);
+    const out = try std.testing.allocator.alloc(StyledCell, 10);
     defer std.testing.allocator.free(out);
     for (out) |*c| c.* = .{};
 

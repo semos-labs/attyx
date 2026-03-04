@@ -604,7 +604,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     resolveTabTitles(ctx, &titles, &name_bufs);
 
-    var tab_cells: [512]overlay_mod.OverlayCell = undefined;
+    var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
@@ -655,7 +655,7 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     resolveTabTitles(ctx, &titles, &name_bufs);
 
-    var sb_cells: [512]overlay_mod.OverlayCell = undefined;
+    var sb_cells: [512]overlay_mod.StyledCell = undefined;
     const sb_style = statusbar_mod.Style{
         .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
         .bg_alpha = sb.config.background_opacity,

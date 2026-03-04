@@ -5,7 +5,7 @@ const layout = @import("layout.zig");
 const ui = @import("ui.zig");
 const ui_render = @import("ui_render.zig");
 const ui_cell = @import("ui_cell.zig");
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
 const LineRange = layout.LineRange;
@@ -16,7 +16,7 @@ const ActionBarStyle = layout.ActionBarStyle;
 /// (row, start_col). Advances one cell per codepoint (assumes all are width 1).
 /// Stops after `max_cells` cells or end of text. Returns cells written.
 fn fillCellsUtf8(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: usize,
     row: usize,
     start_col: usize,
@@ -208,7 +208,7 @@ pub fn layoutStructuredCard(
     return .{ .cells = cells, .width = total_w, .height = total_h };
 }
 
-fn placeTitleInBorder(cells: []OverlayCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
+fn placeTitleInBorder(cells: []StyledCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
     if (title_text.len == 0) return;
     const w: usize = width;
     const title_start: usize = 2;
@@ -222,7 +222,7 @@ fn placeTitleInBorder(cells: []OverlayCell, width: u16, title_text: []const u8, 
 }
 
 fn fillHeader(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -259,7 +259,7 @@ fn fillHeader(
 }
 
 fn fillParagraph(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -281,7 +281,7 @@ fn fillParagraph(
 }
 
 fn fillCodeBlock(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -343,7 +343,7 @@ fn fillCodeBlock(
 }
 
 fn fillBulletList(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -391,7 +391,7 @@ fn fillBulletList(
 }
 
 fn fillDiffLine(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -425,7 +425,7 @@ fn fillDiffLine(
     return start_row + 1;
 }
 
-fn setCellAt(cells: []OverlayCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
+fn setCellAt(cells: []StyledCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
     const idx = row * width + col;
     if (idx >= cells.len) return;
     cells[idx] = .{ .char = char, .fg = fg, .bg = style.bg, .bg_alpha = style.bg_alpha };

@@ -1,15 +1,14 @@
 // Attyx — Panel component
 // A pure rendering component that wraps an Element tree into a centered,
-// bordered, popup-like panel and produces an OverlayCell buffer with cursor info.
+// bordered, popup-like panel and produces an StyledCell buffer with cursor info.
 
 const std = @import("std");
 const ui = @import("ui.zig");
 const ui_render = @import("ui_render.zig");
 const ui_cell = @import("ui_cell.zig");
-const overlay_mod = @import("overlay.zig");
 
-const OverlayCell = overlay_mod.OverlayCell;
-const Rgb = overlay_mod.Rgb;
+const StyledCell = ui.StyledCell;
+const Rgb = ui.Rgb;
 const Element = ui.Element;
 const SizeValue = ui.SizeValue;
 const BorderStyle = ui.BorderStyle;
@@ -24,7 +23,7 @@ pub const PanelConfig = struct {
 };
 
 pub const PanelResult = struct {
-    cells: []OverlayCell, // caller owns, must free
+    cells: []StyledCell, // caller owns, must free
     width: u16,
     height: u16,
     col: u16, // centered grid position
@@ -103,7 +102,7 @@ pub fn renderPanel(
     };
 }
 
-fn placeTitle(cells: []OverlayCell, width: u16, title: []const u8, theme: OverlayTheme) void {
+fn placeTitle(cells: []StyledCell, width: u16, title: []const u8, theme: OverlayTheme) void {
     if (title.len == 0 or width < 5) return;
     const w: usize = width;
     const start: usize = 2; // after corner + one position
@@ -122,7 +121,7 @@ fn placeTitle(cells: []OverlayCell, width: u16, title: []const u8, theme: Overla
     }
 }
 
-fn setCellAt(cells: []OverlayCell, idx: usize, max: usize, char: u21, fg: Rgb, theme: OverlayTheme) void {
+fn setCellAt(cells: []StyledCell, idx: usize, max: usize, char: u21, fg: Rgb, theme: OverlayTheme) void {
     if (idx >= max or idx >= cells.len) return;
     cells[idx] = .{ .char = char, .fg = fg, .bg = theme.bg, .bg_alpha = theme.bg_alpha };
 }

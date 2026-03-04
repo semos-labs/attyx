@@ -3,7 +3,7 @@ const overlay = @import("overlay.zig");
 const action_mod = @import("action.zig");
 const ui = @import("ui.zig");
 const ui_render = @import("ui_render.zig");
-const OverlayCell = overlay.OverlayCell;
+const StyledCell = overlay.StyledCell;
 const OverlayStyle = overlay.OverlayStyle;
 const Rgb = overlay.Rgb;
 
@@ -13,7 +13,7 @@ pub const LineRange = struct {
 };
 
 pub const CardResult = struct {
-    cells: []OverlayCell,
+    cells: []StyledCell,
     width: u16,
     height: u16,
 };
@@ -109,7 +109,7 @@ pub fn layoutCard(
     const total_h = content_h + border_w; // top/bottom border rows
 
     const cell_count: usize = @as(usize, total_w) * @as(usize, total_h);
-    const cells = try allocator.alloc(OverlayCell, cell_count);
+    const cells = try allocator.alloc(StyledCell, cell_count);
 
     // Fill all cells with background
     for (cells) |*cell| {
@@ -138,7 +138,7 @@ pub fn layoutCard(
     };
 }
 
-fn fillBorder(cells: []OverlayCell, width: u16, height: u16, style: OverlayStyle) void {
+fn fillBorder(cells: []StyledCell, width: u16, height: u16, style: OverlayStyle) void {
     const w: usize = width;
     const h: usize = height;
     const bc = style.border_color;
@@ -162,7 +162,7 @@ fn fillBorder(cells: []OverlayCell, width: u16, height: u16, style: OverlayStyle
     }
 }
 
-fn setCell(cells: []OverlayCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
+fn setCell(cells: []StyledCell, row: usize, col: usize, width: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
     const idx = row * width + col;
     if (idx >= cells.len) return;
     cells[idx] = .{
@@ -174,7 +174,7 @@ fn setCell(cells: []OverlayCell, row: usize, col: usize, width: usize, char: u21
 }
 
 fn fillText(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     start_col: u16,
     start_row: u16,
@@ -247,7 +247,7 @@ fn themeFromStyle(style: OverlayStyle) ui.OverlayTheme {
     };
 }
 
-fn placeTitle(cells: []OverlayCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
+fn placeTitle(cells: []StyledCell, width: u16, title_text: []const u8, style: OverlayStyle) void {
     if (title_text.len == 0) return;
     const w: usize = width;
     const title_start: usize = 2;
@@ -263,7 +263,7 @@ fn placeTitle(cells: []OverlayCell, width: u16, title_text: []const u8, style: O
     }
 }
 
-fn setCellFlat(cells: []OverlayCell, idx: usize, max: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
+fn setCellFlat(cells: []StyledCell, idx: usize, max: usize, char: u21, fg: Rgb, style: OverlayStyle) void {
     if (idx >= max or idx >= cells.len) return;
     cells[idx] = .{ .char = char, .fg = fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
 }
@@ -278,7 +278,7 @@ pub const ActionBarStyle = struct {
 
 /// Fill action bar cells into a row: "  [ Insert ]  [ Copy ]  [ Dismiss ]  "
 pub fn fillActionBar(
-    cells: []OverlayCell,
+    cells: []StyledCell,
     stride: u16,
     row: u16,
     start_col: u16,
@@ -337,7 +337,7 @@ pub fn fillActionBar(
     }
 }
 
-fn setActionCell(cells: []OverlayCell, stride: u16, row: u16, col: u16, char: u21, fg: Rgb, bg: Rgb, bg_alpha: u8) void {
+fn setActionCell(cells: []StyledCell, stride: u16, row: u16, col: u16, char: u21, fg: Rgb, bg: Rgb, bg_alpha: u8) void {
     const idx = @as(usize, row) * @as(usize, stride) + @as(usize, col);
     if (idx >= cells.len) return;
     cells[idx] = .{ .char = char, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
@@ -502,7 +502,7 @@ test "layoutActionCard: focused cell has correct bg color" {
 }
 
 test "fillActionBar: bracket chars present" {
-    var cells: [40]OverlayCell = undefined;
+    var cells: [40]StyledCell = undefined;
     for (&cells) |*cell| cell.* = .{};
 
     var bar = action_mod.ActionBar{};
