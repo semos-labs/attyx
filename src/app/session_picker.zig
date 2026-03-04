@@ -9,11 +9,18 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("daemon/protocol.zig");
 const conn = @import("session_connect.zig");
+const picker_render = @import("session_picker_render.zig");
 
 extern "c" fn tcgetattr(fd: c_int, termios: *Termios) c_int;
 extern "c" fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) c_int;
 extern "c" fn isatty(fd: c_int) c_int;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+
+var g_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+fn sigwinchHandler(_: c_int) callconv(.c) void {
+    g_resized.store(true, .release);
+}
 
 const TIOCGWINSZ: c_ulong = 0x40087468; // macOS
 
@@ -50,18 +57,18 @@ const ICANON: u64 = 0x00000100;
 const ECHO: u64 = 0x00000008;
 const ISIG: u64 = 0x00000080;
 
-const Entry = struct {
+pub const Entry = struct {
     id: u32,
     name: [64]u8 = undefined,
     name_len: u8 = 0,
     alive: bool = false,
 
-    fn getName(self: *const Entry) []const u8 {
+    pub fn getName(self: *const Entry) []const u8 {
         return self.name[0..self.name_len];
     }
 };
 
-const max_entries = 32;
+pub const max_entries = 32;
 
 pub fn run(allocator: std.mem.Allocator) !void {
     _ = allocator;
@@ -76,47 +83,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     // Fetch session list (blocking)
     var entries: [max_entries]Entry = undefined;
     var entry_count: u8 = 0;
-    {
-        var hdr: [protocol.header_size]u8 = undefined;
-        protocol.encodeHeader(&hdr, .list, 0);
-        _ = posix.write(sock_fd, &hdr) catch {
-            writeStderr("Error: cannot send list request\r\n");
-            std.process.exit(1);
-        };
-
-        // Wait for response
-        var read_buf: [4096]u8 = undefined;
-        var read_len: usize = 0;
-        var timeout: u32 = 0;
-        while (timeout < 3000) {
-            var fds = [1]posix.pollfd{.{ .fd = sock_fd, .events = 0x0001, .revents = 0 }};
-            _ = posix.poll(&fds, 100) catch break;
-            if (fds[0].revents & 0x0001 != 0) {
-                const n = posix.read(sock_fd, read_buf[read_len..]) catch break;
-                if (n == 0) break;
-                read_len += n;
-                if (read_len >= protocol.header_size) {
-                    const h = protocol.decodeHeader(read_buf[0..protocol.header_size]) catch break;
-                    const total = protocol.header_size + h.payload_len;
-                    if (read_len >= total and h.msg_type == .session_list) {
-                        const payload = read_buf[protocol.header_size..total];
-                        var decoded: [max_entries]protocol.DecodedListEntry = undefined;
-                        const count = protocol.decodeSessionList(payload, &decoded) catch break;
-                        entry_count = @intCast(@min(count, max_entries));
-                        for (0..entry_count) |i| {
-                            entries[i].id = decoded[i].id;
-                            entries[i].alive = decoded[i].alive;
-                            const nlen: u8 = @intCast(@min(decoded[i].name.len, 64));
-                            @memcpy(entries[i].name[0..nlen], decoded[i].name[0..nlen]);
-                            entries[i].name_len = nlen;
-                        }
-                        break;
-                    }
-                }
-            }
-            timeout += 100;
-        }
-    }
+    fetchSessionList(sock_fd, &entries, &entry_count);
 
     // Get current session ID from env
     const current_session_id: ?u32 = blk: {
@@ -147,6 +114,14 @@ pub fn run(allocator: std.mem.Allocator) !void {
         _ = tcsetattr(STDIN_FD, TCSANOW, &orig_termios);
     };
 
+    // Handle SIGWINCH for live resize
+    const sa = std.posix.Sigaction{
+        .handler = .{ .handler = sigwinchHandler },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.WINCH, &sa, null);
+
     // Show cursor and apply configured cursor style (DECSCUSR)
     writeStderr("\x1b[?25h");
     {
@@ -163,6 +138,10 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var filter_len: u8 = 0;
     var filtered_indices: [max_entries]u8 = undefined;
     var filtered_count: u8 = 0;
+    var confirm_kill: ?u8 = null; // filtered index of session pending kill confirmation
+    var rename_buf: [64]u8 = .{0} ** 64;
+    var rename_len: u8 = 0;
+    var renaming: ?u8 = null; // filtered index of session being renamed
 
     // The list shows: [filtered sessions...] + "+ New session" at the end.
     // total_count = filtered_count + 1 (the "new" entry is always present).
@@ -180,11 +159,24 @@ pub fn run(allocator: std.mem.Allocator) !void {
         }
     }
 
-    const term_rows = getTermRows();
+    var term_rows = getTermRows();
     scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
-    render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active);
+    picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
 
     while (true) {
+        // Poll stdin with timeout so we can check the SIGWINCH flag.
+        var poll_fds = [1]posix.pollfd{.{ .fd = STDIN_FD, .events = 0x0001, .revents = 0 }};
+        _ = posix.poll(&poll_fds, 100) catch {};
+
+        // Handle resize (re-render even if no key was pressed)
+        if (g_resized.swap(false, .acq_rel)) {
+            term_rows = getTermRows();
+            scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
+            picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
+        }
+
+        if (poll_fds[0].revents & 0x0001 == 0) continue;
+
         var key_buf: [16]u8 = undefined;
         const n = posix.read(STDIN_FD, &key_buf) catch break;
         if (n == 0) break;
@@ -192,9 +184,55 @@ pub fn run(allocator: std.mem.Allocator) !void {
         const key = key_buf[0..n];
         const total_count: u8 = filtered_count + 1; // +1 for "New session"
 
-        if (key.len == 1) {
+        // Rename mode: Enter commits, Esc cancels, Backspace deletes, printable appends.
+        // Check key[0] regardless of key.len for Enter/Backspace since terminals
+        // may deliver Enter as multi-byte (\r\n).
+        if (renaming != null) {
+            if (key[0] == 0x0d or key[0] == 0x0a) {
+                // Enter — commit rename
+                if (rename_len > 0) {
+                    const ri = renaming.?;
+                    if (ri < filtered_count) {
+                        const e = &entries[filtered_indices[ri]];
+                        sendRename(sock_fd, e.id, rename_buf[0..rename_len]);
+                        var no_fds = [0]posix.pollfd{};
+                        _ = posix.poll(&no_fds, 50) catch {};
+                        fetchSessionList(sock_fd, &entries, &entry_count);
+                        filtered_count = applyFilter(&entries, entry_count, filter_buf[0..filter_len], &filtered_indices);
+                        const total = filtered_count +| 1;
+                        if (selected >= total) selected = if (filtered_count > 0) filtered_count - 1 else 0;
+                    }
+                }
+                renaming = null;
+            } else if (key.len == 1 and key[0] == 0x1b) {
+                // Esc (single byte only — not escape sequences)
+                renaming = null;
+            } else if (key[0] == 0x7f or key[0] == 0x08) {
+                // Backspace
+                if (rename_len > 0) rename_len -= 1;
+            } else if (key.len == 1 and key[0] >= 0x20 and key[0] < 0x7f) {
+                // Printable character
+                if (rename_len < 63) {
+                    rename_buf[rename_len] = key[0];
+                    rename_len += 1;
+                }
+            }
+            // All other keys consumed (no navigation during rename)
+        } else if (confirm_kill != null) {
+        // Confirmation mode: y confirms kill, Esc exits picker, anything else cancels
+            if (key.len == 1 and (key[0] == 'y' or key[0] == 'Y')) {
+                killAndRefresh(sock_fd, &entries, &entry_count, &filtered_count, &filtered_indices, &selected, filtered_count, filter_buf[0..filter_len]);
+                confirm_kill = null;
+            } else if (key.len == 1 and key[0] == 0x1b) {
+                std.process.exit(1);
+            } else if (key.len >= 2 and key[0] == 0x1b) {
+                std.process.exit(1);
+            } else {
+                confirm_kill = null;
+            }
+        } else if (key.len == 1) {
             switch (key[0]) {
-                0x1b => { // Esc
+                0x1b, 0x03 => { // Esc / Ctrl-C
                     std.process.exit(1);
                 },
                 0x0d, 0x0a => { // Enter
@@ -212,14 +250,21 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     outputCreateAction(cwd);
                     std.process.exit(0);
                 },
-                0x04 => { // Ctrl-D — kill (fallback)
+                0x18 => { // Ctrl-X — kill selected session
                     if (filtered_count > 0 and selected < filtered_count) {
-                        const e = &entries[filtered_indices[selected]];
-                        outputAction("kill", e.id, null);
-                        std.process.exit(0);
+                        confirm_kill = selected;
                     }
                 },
-                0x7f, 0x08 => { // Backspace
+                0x12 => { // Ctrl-R — rename selected session
+                    if (filtered_count > 0 and selected < filtered_count) {
+                        const e = &entries[filtered_indices[selected]];
+                        const nlen = e.name_len;
+                        @memcpy(rename_buf[0..nlen], e.name[0..nlen]);
+                        rename_len = nlen;
+                        renaming = selected;
+                    }
+                },
+                0x7f, 0x08 => { // Backspace / Delete key
                     if (filter_len > 0) {
                         filter_len -= 1;
                         filtered_count = applyFilter(&entries, entry_count, filter_buf[0..filter_len], &filtered_indices);
@@ -256,26 +301,48 @@ pub fn run(allocator: std.mem.Allocator) !void {
                 else => {},
             }
         } else if (key.len == 4 and key[0] == 0x1b and key[1] == '[' and key[2] == '3' and key[3] == '~') {
-            // Delete key — kill selected session
+            // Forward Delete key — request kill confirmation
             if (filtered_count > 0 and selected < filtered_count) {
-                const e = &entries[filtered_indices[selected]];
-                outputAction("kill", e.id, null);
-                std.process.exit(0);
+                confirm_kill = selected;
             }
         } else if (key.len >= 2 and key[0] == 0x1b) {
             // Esc + something — treat as Esc
             std.process.exit(1);
         }
 
+        term_rows = getTermRows();
         scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
-        render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active);
+        picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
     }
 }
 
-/// Compute visible list rows: term_rows minus filter (row 1) and footer (last row).
-fn listCapacity(term_rows: u16) u8 {
-    if (term_rows <= 2) return 1;
-    return @intCast(@min(term_rows - 2, 255));
+/// Kill the selected session and refresh the list inline.
+fn killAndRefresh(
+    sock_fd: posix.fd_t,
+    entries: *[max_entries]Entry,
+    entry_count: *u8,
+    filtered_count: *u8,
+    filtered_indices: *[max_entries]u8,
+    selected: *u8,
+    current_filtered: u8,
+    filter: []const u8,
+) void {
+    if (current_filtered == 0 or selected.* >= current_filtered) return;
+    const e = &entries[filtered_indices[selected.*]];
+    sendKill(sock_fd, e.id);
+    // Give daemon time to process the kill before requesting the list.
+    var no_fds = [0]posix.pollfd{};
+    _ = posix.poll(&no_fds, 50) catch {};
+    fetchSessionList(sock_fd, entries, entry_count);
+    filtered_count.* = applyFilter(entries, entry_count.*, filter, filtered_indices);
+    const total = filtered_count.* +| 1;
+    if (selected.* >= total) selected.* = if (filtered_count.* > 0) filtered_count.* - 1 else 0;
+}
+
+/// Compute visible list rows: term_rows minus top pad, filter, bottom pad, and footer.
+pub fn listCapacity(term_rows: u16) u8 {
+    if (term_rows <= 4) return 1;
+    return @intCast(@min(term_rows - 4, 255));
 }
 
 /// Adjust scroll_offset so `selected` is visible within the viewport.
@@ -298,6 +365,99 @@ fn adjustScroll(selected: u8, current_offset: u8, total_count: u8, term_rows: u1
         offset = 0;
     }
     return offset;
+}
+
+/// Fetch session list from daemon over an existing socket.
+fn fetchSessionList(sock_fd: posix.fd_t, entries: *[max_entries]Entry, entry_count: *u8) void {
+    // Drain any unexpected data sitting in the socket buffer before sending.
+    drainSocket(sock_fd);
+
+    var hdr: [protocol.header_size]u8 = undefined;
+    protocol.encodeHeader(&hdr, .list, 0);
+    _ = posix.write(sock_fd, &hdr) catch return;
+
+    var read_buf: [4096]u8 = undefined;
+    var read_len: usize = 0;
+    var timeout: u32 = 0;
+    while (timeout < 3000) {
+        var fds = [1]posix.pollfd{.{ .fd = sock_fd, .events = 0x0001, .revents = 0 }};
+        _ = posix.poll(&fds, 100) catch break;
+        if (fds[0].revents & 0x0001 != 0) {
+            const n = posix.read(sock_fd, read_buf[read_len..]) catch break;
+            if (n == 0) break;
+            read_len += n;
+            // Try to parse messages, skipping non-session_list ones.
+            while (read_len >= protocol.header_size) {
+                const h = protocol.decodeHeader(read_buf[0..protocol.header_size]) catch {
+                    // Corrupt header — skip a byte and retry.
+                    shiftBuf(&read_buf, &read_len, 1);
+                    continue;
+                };
+                const total = protocol.header_size + h.payload_len;
+                if (read_len < total) break; // need more data
+                if (h.msg_type == .session_list) {
+                    const payload = read_buf[protocol.header_size..total];
+                    var decoded: [max_entries]protocol.DecodedListEntry = undefined;
+                    const count = protocol.decodeSessionList(payload, &decoded) catch break;
+                    entry_count.* = @intCast(@min(count, max_entries));
+                    for (0..entry_count.*) |i| {
+                        entries[i].id = decoded[i].id;
+                        entries[i].alive = decoded[i].alive;
+                        const nlen: u8 = @intCast(@min(decoded[i].name.len, 64));
+                        @memcpy(entries[i].name[0..nlen], decoded[i].name[0..nlen]);
+                        entries[i].name_len = nlen;
+                    }
+                    return;
+                }
+                // Not session_list — skip this message and keep looking.
+                shiftBuf(&read_buf, &read_len, total);
+            }
+        }
+        timeout += 100;
+    }
+}
+
+/// Non-blocking drain of any pending data on the socket.
+fn drainSocket(sock_fd: posix.fd_t) void {
+    var drain_buf: [4096]u8 = undefined;
+    while (true) {
+        var fds = [1]posix.pollfd{.{ .fd = sock_fd, .events = 0x0001, .revents = 0 }};
+        _ = posix.poll(&fds, 0) catch return;
+        if (fds[0].revents & 0x0001 == 0) return;
+        const n = posix.read(sock_fd, &drain_buf) catch return;
+        if (n == 0) return;
+    }
+}
+
+/// Shift read_buf left by `amount` bytes, updating read_len.
+fn shiftBuf(buf: *[4096]u8, len: *usize, amount: usize) void {
+    if (amount >= len.*) {
+        len.* = 0;
+        return;
+    }
+    const remaining = len.* - amount;
+    std.mem.copyForwards(u8, buf[0..remaining], buf[amount..len.*]);
+    len.* = remaining;
+}
+
+/// Send a kill command for the given session ID.
+fn sendKill(sock_fd: posix.fd_t, session_id: u32) void {
+    var payload_buf: [4]u8 = undefined;
+    const payload = protocol.encodeKill(&payload_buf, session_id) catch return;
+    var msg_buf: [protocol.header_size + 4]u8 = undefined;
+    protocol.encodeHeader(msg_buf[0..protocol.header_size], .kill, @intCast(payload.len));
+    @memcpy(msg_buf[protocol.header_size..][0..payload.len], payload);
+    _ = posix.write(sock_fd, msg_buf[0 .. protocol.header_size + payload.len]) catch {};
+}
+
+/// Send a rename command for the given session ID.
+fn sendRename(sock_fd: posix.fd_t, session_id: u32, new_name: []const u8) void {
+    var payload_buf: [70]u8 = undefined; // 4 + 2 + 64
+    const payload = protocol.encodeRename(&payload_buf, session_id, new_name) catch return;
+    var msg_buf: [protocol.header_size + 70]u8 = undefined;
+    protocol.encodeHeader(msg_buf[0..protocol.header_size], .rename, @intCast(payload.len));
+    @memcpy(msg_buf[protocol.header_size..][0..payload.len], payload);
+    _ = posix.write(sock_fd, msg_buf[0 .. protocol.header_size + payload.len]) catch {};
 }
 
 fn applyFilter(entries: *const [max_entries]Entry, count: u8, filter: []const u8, out: *[max_entries]u8) u8 {
@@ -329,155 +489,6 @@ fn fuzzyMatch(name: []const u8, query: []const u8) bool {
 
 fn toLower(ch: u8) u8 {
     return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
-}
-
-fn render(
-    entries: *const [max_entries]Entry,
-    _: u8,
-    filtered_indices: *const [max_entries]u8,
-    filtered_count: u8,
-    selected: u8,
-    scroll_offset: u8,
-    term_rows: u16,
-    filter: []const u8,
-    current_session_id: ?u32,
-    icon_filter: []const u8,
-    icon_session: []const u8,
-    icon_new: []const u8,
-    icon_active: []const u8,
-) void {
-    var buf: [4096]u8 = undefined;
-    var pos: usize = 0;
-
-    // Clear screen and move home
-    pos += writeSlice(&buf, pos, "\x1b[2J\x1b[H");
-
-    // Row 1: filter line — icon left-aligned, filter text starts at col 5
-    // (same column as session names after "    " or "  • ")
-    pos += writeSlice(&buf, pos, "  \x1b[90m");
-    pos += writeSlice(&buf, pos, icon_filter);
-    pos += writeSlice(&buf, pos, "\x1b[0m");
-    // Pad so text starts at col 5: we've used 2 + icon_width cols so far
-    const icon_width = displayWidth(icon_filter);
-    const used = 2 + icon_width;
-    if (used < 4) {
-        const pad_needed = 4 - used;
-        const spaces = "    "; // 4 spaces max
-        pos += writeSlice(&buf, pos, spaces[0..pad_needed]);
-    } else {
-        pos += writeSlice(&buf, pos, " "); // at least one space separator
-    }
-    if (filter.len > 0) {
-        pos += writeSlice(&buf, pos, filter);
-    } else {
-        pos += writeSlice(&buf, pos, "\x1b[90mfilter...\x1b[0m");
-    }
-    pos += writeSlice(&buf, pos, "\r\n");
-
-    // Visible window of list items (sessions + "New session")
-    const total_items: u8 = filtered_count +| 1; // +1 for "New session"
-    const cap = listCapacity(term_rows);
-    const vis_end: u8 = @intCast(@min(@as(u16, scroll_offset) + cap, total_items));
-
-    // rows_used tracks how many rows we've emitted (filter = 1, each item = +1)
-    var rows_used: u16 = 1; // filter line already emitted
-
-    for (scroll_offset..vis_end) |item_idx| {
-        if (item_idx < filtered_count) {
-            // Session entry
-            const e = &entries[filtered_indices[item_idx]];
-            const is_selected = (item_idx == selected);
-            const is_current = if (current_session_id) |cid| e.id == cid else false;
-
-            if (is_selected) {
-                pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
-            } else {
-                pos += writeSlice(&buf, pos, "    ");
-            }
-
-            if (icon_session.len > 0) {
-                pos += writeSlice(&buf, pos, "\x1b[90m");
-                pos += writeSlice(&buf, pos, icon_session);
-                pos += writeSlice(&buf, pos, "\x1b[0m ");
-            }
-
-            if (is_current) {
-                pos += writeSlice(&buf, pos, "\x1b[1m");
-                pos += writeSlice(&buf, pos, e.getName());
-                pos += writeSlice(&buf, pos, "\x1b[0m");
-                pos += writeSlice(&buf, pos, " \x1b[90m");
-                pos += writeSlice(&buf, pos, icon_active);
-                pos += writeSlice(&buf, pos, "\x1b[0m");
-            } else if (!e.alive) {
-                pos += writeSlice(&buf, pos, "\x1b[90m");
-                pos += writeSlice(&buf, pos, e.getName());
-                pos += writeSlice(&buf, pos, "\x1b[0m");
-            } else {
-                pos += writeSlice(&buf, pos, e.getName());
-            }
-        } else {
-            // "New session" entry (last item)
-            if (item_idx == selected) {
-                pos += writeSlice(&buf, pos, "  \x1b[35m\xe2\x80\xa2\x1b[0m "); // • magenta
-            } else {
-                pos += writeSlice(&buf, pos, "    ");
-            }
-            pos += writeSlice(&buf, pos, "\x1b[90m");
-            pos += writeSlice(&buf, pos, icon_new);
-            pos += writeSlice(&buf, pos, "\x1b[0m New session");
-        }
-        pos += writeSlice(&buf, pos, "\r\n");
-        rows_used += 1;
-    }
-
-    // Pad with empty lines so footer lands on the last row
-    while (rows_used + 1 < term_rows) {
-        pos += writeSlice(&buf, pos, "\r\n");
-        rows_used += 1;
-    }
-
-    // Footer on last row (no trailing \r\n)
-    pos += writeSlice(&buf, pos, "  \x1b[90m\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 esc close \xe2\x80\xa2 enter select \xe2\x80\xa2 del kill\x1b[0m");
-
-    // Position cursor on filter line (row 1)
-    // Text starts at col 5 (matching session name indent), cursor after last char
-    var cursor_buf: [16]u8 = undefined;
-    const cursor_col = 5 + filter.len + 1; // col 5 (text start) + filter length + 1 (CUP 1-based)
-    const cursor_seq = std.fmt.bufPrint(&cursor_buf, "\x1b[1;{d}H", .{cursor_col}) catch "";
-    pos += writeSlice(&buf, pos, cursor_seq);
-
-    _ = posix.write(STDERR_FD, buf[0..pos]) catch {};
-}
-
-/// Count display width of a UTF-8 string (1 cell per codepoint).
-fn displayWidth(s: []const u8) usize {
-    var width: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        const byte = s[i];
-        if (byte < 0x80) {
-            width += 1;
-            i += 1;
-        } else if (byte < 0xC0) {
-            i += 1; // continuation byte
-        } else if (byte < 0xE0) {
-            width += 1;
-            i += 2;
-        } else if (byte < 0xF0) {
-            width += 1;
-            i += 3;
-        } else {
-            width += 1;
-            i += 4;
-        }
-    }
-    return width;
-}
-
-fn writeSlice(buf: *[4096]u8, pos: usize, data: []const u8) usize {
-    const len = @min(data.len, buf.len - pos);
-    @memcpy(buf[pos .. pos + len], data[0..len]);
-    return len;
 }
 
 /// Marker prefix (Unit Separator, 0x1F) so the parent can locate the picker's

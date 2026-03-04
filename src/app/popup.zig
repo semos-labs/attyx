@@ -169,6 +169,11 @@ pub const PopupState = struct {
         self.outer_w = dims.outer_w;
         self.outer_h = dims.outer_h;
         self.pane.resize(dims.rows, dims.cols);
+        // Clear the engine grid via escape sequences so publishCells sees a
+        // clean state while the child re-renders in response to SIGWINCH.
+        // Raw cell clearing is insufficient — the engine's cursor/scroll
+        // state also needs resetting.
+        self.pane.feed("\x1b[2J\x1b[H\x1b[?25l");
     }
 
     pub fn feed(self: *PopupState, data: []const u8) void {

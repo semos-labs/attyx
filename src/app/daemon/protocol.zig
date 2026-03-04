@@ -18,6 +18,7 @@ pub const MessageType = enum(u8) {
     pane_input = 0x0B,
     pane_resize = 0x0C,
     save_layout = 0x0D,
+    rename = 0x0E,
 
     // Daemon → Client
     created = 0x81,
@@ -78,6 +79,27 @@ pub fn encodeKill(buf: []u8, session_id: u32) ![]u8 {
     if (buf.len < 4) return error.BufferTooSmall;
     std.mem.writeInt(u32, buf[0..4], session_id, .little);
     return buf[0..4];
+}
+
+/// Encode Rename message payload: session_id:u32, name_len:u16, name:[N]u8
+pub fn encodeRename(buf: []u8, session_id: u32, new_name: []const u8) ![]u8 {
+    const name_len: u16 = @intCast(@min(new_name.len, 64));
+    const total: usize = 4 + 2 + name_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], session_id, .little);
+    std.mem.writeInt(u16, buf[4..6], name_len, .little);
+    @memcpy(buf[6 .. 6 + name_len], new_name[0..name_len]);
+    return buf[0..total];
+}
+
+pub const RenameMsg = struct { session_id: u32, name: []const u8 };
+
+pub fn decodeRename(payload: []const u8) !RenameMsg {
+    if (payload.len < 6) return error.PayloadTooShort;
+    const session_id = std.mem.readInt(u32, payload[0..4], .little);
+    const name_len = std.mem.readInt(u16, payload[4..6], .little);
+    if (payload.len < 6 + @as(usize, name_len)) return error.PayloadTooShort;
+    return .{ .session_id = session_id, .name = payload[6 .. 6 + name_len] };
 }
 
 /// Encode Created response payload: session_id:u32
@@ -561,4 +583,12 @@ test "attached_v2 round-trip" {
     try std.testing.expectEqual(@as(u8, 2), msg.pane_count);
     try std.testing.expectEqual(@as(u32, 1), msg.pane_ids[0]);
     try std.testing.expectEqual(@as(u32, 2), msg.pane_ids[1]);
+}
+
+test "rename round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodeRename(&buf, 42, "new-name");
+    const msg = try decodeRename(payload);
+    try std.testing.expectEqual(@as(u32, 42), msg.session_id);
+    try std.testing.expectEqualStrings("new-name", msg.name);
 }

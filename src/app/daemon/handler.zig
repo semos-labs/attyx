@@ -25,6 +25,7 @@ pub fn handleMessage(
             cl.active_pane_count = 0;
         },
         .kill => handleKill(msg.payload, sessions, session_count),
+        .rename => handleRename(msg.payload, sessions),
 
         // V2 pane-multiplexed messages
         .create_pane => handleCreatePane(cl, msg.payload, sessions, next_pane_id, allocator),
@@ -130,6 +131,17 @@ fn handleKill(
             }
         }
     }
+}
+
+fn handleRename(
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+) void {
+    const msg = protocol.decodeRename(payload) catch return;
+    const s = findSession(sessions, msg.session_id) orelse return;
+    const nlen: u8 = @intCast(@min(msg.name.len, 64));
+    @memcpy(s.name[0..nlen], msg.name[0..nlen]);
+    s.name_len = nlen;
 }
 
 // ── V2 pane-multiplexed handlers ──
