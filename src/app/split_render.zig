@@ -124,12 +124,31 @@ fn drawSeparators(
     grid_cols: u16,
     theme: *const Theme,
 ) void {
-    const fg = theme.foreground;
+    // Dim the separator: blend foreground 1/3 toward background
+    const fg = .{
+        .r = @as(u8, @intCast((@as(u16, theme.foreground.r) + @as(u16, theme.background.r) * 2) / 3)),
+        .g = @as(u8, @intCast((@as(u16, theme.foreground.g) + @as(u16, theme.background.g) * 2) / 3)),
+        .b = @as(u8, @intCast((@as(u16, theme.foreground.b) + @as(u16, theme.background.b) * 2) / 3)),
+    };
     const bg = theme.background;
 
     const gap_h = layout_ptr.gap_h;
     const gap_v = layout_ptr.gap_v;
 
+    const sep_cell_template = Cell{
+        .character = 0,
+        .combining = .{ 0, 0 },
+        .fg_r = fg.r,
+        .fg_g = fg.g,
+        .fg_b = fg.b,
+        .bg_r = bg.r,
+        .bg_g = bg.g,
+        .bg_b = bg.b,
+        .flags = 4,
+        .link_id = 0,
+    };
+
+    // Pass 1: draw all separators as │ and ─
     for (&layout_ptr.pool) |*node| {
         if (node.tag != .branch) continue;
         const rect = node.rect;
@@ -141,22 +160,13 @@ fn drawSeparators(
                 const padding = (gap_h -| 1) / 2;
                 const sep_col = rect.col + left_cols + padding;
                 if (sep_col >= grid_cols) continue;
-                for (0..rect.rows) |r| {
-                    const row = rect.row + @as(u16, @intCast(r));
-                    if (row >= grid_rows) break;
-                    const idx = @as(usize, row) * @as(usize, grid_cols) + sep_col;
-                    cells[idx] = .{
-                        .character = 0x2502, // │
-                        .combining = .{ 0, 0 },
-                        .fg_r = fg.r,
-                        .fg_g = fg.g,
-                        .fg_b = fg.b,
-                        .bg_r = bg.r,
-                        .bg_g = bg.g,
-                        .bg_b = bg.b,
-                        .flags = 4,
-                        .link_id = 0,
-                    };
+                // Extend into parent gaps so vertical lines meet horizontal ones
+                const row_start = rect.row -| gap_v;
+                const row_end = @min(grid_rows, rect.row + rect.rows + gap_v);
+                for (row_start..row_end) |r| {
+                    const idx = r * @as(usize, grid_cols) + sep_col;
+                    cells[idx] = sep_cell_template;
+                    cells[idx].character = 0x2502; // │
                 }
             },
             .horizontal => {
@@ -166,25 +176,61 @@ fn drawSeparators(
                 const sep_row = rect.row + top_rows + padding;
                 if (sep_row >= grid_rows) continue;
                 const row_offset = @as(usize, sep_row) * @as(usize, grid_cols);
-                for (0..rect.cols) |cc| {
-                    const col = rect.col + @as(u16, @intCast(cc));
-                    if (col >= grid_cols) break;
-                    cells[row_offset + col] = .{
-                        .character = 0x2500, // ─
-                        .combining = .{ 0, 0 },
-                        .fg_r = fg.r,
-                        .fg_g = fg.g,
-                        .fg_b = fg.b,
-                        .bg_r = bg.r,
-                        .bg_g = bg.g,
-                        .bg_b = bg.b,
-                        .flags = 4,
-                        .link_id = 0,
-                    };
+                // Extend into parent gaps so horizontal lines meet vertical ones
+                const col_start = rect.col -| gap_h;
+                const col_end = @min(grid_cols, rect.col + rect.cols + gap_h);
+                for (col_start..col_end) |cc| {
+                    cells[row_offset + cc] = sep_cell_template;
+                    cells[row_offset + cc].character = 0x2500; // ─
                 }
             },
         }
     }
+
+    // Pass 2: fix up intersections with proper junction characters
+    const gcols: usize = grid_cols;
+    for (0..grid_rows) |r| {
+        for (0..gcols) |cc| {
+            const idx = r * gcols + cc;
+            const ch = cells[idx].character;
+            if (ch != 0x2502 and ch != 0x2500) continue;
+
+            // Check 4 neighbors for separator lines
+            const has_up = r > 0 and isVerticalSep(cells[(r - 1) * gcols + cc].character);
+            const has_down = r + 1 < grid_rows and isVerticalSep(cells[(r + 1) * gcols + cc].character);
+            const has_left = cc > 0 and isHorizontalSep(cells[r * gcols + (cc - 1)].character);
+            const has_right = cc + 1 < gcols and isHorizontalSep(cells[r * gcols + (cc + 1)].character);
+
+            const junction = junctionChar(has_up, has_down, has_left, has_right);
+            if (junction != 0) cells[idx].character = junction;
+        }
+    }
+}
+
+fn isVerticalSep(ch: u32) bool {
+    return ch == 0x2502 or ch == 0x253C or ch == 0x251C or ch == 0x2524 or ch == 0x252C or ch == 0x2534;
+}
+
+fn isHorizontalSep(ch: u32) bool {
+    return ch == 0x2500 or ch == 0x253C or ch == 0x251C or ch == 0x2524 or ch == 0x252C or ch == 0x2534;
+}
+
+fn junctionChar(up: bool, down: bool, left: bool, right: bool) u32 {
+    // Only replace when lines from both axes meet
+    const v = up or down;
+    const h = left or right;
+    if (!v or !h) return 0; // single-axis: no change
+
+    if (up and down and left and right) return 0x253C; // ┼
+    if (up and down and right) return 0x251C; // ├
+    if (up and down and left) return 0x2524; // ┤
+    if (left and right and down) return 0x252C; // ┬
+    if (left and right and up) return 0x2534; // ┴
+    if (down and right) return 0x250C; // ┌
+    if (down and left) return 0x2510; // ┐
+    if (up and right) return 0x2514; // └
+    if (up and left) return 0x2518; // ┘
+    return 0;
 }
 
 /// Convert a terminal Cell to a render Cell.

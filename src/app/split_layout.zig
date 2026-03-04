@@ -322,6 +322,8 @@ pub const SplitLayout = struct {
     }
 
     /// Navigate focus in the given direction using center-ray projection.
+    /// If the center point lands in a gap between sub-panes on the target
+    /// side, scans outward along the perpendicular axis to find a pane.
     pub fn navigate(self: *SplitLayout, dir: NavDirection) void {
         if (self.pane_count <= 1) return;
         if (self.focused == null_index) return;
@@ -337,25 +339,55 @@ pub const SplitLayout = struct {
         switch (dir) {
             .up => {
                 if (rect.row < self.gap_v + 1) return;
-                target_row = rect.row -| (self.gap_v + 1); // skip past gap
+                target_row = rect.row -| (self.gap_v + 1);
             },
             .down => {
-                target_row = rect.row + rect.rows + self.gap_v; // skip past gap
+                target_row = rect.row + rect.rows + self.gap_v;
             },
             .left => {
                 if (rect.col < self.gap_h + 1) return;
-                target_col = rect.col -| (self.gap_h + 1); // skip past gap
+                target_col = rect.col -| (self.gap_h + 1);
             },
             .right => {
-                target_col = rect.col + rect.cols + self.gap_h; // skip past gap
+                target_col = rect.col + rect.cols + self.gap_h;
             },
         }
 
-        if (self.paneAt(target_row, target_col)) |target_idx| {
+        if (self.probeForPane(target_row, target_col, dir, rect)) |target_idx| {
             if (target_idx != self.focused) {
                 self.focused = target_idx;
             }
         }
+    }
+
+    /// Try the target point, then scan outward along the perpendicular axis
+    /// to handle the case where the center lands in a gap between sub-panes.
+    fn probeForPane(self: *SplitLayout, row: u16, col: u16, dir: NavDirection, src: Rect) ?u8 {
+        // Try exact center first
+        if (self.paneAt(row, col)) |idx| return idx;
+
+        // Scan outward from center along the source pane's perpendicular span
+        const is_horizontal = (dir == .left or dir == .right);
+        const span_start: u16 = if (is_horizontal) src.row else src.col;
+        const span_end: u16 = span_start + (if (is_horizontal) src.rows else src.cols);
+        const center: u16 = if (is_horizontal) row else col;
+
+        var offset: u16 = 1;
+        while (offset < span_end - span_start) : (offset += 1) {
+            // Try center + offset
+            if (center + offset < span_end) {
+                const r = if (is_horizontal) center + offset else row;
+                const c = if (is_horizontal) col else center + offset;
+                if (self.paneAt(r, c)) |idx| return idx;
+            }
+            // Try center - offset
+            if (center >= span_start + offset) {
+                const r = if (is_horizontal) center - offset else row;
+                const c = if (is_horizontal) col else center - offset;
+                if (self.paneAt(r, c)) |idx| return idx;
+            }
+        }
+        return null;
     }
 
     /// Return the focused pane.
