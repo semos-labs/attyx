@@ -239,6 +239,14 @@ static void linux_set_window_icon(GLFWwindow* win) {
 }
 
 // ---------------------------------------------------------------------------
+// Platform close window (called from Zig dispatch)
+// ---------------------------------------------------------------------------
+
+void attyx_platform_close_window(void) {
+    glfwSetWindowShouldClose(g_window, 1);
+}
+
+// ---------------------------------------------------------------------------
 // Spawn new window (new process)
 // ---------------------------------------------------------------------------
 

@@ -103,10 +103,10 @@ static uint8_t glfwActionToEventType(int action) {
 }
 
 // ---------------------------------------------------------------------------
-// Keybind dispatch — returns 1 if handled, 0 if the key should pass through
+// Platform clipboard operations (called from Zig dispatch)
 // ---------------------------------------------------------------------------
 
-static void doPaste(void) {
+void attyx_platform_paste(void) {
     const char* text = clipboardPaste();
     if (!text || !*text) {
         ATTYX_LOG_DEBUG("clipboard", "paste: clipboard is empty");
@@ -123,129 +123,6 @@ static void doPaste(void) {
         send_fn((const uint8_t*)text, len);
     }
     ATTYX_LOG_DEBUG("clipboard", "paste: sent %d bytes to PTY", len);
-}
-
-static int dispatchAction(uint8_t act) {
-    if (act >= ATTYX_ACTION_POPUP_TOGGLE_0 &&
-        act < ATTYX_ACTION_POPUP_TOGGLE_0 + ATTYX_POPUP_MAX) {
-        attyx_popup_toggle(act - ATTYX_ACTION_POPUP_TOGGLE_0);
-        return 1;
-    }
-    if (act >= ATTYX_ACTION_TAB_NEW && act <= ATTYX_ACTION_TAB_PREV) {
-        attyx_tab_action(act);
-        return 1;
-    }
-    if (act >= ATTYX_ACTION_TAB_SELECT_1 && act <= ATTYX_ACTION_TAB_SELECT_9) {
-        attyx_tab_action(act);
-        return 1;
-    }
-    if (act >= ATTYX_ACTION_SPLIT_VERTICAL && act <= ATTYX_ACTION_PANE_CLOSE) {
-        attyx_split_action(act);
-        return 1;
-    }
-    if (act >= ATTYX_ACTION_PANE_FOCUS_UP && act <= ATTYX_ACTION_PANE_RESIZE_RIGHT) {
-        if (g_split_active) {
-            attyx_split_action(act);
-            return 1;
-        }
-        return 0;
-    }
-    switch (act) {
-        case ATTYX_ACTION_COPY:
-            doCopy();
-            return 1;
-        case ATTYX_ACTION_PASTE:
-            doPaste();
-            return 1;
-        case ATTYX_ACTION_SEARCH_TOGGLE:
-            if (g_search_active) {
-                attyx_search_cmd(7); // dismiss
-            } else {
-                g_search_active = 1;
-                g_search_query_len = 0;
-                g_search_gen++;
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SEARCH_NEXT:
-            if (g_search_active) {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SEARCH_PREV:
-            if (g_search_active) {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SCROLL_PAGE_UP:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            attyx_scroll_viewport(g_rows);
-            return 1;
-        case ATTYX_ACTION_SCROLL_PAGE_DOWN:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            attyx_scroll_viewport(-g_rows);
-            return 1;
-        case ATTYX_ACTION_SCROLL_TO_TOP:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            g_viewport_offset = g_scrollback_count;
-            attyx_mark_all_dirty();
-            return 1;
-        case ATTYX_ACTION_SCROLL_TO_BOTTOM:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            g_viewport_offset = 0;
-            attyx_mark_all_dirty();
-            return 1;
-        case ATTYX_ACTION_CONFIG_RELOAD:
-            attyx_trigger_config_reload();
-            return 1;
-        case ATTYX_ACTION_DEBUG_TOGGLE:
-            attyx_toggle_debug_overlay();
-            return 1;
-        case ATTYX_ACTION_ANCHOR_DEMO:
-            attyx_toggle_anchor_demo();
-            return 1;
-        case ATTYX_ACTION_AI_DEMO_TOGGLE:
-            attyx_toggle_ai_demo();
-            return 1;
-        case ATTYX_ACTION_SESSION_SWITCHER:
-            attyx_toggle_session_switcher();
-            return 1;
-        case ATTYX_ACTION_SESSION_CREATE:
-            if (g_popup_active) {
-                uint8_t b = 0x0e;
-                attyx_popup_send_input(&b, 1);
-                return 1;
-            }
-            attyx_create_session_direct();
-            return 1;
-        case ATTYX_ACTION_SESSION_KILL:
-            if (g_popup_active) {
-                uint8_t b = 0x04;
-                attyx_popup_send_input(&b, 1);
-                return 1;
-            }
-            return 0;
-        case ATTYX_ACTION_NEW_WINDOW:
-            attyx_spawn_new_window();
-            return 1;
-        case ATTYX_ACTION_CLOSE_WINDOW:
-            glfwSetWindowShouldClose(g_window, 1);
-            return 1;
-        case ATTYX_ACTION_CLEAR_SCREEN:
-            attyx_clear_screen();
-            return 1;
-        case ATTYX_ACTION_SEND_SEQUENCE:
-            if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
-                void (*send_fn)(const uint8_t*, int) =
-                    g_popup_active ? attyx_popup_send_input : attyx_send_input;
-                send_fn(g_keybind_matched_seq, g_keybind_matched_seq_len);
-            }
-            return 1;
-        default:
-            return 0;
-    }
 }
 
 // Build key + codepoint for keybind matching from a GLFW key event.
@@ -333,7 +210,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         glfwToKeyCombo(key, mods, &matchKey, &matchCp);
         uint8_t m = buildGlfwMods(mods);
         uint8_t act = attyx_keybind_match(matchKey, m, matchCp);
-        if (act != ATTYX_ACTION_NONE && dispatchAction(act)) {
+        if (act != ATTYX_ACTION_NONE && attyx_dispatch_action(act)) {
             g_suppress_char = 1;
             return;
         }
@@ -383,8 +260,8 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         return;
     }
 
-    // Session picker key routing
-    if (g_session_picker_active) {
+    // Session picker / command palette key routing
+    if (g_session_picker_active || g_command_palette_active) {
         if (key == GLFW_KEY_ESCAPE)       { attyx_picker_cmd(7); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_ENTER)        { attyx_picker_cmd(8); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_BACKSPACE)    { attyx_picker_cmd(1); g_suppress_char = 1; return; }
@@ -478,8 +355,8 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
         return;
     }
 
-    // When session picker is open, route chars to picker
-    if (g_session_picker_active) {
+    // When session picker or command palette is open, route chars to picker
+    if (g_session_picker_active || g_command_palette_active) {
         if (codepoint >= 0x20) attyx_picker_insert_char(codepoint);
         return;
     }
@@ -594,8 +471,8 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
             int item = ctxMenuHitItem(px, py);
             switch (item) {
-                case CTX_MENU_ITEM_COPY:          doCopy(); break;
-                case CTX_MENU_ITEM_PASTE:         doPaste(); break;
+                case CTX_MENU_ITEM_COPY:          attyx_platform_copy(); break;
+                case CTX_MENU_ITEM_PASTE:         attyx_platform_paste(); break;
                 case CTX_MENU_ITEM_RELOAD_CONFIG: attyx_trigger_config_reload(); break;
                 default: break;
             }
@@ -964,7 +841,7 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
 // Copy to clipboard
 // ---------------------------------------------------------------------------
 
-void doCopy(void) {
+void attyx_platform_copy(void) {
     if (!g_sel_active || !g_window) return;
 
     int sr = g_sel_start_row, sc = g_sel_start_col;

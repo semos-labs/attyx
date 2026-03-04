@@ -36,6 +36,7 @@ const input = @import("ui/input.zig");
 const search = @import("ui/search.zig");
 const ai = @import("ui/ai.zig");
 const event_loop = @import("ui/event_loop.zig");
+const dispatch = @import("ui/dispatch.zig");
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
@@ -152,12 +153,15 @@ pub export var g_ai_prompt_active: i32 = 0;
 pub export var g_toggle_session_switcher: i32 = 0;
 pub export var g_create_session_direct: i32 = 0;
 pub export var g_session_picker_active: i32 = 0;
+pub export var g_toggle_command_palette: i32 = 0;
+pub export var g_command_palette_active: i32 = 0;
 
-// Ensure keybind exports are linked
+// Ensure keybind and dispatch exports are linked
 comptime {
     _ = &keybinds_mod.attyx_keybind_match;
     _ = &keybinds_mod.g_keybind_matched_seq;
     _ = &keybinds_mod.g_keybind_matched_seq_len;
+    _ = &dispatch.attyx_dispatch_action;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +178,9 @@ export fn attyx_toggle_ai_demo() void {
 }
 export fn attyx_toggle_session_switcher() void {
     @atomicStore(i32, &g_toggle_session_switcher, 1, .seq_cst);
+}
+export fn attyx_toggle_command_palette() void {
+    @atomicStore(i32, &g_toggle_command_palette, 1, .seq_cst);
 }
 export fn attyx_create_session_direct() void {
     @atomicStore(i32, &g_create_session_direct, 1, .seq_cst);

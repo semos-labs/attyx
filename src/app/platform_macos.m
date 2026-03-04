@@ -264,6 +264,14 @@ NSString* const kShaderSource =
  "}\n";
 
 // ---------------------------------------------------------------------------
+// Platform close window (called from Zig dispatch)
+// ---------------------------------------------------------------------------
+
+void attyx_platform_close_window(void) {
+    [NSApp.keyWindow close];
+}
+
+// ---------------------------------------------------------------------------
 // Spawn new window (new process)
 // ---------------------------------------------------------------------------
 
@@ -476,7 +484,7 @@ void attyx_spawn_new_window(void) {
 
 - (void)closeTabOrWindow:(id)sender {
     (void)sender;
-    attyx_tab_action(ATTYX_ACTION_TAB_CLOSE);
+    attyx_dispatch_action(50);
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {

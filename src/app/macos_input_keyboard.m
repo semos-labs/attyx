@@ -77,127 +77,6 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     return m;
 }
 
-// ---------------------------------------------------------------------------
-// Keybind dispatch — returns 1 if handled, 0 if the key should pass through
-// ---------------------------------------------------------------------------
-
-static int dispatchAction(uint8_t action) {
-    if (action >= ATTYX_ACTION_POPUP_TOGGLE_0 &&
-        action < ATTYX_ACTION_POPUP_TOGGLE_0 + ATTYX_POPUP_MAX) {
-        attyx_popup_toggle(action - ATTYX_ACTION_POPUP_TOGGLE_0);
-        return 1;
-    }
-    if (action >= ATTYX_ACTION_TAB_NEW && action <= ATTYX_ACTION_TAB_PREV) {
-        attyx_tab_action(action);
-        return 1;
-    }
-    if (action >= ATTYX_ACTION_TAB_SELECT_1 && action <= ATTYX_ACTION_TAB_SELECT_9) {
-        attyx_tab_action(action);
-        return 1;
-    }
-    if (action >= ATTYX_ACTION_SPLIT_VERTICAL && action <= ATTYX_ACTION_PANE_CLOSE) {
-        attyx_split_action(action);
-        return 1;
-    }
-    if (action >= ATTYX_ACTION_PANE_FOCUS_UP && action <= ATTYX_ACTION_PANE_RESIZE_RIGHT) {
-        if (g_split_active) {
-            attyx_split_action(action);
-            return 1;
-        }
-        return 0; // Pass through to terminal when no splits
-    }
-    switch (action) {
-        case ATTYX_ACTION_SEARCH_TOGGLE:
-            if (g_search_active) {
-                attyx_search_cmd(7); // dismiss
-            } else {
-                g_search_active = 1;
-                g_search_query_len = 0;
-                g_search_gen++;
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SEARCH_NEXT:
-            if (g_search_active) {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, 1);
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SEARCH_PREV:
-            if (g_search_active) {
-                __sync_fetch_and_add((volatile int*)&g_search_nav_delta, -1);
-                attyx_mark_all_dirty();
-            }
-            return 1;
-        case ATTYX_ACTION_SCROLL_PAGE_UP:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            attyx_scroll_viewport(g_rows);
-            return 1;
-        case ATTYX_ACTION_SCROLL_PAGE_DOWN:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            attyx_scroll_viewport(-g_rows);
-            return 1;
-        case ATTYX_ACTION_SCROLL_TO_TOP:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            g_viewport_offset = g_scrollback_count;
-            attyx_mark_all_dirty();
-            return 1;
-        case ATTYX_ACTION_SCROLL_TO_BOTTOM:
-            if (g_mouse_tracking || g_alt_screen) return 0;
-            g_viewport_offset = 0;
-            attyx_mark_all_dirty();
-            return 1;
-        case ATTYX_ACTION_CONFIG_RELOAD:
-            attyx_trigger_config_reload();
-            return 1;
-        case ATTYX_ACTION_DEBUG_TOGGLE:
-            attyx_toggle_debug_overlay();
-            return 1;
-        case ATTYX_ACTION_ANCHOR_DEMO:
-            attyx_toggle_anchor_demo();
-            return 1;
-        case ATTYX_ACTION_AI_DEMO_TOGGLE:
-            attyx_toggle_ai_demo();
-            return 1;
-        case ATTYX_ACTION_SESSION_SWITCHER:
-            attyx_toggle_session_switcher();
-            return 1;
-        case ATTYX_ACTION_SESSION_CREATE:
-            if (g_popup_active) {
-                uint8_t b = 0x0e; // Ctrl-N byte
-                attyx_popup_send_input(&b, 1);
-                return 1;
-            }
-            attyx_create_session_direct();
-            return 1;
-        case ATTYX_ACTION_SESSION_KILL:
-            if (g_popup_active) {
-                uint8_t b = 0x04; // Ctrl-D byte
-                attyx_popup_send_input(&b, 1);
-                return 1;
-            }
-            return 0;
-        case ATTYX_ACTION_NEW_WINDOW:
-            attyx_spawn_new_window();
-            return 1;
-        case ATTYX_ACTION_CLOSE_WINDOW:
-            [NSApp.keyWindow close];
-            return 1;
-        case ATTYX_ACTION_CLEAR_SCREEN:
-            attyx_clear_screen();
-            return 1;
-        case ATTYX_ACTION_SEND_SEQUENCE:
-            if (g_keybind_matched_seq_len > 0 && g_keybind_matched_seq) {
-                void (*send_fn)(const uint8_t*, int) =
-                    g_popup_active ? attyx_popup_send_input : attyx_send_input;
-                send_fn(g_keybind_matched_seq, g_keybind_matched_seq_len);
-            }
-            return 1;
-        default:
-            return 0;
-    }
-}
-
 // Build key + codepoint for keybind matching from an NSEvent.
 static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     uint16_t mapped = mapKeyCode(event.keyCode);
@@ -298,8 +177,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
     }
 
-    // Session picker key routing
-    if (g_session_picker_active) {
+    // Session picker / command palette key routing
+    if (g_session_picker_active || g_command_palette_active) {
         unsigned short kc = event.keyCode;
         if (kc == kVK_Escape)              { attyx_picker_cmd(7); return YES; }
         if (kc == kVK_Return)              { attyx_picker_cmd(8); return YES; }
@@ -343,7 +222,7 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         eventToKeyCombo(event, &matchKey, &matchCp);
         uint8_t mods = buildMods(flags);
         uint8_t action = attyx_keybind_match(matchKey, mods, matchCp);
-        if (action != ATTYX_ACTION_NONE && dispatchAction(action))
+        if (action != ATTYX_ACTION_NONE && attyx_dispatch_action(action))
             return YES;
     }
 
