@@ -135,7 +135,8 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         }
     }
     // ATTYX_PICKER_CWD tells the picker what CWD to use for "create"
-    if (fg_cwd) |cwd| {
+    const picker_cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory;
+    if (picker_cwd) |cwd| {
         const cwd_z = ctx.allocator.dupeZ(u8, cwd) catch null;
         if (cwd_z) |z| {
             defer ctx.allocator.free(z);
@@ -309,7 +310,7 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
 pub fn createSessionDirect(ctx: *PtyThreadCtx) void {
     const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
     defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-    const cwd = fg_cwd orelse "/tmp";
+    const cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "/tmp";
     doSessionCreate(ctx, cwd);
 }
 

@@ -124,7 +124,7 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
             closeSessionPicker(ctx);
             const fg_cwd = platform.getForegroundCwd(ctx.allocator, publish.ctxPty(ctx).master);
             defer if (fg_cwd) |cwd| ctx.allocator.free(cwd);
-            const cwd = fg_cwd orelse "/tmp";
+            const cwd = fg_cwd orelse publish.ctxEngine(ctx).state.working_directory orelse "/tmp";
             session_actions.doSessionCreate(ctx, cwd);
             return true;
         },
