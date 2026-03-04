@@ -151,6 +151,7 @@ pub export var g_popup_trail_active: i32 = 0;
 pub export var g_ai_prompt_active: i32 = 0;
 pub export var g_toggle_session_switcher: i32 = 0;
 pub export var g_create_session_direct: i32 = 0;
+pub export var g_session_picker_active: i32 = 0;
 
 // Ensure keybind exports are linked
 comptime {
@@ -187,6 +188,8 @@ export fn attyx_search_insert_char(codepoint: u32) void { input.searchInsertChar
 export fn attyx_search_cmd(cmd: c_int) void { input.searchCmd(cmd); }
 export fn attyx_ai_prompt_insert_char(codepoint: u32) void { input.aiPromptInsertChar(codepoint); }
 export fn attyx_ai_prompt_cmd(cmd: c_int) void { input.aiPromptCmd(cmd); }
+export fn attyx_picker_insert_char(codepoint: u32) void { input.pickerInsertChar(codepoint); }
+export fn attyx_picker_cmd(cmd: c_int) void { input.pickerCmd(cmd); }
 export fn attyx_tab_action(action: c_int) void { input.tabAction(action); }
 export fn attyx_tab_bar_click(col: c_int, grid_cols: c_int) void { input.tabBarClick(col, grid_cols); }
 export fn attyx_statusbar_tab_click(col: c_int, grid_cols: c_int) void { input.statusbarTabClick(col, grid_cols); }

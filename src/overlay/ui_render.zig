@@ -92,7 +92,8 @@ fn measureBox(b: Element.Box, max_w: u16) Size {
 fn measureText(t: Element.Text, max_w: u16) Size {
     if (t.content.len == 0 or max_w == 0) return .{ .width = 0, .height = 0 };
     if (!t.wrap) {
-        const len: u16 = @intCast(@min(t.content.len, max_w));
+        const cp_count = utf8Count(t.content);
+        const len: u16 = @min(cp_count, max_w);
         return .{ .width = len, .height = 1 };
     }
     var lines_buf: [128]LineRange = undefined;
@@ -100,7 +101,7 @@ fn measureText(t: Element.Text, max_w: u16) Size {
     if (line_count == 0) return .{ .width = 0, .height = 0 };
     var max_line_w: u16 = 0;
     for (lines_buf[0..line_count]) |lr| {
-        max_line_w = @max(max_line_w, lr.end - lr.start);
+        max_line_w = @max(max_line_w, utf8Count(t.content[lr.start..lr.end]));
     }
     return .{ .width = max_line_w, .height = line_count };
 }
@@ -125,9 +126,9 @@ fn measureList(l: Element.List, max_w: u16) Size {
 fn measureMenu(m: Element.Menu, max_w: u16) Size {
     var max_item_w: u16 = 0;
     for (m.items) |item| {
-        var item_w: u16 = @intCast(@min(item.label.len, max_w));
+        var item_w: u16 = @min(utf8Count(item.label), max_w);
         if (item.hint_text.len > 0) {
-            item_w += @intCast(@min(item.hint_text.len + 2, max_w)); // "  hint"
+            item_w += @min(utf8Count(item.hint_text) + 2, max_w); // "  hint"
         }
         max_item_w = @max(max_item_w, item_w);
     }
@@ -276,10 +277,12 @@ fn renderText(
     const flags_u8 = rs.text_flags.toU8();
 
     if (!t.wrap) {
-        const len: u16 = @intCast(@min(t.content.len, avail_w));
-        const off = alignOffset(len, avail_w, t.alignment);
-        writeStr(cells, stride, buf_h, x + off, y, t.content[0..len], rs.fg, rs.bg, rs.bg_alpha, flags_u8);
-        return .{ .width = len, .height = 1 };
+        const cp_count = utf8Count(t.content);
+        const vis_cps = @min(cp_count, avail_w);
+        const byte_end = utf8ByteOffset(t.content, vis_cps);
+        const off = alignOffset(vis_cps, avail_w, t.alignment);
+        writeStr(cells, stride, buf_h, x + off, y, t.content[0..byte_end], rs.fg, rs.bg, rs.bg_alpha, flags_u8);
+        return .{ .width = vis_cps, .height = 1 };
     }
 
     var lines_buf: [128]LineRange = undefined;
@@ -289,10 +292,11 @@ fn renderText(
     var max_w: u16 = 0;
     for (lines_buf[0..visible], 0..) |lr, li| {
         const row = y + @as(u16, @intCast(li));
-        const line_len = lr.end - lr.start;
-        const off = alignOffset(line_len, avail_w, t.alignment);
-        writeStr(cells, stride, buf_h, x + off, row, t.content[lr.start..lr.end], rs.fg, rs.bg, rs.bg_alpha, flags_u8);
-        max_w = @max(max_w, line_len);
+        const line_slice = t.content[lr.start..lr.end];
+        const line_cps = utf8Count(line_slice);
+        const off = alignOffset(line_cps, avail_w, t.alignment);
+        writeStr(cells, stride, buf_h, x + off, row, line_slice, rs.fg, rs.bg, rs.bg_alpha, flags_u8);
+        max_w = @max(max_w, line_cps);
     }
 
     return .{ .width = max_w, .height = visible };
@@ -325,12 +329,14 @@ fn renderInput(
     else
         rs.text_flags.toU8();
 
-    const len: u16 = @intCast(@min(display.len, w));
-    writeStr(cells, stride, buf_h, x, y, display[0..len], text_fg, rs.bg, rs.bg_alpha, text_flags);
+    const cp_count = utf8Count(display);
+    const vis_cps = @min(cp_count, w);
+    const byte_end = utf8ByteOffset(display, vis_cps);
+    writeStr(cells, stride, buf_h, x, y, display[0..byte_end], text_fg, rs.bg, rs.bg_alpha, text_flags);
 
     // Fill remaining width with bg
-    if (len < w) {
-        for (len..w) |ci| {
+    if (vis_cps < w) {
+        for (vis_cps..w) |ci| {
             const col = x + @as(u16, @intCast(ci));
             setCell(cells, stride, buf_h, col, y, ' ', rs.fg, rs.bg, rs.bg_alpha, 0);
         }
@@ -415,17 +421,21 @@ fn renderMenu(
         fillRect(cells, stride, buf_h, x, y + row, avail_w, 1, item_rs);
 
         // Write label
-        const label_len: u16 = @intCast(@min(item.label.len, avail_w));
-        writeStr(cells, stride, buf_h, x, y + row, item.label[0..label_len], item_rs.fg, item_rs.bg, item_rs.bg_alpha, item_rs.text_flags.toU8());
+        const label_cps = utf8Count(item.label);
+        const vis_label = @min(label_cps, avail_w);
+        const label_byte_end = utf8ByteOffset(item.label, vis_label);
+        writeStr(cells, stride, buf_h, x, y + row, item.label[0..label_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, item_rs.text_flags.toU8());
 
-        var item_w = label_len;
+        var item_w = vis_label;
         // Write hint right-aligned
         if (item.hint_text.len > 0) {
-            const hint_len: u16 = @intCast(@min(item.hint_text.len, avail_w));
-            if (hint_len + label_len + 2 <= avail_w) {
-                const hint_x = x + avail_w - hint_len;
+            const hint_cps = utf8Count(item.hint_text);
+            const vis_hint = @min(hint_cps, avail_w);
+            if (vis_hint + vis_label + 2 <= avail_w) {
+                const hint_byte_end = utf8ByteOffset(item.hint_text, vis_hint);
+                const hint_x = x + avail_w - vis_hint;
                 const dim_flags = (TextFlags{ .dim = true }).toU8();
-                writeStr(cells, stride, buf_h, hint_x, y + row, item.hint_text[0..hint_len], item_rs.fg, item_rs.bg, item_rs.bg_alpha, dim_flags);
+                writeStr(cells, stride, buf_h, hint_x, y + row, item.hint_text[0..hint_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, dim_flags);
                 item_w = avail_w;
             }
         }
@@ -489,6 +499,8 @@ const fillRect = ui_cell.fillRect;
 const drawBorder = ui_cell.drawBorder;
 const cellIndex = ui_cell.cellIndex;
 const alignOffset = ui_cell.alignOffset;
+const utf8Count = ui_cell.utf8Count;
+const utf8ByteOffset = ui_cell.utf8ByteOffset;
 
 // ---------------------------------------------------------------------------
 // Tests

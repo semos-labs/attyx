@@ -204,7 +204,7 @@ pub fn handleSessionPickerResult(ctx: *PtyThreadCtx, text: []const u8) void {
     }
 }
 
-fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
+pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
 
@@ -289,7 +289,7 @@ fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     logging.info("session-picker", "switched to session {d}", .{session_id});
 }
 
-fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
+pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     const name = if (std.mem.lastIndexOfScalar(u8, cwd, '/')) |i|
@@ -329,7 +329,7 @@ pub fn switchToNextSession(ctx: *PtyThreadCtx) bool {
     return false;
 }
 
-fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {
+pub fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {
     const sc = ctx.session_client orelse return;
     sc.killSession(session_id) catch |err| {
         logging.err("session-picker", "kill failed: {}", .{err});

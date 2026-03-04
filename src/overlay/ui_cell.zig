@@ -1,6 +1,7 @@
 // Attyx — Cell-level helpers for overlay rendering
 // Shared between ui_render.zig and overlay migration code.
 
+const std = @import("std");
 const ui = @import("ui.zig");
 const StyledCell = ui.StyledCell;
 const Rgb = ui.Rgb;
@@ -40,9 +41,24 @@ pub fn writeStr(
     bg_alpha: u8,
     flags: u8,
 ) void {
-    for (text, 0..) |ch, i| {
-        const col = x + @as(u16, @intCast(i));
-        setCell(cells, stride, buf_h, col, y, ch, fg, bg, bg_alpha, flags);
+    var col_off: u16 = 0;
+    var pos: usize = 0;
+    while (pos < text.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
+            pos += 1;
+            continue;
+        };
+        if (pos + seq_len > text.len) break;
+        const cp: u21 = switch (seq_len) {
+            1 => @intCast(text[pos]),
+            2 => std.unicode.utf8Decode2(text[pos..][0..2].*) catch { pos += 2; continue; },
+            3 => std.unicode.utf8Decode3(text[pos..][0..3].*) catch { pos += 3; continue; },
+            4 => std.unicode.utf8Decode4(text[pos..][0..4].*) catch { pos += 4; continue; },
+            else => { pos += 1; continue; },
+        };
+        setCell(cells, stride, buf_h, x + col_off, y, cp, fg, bg, bg_alpha, flags);
+        col_off += 1;
+        pos += seq_len;
     }
 }
 
@@ -101,6 +117,38 @@ pub fn drawBorder(
         setCell(cells, stride, buf_h, x, row, vert, border_color, rs.bg, rs.bg_alpha, 0);
         setCell(cells, stride, buf_h, x + w - 1, row, vert, border_color, rs.bg, rs.bg_alpha, 0);
     }
+}
+
+/// Count the number of codepoints in a UTF-8 string.
+pub fn utf8Count(text: []const u8) u16 {
+    var count: u16 = 0;
+    var pos: usize = 0;
+    while (pos < text.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
+            pos += 1;
+            continue;
+        };
+        if (pos + seq_len > text.len) break;
+        count += 1;
+        pos += seq_len;
+    }
+    return count;
+}
+
+/// Return byte offset at which the Nth codepoint ends (for truncation).
+pub fn utf8ByteOffset(text: []const u8, max_codepoints: u16) u16 {
+    var count: u16 = 0;
+    var pos: usize = 0;
+    while (pos < text.len and count < max_codepoints) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(text[pos]) catch {
+            pos += 1;
+            continue;
+        };
+        if (pos + seq_len > text.len) break;
+        count += 1;
+        pos += seq_len;
+    }
+    return @intCast(pos);
 }
 
 pub fn alignOffset(content_w: u16, avail_w: u16, alignment: ui.Align) u16 {

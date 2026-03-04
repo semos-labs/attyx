@@ -77,6 +77,11 @@ export var g_ai_prompt_active: i32 = 0;
 export fn attyx_ai_prompt_insert_char(_: u32) void {}
 export fn attyx_ai_prompt_cmd(_: c_int) void {}
 
+// Session picker stubs (terminal.zig provides real implementations)
+export var g_session_picker_active: i32 = 0;
+export fn attyx_picker_insert_char(_: u32) void {}
+export fn attyx_picker_cmd(_: c_int) void {}
+
 // Tab management stubs (terminal.zig provides the real implementations)
 export fn attyx_tab_action(_: c_int) void {}
 export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}
