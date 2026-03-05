@@ -485,6 +485,19 @@ pub const Parser = struct {
         return self.onEscape(byte);
     }
 
+    fn dispatchOsc133(rest: []const u8) Action {
+        // OSC 133;D;<exit_code> — command finished with exit code
+        if (rest.len >= 2 and rest[0] == 'D' and rest[1] == ';') {
+            const code = std.fmt.parseInt(u8, rest[2..], 10) catch return .nop;
+            return .{ .command_exit_code = code };
+        }
+        // OSC 133;D with no exit code — treat as exit 0
+        if (rest.len == 1 and rest[0] == 'D') {
+            return .{ .command_exit_code = 0 };
+        }
+        return .nop; // Ignore A/B/C for now
+    }
+
     fn dispatchOsc7337(rest: []const u8) Action {
         // Format: "write-main;<payload>"
         const prefix = "write-main;";
@@ -516,6 +529,7 @@ pub const Parser = struct {
             0, 2 => .{ .set_title = rest },
             7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
+            133 => dispatchOsc133(rest),
             7337 => dispatchOsc7337(rest),
             else => .nop,
         };

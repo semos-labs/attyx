@@ -15,6 +15,7 @@ pub const MenuSelection = enum(u8) {
     rewrite_command = 0,
     explain_command = 1,
     generate_command = 2,
+    fix_command = 3,
 };
 
 pub const MenuState = enum(u8) {
@@ -41,9 +42,10 @@ pub const MenuContext = struct {
 
     pub fn moveUp(self: *MenuContext) void {
         self.selection = switch (self.selection) {
-            .rewrite_command => .generate_command, // wrap
+            .rewrite_command => .fix_command, // wrap
             .explain_command => .rewrite_command,
             .generate_command => .explain_command,
+            .fix_command => .generate_command,
         };
     }
 
@@ -51,7 +53,8 @@ pub const MenuContext = struct {
         self.selection = switch (self.selection) {
             .rewrite_command => .explain_command,
             .explain_command => .generate_command,
-            .generate_command => .rewrite_command, // wrap
+            .generate_command => .fix_command,
+            .fix_command => .rewrite_command, // wrap
         };
     }
 };
@@ -64,6 +67,7 @@ const menu_items = [_]struct { label: []const u8, hint: []const u8 }{
     .{ .label = "Rewrite Command", .hint = "Modify current command" },
     .{ .label = "Explain Command", .hint = "Understand what a command does" },
     .{ .label = "Generate Command", .hint = "Create a new command from description" },
+    .{ .label = "Fix Last Command", .hint = "Fix a failed command using AI" },
 };
 
 // ---------------------------------------------------------------------------
@@ -82,12 +86,13 @@ pub fn layoutMenuCard(
     const sel_idx = @intFromEnum(menu.selection);
 
     // Combine all menu items into a single paragraph (one line per item, no inter-block gap)
-    var items_buf: [128]u8 = undefined;
-    const items_text = std.fmt.bufPrint(&items_buf, "  {s}\n  {s}\n  {s}", .{
+    var items_buf: [192]u8 = undefined;
+    const items_text = std.fmt.bufPrint(&items_buf, "  {s}\n  {s}\n  {s}\n  {s}", .{
         menu_items[0].label,
         menu_items[1].label,
         menu_items[2].label,
-    }) catch "  Rewrite Command\n  Explain Command\n  Generate Command";
+        menu_items[3].label,
+    }) catch "  Rewrite Command\n  Explain Command\n  Generate Command\n  Fix Last Command";
 
     const blocks = [_]content_mod.ContentBlock{
         .{ .tag = .paragraph, .text = items_text },
@@ -147,6 +152,8 @@ test "MenuContext: moveDown wraps" {
     menu.moveDown();
     try std.testing.expectEqual(MenuSelection.generate_command, menu.selection);
     menu.moveDown();
+    try std.testing.expectEqual(MenuSelection.fix_command, menu.selection);
+    menu.moveDown();
     try std.testing.expectEqual(MenuSelection.rewrite_command, menu.selection);
 }
 
@@ -155,6 +162,8 @@ test "MenuContext: moveUp wraps" {
     menu.open();
 
     try std.testing.expectEqual(MenuSelection.rewrite_command, menu.selection);
+    menu.moveUp();
+    try std.testing.expectEqual(MenuSelection.fix_command, menu.selection);
     menu.moveUp();
     try std.testing.expectEqual(MenuSelection.generate_command, menu.selection);
     menu.moveUp();

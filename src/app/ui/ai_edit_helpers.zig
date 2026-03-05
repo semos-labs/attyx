@@ -17,6 +17,7 @@ const ai = @import("ai.zig");
 const ai_gen = @import("ai_generate_helpers.zig");
 const ai_menu_helpers = @import("ai_menu_helpers.zig");
 const ai_explain = @import("ai_explain_helpers.zig");
+const ai_fix = @import("ai_fix_helpers.zig");
 const cmd_capture_mod = @import("../cmd_capture.zig");
 
 pub fn renderEditPromptCard(ctx: *PtyThreadCtx) void {
@@ -581,6 +582,7 @@ pub fn pollPromptInput(ctx: *PtyThreadCtx) void {
                     .rewrite_command => startRewriteFromMenu(ctx),
                     .explain_command => ai_explain.startExplainInvocation(ctx),
                     .generate_command => ai_gen.startGenerateInvocation(ctx),
+                    .fix_command => ai_fix.startFixInvocation(ctx),
                 }
             } else if (ai.g_ai_menu != null) {
                 ai_menu_helpers.renderMenuCard(ctx);

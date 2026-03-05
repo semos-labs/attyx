@@ -13,6 +13,7 @@ const Cursor = attyx.Cursor;
 pub const CommandBlock = struct {
     command: []const u8, // owned, prompt-stripped
     output: []const u8, // owned (empty &.{} if none)
+    exit_code: ?u8 = null, // from OSC 133;D, null if unavailable
     started_ns: u64, // timestamp when Enter was sent
     finished_ns: u64, // timestamp when next prompt detected
 };
@@ -43,6 +44,9 @@ pub const CmdCapture = struct {
     // Pending command (between Enter and finalization)
     pending_command: ?[]const u8 = null,
     pending_started_ns: u64 = 0,
+
+    // Exit code from OSC 133;D (set between command start and finalize)
+    pending_exit_code: ?u8 = null,
 
     // Timing
     last_output_ns: u64 = 0,
@@ -75,6 +79,11 @@ pub const CmdCapture = struct {
             }
         }
         self.allocator.free(self.output_buf);
+    }
+
+    /// Called from pane.feed() when OSC 133;D delivers an exit code.
+    pub fn notifyExitCode(self: *CmdCapture, code: u8) void {
+        self.pending_exit_code = code;
     }
 
     /// Called from pane.feed() — accumulate output bytes when collecting.
@@ -186,11 +195,13 @@ pub const CmdCapture = struct {
         self.pushBlock(.{
             .command = cmd,
             .output = output,
+            .exit_code = self.pending_exit_code,
             .started_ns = self.pending_started_ns,
             .finished_ns = now_ns,
         });
 
         self.pending_command = null;
+        self.pending_exit_code = null;
         self.output_len = 0;
     }
 
@@ -406,6 +417,73 @@ test "ring buffer overflow" {
     // Newest should be cmd32
     const newest = cap.getBlock(31).?;
     try std.testing.expectEqualStrings("cmd32", newest.command);
+}
+
+test "exit code attached to block" {
+    const allocator = std.testing.allocator;
+    var cap = try CmdCapture.init(allocator);
+    defer cap.deinit();
+
+    var grid = try Grid.init(allocator, 5, 20);
+    defer grid.deinit();
+
+    // Prompt "$ " at row 0
+    grid.setCell(0, 0, .{ .char = '$' });
+    grid.setCell(0, 1, .{ .char = ' ' });
+    // Command "ls"
+    grid.setCell(0, 2, .{ .char = 'l' });
+    grid.setCell(0, 3, .{ .char = 's' });
+
+    const t0: u64 = 1_000_000_000;
+
+    // Idle -> at_prompt
+    cap.last_output_ns = t0;
+    cap.tick(&grid, .{ .row = 0, .col = 2 }, false, false, t0 + 300_000_000);
+    try std.testing.expectEqual(State.at_prompt, cap.state);
+
+    // CR -> collecting_output
+    cap.tick(&grid, .{ .row = 0, .col = 4 }, false, true, t0 + 500_000_000);
+    try std.testing.expectEqual(State.collecting_output, cap.state);
+
+    // Exit code arrives (via OSC 133;D)
+    cap.notifyExitCode(1);
+
+    // Output arrives
+    cap.notifyOutput("error\n", t0 + 600_000_000);
+
+    // Idle -> finalize
+    cap.tick(&grid, .{ .row = 2, .col = 2 }, false, false, t0 + 900_000_000);
+    try std.testing.expectEqual(@as(usize, 1), cap.blockCount());
+
+    const block = cap.getBlock(0).?;
+    try std.testing.expectEqualStrings("ls", block.command);
+    try std.testing.expectEqual(@as(?u8, 1), block.exit_code);
+}
+
+test "exit code null when no OSC 133" {
+    const allocator = std.testing.allocator;
+    var cap = try CmdCapture.init(allocator);
+    defer cap.deinit();
+
+    var grid = try Grid.init(allocator, 5, 20);
+    defer grid.deinit();
+
+    grid.setCell(0, 0, .{ .char = '$' });
+    grid.setCell(0, 1, .{ .char = ' ' });
+    grid.setCell(0, 2, .{ .char = 'l' });
+    grid.setCell(0, 3, .{ .char = 's' });
+
+    const t0: u64 = 1_000_000_000;
+
+    cap.last_output_ns = t0;
+    cap.tick(&grid, .{ .row = 0, .col = 2 }, false, false, t0 + 300_000_000);
+    cap.tick(&grid, .{ .row = 0, .col = 4 }, false, true, t0 + 500_000_000);
+    // No notifyExitCode call
+    cap.notifyOutput("output\n", t0 + 600_000_000);
+    cap.tick(&grid, .{ .row = 2, .col = 2 }, false, false, t0 + 900_000_000);
+
+    const block = cap.getBlock(0).?;
+    try std.testing.expect(block.exit_code == null);
 }
 
 test "grid text: single row and trailing spaces" {

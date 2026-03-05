@@ -267,6 +267,64 @@ test "state: inject buffer fills and drains correctly" {
     try std.testing.expect(t.drainMainInject() == null);
 }
 
+// ===========================================================================
+// OSC 133 — Shell integration (command exit code)
+// ===========================================================================
+
+test "OSC 133;D: command exit code stored in state" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b]133;D;127\x07");
+    try std.testing.expectEqual(@as(?u8, 127), engine.state.last_exit_code);
+
+    // Drain clears it
+    const code = engine.state.drainExitCode();
+    try std.testing.expectEqual(@as(?u8, 127), code);
+    try std.testing.expect(engine.state.drainExitCode() == null);
+}
+
+test "OSC 133;D: zero exit code" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b]133;D;0\x07");
+    try std.testing.expectEqual(@as(?u8, 0), engine.state.drainExitCode());
+}
+
+test "OSC 133;D: no semicolon treated as exit 0" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b]133;D\x07");
+    try std.testing.expectEqual(@as(?u8, 0), engine.state.drainExitCode());
+}
+
+test "OSC 133;A/B/C: ignored" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b]133;A\x07");
+    try std.testing.expect(engine.state.drainExitCode() == null);
+    engine.feed("\x1b]133;B\x07");
+    try std.testing.expect(engine.state.drainExitCode() == null);
+    engine.feed("\x1b]133;C\x07");
+    try std.testing.expect(engine.state.drainExitCode() == null);
+}
+
+test "OSC 133;D: ST terminator" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 10);
+    defer engine.deinit();
+
+    engine.feed("\x1b]133;D;42\x1b\\");
+    try std.testing.expectEqual(@as(?u8, 42), engine.state.drainExitCode());
+}
+
 test "integration: OSC 7337 through engine produces drainMainInject payload" {
     const alloc = std.testing.allocator;
     var engine = try Engine.init(alloc, 2, 20);

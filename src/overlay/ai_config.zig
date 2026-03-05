@@ -29,6 +29,7 @@ pub fn actionString(inv: InvocationType) []const u8 {
         .edit_selection => "edit_selection",
         .command_rewrite => "command_rewrite",
         .command_explain => "command_explain",
+        .command_fix => "command_fix",
     };
 }
 
@@ -139,6 +140,80 @@ pub fn serializeGenerateRequest(allocator: std.mem.Allocator, intent: []const u8
     try writeJsonString(w, "os");
     try w.writeAll(":");
     try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // client object
+    try w.writeAll(",");
+    try writeJsonString(w, "client");
+    try w.writeAll(":{");
+    try writeJsonString(w, "app");
+    try w.writeAll(":");
+    try writeJsonString(w, "attyx");
+    try w.writeAll(",");
+    try writeJsonString(w, "version");
+    try w.writeAll(":");
+    try writeJsonString(w, "0.1.0");
+    try w.writeAll(",");
+    try writeJsonString(w, "platform");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll("}");
+
+    // options
+    try w.writeAll(",");
+    try writeJsonString(w, "options");
+    try w.writeAll(":{");
+    try writeJsonString(w, "verbosity");
+    try w.writeAll(":");
+    try writeJsonString(w, "normal");
+    try w.writeAll("}");
+
+    try w.writeAll("}");
+
+    return list.toOwnedSlice(allocator);
+}
+
+/// Serialize a fix-command request body for POST /v1/ai/execute.
+/// Caller owns the returned slice.
+pub fn serializeFixRequest(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    exit_code: u8,
+    output_tail: []const u8,
+    shell: ?[]const u8,
+) ![]u8 {
+    var list: std.ArrayList(u8) = .{};
+    errdefer list.deinit(allocator);
+    const w = list.writer(allocator);
+
+    try w.writeAll("{");
+    try writeJsonString(w, "action");
+    try w.writeAll(":");
+    try writeJsonString(w, "command_fix");
+
+    // context object
+    try w.writeAll(",");
+    try writeJsonString(w, "context");
+    try w.writeAll(":{");
+    try writeJsonString(w, "command");
+    try w.writeAll(":");
+    try writeJsonString(w, command);
+    try w.writeAll(",");
+    try writeJsonString(w, "exit_code");
+    try w.writeAll(":");
+    try w.print("{d}", .{exit_code});
+    try w.writeAll(",");
+    try writeJsonString(w, "stdout_tail");
+    try w.writeAll(":");
+    try writeJsonString(w, output_tail);
+    try w.writeAll(",");
+    try writeJsonString(w, "os");
+    try w.writeAll(":");
+    try writeJsonString(w, comptime osString());
+    try w.writeAll(",");
+    try writeJsonString(w, "shell");
+    try w.writeAll(":");
+    try writeJsonString(w, shell orelse "unknown");
     try w.writeAll("}");
 
     // client object
@@ -324,6 +399,7 @@ test "actionString mapping" {
     try std.testing.expectEqualStrings("summarize_output", actionString(.general));
     try std.testing.expectEqualStrings("edit_selection", actionString(.edit_selection));
     try std.testing.expectEqualStrings("command_rewrite", actionString(.command_rewrite));
+    try std.testing.expectEqualStrings("command_fix", actionString(.command_fix));
 }
 
 test "serializeRewriteRequest: basic JSON structure" {
@@ -489,6 +565,26 @@ test "serializeExplainRequest: JSON structure" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"context\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "find . -name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"options\"") != null);
+}
+
+test "serializeFixRequest: JSON structure" {
+    const alloc = std.testing.allocator;
+    const json = try serializeFixRequest(alloc, "gcc main.c", 1, "error: undeclared identifier", "zsh");
+    defer alloc.free(json);
+
+    try std.testing.expect(json.len > 0);
+    try std.testing.expectEqual(@as(u8, '{'), json[0]);
+    try std.testing.expectEqual(@as(u8, '}'), json[json.len - 1]);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"action\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command_fix\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"gcc main.c\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"exit_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stdout_tail\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"zsh\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"client\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"options\"") != null);
 }

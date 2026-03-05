@@ -92,6 +92,9 @@ pub const TerminalState = struct {
     /// Whether to reflow content on resize (configurable, default true).
     reflow_on_resize: bool = true,
 
+    /// Last command exit code (from OSC 133;D), consumed by app layer.
+    last_exit_code: ?u8 = null,
+
     /// Kitty keyboard protocol flags stack (max 16 entries).
     kitty_kbd_flags: [16]u5 = .{0} ** 16,
     kitty_kbd_stack_len: u4 = 0,
@@ -145,7 +148,7 @@ pub const TerminalState = struct {
     pub fn apply(self: *TerminalState, action: Action) void {
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .command_exit_code, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
             else => {
                 self.wrap_next = false;
             },
@@ -237,6 +240,9 @@ pub const TerminalState = struct {
             .hyperlink_end => self.endHyperlink(),
             .set_title => |t| self.setTitle(t),
             .set_cwd => |u| self.setCwd(u),
+            .command_exit_code => |code| {
+                self.last_exit_code = code;
+            },
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -526,6 +532,13 @@ pub const TerminalState = struct {
     pub const respondSecondaryDeviceAttributes = @import("state_report.zig").respondSecondaryDeviceAttributes;
     pub const respondDecRequestMode = @import("state_report.zig").respondDecRequestMode;
     pub const respondKittyFlags = @import("state_report.zig").respondKittyFlags;
+
+    /// Drain the last exit code. Returns it and clears the field.
+    pub fn drainExitCode(self: *TerminalState) ?u8 {
+        const code = self.last_exit_code;
+        self.last_exit_code = null;
+        return code;
+    }
 
     /// Drain the response buffer. Returns the pending response bytes and
     /// resets the buffer. Caller must write these to the PTY.

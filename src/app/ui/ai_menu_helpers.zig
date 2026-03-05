@@ -94,6 +94,7 @@ pub fn consumeMenuInput(ctx: *PtyThreadCtx) ?MenuSelection {
             '1' => return .rewrite_command,
             '2' => return .explain_command,
             '3' => return .generate_command,
+            '4' => return .fix_command,
             else => {},
         }
     }

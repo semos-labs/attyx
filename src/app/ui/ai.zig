@@ -19,6 +19,7 @@ const overlay_ai_edit = attyx.overlay_ai_edit;
 const overlay_ai_explain = attyx.overlay_ai_explain;
 const overlay_ai_generate = attyx.overlay_ai_generate;
 const overlay_ai_menu = attyx.overlay_ai_menu;
+const overlay_ai_fix = attyx.overlay_ai_fix;
 const update_check = attyx.overlay_update_check;
 const OverlayManager = overlay_mod.OverlayManager;
 
@@ -31,6 +32,7 @@ const ai_edit = @import("ai_edit_helpers.zig");
 const ai_explain_helpers = @import("ai_explain_helpers.zig");
 const ai_generate_helpers = @import("ai_generate_helpers.zig");
 const ai_menu_helpers = @import("ai_menu_helpers.zig");
+const ai_fix_helpers = @import("ai_fix_helpers.zig");
 pub const handleEditAcceptAction = ai_edit.handleEditAcceptAction;
 pub const handleEditInsertAction = ai_edit.handleEditInsertAction;
 pub const handleEditRejectAction = ai_edit.handleEditRejectAction;
@@ -46,6 +48,8 @@ pub const handleGenerateInsertAction = ai_generate_helpers.handleGenerateInsertA
 pub const handleGenerateCopyAction = ai_generate_helpers.handleGenerateCopyAction;
 pub const submitGeneratePrompt = ai_generate_helpers.submitGeneratePrompt;
 pub const startAiMenu = ai_menu_helpers.startAiMenu;
+pub const handleFixReplaceAction = ai_fix_helpers.handleFixReplaceAction;
+pub const handleFixCopyAction = ai_fix_helpers.handleFixCopyAction;
 
 const Rgb = overlay_mod.Rgb;
 const ContentStyle = overlay_content.ContentStyle;
@@ -93,6 +97,7 @@ pub var g_ai_rewrite: ?overlay_ai_edit.RewriteContext = null;
 pub var g_ai_explain: ?overlay_ai_explain.ExplainContext = null;
 pub var g_ai_generate: ?overlay_ai_generate.GenerateContext = null;
 pub var g_ai_menu: ?overlay_ai_menu.MenuContext = null;
+pub var g_ai_fix: ?overlay_ai_fix.FixContext = null;
 pub var g_update_checker: ?update_check.UpdateChecker = null;
 
 pub fn captureAiContext(ctx: *PtyThreadCtx) void {
@@ -169,7 +174,7 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
 
     // Build URL — edit/rewrite modes use non-streaming endpoint
     var url_buf: [512]u8 = undefined;
-    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite or bundle.invocation == .command_explain or bundle.invocation == .command_generate)
+    const endpoint = if (bundle.invocation == .edit_selection or bundle.invocation == .command_rewrite or bundle.invocation == .command_explain or bundle.invocation == .command_generate or bundle.invocation == .command_fix)
         "/v1/ai/execute"
     else
         "/v1/ai/execute/stream";
@@ -359,6 +364,7 @@ pub fn tickAi(ctx: *PtyThreadCtx) void {
                 const is_rewrite = if (g_ai_rewrite) |*rw| rw.state == .streaming else false;
                 const is_explain = if (g_ai_explain) |*ex| ex.state == .streaming else false;
                 const is_generate = if (g_ai_generate) |*gen| gen.state == .streaming else false;
+                const is_fix = if (g_ai_fix) |*fix| fix.state == .streaming else false;
                 if (is_edit) {
                     ai_edit.handleEditDoneResponse(ctx, sse);
                 } else if (is_rewrite) {
@@ -367,6 +373,8 @@ pub fn tickAi(ctx: *PtyThreadCtx) void {
                     ai_explain_helpers.handleExplainDoneResponse(ctx, sse);
                 } else if (is_generate) {
                     ai_generate_helpers.handleGenerateDoneResponse(ctx, sse);
+                } else if (is_fix) {
+                    ai_fix_helpers.handleFixDoneResponse(ctx, sse);
                 } else {
                     ai_edit.handleNormalDoneResponse(ctx, sse, mgr);
                 }
@@ -476,6 +484,7 @@ pub fn relayoutAiStreamContent(ctx: *PtyThreadCtx, blocks: []const overlay_conte
         .edit_selection => "Edit Selection",
         .command_rewrite => "Rewrite Command",
         .command_explain => "Explain Command",
+        .command_fix => "Fix Failed Command",
     } else "AI Response";
 
     var bar = attyx.overlay_action.ActionBar{};

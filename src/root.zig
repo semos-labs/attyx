@@ -45,6 +45,8 @@ pub const overlay_ai_explain = @import("overlay/ai_explain.zig");
 pub const overlay_ai_generate = @import("overlay/ai_generate.zig");
 pub const overlay_ai_menu = @import("overlay/ai_menu.zig");
 pub const overlay_ai_safety = @import("overlay/ai_safety.zig");
+pub const overlay_ai_fix = @import("overlay/ai_fix.zig");
+pub const overlay_ai_redact = @import("overlay/ai_redact.zig");
 pub const overlay_diff = @import("overlay/diff.zig");
 pub const overlay_update_check = @import("overlay/update_check.zig");
 
@@ -121,6 +123,8 @@ test {
     _ = @import("overlay/ai_generate.zig");
     _ = @import("overlay/ai_menu.zig");
     _ = @import("overlay/ai_safety.zig");
+    _ = @import("overlay/ai_fix.zig");
+    _ = @import("overlay/ai_redact.zig");
     _ = @import("overlay/diff.zig");
     _ = @import("overlay/update_check.zig");
 }

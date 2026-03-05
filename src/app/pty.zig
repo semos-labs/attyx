@@ -309,6 +309,13 @@ pub const Pty = struct {
             \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
             \\fi
             \\unset __ATTYX_BIN_DIR
+            \\# OSC 133;D: report command exit code before each prompt
+            \\__attyx_precmd() {
+            \\  local ret=$?
+            \\  printf '\e]133;D;%d\a' "$ret"
+            \\  return $ret
+            \\}
+            \\precmd_functions=(__attyx_precmd ${precmd_functions[@]})
             \\# OSC 7: report cwd on every directory change
             \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
             \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)

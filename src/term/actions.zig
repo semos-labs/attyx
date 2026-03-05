@@ -174,6 +174,9 @@ pub const Action = union(enum) {
     /// borrowed from parser osc_buf, valid until next parser call.
     set_cwd: []const u8,
 
+    /// OSC 133;D — command finished with exit code.
+    command_exit_code: u8,
+
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.
     dcs_passthrough: []const u8,

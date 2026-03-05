@@ -71,6 +71,9 @@ pub const Pane = struct {
             cap.notifyOutput(data, tsNow());
         }
         self.engine.feed(data);
+        if (self.engine.state.drainExitCode()) |code| {
+            if (self.cmd_capture) |cap| cap.notifyExitCode(code);
+        }
         if (self.engine.state.drainResponse()) |resp| {
             _ = self.pty.writeToPty(resp) catch {};
         }
