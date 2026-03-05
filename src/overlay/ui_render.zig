@@ -420,11 +420,12 @@ fn renderMenu(
         // Fill row background
         fillRect(cells, stride, buf_h, x, y + row, avail_w, 1, item_rs);
 
-        // Write label
+        // Write label (dim disabled items)
         const label_cps = utf8Count(item.label);
         const vis_label = @min(label_cps, avail_w);
         const label_byte_end = utf8ByteOffset(item.label, vis_label);
-        writeStr(cells, stride, buf_h, x, y + row, item.label[0..label_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, item_rs.text_flags.toU8());
+        const label_flags = if (item.enabled) item_rs.text_flags.toU8() else (TextFlags{ .dim = true }).toU8();
+        writeStr(cells, stride, buf_h, x, y + row, item.label[0..label_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, label_flags);
 
         var item_w = vis_label;
         // Write hint right-aligned
