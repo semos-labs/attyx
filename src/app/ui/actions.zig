@@ -535,6 +535,10 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
         c.g_cursor_trail = @intFromBool(new_cfg.cursor_trail);
         ctx.applied_cursor_trail = new_cfg.cursor_trail;
     }
+    if (new_cfg.font_ligatures != ctx.applied_font_ligatures) {
+        c.g_font_ligatures = @intFromBool(new_cfg.font_ligatures);
+        ctx.applied_font_ligatures = new_cfg.font_ligatures;
+    }
 
     // Scrollback
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {

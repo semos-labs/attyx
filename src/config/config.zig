@@ -109,6 +109,7 @@ pub const AppConfig = struct {
     cell_width: CellSize = .auto,
     cell_height: CellSize = .auto,
     font_fallback: ?[]const []const u8 = null,
+    font_ligatures: bool = true,
 
     // [theme]
     theme_name: []const u8 = "default",

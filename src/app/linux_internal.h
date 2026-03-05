@@ -200,10 +200,30 @@ extern const char* kFragColorTextSrc;
 
 char* findFontPath(const char* family);
 int   glyphCacheLookup(GlyphCache* gc, uint32_t cp);
+void  glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot);
+void  glyphCacheGrow(GlyphCache* gc);
 int   glyphCacheRasterize(GlyphCache* gc, uint32_t cp);
 uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2);
 int   glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2);
 GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale);
+
+// ---------------------------------------------------------------------------
+// Ligature support (linux_ligature.c)
+// ---------------------------------------------------------------------------
+
+#define MAX_LIGA_LEN       16
+#define LIGA_RESULT_CAP    512
+typedef struct {
+    uint32_t key;
+    int8_t   count;
+    bool     hasAlternates;
+    int      slots[MAX_LIGA_LEN];
+} LigaResult;
+
+uint32_t          ligatureKey(const uint32_t* cps, int count);
+bool              isLigaTrigger(uint32_t ch);
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count);
+void              ligatureCacheClear(void);
 
 // ---------------------------------------------------------------------------
 // Emit helpers (linux_render.c — used by renderer)

@@ -127,7 +127,7 @@ int glyphCacheLookup(GlyphCache* gc, uint32_t cp) {
     return -1;
 }
 
-static void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
+void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
     uint32_t idx = (cp * 2654435761u) % GLYPH_CACHE_CAP;
     for (int probe = 0; probe < GLYPH_CACHE_CAP; probe++) {
         uint32_t i = (idx + probe) % GLYPH_CACHE_CAP;
@@ -139,7 +139,7 @@ static void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
     }
 }
 
-static void glyphCacheGrow(GlyphCache* gc) {
+void glyphCacheGrow(GlyphCache* gc) {
     int oldH = gc->atlas_h;
     (void)oldH;
     int newRows = (gc->max_slots / gc->atlas_cols) * 2;

@@ -52,6 +52,7 @@ pub const PtyThreadCtx = struct {
     applied_cursor_shape: CursorShapeConfig,
     applied_cursor_blink: bool,
     applied_cursor_trail: bool,
+    applied_font_ligatures: bool,
     applied_scrollback_lines: u32,
     theme_registry: *ThemeRegistry,
     active_theme: Theme,
@@ -267,6 +268,7 @@ pub fn run(
 
     publish.publishFontConfig(&config);
     c.g_cursor_trail = @intFromBool(config.cursor_trail);
+    c.g_font_ligatures = @intFromBool(config.font_ligatures);
     g_background_opacity = config.background_opacity;
     g_background_blur = @intCast(config.background_blur);
     g_window_decorations = if (config.window_decorations) 1 else 0;
@@ -604,6 +606,7 @@ pub fn run(
         .applied_cursor_shape = config.cursor_shape,
         .applied_cursor_blink = config.cursor_blink,
         .applied_cursor_trail = config.cursor_trail,
+        .applied_font_ligatures = config.font_ligatures,
         .applied_scrollback_lines = @intCast(tab_mgr.activePane().engine.state.scrollback.max_lines),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,

@@ -49,6 +49,7 @@ volatile uint8_t g_row_wrapped[ATTYX_MAX_ROWS] = {0};
 volatile int g_cursor_shape   = 0;
 volatile int g_cursor_visible = 1;
 volatile int g_cursor_trail   = 0;
+volatile int g_font_ligatures = 1;
 
 char         g_title_buf[ATTYX_TITLE_MAX];
 volatile int g_title_len     = 0;

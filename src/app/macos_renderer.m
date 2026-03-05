@@ -200,6 +200,7 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 
     CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
     _glyphCache = createGlyphCache(_device, scale);
+    ligatureCacheClear();
 
     g_cell_pt_w = _glyphCache.glyph_w / _glyphCache.scale;
     g_cell_pt_h = _glyphCache.glyph_h / _glyphCache.scale;

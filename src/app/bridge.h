@@ -133,6 +133,7 @@ extern volatile int g_kitty_kbd_flags;
 extern volatile int g_cursor_shape;
 extern volatile int g_cursor_visible;   // 1=visible, 0=hidden
 extern volatile int g_cursor_trail;     // 1=trail enabled, 0=disabled
+extern volatile int g_font_ligatures;   // 1=ligatures enabled, 0=disabled
 
 // Window title (written by PTY thread, read by renderer).
 #define ATTYX_TITLE_MAX 256

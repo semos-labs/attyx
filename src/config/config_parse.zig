@@ -120,6 +120,14 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    if (Lookup.get(root, "font", "ligatures")) |v| {
+        if (v == .bool) {
+            config.font_ligatures = v.bool;
+        } else {
+            std.debug.print("error: {s}: font.ligatures must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
 
     // [theme]
     if (Lookup.get(root, "theme", "name")) |v| {

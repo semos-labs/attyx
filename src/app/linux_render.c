@@ -88,6 +88,7 @@ void linux_rebuild_font(void) {
     FT_Done_Face(g_gc.ft_face);
 
     g_gc = createGlyphCache(ft_lib, g_content_scale);
+    ligatureCacheClear();
     g_cell_px_w = g_gc.glyph_w;
     g_cell_px_h = g_gc.glyph_h;
     g_cell_w_pts = g_cell_px_w / g_content_scale;
@@ -564,13 +565,70 @@ int drawFrame(void) {
     int ti = 0;
     int ci = 0;
     if (g_full_redraw || dirtyAny(dirty)) {
-        for (int i = 0; i < visibleTotal; i++) {
+        for (int i = 0; i < visibleTotal; ) {
             const AttyxCell* cell = &cells[i];
             uint32_t ch = cell->character;
-            if (ch <= 32) continue;
-            if (ch == 0x10EEEE) continue;  // Kitty Unicode placeholder
+            if (ch <= 32 || ch == 0x10EEEE) { i++; continue; }
 
             int row = i / cols, col = i % cols;
+
+            // --- Ligature detection (calt-based shaping) ---
+            if (g_font_ligatures && isLigaTrigger(ch) && !cell->combining[0]) {
+                int maxRun = cols - col;
+                if (maxRun > MAX_LIGA_LEN) maxRun = MAX_LIGA_LEN;
+                int runLen = 1;
+                while (runLen < maxRun) {
+                    const AttyxCell* next = &cells[i + runLen];
+                    if (!isLigaTrigger(next->character)) break;
+                    if (next->combining[0]) break;
+                    if (next->fg_r != cell->fg_r || next->fg_g != cell->fg_g
+                        || next->fg_b != cell->fg_b) break;
+                    if ((next->flags & 0x11) != (cell->flags & 0x11)) break;
+                    runLen++;
+                }
+                if (runLen >= 2) {
+                    uint32_t cps[MAX_LIGA_LEN];
+                    for (int k = 0; k < runLen; k++) cps[k] = cells[i+k].character;
+                    const LigaResult* lr = shapeLigatureRun(&g_gc, cps, runLen);
+                    atlasW = (float)g_gc.atlas_w;
+                    if (lr && lr->hasAlternates) {
+                        for (int k = 0; k < runLen; k++) {
+                            int sSlot = lr->slots[k];
+                            if (sSlot < 0) continue;
+                            int sac = sSlot % atlasCols;
+                            int sar = sSlot / atlasCols;
+                            float atlasH = (float)g_gc.atlas_h;
+                            float su0 = sac       * glyphW / atlasW;
+                            float sv0 = sar       * glyphH / atlasH;
+                            float su1 = (sac + 1) * glyphW / atlasW;
+                            float sv1 = (sar + 1) * glyphH / atlasH;
+                            float lx0 = offX + (col + k) * gw;
+                            float ly0 = offY + row * gh;
+                            float lx1 = lx0 + gw;
+                            float ly1 = ly0 + gh;
+                            float fr = cell->fg_r / 255.0f;
+                            float fg = cell->fg_g / 255.0f;
+                            float fb = cell->fg_b / 255.0f;
+                            if (g_theme_sel_fg_set && cellIsSelected(row, col + k)) {
+                                fr = g_theme_sel_fg_r / 255.0f;
+                                fg = g_theme_sel_fg_g / 255.0f;
+                                fb = g_theme_sel_fg_b / 255.0f;
+                            }
+                            g_text_verts[ti+0] = (Vertex){ lx0, ly0, su0,sv0, fr,fg,fb,1 };
+                            g_text_verts[ti+1] = (Vertex){ lx1, ly0, su1,sv0, fr,fg,fb,1 };
+                            g_text_verts[ti+2] = (Vertex){ lx0, ly1, su0,sv1, fr,fg,fb,1 };
+                            g_text_verts[ti+3] = (Vertex){ lx1, ly0, su1,sv0, fr,fg,fb,1 };
+                            g_text_verts[ti+4] = (Vertex){ lx1, ly1, su1,sv1, fr,fg,fb,1 };
+                            g_text_verts[ti+5] = (Vertex){ lx0, ly1, su0,sv1, fr,fg,fb,1 };
+                            ti += 6;
+                        }
+                        i += runLen;
+                        continue;
+                    }
+                }
+            }
+
+            // --- Normal per-cell rendering ---
             float x0 = offX + col * gw, y0 = offY + row * gh;
             float x1 = x0 + gw, y1 = y0 + gh;
 
@@ -637,6 +695,7 @@ int drawFrame(void) {
                 g_text_verts[ti+5] = (Vertex){ x0,  y1, au0,av1, fr,fg,fb,1 };
                 ti += 6;
             }
+            i++;
         }
         g_total_text_verts  = ti;
         g_total_color_verts = ci;

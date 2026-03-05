@@ -132,6 +132,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_popup.m"),      .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_ligature.m"),  .flags = macos_flags });
         if (std.mem.eql(u8, env, "production")) {
             exe.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = macos_flags });
         } else {
@@ -164,6 +165,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_clipboard.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_overlay.c"),  .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_popup.c"),   .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_ligature.c"), .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkSystemLibrary("glfw3", .{ .preferred_link_mode = .static });
         exe.root_module.linkSystemLibrary("gl", .{});
@@ -235,6 +237,7 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_ligature.m"),  .flags = app_macos_flags });
         if (std.mem.eql(u8, env, "production")) {
             app.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = app_macos_flags });
         } else {

@@ -107,10 +107,30 @@ typedef struct {
 
 GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale);
 int  glyphCacheLookup(GlyphCache* gc, uint32_t cp);
+void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot);
+void glyphCacheGrow(GlyphCache* gc);
 int  glyphCacheRasterize(GlyphCache* gc, uint32_t cp);
 uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2);
 int  glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2);
 int  renderBoxDraw(CGContextRef ctx, uint32_t cp, int gw, int gh, float scale);
+
+// ---------------------------------------------------------------------------
+// Ligature support (macos_ligature.m)
+// ---------------------------------------------------------------------------
+
+#define MAX_LIGA_LEN       16
+#define LIGA_RESULT_CAP    512
+typedef struct {
+    uint32_t key;                      // ligatureKey hash (0 = empty slot)
+    int8_t   count;                    // number of chars in sequence
+    bool     hasAlternates;            // true if any glyph differs from unshaped
+    int      slots[MAX_LIGA_LEN];      // atlas slots (-1 = not yet rasterized)
+} LigaResult;
+
+uint32_t          ligatureKey(const uint32_t* cps, int count);
+bool              isLigaTrigger(uint32_t ch);
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count);
+void              ligatureCacheClear(void);
 
 // ---------------------------------------------------------------------------
 // Emit helpers (macos_renderer.m — used by renderer and search bar)

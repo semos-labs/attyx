@@ -126,6 +126,10 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.cursor_trail = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-trail")) {
             result.config.cursor_trail = false;
+        } else if (std.mem.eql(u8, arg, "--font-ligatures")) {
+            result.config.font_ligatures = true;
+        } else if (std.mem.eql(u8, arg, "--no-font-ligatures")) {
+            result.config.font_ligatures = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             result.config.program = requireArg(args, &i, "--shell");
         } else if (std.mem.eql(u8, arg, "--working-directory") or std.mem.eql(u8, arg, "-d")) {
@@ -240,6 +244,10 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
             config.cursor_trail = true;
         } else if (std.mem.eql(u8, arg, "--no-cursor-trail")) {
             config.cursor_trail = false;
+        } else if (std.mem.eql(u8, arg, "--font-ligatures")) {
+            config.font_ligatures = true;
+        } else if (std.mem.eql(u8, arg, "--no-font-ligatures")) {
+            config.font_ligatures = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             i += 1;
             if (i < args.len) config.program = args[i];
@@ -355,6 +363,8 @@ pub fn printUsage() void {
         \\                             Enable/disable cursor blinking
         \\  --cursor-trail / --no-cursor-trail
         \\                             Enable/disable cursor trail effect
+        \\  --font-ligatures / --no-font-ligatures
+        \\                             Enable/disable font ligatures (default: on)
         \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
         \\  -d, --working-directory <path>
         \\                             Initial working directory (default: ~)
