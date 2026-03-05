@@ -476,7 +476,9 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                     if (runLen >= 2) {
                         uint32_t cps[MAX_LIGA_LEN];
                         for (int k = 0; k < runLen; k++) cps[k] = cells[i+k].character;
-                        const LigaResult* lr = shapeLigatureRun(&_glyphCache, cps, runLen);
+                        int ligaStyle = ((cell->flags & 0x01) ? 1 : 0)
+                                      | ((cell->flags & 0x10) ? 2 : 0);
+                        const LigaResult* lr = shapeLigatureRun(&_glyphCache, cps, runLen, ligaStyle);
                         atlasW = (float)_glyphCache.atlas_w;
                         if (lr && lr->hasAlternates) {
                             for (int k = 0; k < runLen; k++) {
@@ -522,6 +524,9 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 float y1 = y0 + gh;
 
                 uint32_t key = ch;
+                uint8_t fl = cell->flags;
+                if (fl & 0x01) key |= GLYPH_BOLD_BIT;
+                if (fl & 0x10) key |= GLYPH_ITALIC_BIT;
                 bool hasCombining = (cell->combining[0] != 0);
                 if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
 
@@ -529,7 +534,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 if (rawSlot < 0) {
                     rawSlot = hasCombining
                         ? glyphCacheRasterizeCombined(&_glyphCache, ch, cell->combining[0], cell->combining[1])
-                        : glyphCacheRasterize(&_glyphCache, ch);
+                        : glyphCacheRasterize(&_glyphCache, key);
                     atlasW = (float)_glyphCache.atlas_w;
                 }
 

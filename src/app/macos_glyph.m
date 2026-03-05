@@ -141,23 +141,32 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
 
+    // Extract style bits and base codepoint from the key.
+    int styleBold   = (cp & GLYPH_BOLD_BIT)   ? 1 : 0;
+    int styleItalic = (cp & GLYPH_ITALIC_BIT)  ? 1 : 0;
+    uint32_t baseCp = cp & 0x1FFFFF;
+
     // 1. UTF-16 encoding
     UniChar utf16[2];
     int utf16Len;
-    if (cp <= 0xFFFF) {
-        utf16[0] = (UniChar)cp;
+    if (baseCp <= 0xFFFF) {
+        utf16[0] = (UniChar)baseCp;
         utf16Len = 1;
     } else {
-        uint32_t u = cp - 0x10000;
+        uint32_t u = baseCp - 0x10000;
         utf16[0] = (UniChar)(0xD800 + (u >> 10));
         utf16[1] = (UniChar)(0xDC00 + (u & 0x3FF));
         utf16Len = 2;
     }
 
-    // 2. Glyph lookup: primary font → user fallbacks → system fallback
-    CTFontRef drawFont = gc->font;
+    // 2. Select styled font, then glyph lookup: styled font → primary → fallbacks
+    CTFontRef styledFont = gc->font;
+    if (styleBold && styleItalic)      styledFont = gc->font_bold_italic;
+    else if (styleBold)                styledFont = gc->font_bold;
+    else if (styleItalic)              styledFont = gc->font_italic;
+    CTFontRef drawFont = styledFont;
     CGGlyph glyph = 0;
-    bool haveGlyph = CTFontGetGlyphsForCharacters(gc->font, utf16, &glyph, utf16Len)
+    bool haveGlyph = CTFontGetGlyphsForCharacters(styledFont, utf16, &glyph, utf16Len)
                   && glyph != 0;
     if (!haveGlyph) {
         CGFloat fontSize = CTFontGetSize(gc->font);
@@ -201,11 +210,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     //    if the font happens to draw them wider than one cell — they are 1-cell
     //    characters in the terminal model, and 2-cell allocation causes bleed into
     //    adjacent cells.
-    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4);
-    bool isBoxDraw   = (cp >= 0x2500 && cp <= 0x257F);
-    bool isBlock     = (cp >= 0x2580 && cp <= 0x259F);
+    bool isPowerline = (baseCp >= 0xE0B0 && baseCp <= 0xE0D4);
+    bool isBoxDraw   = (baseCp >= 0x2500 && baseCp <= 0x257F);
+    bool isBlock     = (baseCp >= 0x2580 && baseCp <= 0x259F);
     bool wide = false;
-    if (haveGlyph && !isPowerline && !isBlock && canBeWide(cp)) {
+    if (haveGlyph && !isPowerline && !isBlock && canBeWide(baseCp)) {
         CGRect bbox;
         CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
         CGSize adv;
@@ -235,7 +244,9 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     // 5. If no glyph was found, store a blank slot (all-zero pixels) and return.
     //    Block elements skip this: they are drawn as geometry, no glyph needed.
     if (!haveGlyph && !isBlock) {
-        if (drawFont != gc->font) CFRelease(drawFont);
+        if (drawFont != gc->font && drawFont != gc->font_bold
+                && drawFont != gc->font_italic && drawFont != gc->font_bold_italic)
+                CFRelease(drawFont);
         glyphCacheInsert(gc, cp, slot);
         return slot;
     }
@@ -280,7 +291,9 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                   mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)(renderW * 4)];
             free(pixels);
 
-            if (drawFont != gc->font) CFRelease(drawFont);
+            if (drawFont != gc->font && drawFont != gc->font_bold
+                && drawFont != gc->font_italic && drawFont != gc->font_bold_italic)
+                CFRelease(drawFont);
             int encoded = (wide ? GLYPH_WIDE_BIT : 0) | GLYPH_COLOR_BIT | slot;
             glyphCacheInsert(gc, cp, encoded);
             return encoded;
@@ -302,7 +315,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         // Box-drawing (U+2500–U+257F): geometry-based rendering for pixel-perfect
         // thin lines at exactly 1 logical pixel — no font metrics involved.
         // Falls back to unscaled glyph draw for dashed/arc variants not in the table.
-        if (!renderBoxDraw(ctx, cp, gw, gh, gc->scale)) {
+        if (!renderBoxDraw(ctx, baseCp, gw, gh, gc->scale)) {
             CGPoint pos = CGPointMake((float)gc->x_offset, gc->baseline_y);
             CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
         }
@@ -327,51 +340,51 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         // scaling ▄ (bbox height = gh/2) by gh/bbox.height = 2× yields a full block.
         // CG coordinate system: y=0 at bottom of context.
         bool drawn = false;
-        if (cp >= 0x2581 && cp <= 0x2588) {
+        if (baseCp >= 0x2581 && baseCp <= 0x2588) {
             // LOWER ONE-EIGHTH .. FULL BLOCK (U+2581–U+2588)
-            int eighths = (int)(cp - 0x2580); // 1..8
+            int eighths = (int)(baseCp - 0x2580); // 1..8
             float blockH = roundf((float)gh * eighths / 8.0f);
             CGContextFillRect(ctx, CGRectMake(0, 0, (float)gw, blockH));
             drawn = true;
-        } else if (cp == 0x2580) {
+        } else if (baseCp == 0x2580) {
             // UPPER HALF BLOCK
             float halfH = roundf((float)gh / 2.0f);
             CGContextFillRect(ctx, CGRectMake(0, (float)gh - halfH, (float)gw, halfH));
             drawn = true;
-        } else if (cp >= 0x2589 && cp <= 0x258F) {
+        } else if (baseCp >= 0x2589 && baseCp <= 0x258F) {
             // LEFT SEVEN-EIGHTHS .. LEFT ONE-EIGHTH BLOCK (U+2589–U+258F)
-            int eighths = (int)(0x2590 - cp); // 7..1
+            int eighths = (int)(0x2590 - baseCp); // 7..1
             float blockW = roundf((float)gw * eighths / 8.0f);
             CGContextFillRect(ctx, CGRectMake(0, 0, blockW, (float)gh));
             drawn = true;
-        } else if (cp == 0x2590) {
+        } else if (baseCp == 0x2590) {
             // RIGHT HALF BLOCK
             float halfW = roundf((float)gw / 2.0f);
             CGContextFillRect(ctx, CGRectMake((float)gw - halfW, 0, halfW, (float)gh));
             drawn = true;
-        } else if (cp == 0x2594) {
+        } else if (baseCp == 0x2594) {
             // UPPER ONE EIGHTH BLOCK
             float blockH = roundf((float)gh / 8.0f);
             CGContextFillRect(ctx, CGRectMake(0, (float)gh - blockH, (float)gw, blockH));
             drawn = true;
-        } else if (cp == 0x2595) {
+        } else if (baseCp == 0x2595) {
             // RIGHT ONE EIGHTH BLOCK
             float blockW = roundf((float)gw / 8.0f);
             CGContextFillRect(ctx, CGRectMake((float)gw - blockW, 0, blockW, (float)gh));
             drawn = true;
-        } else if (cp >= 0x2591 && cp <= 0x2593) {
+        } else if (baseCp >= 0x2591 && baseCp <= 0x2593) {
             // SHADE CHARACTERS — render as solid fills at fractional brightness.
             // ░ = 25%, ▒ = 50%, ▓ = 75%
             static const float shadeAlpha[] = {0.25f, 0.50f, 0.75f};
-            float a = shadeAlpha[cp - 0x2591];
+            float a = shadeAlpha[baseCp - 0x2591];
             CGContextSetGrayFillColor(ctx, 1.0f, a);
             CGContextFillRect(ctx, CGRectMake(0, 0, (float)gw, (float)gh));
             CGContextSetGrayFillColor(ctx, 1.0f, 1.0f); // restore
             drawn = true;
-        } else if (cp >= 0x2596 && cp <= 0x259F) {
+        } else if (baseCp >= 0x2596 && baseCp <= 0x259F) {
             // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
             static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};
-            int bits = quadBits[cp - 0x2596];
+            int bits = quadBits[baseCp - 0x2596];
             float hw = roundf((float)gw / 2.0f);
             float hh = roundf((float)gh / 2.0f);
             if (bits & 1) CGContextFillRect(ctx, CGRectMake(0,  hh, hw,            (float)gh - hh)); // UL
@@ -430,7 +443,9 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     }
 
     CGContextRelease(ctx);
-    if (drawFont != gc->font) CFRelease(drawFont);
+    if (drawFont != gc->font && drawFont != gc->font_bold
+                && drawFont != gc->font_italic && drawFont != gc->font_bold_italic)
+                CFRelease(drawFont);
 
     // 8. Upload to atlas
     [gc->texture replaceRegion:MTLRegionMake2D(ac * gw, ar * gh, renderW, gh)

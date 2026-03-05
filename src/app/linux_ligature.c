@@ -46,8 +46,8 @@ void ligatureCacheClear(void) {
     // No cache to clear without HarfBuzz.
 }
 
-const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count) {
-    (void)gc; (void)cps; (void)count;
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count, int style) {
+    (void)gc; (void)cps; (void)count; (void)style;
     return NULL;
 }
 

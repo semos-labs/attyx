@@ -95,15 +95,22 @@ static int cpToUtf16(uint32_t cp, UniChar buf[2]) {
 // glyph positioning internally.
 // ---------------------------------------------------------------------------
 
-const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count) {
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count, int style) {
     if (count < 2 || count > MAX_LIGA_LEN) return NULL;
 
-    uint32_t key = ligatureKey(cps, count);
+    // Mix style into the cache key so bold/italic get separate entries.
+    uint32_t key = ligatureKey(cps, count) ^ ((uint32_t)style << 28);
     LigaResult* cached = ligaCacheLookup(key);
     if (cached) return cached;
 
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
+
+    // Select styled font
+    CTFontRef font = gc->font;
+    if (style == 3 && gc->font_bold_italic)      font = gc->font_bold_italic;
+    else if (style == 1 && gc->font_bold)         font = gc->font_bold;
+    else if (style == 2 && gc->font_italic)       font = gc->font_italic;
 
     // Build UTF-16 string
     UniChar utf16[MAX_LIGA_LEN * 2];
@@ -113,7 +120,7 @@ const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int coun
 
     // Shape with CoreText (calt is enabled by default)
     NSString* str = [[NSString alloc] initWithCharacters:utf16 length:utf16Len];
-    NSDictionary* attrs = @{(NSString*)kCTFontAttributeName: (__bridge id)gc->font};
+    NSDictionary* attrs = @{(NSString*)kCTFontAttributeName: (__bridge id)font};
     NSAttributedString* attrStr = [[NSAttributedString alloc]
         initWithString:str attributes:attrs];
     CTLineRef line = CTLineCreateWithAttributedString(
@@ -136,7 +143,7 @@ const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int coun
             UniChar u16[2];
             int u16len = cpToUtf16(cps[pos + g], u16);
             CGGlyph unshaped = 0;
-            CTFontGetGlyphsForCharacters(gc->font, u16, &unshaped, u16len);
+            CTFontGetGlyphsForCharacters(font, u16, &unshaped, u16len);
             if (glyphs[g] != unshaped) hasAlternates = true;
         }
         pos += toGet;
@@ -186,7 +193,7 @@ const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int coun
             shapedPositions[k].x + gc->x_offset,
             gc->baseline_y);
     }
-    CTFontDrawGlyphs(gc->font, shapedGlyphs, drawPositions, shapedCount, ctx);
+    CTFontDrawGlyphs(font, shapedGlyphs, drawPositions, shapedCount, ctx);
     CGContextRelease(ctx);
 
     // Slice into per-cell atlas slots
