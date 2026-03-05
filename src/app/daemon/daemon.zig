@@ -8,6 +8,7 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
 const handler = @import("handler.zig");
 const session_connect = @import("../session_connect.zig");
+const state_persist = @import("state_persist.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -77,10 +78,15 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var next_session_id: u32 = 1;
     var next_pane_id: u32 = 1;
 
+    // Load persisted dead sessions from previous daemon run.
+    state_persist.load(&sessions, &next_session_id, &next_pane_id);
+
     var clients: [max_clients]?DaemonClient = .{null} ** max_clients;
     var client_count: usize = 0;
 
     defer {
+        // Save dead sessions before final cleanup.
+        state_persist.save(&sessions, next_session_id, next_pane_id);
         // Clean shutdown: close all sessions and clients
         for (&sessions) |*slot| {
             if (slot.*) |*s| {

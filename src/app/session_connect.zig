@@ -47,7 +47,7 @@ pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions-{s}.sock", .{ home, suffix }) catch null;
 }
 
-fn exePathHash() []const u8 {
+pub fn exePathHash() []const u8 {
     const Static = struct {
         var computed: bool = false;
         var hex: [8]u8 = undefined;

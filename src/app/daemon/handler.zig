@@ -4,6 +4,7 @@ const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
+const state_persist = @import("state_persist.zig");
 
 const max_sessions: usize = 32;
 const replay_capacity: usize = RingBuffer.default_capacity;
@@ -25,7 +26,7 @@ pub fn handleMessage(
             cl.attached_session = null;
             cl.active_pane_count = 0;
         },
-        .kill => handleKill(msg.payload, sessions, session_count),
+        .kill => handleKill(msg.payload, sessions, session_count, next_id.*, next_pane_id.*),
         .rename => handleRename(msg.payload, sessions),
 
         // V2 pane-multiplexed messages
@@ -144,6 +145,8 @@ fn handleKill(
     payload: []const u8,
     sessions: *[max_sessions]?DaemonSession,
     session_count: *usize,
+    next_session_id: u32,
+    next_pane_id: u32,
 ) void {
     const kill_id = protocol.decodeKill(payload) catch return;
     for (sessions) |*slot| {
@@ -154,6 +157,8 @@ fn handleKill(
                     // Session stays in its slot as a "recent" entry.
                     s.killAllPanes();
                     session_count.* -= 1;
+                    // Persist dead sessions to disk.
+                    state_persist.save(sessions, next_session_id, next_pane_id);
                 } else {
                     // Already dead — fully destroy it.
                     s.deinit();
