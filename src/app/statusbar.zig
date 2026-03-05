@@ -4,6 +4,7 @@ const attyx = @import("attyx");
 const overlay_mod = attyx.overlay_mod;
 const StyledCell = overlay_mod.StyledCell;
 pub const Rgb = overlay_mod.Rgb;
+const unicode = attyx.unicode;
 const platform = @import("../platform/platform.zig");
 const statusbar_config = @import("../config/statusbar_config.zig");
 const StatusbarConfig = statusbar_config.StatusbarConfig;
@@ -404,34 +405,24 @@ fn writeUtf8(cells: []StyledCell, start: u16, limit: u16, text: []const u8, fg: 
     var col = start;
     var i: usize = 0;
     while (i < text.len and col < limit) {
-        const byte = text[i];
-        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            i += 1;
+        const cp = decodeOne(text, &i) orelse continue;
+        if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) {
+            if (col > start) {
+                const prev = &cells[col - 1];
+                if (prev.combining[0] == 0) {
+                    prev.combining[0] = cp;
+                } else if (prev.combining[1] == 0) {
+                    prev.combining[1] = cp;
+                }
+            }
             continue;
-        };
-        if (i + seq_len > text.len) break;
-        const cp: u21 = switch (seq_len) {
-            1 => @intCast(byte),
-            2 => std.unicode.utf8Decode2(text[i..][0..2].*) catch {
-                i += 2;
-                continue;
-            },
-            3 => std.unicode.utf8Decode3(text[i..][0..3].*) catch {
-                i += 3;
-                continue;
-            },
-            4 => std.unicode.utf8Decode4(text[i..][0..4].*) catch {
-                i += 4;
-                continue;
-            },
-            else => {
-                i += 1;
-                continue;
-            },
-        };
+        }
         cells[col] = .{ .char = cp, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
         col += 1;
-        i += seq_len;
+        if (unicode.charDisplayWidth(cp) == 2 and col < limit) {
+            cells[col] = .{ .char = ' ', .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
+            col += 1;
+        }
     }
     return col;
 }
@@ -441,59 +432,80 @@ fn writeUtf8Colored(cells: []StyledCell, start: u16, limit: u16, text: []const u
     var col = start;
     var i: usize = 0;
     while (i < text.len and col < limit) {
-        const byte = text[i];
-        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            i += 1;
+        const byte_offset = i;
+        const cp = decodeOne(text, &i) orelse continue;
+        if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) {
+            if (col > start) {
+                const prev = &cells[col - 1];
+                if (prev.combining[0] == 0) {
+                    prev.combining[0] = cp;
+                } else if (prev.combining[1] == 0) {
+                    prev.combining[1] = cp;
+                }
+            }
             continue;
-        };
-        if (i + seq_len > text.len) break;
-        const cp: u21 = switch (seq_len) {
-            1 => @intCast(byte),
-            2 => std.unicode.utf8Decode2(text[i..][0..2].*) catch {
-                i += 2;
-                continue;
-            },
-            3 => std.unicode.utf8Decode3(text[i..][0..3].*) catch {
-                i += 3;
-                continue;
-            },
-            4 => std.unicode.utf8Decode4(text[i..][0..4].*) catch {
-                i += 4;
-                continue;
-            },
-            else => {
-                i += 1;
-                continue;
-            },
-        };
+        }
         var fg = default_fg;
         for (spans) |span| {
-            if (i >= span.start and i < span.end) {
+            if (byte_offset >= span.start and byte_offset < span.end) {
                 fg = span.fg;
                 break;
             }
         }
         cells[col] = .{ .char = cp, .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
         col += 1;
-        i += seq_len;
+        if (unicode.charDisplayWidth(cp) == 2 and col < limit) {
+            cells[col] = .{ .char = ' ', .fg = fg, .bg = bg, .bg_alpha = bg_alpha };
+            col += 1;
+        }
     }
     return col;
 }
 
-/// Count the number of Unicode codepoints in a UTF-8 byte slice.
+/// Count display columns for a UTF-8 byte slice (wide chars = 2, combining/ZW = 0).
 fn utf8CodepointCount(text: []const u8) u16 {
     var count: u16 = 0;
     var i: usize = 0;
     while (i < text.len) {
-        const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
-            i += 1;
-            continue;
-        };
-        if (i + seq_len > text.len) break;
-        count += 1;
-        i += seq_len;
+        const cp = decodeOne(text, &i) orelse continue;
+        if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) continue;
+        count += unicode.charDisplayWidth(cp);
     }
     return count;
+}
+
+/// Decode one UTF-8 codepoint from text[i..], advancing i. Returns null on invalid byte.
+fn decodeOne(text: []const u8, i: *usize) ?u21 {
+    const byte = text[i.*];
+    const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+        i.* += 1;
+        return null;
+    };
+    if (i.* + seq_len > text.len) {
+        i.* = text.len;
+        return null;
+    }
+    const cp: u21 = switch (seq_len) {
+        1 => @intCast(byte),
+        2 => std.unicode.utf8Decode2(text[i.*..][0..2].*) catch {
+            i.* += 2;
+            return null;
+        },
+        3 => std.unicode.utf8Decode3(text[i.*..][0..3].*) catch {
+            i.* += 3;
+            return null;
+        },
+        4 => std.unicode.utf8Decode4(text[i.*..][0..4].*) catch {
+            i.* += 4;
+            return null;
+        },
+        else => {
+            i.* += 1;
+            return null;
+        },
+    };
+    i.* += seq_len;
+    return cp;
 }
 
 // -------------------------------------------------------------------------

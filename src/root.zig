@@ -18,6 +18,7 @@ pub const scrollback = @import("term/scrollback.zig");
 pub const search = @import("term/search.zig");
 pub const dirty = @import("term/dirty.zig");
 pub const hash = @import("term/hash.zig");
+pub const unicode = @import("term/unicode.zig");
 pub const render_color = @import("render/color.zig");
 pub const graphics_cmd = @import("term/graphics_cmd.zig");
 pub const graphics_store = @import("term/graphics_store.zig");

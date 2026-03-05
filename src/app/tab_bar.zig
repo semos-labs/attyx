@@ -7,6 +7,7 @@ const std = @import("std");
 const attyx = @import("attyx");
 const StyledCell = attyx.overlay_mod.StyledCell;
 const Rgb = attyx.overlay_mod.Rgb;
+const unicode = attyx.unicode;
 const tab_manager = @import("tab_manager.zig");
 pub const max_tabs = tab_manager.max_tabs;
 
@@ -51,11 +52,15 @@ fn nextCodepoint(s: []const u8, i: *usize) ?u21 {
     return cp;
 }
 
-/// Count display columns for a UTF-8 string (1 column per codepoint).
+/// Count display columns for a UTF-8 string, accounting for wide (CJK) chars
+/// and zero-width / combining marks.
 fn displayWidth(s: []const u8) u16 {
     var i: usize = 0;
     var count: u16 = 0;
-    while (nextCodepoint(s, &i) != null) count += 1;
+    while (nextCodepoint(s, &i)) |cp| {
+        if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) continue;
+        count += unicode.charDisplayWidth(cp);
+    }
     return count;
 }
 
@@ -162,8 +167,25 @@ pub fn generate(
             var ti: usize = 0;
             while (nextCodepoint(title, &ti)) |cp| {
                 if (pos >= content_width) break;
+                if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) {
+                    // Attach to previous cell's combining slots
+                    if (pos > 0) {
+                        const prev = &buf[col + pos - 1];
+                        if (prev.combining[0] == 0) {
+                            prev.combining[0] = cp;
+                        } else if (prev.combining[1] == 0) {
+                            prev.combining[1] = cp;
+                        }
+                    }
+                    continue;
+                }
                 buf[col + pos] = .{ .char = cp, .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
                 pos += 1;
+                // Wide char: emit spacer in next column
+                if (unicode.charDisplayWidth(cp) == 2 and pos < content_width) {
+                    buf[col + pos] = .{ .char = ' ', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+                    pos += 1;
+                }
             }
         }
         if (pos < content_width) {
@@ -350,6 +372,21 @@ test "generate: utf-8 title renders codepoints not bytes" {
     try std.testing.expectEqual(@as(u21, 'f'), result.cells[3].char);
     try std.testing.expectEqual(@as(u21, 0xe9), result.cells[4].char); // é as single codepoint
     try std.testing.expectEqual(@as(u21, ' '), result.cells[5].char); // trailing space of title
+}
+
+test "generate: CJK wide chars take 2 columns" {
+    var buf: [80]StyledCell = undefined;
+    var titles: TabTitles = .{null} ** max_tabs;
+    // "你好" = 2 codepoints, 4 display columns
+    titles[0] = "\xe4\xbd\xa0\xe5\xa5\xbd";
+    // displayWidth = 4, tab = " 你好 " + " 1 " = (1+4+1) + (1+1+1) = 6 + 3 = 9
+    const result = generate(&buf, 1, 0, 80, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char); // leading space
+    try std.testing.expectEqual(@as(u21, 0x4F60), result.cells[1].char); // 你
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[2].char); // wide spacer
+    try std.testing.expectEqual(@as(u21, 0x597D), result.cells[3].char); // 好
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[4].char); // wide spacer
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[5].char); // trailing space
 }
 
 test "tabIndexAtCol: null on 0 cols or 0 tabs" {
