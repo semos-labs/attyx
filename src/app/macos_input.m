@@ -68,6 +68,51 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
 }
 
 // ---------------------------------------------------------------------------
+// Split separator hit-test (~20px grab zone around separator lines)
+// mouseX: raw mouse X in view points.  offX/cellW: grid origin and cell width.
+// Returns: 0 = miss, 1 = vertical (left-right resize), 2 = horizontal (up-down)
+// ---------------------------------------------------------------------------
+
+static int separatorHitTest(int col, int row, float mouseX, float offX, float cellW) {
+    int srow = row - g_grid_top_offset;
+    int scols = g_cols;
+    if (!g_cells || srow < 0 || srow >= g_rows) return 0;
+    const float halfHit = 10.0f; // 10pt each side ≈ 20px on Retina
+    for (int dc = -1; dc <= 1; dc++) {
+        int c = col + dc;
+        if (c < 0 || c >= scols) continue;
+        uint32_t ch = g_cells[srow * scols + c].character;
+        int type = 0;
+        if (ch == 0x2502) { type = 1; }
+        else if (ch == 0x2500) { type = 2; }
+        else if (ch == 0x253C || ch == 0x251C || ch == 0x2524 ||
+                 ch == 0x252C || ch == 0x2534 || ch == 0x250C ||
+                 ch == 0x2510 || ch == 0x2514 || ch == 0x2518) {
+            BOOL hasVert = NO;
+            if (srow > 0) {
+                uint32_t nc = g_cells[(srow-1) * scols + c].character;
+                hasVert = (nc == 0x2502 || nc == 0x253C || nc == 0x251C ||
+                           nc == 0x2524 || nc == 0x252C || nc == 0x2534);
+            }
+            type = hasVert ? 1 : 2;
+        }
+        if (type == 0) continue;
+        float sepCenterX = offX + (c + 0.5f) * cellW;
+        if (fabsf(mouseX - sepCenterX) <= halfHit) return type;
+    }
+    return 0;
+}
+
+static void mouseXOffset(NSEvent *event, NSView *view, float *outMouseX, float *outOffX) {
+    NSPoint loc = [view convertPoint:event.locationInWindow fromView:nil];
+    *outMouseX = (float)loc.x;
+    float availW = (float)view.bounds.size.width - g_padding_left - g_padding_right;
+    float cx = floorf((availW - g_cols * g_cell_pt_w) * 0.5f);
+    if (cx < 0) cx = 0;
+    *outOffX = g_padding_left + cx;
+}
+
+// ---------------------------------------------------------------------------
 // URL detection helpers
 // ---------------------------------------------------------------------------
 
@@ -219,6 +264,21 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (g_copy_mode) {
         attyx_copy_mode_exit(0);
     }
+
+    // Split separator click: intercept before mouse tracking so drag resize
+    // works even when the focused pane has mouse tracking enabled (e.g. vim).
+    if (g_split_active) {
+        int sc, sr;
+        mouseCell0(event, self, &sc, &sr);
+        float mx, ox;
+        mouseXOffset(event, self, &mx, &ox);
+        if (separatorHitTest(sc, sr, mx, ox, g_cell_pt_w)) {
+            attyx_split_drag_start(sc, sr);
+            _splitDragging = YES;
+            return;
+        }
+    }
+
     if (g_mouse_tracking && g_mouse_sgr) {
         int col, row;
         mouseCell(event, self, &col, &row);
@@ -496,6 +556,30 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseMoved:(NSEvent *)event {
+    // Split separator hover: always check before mouse tracking so the
+    // resize cursor appears even when the focused pane tracks the mouse.
+    if (g_split_active && !g_split_drag_active) {
+        static BOOL wasOnSeparator = NO;
+        int hcol, hrow;
+        mouseCell0(event, self, &hcol, &hrow);
+        float mx, ox;
+        mouseXOffset(event, self, &mx, &ox);
+        int hit = separatorHitTest(hcol, hrow, mx, ox, g_cell_pt_w);
+        if (hit == 1) {
+            [[NSCursor resizeLeftRightCursor] set];
+            wasOnSeparator = YES;
+            return;
+        } else if (hit == 2) {
+            [[NSCursor resizeUpDownCursor] set];
+            wasOnSeparator = YES;
+            return;
+        }
+        if (wasOnSeparator) {
+            wasOnSeparator = NO;
+            [[NSCursor IBeamCursor] set];
+        }
+    }
+
     int tracking = g_mouse_tracking;
     if (tracking == 3 && g_mouse_sgr) {
         int col, row;
@@ -511,6 +595,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     if (!tracking) {
         int col, row;
         mouseCell0(event, self, &col, &row);
+
         row -= g_grid_top_offset;
         if (row < 0) row = 0;
         int cols = g_cols, rows_n = g_rows;

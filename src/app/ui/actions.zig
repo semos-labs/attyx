@@ -273,12 +273,15 @@ pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
 
             layout.pool[branch_idx].ratio = new_ratio;
             layout.layout(pty_rows, ctx.grid_cols);
-            split_actions_mod.notifyPaneSizes(ctx, layout);
+            // Don't notify daemon during drag — too many resize messages.
+            // Daemon gets notified on drag end below.
             switchActiveTab(ctx);
         }
     }
 
     if (@atomicRmw(i32, &input.g_split_drag_end_pending, .Xchg, 0, .seq_cst) != 0) {
+        // Notify daemon of final pane sizes after drag completes.
+        split_actions_mod.notifyPaneSizes(ctx, layout);
         input.g_split_drag_branch = 0xFF;
         @atomicStore(i32, &terminal.g_split_drag_active, 0, .seq_cst);
     }

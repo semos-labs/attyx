@@ -474,6 +474,50 @@ static int ctxMenuHitItem(float px, float py) {
     return CTX_MENU_ITEM_RELOAD_CONFIG;
 }
 
+// Split separator hit-test (~20px grab zone around separator lines).
+// mouseX: raw mouse X in screen coords.  offX/cellW: grid origin and cell width.
+// Returns: 0 = miss, 1 = vertical (left-right resize), 2 = horizontal (up-down)
+static int separatorHitTest(int col, int row, float mouseX, float offX, float cellW) {
+    int srow = row - g_grid_top_offset;
+    int scols = g_cols;
+    if (!g_cells || srow < 0 || srow >= g_rows) return 0;
+    const float halfHit = 10.0f;
+    for (int dc = -1; dc <= 1; dc++) {
+        int c = col + dc;
+        if (c < 0 || c >= scols) continue;
+        uint32_t ch = g_cells[srow * scols + c].character;
+        int type = 0;
+        if (ch == 0x2502) { type = 1; }
+        else if (ch == 0x2500) { type = 2; }
+        else if (ch == 0x253C || ch == 0x251C || ch == 0x2524 ||
+                 ch == 0x252C || ch == 0x2534 || ch == 0x250C ||
+                 ch == 0x2510 || ch == 0x2514 || ch == 0x2518) {
+            int hasVert = 0;
+            if (srow > 0) {
+                uint32_t nc = g_cells[(srow-1) * scols + c].character;
+                hasVert = (nc == 0x2502 || nc == 0x253C || nc == 0x251C ||
+                           nc == 0x2524 || nc == 0x252C || nc == 0x2534);
+            }
+            type = hasVert ? 1 : 2;
+        }
+        if (type == 0) continue;
+        float sepCenterX = offX + (c + 0.5f) * cellW;
+        if (fabsf(mouseX - sepCenterX) <= halfHit) return type;
+    }
+    return 0;
+}
+
+static void mouseXOffset(double mx, float *outOffX, float *outCellW) {
+    float cellW = g_cell_px_w / g_content_scale;
+    int win_w, win_h;
+    glfwGetWindowSize(g_window, &win_w, &win_h);
+    float availW = (float)win_w - g_padding_left - g_padding_right;
+    float cx = floorf((availW - g_cols * cellW) * 0.5f);
+    if (cx < 0) cx = 0;
+    *outOffX = g_padding_left + cx;
+    *outCellW = cellW;
+}
+
 static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods) {
     double mx, my;
     glfwGetCursorPos(w, &mx, &my);
@@ -503,6 +547,21 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             if (g_copy_mode) {
                 attyx_copy_mode_exit(0);
             }
+
+            // Split separator click: intercept before mouse tracking so drag
+            // resize works even when focused pane tracks the mouse (e.g. vim).
+            if (g_split_active) {
+                int sc, sr;
+                mouseToCell(mx, my, &sc, &sr);
+                float ox, cw;
+                mouseXOffset(mx, &ox, &cw);
+                if (separatorHitTest(sc, sr, (float)mx, ox, cw)) {
+                    attyx_split_drag_start(sc, sr);
+                    g_split_dragging = 1;
+                    return;
+                }
+            }
+
             if (g_mouse_tracking && g_mouse_sgr) {
                 int col, row;
                 mouseToCell1(mx, my, &col, &row);
@@ -680,6 +739,31 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         attyx_split_drag_update(col, row);
         return;
     }
+
+    // Split separator hover: check before mouse tracking so the resize
+    // cursor appears even when the focused pane tracks the mouse.
+    if (g_split_active && !g_split_drag_active) {
+        static int wasOnSep = 0;
+        int scol, srow;
+        mouseToCell(mx, my, &scol, &srow);
+        float ox, cw;
+        mouseXOffset(mx, &ox, &cw);
+        int hit = separatorHitTest(scol, srow, (float)mx, ox, cw);
+        if (hit == 1) {
+            glfwSetCursor(w, glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR));
+            wasOnSep = 1;
+            return;
+        } else if (hit == 2) {
+            glfwSetCursor(w, glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR));
+            wasOnSep = 1;
+            return;
+        }
+        if (wasOnSep) {
+            wasOnSep = 0;
+            glfwSetCursor(w, glfwCreateStandardCursor(GLFW_IBEAM_CURSOR));
+        }
+    }
+
     if (g_left_down && g_mouse_tracking && g_mouse_sgr) {
         if (g_mouse_tracking < 2) return;
         int col, row;
