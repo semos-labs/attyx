@@ -29,6 +29,7 @@ pub const DaemonMessage = union(enum) {
     pane_proc_name: struct { pane_id: u32, name: []const u8 },
     replay_end: u32, // pane_id whose replay just finished
     session_attached: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
+    layout_sync: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
     session_list: void,
     session_created: u32,
     err: void,
@@ -364,6 +365,22 @@ pub const SessionClient = struct {
                         self.attached_session_id = v2.session_id;
                         self.consumeBytes(total);
                         return .{ .session_attached = .{
+                            .session_id = v2.session_id,
+                            .layout = self.layout_buf[0..llen],
+                            .pane_ids = v2.pane_ids,
+                            .pane_count = v2.pane_count,
+                        } };
+                    } else |_| {}
+                    self.consumeBytes(total);
+                    continue;
+                },
+                .layout_sync => {
+                    if (protocol.decodeAttachedV2(payload)) |v2| {
+                        const llen: u16 = @intCast(@min(v2.layout.len, self.layout_buf.len));
+                        @memcpy(self.layout_buf[0..llen], v2.layout[0..llen]);
+                        self.layout_len = llen;
+                        self.consumeBytes(total);
+                        return .{ .layout_sync = .{
                             .session_id = v2.session_id,
                             .layout = self.layout_buf[0..llen],
                             .pane_ids = v2.pane_ids,

@@ -250,7 +250,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     }
                     // Process complete messages
                     while (cl.nextMessage()) |msg| {
-                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator);
+                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients);
                     }
                     if (cl.dead) {
                         cl.deinit();

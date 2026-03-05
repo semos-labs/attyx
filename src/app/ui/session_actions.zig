@@ -66,7 +66,24 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
                 }
             }
             if (!was_focused) {
-                leaf.pane.needs_engine_reinit = true;
+                // Reinit the engine immediately so switchActiveTab never
+                // renders stale content from a prior focus cycle.  The
+                // daemon will replay scrollback into this fresh engine.
+                const rows: u16 = @intCast(leaf.pane.engine.state.grid.rows);
+                const cols: u16 = @intCast(leaf.pane.engine.state.grid.cols);
+                leaf.pane.engine.deinit();
+                leaf.pane.engine = @import("attyx").Engine.init(
+                    leaf.pane.allocator,
+                    rows,
+                    cols,
+                    ctx.applied_scrollback_lines,
+                ) catch {
+                    leaf.pane.needs_engine_reinit = true;
+                    leaf.pane.suppress_responses = true;
+                    continue;
+                };
+                leaf.pane.needs_engine_reinit = false;
+                leaf.pane.suppress_responses = true;
             }
         }
     }
@@ -283,7 +300,14 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     // Force full redraw so the new session's content appears immediately.
     actions.g_force_full_redraw = true;
     c.attyx_mark_all_dirty();
-    if (ctx.statusbar) |sb| sb.resetWidgets();
+    // Reset cached cwd pointers so tick detects the new pane's cwd and
+    // refreshes immediately — avoids a flash of stale/empty widgets.
+    if (ctx.statusbar) |sb| {
+        sb.resetWidgets();
+        if (sb.config.enabled) {
+            _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+        }
+    }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
     publish.publishOverlays(ctx);
@@ -329,6 +353,58 @@ pub fn switchToNextSession(ctx: *PtyThreadCtx) bool {
         }
     }
     return false;
+}
+
+/// Handle layout_sync broadcast from daemon (another window changed tabs/splits).
+pub fn handleLayoutSync(ctx: *PtyThreadCtx, layout_data: []const u8) void {
+    if (layout_data.len == 0) return;
+    const info = layout_codec.deserialize(layout_data) catch return;
+
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+
+    ctx.tab_mgr.syncFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch return;
+
+    if (ctx.tab_mgr.count == 0) {
+        c.attyx_request_quit();
+        return;
+    }
+
+    // Resize daemon PTYs to match each pane's layout dimensions
+    if (ctx.session_client) |sc| {
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id) |dpid|
+                        sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+                }
+            }
+        }
+    }
+
+    // Update globals and focus
+    const ap = ctx.tab_mgr.activePane();
+    terminal.g_engine = &ap.engine;
+    terminal.g_pty_master = ap.pty.master;
+    terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
+
+    ctx.last_focus_count = 0;
+    actions.switchActiveTab(ctx);
+
+    actions.g_force_full_redraw = true;
+    c.attyx_mark_all_dirty();
+    if (ctx.statusbar) |sb| {
+        sb.resetWidgets();
+        if (sb.config.enabled) {
+            _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+        }
+    }
+    publish.generateTabBar(ctx);
+    publish.generateStatusbar(ctx);
+    publish.publishOverlays(ctx);
+
+    logging.info("layout-sync", "synced layout from another window", .{});
 }
 
 pub fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {
