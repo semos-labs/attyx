@@ -3,8 +3,8 @@ const attyx = @import("attyx");
 const overlay_mod = attyx.overlay_mod;
 const overlay_ai_generate = attyx.overlay_ai_generate;
 const overlay_ai_stream = attyx.overlay_ai_stream;
-const overlay_ai_config = attyx.overlay_ai_config;
 const overlay_ai_safety = attyx.overlay_ai_safety;
+const security_gateway = attyx.security_gateway;
 
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -94,12 +94,11 @@ pub fn submitGeneratePrompt(ctx: *PtyThreadCtx) void {
     // Get shell name from context bundle title
     const shell: ?[]const u8 = if (ai.g_context_bundle) |*bundle| bundle.title else null;
 
-    // Build generate-specific request body
-    if (ai.g_ai_request_body) |old| mgr.allocator.free(old);
-    ai.g_ai_request_body = overlay_ai_config.serializeGenerateRequest(
+    // Build generate request through security gateway
+    if (ai.g_ai_prepared_request) |*old| old.deinit(mgr.allocator);
+    ai.g_ai_prepared_request = security_gateway.prepareRequest(
         mgr.allocator,
-        prompt_text,
-        shell,
+        .{ .generate = .{ .intent = prompt_text, .shell = shell } },
     ) catch null;
 
     // Set context bundle invocation type

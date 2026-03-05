@@ -52,6 +52,7 @@ pub const overlay_update_check = @import("overlay/update_check.zig");
 
 pub const security_redaction = @import("security/redaction.zig");
 pub const security_payload = @import("security/payload.zig");
+pub const security_gateway = @import("security/gateway.zig");
 
 pub const version = @import("build_options").version;
 pub const env = @import("build_options").env;
@@ -132,4 +133,5 @@ test {
     _ = @import("overlay/update_check.zig");
     _ = @import("security/redaction.zig");
     _ = @import("security/payload.zig");
+    _ = @import("security/gateway.zig");
 }

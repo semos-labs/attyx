@@ -67,6 +67,28 @@ fn submitEditPrompt(ctx: *PtyThreadCtx) void {
     bundle.edit_prompt = mgr.allocator.dupe(u8, prompt_text) catch null;
     bundle.invocation = .edit_selection;
 
+    // Build edit request through security gateway
+    if (ai.g_ai_prepared_request) |*old| old.deinit(mgr.allocator);
+    ai.g_ai_prepared_request = attyx.security_gateway.prepareRequest(
+        mgr.allocator,
+        .{ .edit = .{
+            .selection = bundle.selection_text orelse "",
+            .intent = prompt_text,
+            .shell = bundle.title,
+        } },
+    ) catch null;
+
+    // Review gate: if sensitive content detected, show review card
+    if (ai.g_ai_prepared_request) |*req| {
+        if (req.has_sensitive_content) {
+            ai.g_ai_review_pending = true;
+            ai.showReviewCard(ctx, &req.report);
+            edit.submitPrompt();
+            terminal.g_ai_prompt_active = 0;
+            return;
+        }
+    }
+
     std.debug.print("[ai-edit] set invocation=edit_selection, calling loadTokensAndStream\n", .{});
     edit.submitPrompt();
     terminal.g_ai_prompt_active = 0;
@@ -230,10 +252,11 @@ pub fn cancelAi(ctx: *PtyThreadCtx) void {
         mgr.hide(.ai_demo);
         mgr.hide(.context_preview);
     }
-    if (ai.g_ai_request_body) |body| {
-        if (ctx.overlay_mgr) |mgr| mgr.allocator.free(body);
-        ai.g_ai_request_body = null;
+    if (ai.g_ai_prepared_request) |*req| {
+        if (ctx.overlay_mgr) |mgr| req.deinit(mgr.allocator);
+        ai.g_ai_prepared_request = null;
     }
+    ai.g_ai_review_pending = false;
     if (ai.g_ai_accumulator) |*acc| {
         acc.deinit();
         ai.g_ai_accumulator = null;
@@ -428,12 +451,11 @@ fn submitRewritePrompt(ctx: *PtyThreadCtx) void {
     if (prompt_text.len == 0) return;
     const command = rw.target_command orelse return;
 
-    // Build rewrite-specific request body
-    if (ai.g_ai_request_body) |old| mgr.allocator.free(old);
-    ai.g_ai_request_body = overlay_ai_config.serializeRewriteRequest(
+    // Build rewrite request through security gateway
+    if (ai.g_ai_prepared_request) |*old| old.deinit(mgr.allocator);
+    ai.g_ai_prepared_request = attyx.security_gateway.prepareRequest(
         mgr.allocator,
-        command,
-        prompt_text,
+        .{ .rewrite = .{ .command = command, .user_request = prompt_text } },
     ) catch null;
 
     // Set context bundle invocation type

@@ -2,7 +2,7 @@ const std = @import("std");
 const attyx = @import("attyx");
 const overlay_ai_explain = attyx.overlay_ai_explain;
 const overlay_ai_stream = attyx.overlay_ai_stream;
-const overlay_ai_config = attyx.overlay_ai_config;
+const security_gateway = attyx.security_gateway;
 
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -36,8 +36,12 @@ pub fn startExplainInvocation(ctx: *PtyThreadCtx) void {
     var explain = &(ai.g_ai_explain.?);
     explain.open(target) catch return;
 
-    // Build request body
-    ai.g_ai_request_body = overlay_ai_config.serializeExplainRequest(mgr.allocator, target) catch null;
+    // Build request through security gateway
+    if (ai.g_ai_prepared_request) |*old| old.deinit(mgr.allocator);
+    ai.g_ai_prepared_request = security_gateway.prepareRequest(
+        mgr.allocator,
+        .{ .explain = .{ .command = target } },
+    ) catch null;
 
     // Start auth + streaming
     ai.loadTokensAndStream(ctx);

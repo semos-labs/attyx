@@ -21,6 +21,7 @@ const overlay_ai_generate = attyx.overlay_ai_generate;
 const overlay_ai_menu = attyx.overlay_ai_menu;
 const overlay_ai_fix = attyx.overlay_ai_fix;
 const update_check = attyx.overlay_update_check;
+const security_gateway = attyx.security_gateway;
 const OverlayManager = overlay_mod.OverlayManager;
 
 const terminal = @import("../terminal.zig");
@@ -33,6 +34,7 @@ const ai_explain_helpers = @import("ai_explain_helpers.zig");
 const ai_generate_helpers = @import("ai_generate_helpers.zig");
 const ai_menu_helpers = @import("ai_menu_helpers.zig");
 const ai_fix_helpers = @import("ai_fix_helpers.zig");
+const ai_review = @import("ai_review.zig");
 pub const handleEditAcceptAction = ai_edit.handleEditAcceptAction;
 pub const handleEditInsertAction = ai_edit.handleEditInsertAction;
 pub const handleEditRejectAction = ai_edit.handleEditRejectAction;
@@ -90,7 +92,9 @@ pub var g_token_store: ?overlay_ai_auth.TokenStore = null;
 pub var g_auth_thread: ?overlay_ai_auth.AuthThread = null;
 pub var g_sse_thread: ?overlay_ai_stream.SseThread = null;
 pub var g_ai_accumulator: ?overlay_ai_content.AiContentAccumulator = null;
-pub var g_ai_request_body: ?[]u8 = null;
+pub var g_ai_prepared_request: ?security_gateway.PreparedRequest = null;
+/// Whether a review card is pending user confirmation before send.
+pub var g_ai_review_pending: bool = false;
 const g_ai_base_url: []const u8 = overlay_ai_config.base_url;
 pub var g_ai_edit: ?overlay_ai_edit.EditContext = null;
 pub var g_ai_rewrite: ?overlay_ai_edit.RewriteContext = null;
@@ -166,11 +170,30 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
     const store = &(g_token_store orelse return);
     const token = store.access_token orelse return;
 
-    // Serialize request body (skip if pre-set, e.g. rewrite mode)
-    if (g_ai_request_body == null) {
-        g_ai_request_body = overlay_ai_config.serializeRequest(mgr.allocator, bundle) catch null;
+    // All requests must go through the gateway. If no prepared request,
+    // build one from the context bundle (general flow).
+    if (g_ai_prepared_request == null) {
+        g_ai_prepared_request = security_gateway.prepareRequest(mgr.allocator, .{
+            .general = .{
+                .command = bundle.cursor_line,
+                .selection = bundle.selection_text,
+                .scrollback_excerpt = bundle.scrollback_excerpt,
+                .edit_prompt = bundle.edit_prompt,
+                .shell = bundle.title,
+            },
+        }) catch null;
+
+        // Review gate: if sensitive content detected, show review card first
+        if (g_ai_prepared_request) |*req| {
+            if (req.has_sensitive_content and !g_ai_review_pending) {
+                g_ai_review_pending = true;
+                showReviewCard(ctx, &req.report);
+                return;
+            }
+        }
     }
-    const body = g_ai_request_body orelse return;
+    const prepared = &(g_ai_prepared_request orelse return);
+    const body = prepared.bodySlice();
 
     // Build URL — edit/rewrite modes use non-streaming endpoint
     var url_buf: [512]u8 = undefined;
@@ -203,6 +226,10 @@ fn spawnSseStream(ctx: *PtyThreadCtx) void {
         return;
     };
 }
+pub const showReviewCard = ai_review.showReviewCard;
+pub const confirmReviewSend = ai_review.confirmReviewSend;
+pub const copyRedactedPayload = ai_review.copyRedactedPayload;
+
 pub fn loadTokensAndStream(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (g_token_store == null) {

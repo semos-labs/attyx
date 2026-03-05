@@ -4,7 +4,7 @@ const overlay_ai_fix = attyx.overlay_ai_fix;
 const overlay_ai_stream = attyx.overlay_ai_stream;
 const overlay_ai_config = attyx.overlay_ai_config;
 const overlay_ai_safety = attyx.overlay_ai_safety;
-const overlay_ai_redact = attyx.overlay_ai_redact;
+const security_gateway = attyx.security_gateway;
 
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -65,28 +65,31 @@ pub fn startFixInvocation(ctx: *PtyThreadCtx) void {
     var fix = &(ai.g_ai_fix.?);
     fix.open(block.command) catch return;
 
-    // Extract last 50 lines of output and redact
-    const output_tail = extractOutputTail(mgr.allocator, block.output, 50) catch "";
-    defer if (output_tail.len > 0 and output_tail.ptr != block.output.ptr)
-        mgr.allocator.free(output_tail);
-
-    const redacted = overlay_ai_redact.redactSensitive(mgr.allocator, output_tail) catch output_tail;
-    defer if (redacted.ptr != output_tail.ptr) mgr.allocator.free(redacted);
-
     // Get shell name from context bundle
     const shell: ?[]const u8 = if (ai.g_context_bundle) |*bundle| bundle.title else null;
 
-    // Build fix request body
-    if (ai.g_ai_request_body) |old| mgr.allocator.free(old);
-    ai.g_ai_request_body = overlay_ai_config.serializeFixRequest(
+    // Build fix request through security gateway (handles redaction + truncation)
+    if (ai.g_ai_prepared_request) |*old| old.deinit(mgr.allocator);
+    ai.g_ai_prepared_request = security_gateway.prepareRequest(
         mgr.allocator,
-        block.command,
-        exit_code,
-        redacted,
-        shell,
+        .{ .fix = .{
+            .command = block.command,
+            .exit_code = exit_code,
+            .output = block.output,
+            .shell = shell,
+        } },
     ) catch null;
 
-    // Start auth + streaming
+    const prepared = &(ai.g_ai_prepared_request orelse return);
+
+    // Show review card if sensitive content was found
+    if (prepared.has_sensitive_content) {
+        ai.g_ai_review_pending = true;
+        ai.showReviewCard(ctx, &prepared.report);
+        return;
+    }
+
+    // No sensitive content — send directly
     ai.loadTokensAndStream(ctx);
 }
 
@@ -180,25 +183,4 @@ fn showFixError(ctx: *PtyThreadCtx, msg: []const u8) void {
     var bar = attyx.overlay_action.ActionBar{};
     bar.add(.dismiss, "Close");
     ai.showAiOverlayCard(ctx, result.cells, result.width, result.height, bar);
-}
-
-/// Extract the last N lines from output.
-fn extractOutputTail(allocator: std.mem.Allocator, output: []const u8, max_lines: usize) ![]const u8 {
-    if (output.len == 0) return "";
-
-    // Count newlines from the end
-    var count: usize = 0;
-    var pos = output.len;
-    while (pos > 0) {
-        pos -= 1;
-        if (output[pos] == '\n') {
-            count += 1;
-            if (count >= max_lines) {
-                return try allocator.dupe(u8, output[pos + 1 ..]);
-            }
-        }
-    }
-
-    // Fewer than max_lines — return all
-    return try allocator.dupe(u8, output);
 }
