@@ -119,6 +119,14 @@ pub const Pane = struct {
         }
     }
 
+    /// Force TIOCSWINSZ even if engine dimensions match. Used after split
+    /// to guarantee SIGWINCH delivery to child processes like vim.
+    pub fn forceNotifySize(self: *Pane) void {
+        const rows: u16 = @intCast(self.engine.state.grid.rows);
+        const cols: u16 = @intCast(self.engine.state.grid.cols);
+        self.pty.resize(rows, cols) catch {};
+    }
+
     pub fn childExited(self: *Pane) bool {
         // Session-backed panes: the local PTY is idle — ignore its exit.
         // The daemon pane lifecycle is managed via the session socket.

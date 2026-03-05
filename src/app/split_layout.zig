@@ -140,9 +140,6 @@ pub const SplitLayout = struct {
             },
         }
 
-        // Resize old pane to its new (smaller) rect
-        old_pane.resize(left_rect.rows, left_rect.cols);
-
         // Left child inherits old pane
         self.pool[left_idx] = .{
             .tag = .leaf,

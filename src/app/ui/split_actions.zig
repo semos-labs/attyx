@@ -24,6 +24,23 @@ pub fn computeSplitGaps() struct { h: u16, v: u16 } {
     };
 }
 
+/// Notify daemon of new pane dimensions after layout changes (split, close, resize, etc.).
+/// For daemon-backed panes: sends resize via session protocol.
+/// For local panes: forces TIOCSWINSZ (SIGWINCH) delivery.
+pub fn notifyPaneSizes(ctx: *PtyThreadCtx, layout: *SplitLayout) void {
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const lc = layout.collectLeaves(&leaves);
+    for (leaves[0..lc]) |leaf| {
+        if (leaf.pane.daemon_pane_id) |dpid| {
+            if (ctx.session_client) |sc| {
+                sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+            }
+        } else {
+            leaf.pane.forceNotifySize();
+        }
+    }
+}
+
 pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.Direction) void {
     const Pane = @import("../pane.zig").Pane;
 
@@ -52,6 +69,9 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
 
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     layout.layout(pty_rows, ctx.grid_cols);
+
+    notifyPaneSizes(ctx, layout);
+
     actions.updateSplitActive(ctx);
     actions.switchActiveTab(ctx);
     actions.saveSessionLayout(ctx);
