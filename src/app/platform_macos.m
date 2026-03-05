@@ -350,7 +350,9 @@ void attyx_spawn_new_window(void) {
     AttyxView* termView = [[AttyxView alloc] initWithFrame:frame device:device];
     termView.layer.contentsScale = scaleFactor;
     termView.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
-    ((CAMetalLayer*)termView.layer).presentsWithTransaction = YES;
+    CAMetalLayer* metalLayer = (CAMetalLayer*)termView.layer;
+    metalLayer.presentsWithTransaction = YES;
+    metalLayer.maximumDrawableCount = 2;
     float _opac = g_background_opacity;
     if (_opac >= 1.0f) {
         termView.clearColor = MTLClearColorMake(0.118, 0.118, 0.141, 1.0);

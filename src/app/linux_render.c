@@ -147,7 +147,7 @@ int drawFrame(void) {
         free(g_color_verts);
         free(g_cell_snapshot);
 
-        g_bg_vert_cap = (total * 4 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
+        g_bg_vert_cap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
         g_bg_verts      = (Vertex*)calloc(g_bg_vert_cap, sizeof(Vertex));
         g_text_verts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
         g_color_verts   = (Vertex*)calloc(total * 6, sizeof(Vertex));
