@@ -110,6 +110,8 @@ pub const Action = enum(u8) {
     pane_rotate = 78,
     pane_zoom_toggle = 79,
     copy_mode_enter = 80,
+    tab_move_left = 81,
+    tab_move_right = 82,
     _,
 
     /// Return the popup index if this is a popup_toggle action.

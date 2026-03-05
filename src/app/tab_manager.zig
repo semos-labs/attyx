@@ -150,6 +150,26 @@ pub const TabManager = struct {
         }
     }
 
+    /// Move the active tab one position to the left (wraps around).
+    pub fn moveTabLeft(self: *TabManager) void {
+        if (self.count <= 1) return;
+        const dst = if (self.active == 0) self.count - 1 else self.active - 1;
+        const tmp = self.tabs[self.active];
+        self.tabs[self.active] = self.tabs[dst];
+        self.tabs[dst] = tmp;
+        self.active = dst;
+    }
+
+    /// Move the active tab one position to the right (wraps around).
+    pub fn moveTabRight(self: *TabManager) void {
+        if (self.count <= 1) return;
+        const dst = if (self.active + 1 >= self.count) 0 else self.active + 1;
+        const tmp = self.tabs[self.active];
+        self.tabs[self.active] = self.tabs[dst];
+        self.tabs[dst] = tmp;
+        self.active = dst;
+    }
+
     /// Resize all tabs. For each tab, calls layout() which recursively
     /// resizes all split panes to fit within the given dimensions.
     pub fn resizeAll(self: *TabManager, rows: u16, cols: u16) void {

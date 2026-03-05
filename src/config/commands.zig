@@ -93,6 +93,9 @@ pub const registry = [_]CommandDef{
     // macOS-only additional keybinds (arrow-based tab switching)
     .{ .action = .tab_prev, .name = "tab_prev_arrows", .description = "Previous tab (arrows)", .scope = .global, .mac_hotkey = "cmd+shift+left", .linux_hotkey = "ctrl+alt+left" },
     .{ .action = .tab_next, .name = "tab_next_arrows", .description = "Next tab (arrows)", .scope = .global, .mac_hotkey = "cmd+shift+right", .linux_hotkey = "ctrl+alt+right" },
+    // Tab reordering
+    .{ .action = .tab_move_left, .name = "tab_move_left", .description = "Move tab left", .scope = .global, .mac_hotkey = "cmd+ctrl+shift+left", .linux_hotkey = "ctrl+alt+shift+left" },
+    .{ .action = .tab_move_right, .name = "tab_move_right", .description = "Move tab right", .scope = .global, .mac_hotkey = "cmd+ctrl+shift+right", .linux_hotkey = "ctrl+alt+shift+right" },
 };
 
 // ---------------------------------------------------------------------------

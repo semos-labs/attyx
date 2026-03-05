@@ -38,6 +38,7 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
     // Tab actions
     switch (action) {
         .tab_new, .tab_close, .tab_next, .tab_prev,
+        .tab_move_left, .tab_move_right,
         .tab_select_1, .tab_select_2, .tab_select_3,
         .tab_select_4, .tab_select_5, .tab_select_6,
         .tab_select_7, .tab_select_8, .tab_select_9,

@@ -110,6 +110,20 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             switchActiveTab(ctx);
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
+        .tab_move_left => {
+            if (ctx.tab_mgr.count <= 1) return;
+            ctx.tab_mgr.moveTabLeft();
+            switchActiveTab(ctx);
+            saveSessionLayout(ctx);
+            logging.info("tabs", "moved tab left to {d}", .{ctx.tab_mgr.active + 1});
+        },
+        .tab_move_right => {
+            if (ctx.tab_mgr.count <= 1) return;
+            ctx.tab_mgr.moveTabRight();
+            switchActiveTab(ctx);
+            saveSessionLayout(ctx);
+            logging.info("tabs", "moved tab right to {d}", .{ctx.tab_mgr.active + 1});
+        },
         .tab_select_1, .tab_select_2, .tab_select_3,
         .tab_select_4, .tab_select_5, .tab_select_6,
         .tab_select_7, .tab_select_8, .tab_select_9,
