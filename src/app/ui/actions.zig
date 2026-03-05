@@ -377,7 +377,9 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
 pub fn resolveFocusedCwd(ctx: *PtyThreadCtx, osc7_buf: *[statusbar.max_output_len]u8) struct { cwd: ?[]const u8, owned: bool } {
     const pane = ctx.tab_mgr.activePane();
     // Local PTY: use platform lookup (handles tmux, fg process, etc.)
-    if (pane.daemon_pane_id == null and pane.pty.master >= 0) {
+    // Skip when altscreen is active — the foreground process (vim, less, etc.)
+    // may have a different CWD; prefer the shell's last OSC 7 report instead.
+    if (!pane.engine.state.alt_active and pane.daemon_pane_id == null and pane.pty.master >= 0) {
         if (platform.getForegroundCwd(ctx.allocator, pane.pty.master)) |cwd|
             return .{ .cwd = cwd, .owned = true };
     }
