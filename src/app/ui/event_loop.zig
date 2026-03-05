@@ -438,6 +438,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                     }
                                 },
                                 .replay_end => {},
+                                .layout_sync => |sync| {
+                                    session_actions.handleLayoutSync(ctx, sync.layout);
+                                    got_data = true;
+                                },
                                 else => {},
                             }
                         }

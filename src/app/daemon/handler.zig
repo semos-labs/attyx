@@ -7,6 +7,7 @@ const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
 
 const max_sessions: usize = 32;
+const max_clients: usize = 16;
 const replay_capacity: usize = RingBuffer.default_capacity;
 
 pub fn handleMessage(
@@ -17,6 +18,7 @@ pub fn handleMessage(
     next_id: *u32,
     next_pane_id: *u32,
     allocator: std.mem.Allocator,
+    clients: *[max_clients]?DaemonClient,
 ) void {
     switch (msg.msg_type) {
         .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
@@ -35,7 +37,7 @@ pub fn handleMessage(
         .focus_panes => handleFocusPanes(cl, msg.payload, sessions),
         .pane_input => handlePaneInput(cl, msg.payload, sessions),
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
-        .save_layout => handleSaveLayout(cl, msg.payload, sessions),
+        .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
 
         // Ignore server→client messages
         else => {},
@@ -311,11 +313,22 @@ fn handleSaveLayout(
     cl: *DaemonClient,
     payload: []const u8,
     sessions: *[max_sessions]?DaemonSession,
+    clients: *[max_clients]?DaemonClient,
 ) void {
     const session = getAttachedSession(cl, sessions) orelse return;
     const len: u16 = @intCast(@min(payload.len, session.layout_data.len));
     @memcpy(session.layout_data[0..len], payload[0..len]);
     session.layout_len = len;
+
+    // Broadcast layout_sync to all OTHER clients attached to the same session.
+    for (clients) |*cslot| {
+        if (cslot.*) |*other| {
+            if (other == cl) continue;
+            if (other.attached_session == cl.attached_session) {
+                other.sendLayoutSync(session);
+            }
+        }
+    }
 }
 
 // ── Session revive ──

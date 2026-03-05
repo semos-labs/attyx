@@ -184,6 +184,23 @@ pub const DaemonClient = struct {
         if (!self.dead) self.writeAll(payload);
     }
 
+    /// Send a layout_sync broadcast (same payload as attached, different msg type).
+    pub fn sendLayoutSync(self: *DaemonClient, session: *DaemonSession) void {
+        var pane_ids: [32]u32 = undefined;
+        const pane_count = session.collectPaneIds(&pane_ids);
+        var payload_buf: [4096 + 140]u8 = undefined;
+        const payload = protocol.encodeAttachedV2(
+            &payload_buf,
+            session.id,
+            session.layout_data[0..session.layout_len],
+            pane_ids[0..pane_count],
+        ) catch return;
+        var hdr: [protocol.header_size]u8 = undefined;
+        protocol.encodeHeader(&hdr, .layout_sync, @intCast(payload.len));
+        self.writeAll(&hdr);
+        if (!self.dead) self.writeAll(payload);
+    }
+
     /// Send session list directly from session slots (avoids copying large structs).
     pub fn sendSessionListFromSlots(self: *DaemonClient, sessions: *[32]?DaemonSession) void {
         var entries: [32]protocol.SessionEntry = undefined;

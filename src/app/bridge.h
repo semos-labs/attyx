@@ -31,7 +31,7 @@ extern volatile int g_statusbar_visible;
 extern volatile int g_statusbar_position; // 0=top, 1=bottom
 extern volatile int g_tab_bar_visible;
 
-// Spawn a new attyx process (new window with fresh shell session).
+// Spawn a new attyx window (new instance via NSWorkspace, or fork for Linux/dev).
 void attyx_spawn_new_window(void);
 
 // Signal the window to close (called from PTY thread on child exit).

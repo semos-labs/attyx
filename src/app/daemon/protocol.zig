@@ -30,6 +30,7 @@ pub const MessageType = enum(u8) {
     pane_died = 0x89,
     pane_proc_name = 0x8A,
     replay_end = 0x8B,
+    layout_sync = 0x8C,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type

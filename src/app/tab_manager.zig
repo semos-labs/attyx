@@ -204,6 +204,146 @@ pub const TabManager = struct {
         self.active = 0;
     }
 
+    /// Sync from a remote layout, preserving existing pane engines where possible.
+    /// New panes get fresh daemon-backed engines; removed panes are destroyed.
+    /// The local active tab is preserved (not overwritten by the sender's choice).
+    pub fn syncFromLayout(
+        self: *TabManager,
+        info: *const layout_codec.LayoutInfo,
+        rows: u16,
+        cols: u16,
+        scrollback_lines: usize,
+    ) !void {
+        const prev_active = self.active;
+
+        // Collect current daemon pane IDs → Pane pointers
+        const max_existing = max_tabs * split_layout_mod.max_panes;
+        var existing_ids: [max_existing]u32 = undefined;
+        var existing_panes: [max_existing]*Pane = undefined;
+        var existing_count: usize = 0;
+        for (self.tabs[0..self.count]) |*maybe| {
+            if (maybe.*) |*lay| {
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id) |dpid| {
+                        if (existing_count < max_existing) {
+                            existing_ids[existing_count] = dpid;
+                            existing_panes[existing_count] = leaf.pane;
+                            existing_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect new layout pane IDs
+        var new_ids_buf: [max_existing]u32 = undefined;
+        const new_count = layout_codec.collectLeafPaneIds(info, &new_ids_buf);
+
+        // Find reusable panes (in both old and new) — detach from old layout
+        var reused: [max_existing]bool = .{false} ** max_existing;
+        for (0..new_count) |ni| {
+            for (0..existing_count) |ei| {
+                if (new_ids_buf[ni] == existing_ids[ei]) {
+                    reused[ei] = true;
+                    break;
+                }
+            }
+        }
+
+        // Null out reusable panes in old layouts so reset() doesn't destroy them
+        for (self.tabs[0..self.count]) |*maybe| {
+            if (maybe.*) |*lay| {
+                for (&lay.pool) |*node| {
+                    if (node.tag == .leaf and node.pane != null) {
+                        const p = node.pane.?;
+                        if (p.daemon_pane_id) |dpid| {
+                            for (0..existing_count) |ei| {
+                                if (existing_ids[ei] == dpid and reused[ei]) {
+                                    node.pane = null; // detach — don't free
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reset (destroys non-reused panes)
+        self.reset();
+
+        // Rebuild from new layout, reusing existing panes
+        for (0..info.tab_count) |ti| {
+            const tab = &info.tabs[ti];
+            if (tab.node_count == 0) continue;
+
+            var sl = SplitLayout{};
+            sl.setGaps(self.split_gap_h, self.split_gap_v);
+            var pane_count: u8 = 0;
+
+            for (0..tab.node_count) |ni| {
+                const node = &tab.nodes[ni];
+                switch (node.tag) {
+                    .leaf => {
+                        // Try to reuse existing pane
+                        var found_pane: ?*Pane = null;
+                        for (0..existing_count) |ei| {
+                            if (existing_ids[ei] == node.pane_id and reused[ei]) {
+                                found_pane = existing_panes[ei];
+                                break;
+                            }
+                        }
+                        const pane = found_pane orelse blk: {
+                            const p = try self.allocator.create(Pane);
+                            errdefer self.allocator.destroy(p);
+                            p.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
+                            p.daemon_pane_id = node.pane_id;
+                            p.needs_engine_reinit = true;
+                            break :blk p;
+                        };
+                        sl.pool[ni] = .{ .tag = .leaf, .pane = pane };
+                        pane_count += 1;
+                    },
+                    .branch => {
+                        sl.pool[ni] = .{
+                            .tag = .branch,
+                            .direction = switch (node.direction) {
+                                .vertical => .vertical,
+                                .horizontal => .horizontal,
+                            },
+                            .ratio = @as(f32, @floatFromInt(node.ratio_x100)) / 100.0,
+                            .children = .{ node.child_left, node.child_right },
+                        };
+                    },
+                }
+            }
+
+            sl.root = tab.root_idx;
+            sl.focused = tab.focused_idx;
+            sl.pane_count = pane_count;
+            sl.layout(rows, cols);
+
+            if (tab.getTitle()) |title| {
+                const pane = sl.focusedPane();
+                const len: u8 = @intCast(@min(title.len, 64));
+                @memcpy(pane.daemon_proc_name[0..len], title[0..len]);
+                pane.daemon_proc_name_len = len;
+            }
+
+            self.tabs[self.count] = sl;
+            self.count += 1;
+        }
+
+        // Preserve local active tab; clamp if it was removed.
+        if (prev_active < self.count) {
+            self.active = prev_active;
+        } else if (self.count > 0) {
+            self.active = self.count - 1;
+        }
+    }
+
     /// Serialize current tab/split state into a layout blob for the daemon.
     pub fn serializeLayout(self: *TabManager, buf: []u8) !u16 {
         var info = layout_codec.LayoutInfo{};

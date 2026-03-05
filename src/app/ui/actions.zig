@@ -391,6 +391,11 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
     publish.generateTabBar(ctx);
+    // Tick statusbar widgets immediately so cwd/git refresh for the new
+    // pane before we generate the overlay — avoids a flash of stale data.
+    if (ctx.statusbar) |sb| if (sb.config.enabled) {
+        _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+    };
     publish.generateStatusbar(ctx);
     publish.publishNativeTabTitles(ctx);
     publish.publishOverlays(ctx);

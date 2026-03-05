@@ -273,20 +273,30 @@ void attyx_platform_close_window(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn new window (new process)
+// Spawn new window (new instance via NSWorkspace)
 // ---------------------------------------------------------------------------
 
 void attyx_spawn_new_window(void) {
-    NSString* path = NSProcessInfo.processInfo.arguments[0];
-    const char* cpath = [path fileSystemRepresentation];
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Child: exec a fresh attyx process.
-        char* argv[] = { (char*)cpath, NULL };
-        execv(cpath, argv);
-        _exit(1); // exec failed
+    NSURL* bundleURL = [[NSBundle mainBundle] bundleURL];
+    // If running from a .app bundle, use NSWorkspace to launch a new instance
+    // grouped under the same app identity (same dock icon, Cmd+` switching).
+    if ([[bundleURL pathExtension] isEqualToString:@"app"]) {
+        NSWorkspaceOpenConfiguration* config = [NSWorkspaceOpenConfiguration configuration];
+        config.createsNewApplicationInstance = YES;
+        [[NSWorkspace sharedWorkspace] openApplicationAtURL:bundleURL
+                                              configuration:config
+                                          completionHandler:nil];
+    } else {
+        // Fallback for running the raw binary outside a bundle (dev builds).
+        NSString* path = NSProcessInfo.processInfo.arguments[0];
+        const char* cpath = [path fileSystemRepresentation];
+        pid_t pid = fork();
+        if (pid == 0) {
+            char* argv[] = { (char*)cpath, NULL };
+            execv(cpath, argv);
+            _exit(1);
+        }
     }
-    // Parent continues; ignore child (auto-reaped).
 }
 
 // ---------------------------------------------------------------------------
