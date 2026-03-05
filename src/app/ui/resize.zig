@@ -46,9 +46,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
                         if (dpid == out.pane_id) {
                             ctx.session.appendOutput(out.data);
                             rpane.engine.feed(out.data);
-                            if (rpane.engine.state.drainResponse()) |resp| {
-                                sc.sendPaneInput(out.pane_id, resp) catch {};
-                            }
+                            _ = rpane.engine.state.drainResponse();
                         }
                     }
                 },
