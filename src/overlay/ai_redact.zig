@@ -1,113 +1,24 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const redaction = @import("../security/redaction.zig");
 
-/// Redact lines containing sensitive patterns. Each matching line is
-/// replaced with "[REDACTED]". Returns a new owned slice.
+/// Redact sensitive content. Returns a new owned slice with secrets replaced.
+/// This is the compatibility wrapper around security/redaction.zig.
 pub fn redactSensitive(allocator: Allocator, input: []const u8) ![]u8 {
-    var list: std.ArrayList(u8) = .{};
-    errdefer list.deinit(allocator);
-    const w = list.writer(allocator);
-
-    var it = std.mem.splitScalar(u8, input, '\n');
-    var first = true;
-    while (it.next()) |line| {
-        if (!first) try w.writeByte('\n');
-        first = false;
-        if (isSensitiveLine(line)) {
-            try w.writeAll("[REDACTED]");
-        } else {
-            try w.writeAll(line);
-        }
-    }
-
-    return list.toOwnedSlice(allocator);
+    const result = try redaction.redactText(allocator, input);
+    return result.text;
 }
 
-fn isSensitiveLine(line: []const u8) bool {
-    // Key / certificate patterns
-    if (containsCI(line, "PRIVATE KEY")) return true;
-    if (containsCI(line, "BEGIN RSA")) return true;
-    if (containsCI(line, "BEGIN OPENSSH")) return true;
-
-    // Cloud / API key patterns
-    if (containsCI(line, "AWS_SECRET")) return true;
-    if (hasAkiaPattern(line)) return true;
-
-    // Environment variable secrets
-    if (containsCI(line, "TOKEN=")) return true;
-    if (containsCI(line, "SECRET=")) return true;
-    if (containsCI(line, "PASSWORD=")) return true;
-
-    // Auth headers
-    if (containsCI(line, "Bearer ")) return true;
-    if (containsCI(line, "Authorization:")) return true;
-
-    // Long base64-like strings (potential encoded secrets)
-    if (hasLongBase64Run(line, 100)) return true;
-
-    return false;
+/// Full redaction with findings report.
+pub fn redactWithFindings(allocator: Allocator, input: []const u8) !redaction.RedactionResult {
+    return redaction.redactText(allocator, input);
 }
 
-/// Case-insensitive substring search.
-fn containsCI(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
-    const end = haystack.len - needle.len + 1;
-    for (0..end) |i| {
-        if (eqlCI(haystack[i..][0..needle.len], needle)) return true;
-    }
-    return false;
-}
+pub const RedactionResult = redaction.RedactionResult;
+pub const FindingType = redaction.FindingType;
 
-fn eqlCI(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ac, bc| {
-        if (toLower(ac) != toLower(bc)) return false;
-    }
-    return true;
-}
-
-fn toLower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
-
-/// Check for AKIA followed by 16+ alphanumeric characters.
-fn hasAkiaPattern(line: []const u8) bool {
-    if (line.len < 20) return false; // "AKIA" + 16
-    for (0..line.len - 3) |i| {
-        if (line[i] == 'A' and line[i + 1] == 'K' and line[i + 2] == 'I' and line[i + 3] == 'A') {
-            var count: usize = 0;
-            var j = i + 4;
-            while (j < line.len and isAlnum(line[j])) : (j += 1) {
-                count += 1;
-            }
-            if (count >= 16) return true;
-        }
-    }
-    return false;
-}
-
-/// Check for a run of 100+ consecutive base64-like characters.
-fn hasLongBase64Run(line: []const u8, threshold: usize) bool {
-    var run: usize = 0;
-    for (line) |ch| {
-        if (isBase64Char(ch)) {
-            run += 1;
-            if (run >= threshold) return true;
-        } else {
-            run = 0;
-        }
-    }
-    return false;
-}
-
-fn isAlnum(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9');
-}
-
-fn isBase64Char(c: u8) bool {
-    return isAlnum(c) or c == '+' or c == '/' or c == '=';
-}
+// Re-export payload builder
+pub const payload = @import("../security/payload.zig");
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -115,44 +26,46 @@ fn isBase64Char(c: u8) bool {
 
 test "redact: private key line" {
     const alloc = std.testing.allocator;
-    const result = try redactSensitive(alloc, "-----BEGIN RSA PRIVATE KEY-----");
+    const result = try redactSensitive(alloc, "-----BEGIN RSA PRIVATE KEY-----\ndata\n-----END RSA PRIVATE KEY-----");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "[REDACTED_PRIVATE_KEY]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "data") == null);
 }
 
 test "redact: openssh key" {
     const alloc = std.testing.allocator;
-    const result = try redactSensitive(alloc, "-----BEGIN OPENSSH PRIVATE KEY-----");
+    const result = try redactSensitive(alloc, "-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "[REDACTED_PRIVATE_KEY]") != null);
 }
 
 test "redact: AWS secret" {
     const alloc = std.testing.allocator;
     const result = try redactSensitive(alloc, "AWS_SECRET_ACCESS_KEY=abcdef1234567890");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "abcdef1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "[REDACTED]") != null);
 }
 
 test "redact: AKIA key" {
     const alloc = std.testing.allocator;
     const result = try redactSensitive(alloc, "AKIAIOSFODNN7EXAMPLE1");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "[REDACTED_TOKEN]") != null);
 }
 
 test "redact: TOKEN= pattern" {
     const alloc = std.testing.allocator;
-    const result = try redactSensitive(alloc, "GITHUB_TOKEN=ghp_abc123");
+    const result = try redactSensitive(alloc, "GITHUB_TOKEN=ghp_abc123def456ghi");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "ghp_abc123") == null);
 }
 
 test "redact: Bearer token" {
     const alloc = std.testing.allocator;
     const result = try redactSensitive(alloc, "Authorization: Bearer eyJhbGciOiJI");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "eyJhbGci") == null);
 }
 
 test "redact: safe lines pass through" {
@@ -166,14 +79,7 @@ test "redact: mixed lines" {
     const alloc = std.testing.allocator;
     const result = try redactSensitive(alloc, "line1\nPASSWORD=secret\nline3");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("line1\n[REDACTED]\nline3", result);
-}
-
-test "redact: long base64 run" {
-    const alloc = std.testing.allocator;
-    var buf: [110]u8 = undefined;
-    @memset(&buf, 'A');
-    const result = try redactSensitive(alloc, &buf);
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("[REDACTED]", result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "line1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\nline3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "secret") == null);
 }

@@ -50,6 +50,9 @@ pub const overlay_ai_redact = @import("overlay/ai_redact.zig");
 pub const overlay_diff = @import("overlay/diff.zig");
 pub const overlay_update_check = @import("overlay/update_check.zig");
 
+pub const security_redaction = @import("security/redaction.zig");
+pub const security_payload = @import("security/payload.zig");
+
 pub const version = @import("build_options").version;
 pub const env = @import("build_options").env;
 
@@ -127,4 +130,6 @@ test {
     _ = @import("overlay/ai_redact.zig");
     _ = @import("overlay/diff.zig");
     _ = @import("overlay/update_check.zig");
+    _ = @import("security/redaction.zig");
+    _ = @import("security/payload.zig");
 }
