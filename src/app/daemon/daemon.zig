@@ -71,7 +71,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
     setNonBlocking(listen_fd);
 
     const stderr = std.fs.File.stderr();
-    stderr.writeAll("attyx daemon: listening\n") catch {};
+    const label = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): listening\n" else "attyx daemon: listening\n";
+    stderr.writeAll(label) catch {};
 
     var sessions: [max_sessions]?DaemonSession = .{null} ** max_sessions;
     var session_count: usize = 0;
@@ -312,7 +313,8 @@ fn cleanStaleSocket(path: []const u8) void {
         return;
     };
     // Connection succeeded — another daemon is running
-    std.fs.File.stderr().writeAll("attyx daemon: already running\n") catch {};
+    const msg = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): already running\n" else "attyx daemon: already running\n";
+    std.fs.File.stderr().writeAll(msg) catch {};
     std.process.exit(0);
 }
 

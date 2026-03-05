@@ -40,7 +40,8 @@ pub fn connectToSocket() !posix.fd_t {
 
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     const home = std.posix.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions.sock", .{home}) catch null;
+    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
 }
 
 fn probeAlive(fd: posix.fd_t) bool {
