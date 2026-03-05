@@ -116,20 +116,22 @@ static void glyphCacheGrow(GlyphCache* gc) {
     free(buf);
     gc->texture = newTex;
 
-    // Grow color atlas in parallel (slots are shared — indices must stay consistent)
-    uint8_t* cbuf = (uint8_t*)calloc(gc->atlas_w * newH * 4, 1);
-    [gc->color_texture getBytes:cbuf
-                    bytesPerRow:gc->atlas_w * 4
-                     fromRegion:MTLRegionMake2D(0, 0, gc->atlas_w, oldH)
-                    mipmapLevel:0];
-    MTLTextureDescriptor* cd = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                     width:gc->atlas_w height:newH mipmapped:NO];
-    id<MTLTexture> newColorTex = [gc->device newTextureWithDescriptor:cd];
-    [newColorTex replaceRegion:MTLRegionMake2D(0, 0, gc->atlas_w, newH)
-                   mipmapLevel:0 withBytes:cbuf bytesPerRow:gc->atlas_w * 4];
-    free(cbuf);
-    gc->color_texture = newColorTex;
+    // Grow color atlas only if it has been created (lazy allocation).
+    if (gc->color_texture) {
+        uint8_t* cbuf = (uint8_t*)calloc(gc->atlas_w * newH * 4, 1);
+        [gc->color_texture getBytes:cbuf
+                        bytesPerRow:gc->atlas_w * 4
+                         fromRegion:MTLRegionMake2D(0, 0, gc->atlas_w, oldH)
+                        mipmapLevel:0];
+        MTLTextureDescriptor* cd = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                         width:gc->atlas_w height:newH mipmapped:NO];
+        id<MTLTexture> newColorTex = [gc->device newTextureWithDescriptor:cd];
+        [newColorTex replaceRegion:MTLRegionMake2D(0, 0, gc->atlas_w, newH)
+                       mipmapLevel:0 withBytes:cbuf bytesPerRow:gc->atlas_w * 4];
+        free(cbuf);
+        gc->color_texture = newColorTex;
+    }
 
     gc->atlas_h = newH;
     gc->max_slots = newMaxSlots;
@@ -246,6 +248,15 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         CFRelease(familyName);
 
         if (isColorEmoji) {
+            // Lazy-create color atlas on first color glyph.
+            if (!gc->color_texture) {
+                MTLTextureDescriptor* cd = [MTLTextureDescriptor
+                    texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                 width:gc->atlas_w height:gc->atlas_h
+                                             mipmapped:NO];
+                gc->color_texture = [gc->device newTextureWithDescriptor:cd];
+            }
+
             CGColorSpaceRef rgbCS = CGColorSpaceCreateDeviceRGB();
             uint8_t* pixels = (uint8_t*)calloc(renderW * gh * 4, 1);
             CGContextRef ctx = CGBitmapContextCreate(pixels, renderW, gh, 8, renderW * 4,
@@ -258,8 +269,6 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 initWithString:str attributes:attrs];
             CTLineRef line = CTLineCreateWithAttributedString(
                 (__bridge CFAttributedStringRef)attrStr);
-            // Match the gray glyph path: wide uses x=0, narrow uses x_offset;
-            // baseline_y centers the glyph in the cell (same as CTFontDrawGlyphs).
             float posX = wide ? 0.0f : (float)gc->x_offset;
             CGContextSetTextPosition(ctx, (CGFloat)posX, (CGFloat)gc->baseline_y);
             CTLineDraw(line, ctx);

@@ -91,7 +91,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             free(_colorVerts);
             free(_cellSnapshot);
 
-            int bgVertCap = (total * 4 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
+            int bgVertCap = (total * 2 + cols + cols + ATTYX_SEARCH_VIS_MAX) * 6;
             _bgVerts       = (Vertex*)calloc(bgVertCap, sizeof(Vertex));
             _textVerts     = (Vertex*)calloc(total * 6, sizeof(Vertex));
             _colorVerts    = (Vertex*)calloc(total * 6, sizeof(Vertex));
@@ -711,7 +711,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                     vertexCount:ti];
         }
 
-        if (ci > 0) {
+        if (ci > 0 && _glyphCache.color_texture) {
             [enc setRenderPipelineState:self.colorPipeline];
             [enc setVertexBuffer:_colorMetalBuf offset:0 atIndex:0];
             [enc setVertexBytes:viewport length:sizeof(viewport) atIndex:1];

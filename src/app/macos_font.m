@@ -167,16 +167,10 @@ GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
            bytesPerRow:atlasW];
     free(zeroes);
 
-    MTLTextureDescriptor* cd =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                           width:atlasW height:atlasH
-                                                       mipmapped:NO];
-    id<MTLTexture> colorTex = [device newTextureWithDescriptor:cd];
-
     GlyphCache gc;
     memset((void*)&gc, 0, sizeof(gc));
     gc.texture       = tex;
-    gc.color_texture = colorTex;
+    gc.color_texture = nil; // Lazy — created on first color glyph
     gc.font       = (CTFontRef)CFRetain(font);
     gc.glyph_w    = gw;
     gc.glyph_h    = gh;
