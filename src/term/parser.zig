@@ -351,10 +351,6 @@ pub const Parser = struct {
                 self.state = .str_ignore_escape;
                 return null;
             },
-            // C1 ST (8-bit String Terminator) ends the sequence.
-            // BEL (0x07) is intentionally NOT a terminator here —
-            // DCS/APC payloads (e.g. tmux passthrough) may embed
-            // inner OSC sequences that use BEL as *their* terminator.
             0x9C => {
                 self.state = .ground;
                 return .nop;
@@ -454,7 +450,7 @@ pub const Parser = struct {
 
     fn onOsc(self: *Parser, byte: u8) ?Action {
         switch (byte) {
-            0x07, 0x9C => {
+            0x07 => {
                 self.state = .ground;
                 return self.dispatchOsc();
             },
@@ -518,7 +514,7 @@ pub const Parser = struct {
             "";
 
         return switch (num) {
-            0, 2 => .{ .set_title = rest },
+            0, 1, 2 => .{ .set_title = rest },
             7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
             7337 => dispatchOsc7337(rest),
