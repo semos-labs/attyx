@@ -18,8 +18,13 @@ const attyx = @import("attyx");
 const picker_state_mod = attyx.overlay_session_picker;
 const SessionPickerState = picker_state_mod.SessionPickerState;
 const picker_panel = attyx.overlay_session_picker_panel;
+const FinderState = attyx.finder.FinderState;
 
 var g_picker_state: ?SessionPickerState = null;
+var g_finder_state: ?FinderState = null;
+var g_finder_root: []const u8 = "~";
+var g_finder_depth: u8 = 4;
+var g_finder_show_hidden: bool = false;
 
 pub fn openSessionPicker(ctx: *PtyThreadCtx) void {
     // Close existing popup if any
@@ -68,13 +73,27 @@ pub fn openSessionPicker(ctx: *PtyThreadCtx) void {
     g_picker_state = state;
     @atomicStore(i32, &terminal.g_session_picker_active, 1, .seq_cst);
 
+    // Init finder for filesystem search
+    if (g_finder_state != null) {
+        g_finder_state.?.deinit();
+        g_finder_state = null;
+    }
+    g_finder_state = FinderState.init(ctx.allocator, g_finder_root, g_finder_depth, g_finder_show_hidden) catch null;
+
     renderAndPublish(ctx);
     logging.info("session-picker", "opened overlay picker", .{});
 }
 
+/// Configure finder parameters (called when config is loaded/reloaded).
+pub fn setFinderConfig(root: []const u8, depth: u8, show_hidden: bool) void {
+    g_finder_root = root;
+    g_finder_depth = depth;
+    g_finder_show_hidden = show_hidden;
+}
+
 /// Drain picker input rings and process actions. Returns true if any input consumed.
 pub fn consumePickerInput(ctx: *PtyThreadCtx) bool {
-    var state = &(g_picker_state orelse return false);
+    const state = &(g_picker_state orelse return false);
     var consumed = false;
 
     // Drain char ring
@@ -103,8 +122,79 @@ pub fn consumePickerInput(ctx: *PtyThreadCtx) bool {
         if (processAction(ctx, state, action)) return true;
     }
 
-    if (consumed) renderAndPublish(ctx);
+    if (consumed) {
+        // Update finder with current filter text
+        if (g_finder_state) |*finder| {
+            finder.updateQuery(state.filter_buf[0..state.filter_len]);
+            pushFinderResults(state, finder);
+        }
+        renderAndPublish(ctx);
+    }
     return consumed;
+}
+
+/// Tick the finder — called from the event loop to process directory walking.
+pub fn tickFinder(ctx: *PtyThreadCtx) void {
+    const state = &(g_picker_state orelse return);
+    const finder = &(g_finder_state orelse return);
+
+    if (finder.walking_done) return;
+
+    finder.tick() catch return;
+
+    // If we have an active query, push updated results
+    if (state.filter_len > 0) {
+        const old_count = state.fs_count;
+        pushFinderResults(state, finder);
+        if (state.fs_count != old_count) {
+            renderAndPublish(ctx);
+        }
+    }
+}
+
+fn pushFinderResults(state: *SessionPickerState, finder: *FinderState) void {
+    const query_active = state.filter_len > 0;
+    if (!query_active) {
+        state.fs_count = 0;
+        return;
+    }
+
+    const max_fs = picker_state_mod.max_fs_results;
+    // Fetch more than we need so we can skip dupes and still fill max_fs
+    const fetch_count = max_fs * 3;
+    const result_indices = finder.getResults(0, fetch_count);
+
+    var paths: [max_fs][]const u8 = undefined;
+    var scores: [max_fs]i32 = undefined;
+    var out: usize = 0;
+
+    for (result_indices, 0..) |idx, i| {
+        if (out >= max_fs) break;
+        const path = finder.getPath(idx);
+
+        // Deduplicate: skip if basename matches any existing session name
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep|
+            path[sep + 1 ..]
+        else
+            path;
+
+        if (matchesExistingSession(state, basename)) continue;
+
+        paths[out] = path;
+        scores[out] = finder.getScore(@intCast(i));
+        out += 1;
+    }
+
+    state.updateFsResults(paths[0..out], scores[0..out]);
+}
+
+fn matchesExistingSession(state: *const SessionPickerState, basename: []const u8) bool {
+    if (basename.len == 0) return false;
+    for (0..state.entry_count) |i| {
+        const name = state.entries[i].getName();
+        if (std.mem.eql(u8, name, basename)) return true;
+    }
+    return false;
 }
 
 /// Process a PickerAction returned by the state machine.
@@ -127,6 +217,28 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
             const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
             defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
             session_actions.doSessionCreate(ctx, resolved.cwd orelse "/tmp");
+            return true;
+        },
+        .create_session_at => |rel_path| {
+            // Build absolute path from finder root + relative path
+            var abs_buf: [512]u8 = undefined;
+            const finder = &(g_finder_state orelse {
+                closeSessionPicker(ctx);
+                return true;
+            });
+            const root = finder.getRootPath();
+            const abs_path = std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ root, rel_path }) catch {
+                closeSessionPicker(ctx);
+                return true;
+            };
+            // Copy to allocator since closeSessionPicker will deinit finder
+            const path_copy = ctx.allocator.dupe(u8, abs_path) catch {
+                closeSessionPicker(ctx);
+                return true;
+            };
+            closeSessionPicker(ctx);
+            session_actions.doSessionCreate(ctx, path_copy);
+            ctx.allocator.free(path_copy);
             return true;
         },
         .kill_session => |id| {
@@ -178,6 +290,10 @@ fn refreshList(ctx: *PtyThreadCtx, state: *SessionPickerState) void {
 }
 
 pub fn closeSessionPicker(ctx: *PtyThreadCtx) void {
+    if (g_finder_state) |*finder| {
+        finder.deinit();
+        g_finder_state = null;
+    }
     g_picker_state = null;
     @atomicStore(i32, &terminal.g_session_picker_active, 0, .seq_cst);
     if (ctx.overlay_mgr) |mgr| mgr.hide(.session_picker);
@@ -204,6 +320,7 @@ pub fn relayout(ctx: *PtyThreadCtx) void {
         .new = ctx.session_icon_new,
         .active = ctx.session_icon_active,
         .recent = ctx.session_icon_recent,
+        .folder = ctx.session_icon_folder,
     };
 
     const result = picker_panel.renderSessionPicker(
@@ -238,6 +355,7 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
         .new = ctx.session_icon_new,
         .active = ctx.session_icon_active,
         .recent = ctx.session_icon_recent,
+        .folder = ctx.session_icon_folder,
     };
 
     const result = picker_panel.renderSessionPicker(

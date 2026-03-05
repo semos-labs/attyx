@@ -103,20 +103,29 @@ pub const SessionClient = struct {
     }
 
     /// Send input to a specific pane.
+    /// Large payloads are chunked to avoid blocking the main thread or
+    /// truncating data on non-blocking sockets.
     pub fn sendPaneInput(self: *SessionClient, pane_id: u32, bytes: []const u8) !void {
+        // Small input: encode and send in one message (fits in 512-byte buffer).
         if (bytes.len <= 508) {
             var payload_buf: [512]u8 = undefined;
             const payload = try protocol.encodePaneInput(&payload_buf, pane_id, bytes);
             try self.sendMessage(.pane_input, payload);
-        } else {
-            // Large input — send header + payload separately
-            var hdr: [protocol.header_size]u8 = undefined;
-            protocol.encodeHeader(&hdr, .pane_input, @intCast(4 + bytes.len));
-            _ = try posix.write(self.socket_fd, &hdr);
-            var id_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &id_buf, pane_id, .little);
-            _ = try posix.write(self.socket_fd, &id_buf);
-            _ = try posix.write(self.socket_fd, bytes);
+            return;
+        }
+
+        // Large input: split into chunks that fit the small path.
+        // Each chunk is a separate pane_input message so the daemon can
+        // process them incrementally without needing a huge contiguous write
+        // to the PTY.
+        const chunk_max: usize = 508;
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            const end = @min(offset + chunk_max, bytes.len);
+            var payload_buf: [512]u8 = undefined;
+            const payload = try protocol.encodePaneInput(&payload_buf, pane_id, bytes[offset..end]);
+            try self.sendMessage(.pane_input, payload);
+            offset = end;
         }
     }
 
@@ -427,12 +436,31 @@ pub const SessionClient = struct {
         if (payload.len <= 512) {
             const msg = protocol.encodeMessage(&msg_buf, msg_type, payload) catch
                 return error.EncodeFailed;
-            _ = try posix.write(self.socket_fd, msg);
+            try self.writeAll(msg);
         } else {
             var hdr: [protocol.header_size]u8 = undefined;
             protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
-            _ = try posix.write(self.socket_fd, &hdr);
-            _ = try posix.write(self.socket_fd, payload);
+            try self.writeAll(&hdr);
+            try self.writeAll(payload);
+        }
+    }
+
+    /// Write all bytes to the socket, handling short writes and WouldBlock.
+    fn writeAll(self: *SessionClient, data: []const u8) !void {
+        var offset: usize = 0;
+        var retries: u32 = 0;
+        while (offset < data.len) {
+            const n = posix.write(self.socket_fd, data[offset..]) catch |err| {
+                if (err == error.WouldBlock) {
+                    retries += 1;
+                    if (retries >= 200) return error.WouldBlock; // 200ms timeout
+                    posix.nanosleep(0, 1_000_000);
+                    continue;
+                }
+                return err;
+            };
+            offset += n;
+            retries = 0;
         }
     }
 

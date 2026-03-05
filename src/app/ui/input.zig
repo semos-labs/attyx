@@ -314,6 +314,82 @@ pub fn popupHandleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_
     }
 }
 
+// ---------------------------------------------------------------------------
+// Async paste buffer — large writes are queued here so the main thread
+// doesn't block.  The PTY reader thread drains it via drainPasteBuffer().
+// ---------------------------------------------------------------------------
+
+const paste_buf_cap: usize = 4 * 1024 * 1024; // 4 MB max buffered paste
+var paste_buf: ?[]u8 = null;
+var paste_len: usize = 0;
+var paste_offset: usize = 0;
+var paste_fd: posix.fd_t = -1;
+var paste_mutex: std.Thread.Mutex = .{};
+
+fn pasteAlloc() []u8 {
+    if (paste_buf) |b| return b;
+    paste_buf = std.heap.page_allocator.alloc(u8, paste_buf_cap) catch return &[0]u8{};
+    return paste_buf.?;
+}
+
+/// Enqueue data for async write.  Returns true if buffered successfully.
+fn enqueuePaste(fd: posix.fd_t, data: []const u8) bool {
+    paste_mutex.lock();
+    defer paste_mutex.unlock();
+
+    const buf = pasteAlloc();
+    if (buf.len == 0) return false;
+
+    // If there's already pending data for a different fd, flush concept doesn't
+    // apply — just overwrite (shouldn't happen in practice).
+    if (paste_len > 0 and paste_fd != fd) {
+        paste_len = 0;
+        paste_offset = 0;
+    }
+
+    const avail = buf.len - paste_len;
+    if (data.len > avail) return false;
+
+    @memcpy(buf[paste_len..][0..data.len], data);
+    paste_len += data.len;
+    paste_fd = fd;
+    return true;
+}
+
+/// Called from the PTY reader thread to drain buffered paste data.
+/// Writes as much as the PTY will accept without blocking, then returns.
+pub fn drainPasteBuffer() void {
+    paste_mutex.lock();
+    defer paste_mutex.unlock();
+
+    if (paste_len == 0) return;
+    const buf = paste_buf orelse return;
+    const fd = paste_fd;
+
+    while (paste_offset < paste_len) {
+        const remaining = buf[paste_offset..paste_len];
+        const chunk = remaining[0..@min(remaining.len, 4096)];
+        const n = posix.write(fd, chunk) catch |err| {
+            if (err == error.WouldBlock) return; // try again next tick
+            // Fatal write error — discard remaining paste
+            paste_len = 0;
+            paste_offset = 0;
+            return;
+        };
+        paste_offset += n;
+    }
+
+    // Fully drained
+    paste_len = 0;
+    paste_offset = 0;
+}
+
+pub fn hasPendingPaste() bool {
+    paste_mutex.lock();
+    defer paste_mutex.unlock();
+    return paste_len > 0;
+}
+
 pub fn sendInput(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
@@ -324,19 +400,47 @@ pub fn sendInput(bytes: [*]const u8, len: c_int) void {
         return;
     }
 
-    if (terminal.g_pty_master < 0) return;
+    const fd = terminal.g_pty_master;
+    if (fd < 0) return;
+
+    // If there's already buffered paste data, append to the buffer to
+    // preserve ordering (e.g. bracketed paste markers must follow data).
+    if (hasPendingPaste()) {
+        if (enqueuePaste(fd, data)) return;
+        // Buffer full — fall through to blocking write
+    }
+
+    // Try to write directly (non-blocking).
     const chunk_size: usize = 4096;
     var offset: usize = 0;
     while (offset < data.len) {
         const end = @min(offset + chunk_size, data.len);
-        const n = posix.write(terminal.g_pty_master, data[offset..end]) catch |err| {
-            if (err == error.WouldBlock) {
-                posix.nanosleep(0, 1_000_000);
-                continue;
-            }
+        const n = posix.write(fd, data[offset..end]) catch |err| {
+            if (err == error.WouldBlock) break;
             return;
         };
         offset += n;
+        // For large writes, only do one direct chunk then switch to async
+        // to avoid blocking the main thread.
+        if (data.len > chunk_size) break;
+    }
+
+    // Buffer whatever remains for the PTY thread to drain
+    if (offset < data.len) {
+        if (!enqueuePaste(fd, data[offset..])) {
+            // Buffer full — fall back to blocking write as last resort.
+            while (offset < data.len) {
+                const end = @min(offset + chunk_size, data.len);
+                const n = posix.write(fd, data[offset..end]) catch |err| {
+                    if (err == error.WouldBlock) {
+                        posix.nanosleep(0, 1_000_000);
+                        continue;
+                    }
+                    return;
+                };
+                offset += n;
+            }
+        }
     }
 }
 

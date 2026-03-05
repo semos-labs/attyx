@@ -559,7 +559,39 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    if (Lookup.get(root, "sessions", "root")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_session_finder_root) |old| allocator.free(old);
+            config.session_finder_root = dupe;
+            config._owned_session_finder_root = dupe;
+        } else {
+            std.debug.print("error: {s}: sessions.root must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "sessions", "finder_depth")) |v| {
+        if (v == .int) {
+            if (v.int < 1 or v.int > 8) {
+                std.debug.print("error: {s}: sessions.finder_depth must be between 1 and 8\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.session_finder_depth = @intCast(v.int);
+        } else {
+            std.debug.print("error: {s}: sessions.finder_depth must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "sessions", "finder_show_hidden")) |v| {
+        if (v == .bool) {
+            config.session_finder_show_hidden = v.bool;
+        } else {
+            std.debug.print("error: {s}: sessions.finder_show_hidden must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
     inline for (.{
+        .{ "icon_folder", &config.session_icon_folder, &config._owned_session_icon_folder },
         .{ "icon_filter", &config.session_icon_filter, &config._owned_session_icon_filter },
         .{ "icon_session", &config.session_icon_session, &config._owned_session_icon_session },
         .{ "icon_new", &config.session_icon_new, &config._owned_session_icon_new },

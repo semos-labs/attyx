@@ -19,10 +19,23 @@ pub const SessionEntry = struct {
     }
 };
 
+pub const max_fs_results = 8;
+
+pub const FsEntry = struct {
+    path_buf: [256]u8 = undefined,
+    path_len: u16 = 0,
+    score: i32 = 0,
+
+    pub fn getPath(self: *const FsEntry) []const u8 {
+        return self.path_buf[0..self.path_len];
+    }
+};
+
 pub const PickerAction = union(enum) {
     none,
     switch_session: u32,
     create_session: void,
+    create_session_at: []const u8,
     kill_session: u32,
     rename_session: struct { id: u32, name: []const u8 },
     close: void,
@@ -44,6 +57,10 @@ pub const SessionPickerState = struct {
     // Rename
     rename_buf: [64]u8 = .{0} ** 64,
     rename_len: u8 = 0,
+
+    // Filesystem results
+    fs_results: [max_fs_results]FsEntry = undefined,
+    fs_count: u8 = 0,
 
     // Context
     current_session_id: ?u32 = null,
@@ -173,14 +190,15 @@ pub const SessionPickerState = struct {
             },
             7 => return .close, // Escape
             8 => { // Enter
-                const total = self.totalCount();
-                if (self.selected == self.filtered_count) {
-                    return .create_session;
-                } else if (self.filtered_count > 0 and self.selected < self.filtered_count) {
+                if (self.selected < self.filtered_count) {
                     const e = &self.entries[self.filtered_indices[self.selected]];
                     return .{ .switch_session = e.id };
+                } else if (self.selected < self.filtered_count +| self.fs_count) {
+                    const fs_idx = self.selected - self.filtered_count;
+                    return .{ .create_session_at = self.fs_results[fs_idx].getPath() };
+                } else {
+                    return .create_session;
                 }
-                _ = total;
             },
             9 => self.moveUp(), // Up
             10 => self.moveDown(), // Down
@@ -228,9 +246,21 @@ pub const SessionPickerState = struct {
         }
     }
 
-    /// Total items = filtered sessions + 1 ("New session" entry).
+    /// Total items = filtered sessions + fs results + 1 ("New session" entry).
     pub fn totalCount(self: *const SessionPickerState) u8 {
-        return self.filtered_count +| 1;
+        return self.filtered_count +| self.fs_count +| 1;
+    }
+
+    /// Update filesystem results from the finder.
+    pub fn updateFsResults(self: *SessionPickerState, paths: []const []const u8, scores: []const i32) void {
+        const n: u8 = @intCast(@min(paths.len, max_fs_results));
+        for (0..n) |i| {
+            const plen = @min(paths[i].len, @as(usize, 256));
+            @memcpy(self.fs_results[i].path_buf[0..plen], paths[i][0..plen]);
+            self.fs_results[i].path_len = @intCast(plen);
+            self.fs_results[i].score = if (i < scores.len) scores[i] else 0;
+        }
+        self.fs_count = n;
     }
 
     pub fn applyFilter(self: *SessionPickerState) void {

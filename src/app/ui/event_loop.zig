@@ -54,6 +54,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         search.g_search = null;
     }
 
+    // Configure session finder from config
+    session_picker_ui.setFinderConfig(
+        ctx.session_finder_root,
+        ctx.session_finder_depth,
+        ctx.session_finder_show_hidden,
+    );
+
     // Apply initial grid offsets (statusbar/tab bar) and resize PTY
     publish.updateGridOffsets(ctx);
     publish.generateStatusbar(ctx);
@@ -179,6 +186,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Session picker input polling
         if (terminal.g_session_picker_active != 0) {
             _ = session_picker_ui.consumePickerInput(ctx);
+            session_picker_ui.tickFinder(ctx);
         }
 
         // Command palette input polling
@@ -348,7 +356,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        _ = posix.poll(fds[0..nfds], 16) catch break;
+        // Drain any buffered paste data before polling — this interleaves
+        // writing paste input with reading shell output, preventing deadlock
+        // when the kernel PTY buffer fills in both directions.
+        input.drainPasteBuffer();
+
+        // Shorten poll timeout when there's still pending paste data so we
+        // drain it promptly instead of waiting the full 16ms.
+        const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
+        _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
 
         var got_data = false;
         const active_focused_pane = ctx.tab_mgr.activePane();
