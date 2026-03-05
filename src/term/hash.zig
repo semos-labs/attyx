@@ -26,9 +26,9 @@ pub fn hash(st: *const state_mod.TerminalState) u64 {
 
 test "identical states produce same hash" {
     const alloc = std.testing.allocator;
-    var s1 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s1 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s1.deinit();
-    var s2 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s2 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s2.deinit();
 
     try std.testing.expectEqual(hash(&s1), hash(&s2));
@@ -36,9 +36,9 @@ test "identical states produce same hash" {
 
 test "different content produces different hash" {
     const alloc = std.testing.allocator;
-    var s1 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s1 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s1.deinit();
-    var s2 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s2 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s2.deinit();
 
     s2.grid.setCell(0, 0, .{ .char = 'X' });
@@ -48,9 +48,9 @@ test "different content produces different hash" {
 
 test "cursor move changes hash" {
     const alloc = std.testing.allocator;
-    var s1 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s1 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s1.deinit();
-    var s2 = try state_mod.TerminalState.init(alloc, 4, 6);
+    var s2 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s2.deinit();
 
     s2.cursor.col = 3;

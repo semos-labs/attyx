@@ -125,7 +125,7 @@ test "golden: multiple scrolls" {
 
 test "apply print writes to grid and advances cursor" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -136,7 +136,7 @@ test "apply print writes to grid and advances cursor" {
 
 test "apply control.bs clamps at column 0" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .control = .bs });
@@ -145,7 +145,7 @@ test "apply control.bs clamps at column 0" {
 
 test "apply control.cr resets column to 0" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -157,7 +157,7 @@ test "apply control.cr resets column to 0" {
 
 test "apply control.lf moves down, preserves column" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 3, 4);
+    var t = try TerminalState.init(alloc, 3, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -168,7 +168,7 @@ test "apply control.lf moves down, preserves column" {
 
 test "apply control.tab advances to next 8-column stop" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 20);
+    var t = try TerminalState.init(alloc, 2, 20, 100);
     defer t.deinit();
 
     t.apply(.{ .control = .tab });
@@ -179,7 +179,7 @@ test "apply control.tab advances to next 8-column stop" {
 
 test "apply nop has no effect" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'X' });
@@ -193,7 +193,7 @@ test "apply nop has no effect" {
 
 test "printed cells carry current pen style" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.pen = .{ .fg = Color.red, .bold = true };
@@ -210,7 +210,7 @@ test "printed cells carry current pen style" {
 test "combining diacritical attaches to previous cell" {
     // 'a' + U+0308 (combining diaeresis) → cell has base 'a' + combining[0] = 0x0308
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'a' });
@@ -226,7 +226,7 @@ test "combining diacritical attaches to previous cell" {
 test "two combining marks attach to same cell" {
     // 'a' + U+0308 (diaeresis) + U+0301 (acute) → both slots filled
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'a' });
@@ -241,7 +241,7 @@ test "two combining marks attach to same cell" {
 test "Thai combining marks stored in cell" {
     // Thai: ko kai (U+0E01) + sara i (U+0E34) + mai ek (U+0E48)
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 0x0E01 }); // ko kai (base consonant)
@@ -256,7 +256,7 @@ test "Thai combining marks stored in cell" {
 test "combining mark at column 0 is absorbed without crash" {
     // Sending a combining mark as the very first character
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 0x0308 }); // combining diaeresis at col 0
@@ -277,7 +277,7 @@ test "Thai UTF-8 combining marks are zero-width through engine" {
     // "แผ่นดิน" = แ(1) + ผ(1) + ่(0) + น(1) + ด(1) + ิ(0) + น(1) = 5 cells
     const alloc = std.testing.allocator;
     const Engine = @import("../../term/engine.zig").Engine;
-    var e = try Engine.init(alloc, 2, 20);
+    var e = try Engine.init(alloc, 2, 20, 100);
     defer e.deinit();
 
     // แ=E0B981  ผ=E0B89C  ่=E0B988  น=E0B899  ด=E0B894  ิ=E0B8B4  น=E0B899
@@ -301,7 +301,7 @@ test "Thai two-column alignment: cursor position matches pipe separator" {
     // Bytes extracted from actual file hex dump.
     const alloc = std.testing.allocator;
     const Engine = @import("../../term/engine.zig").Engine;
-    var e = try Engine.init(alloc, 2, 80);
+    var e = try Engine.init(alloc, 2, 80, 100);
     defer e.deinit();
 
     // "    ๏ แผ่นดินฮั่นเสื่อมโทรมแสนสังเวช  "

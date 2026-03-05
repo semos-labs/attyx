@@ -10,6 +10,7 @@ const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
 const Pane = @import("pane.zig").Pane;
+const Scrollback = attyx.Scrollback;
 const theme_registry_mod = @import("../theme/registry.zig");
 const Theme = theme_registry_mod.Theme;
 
@@ -114,7 +115,7 @@ pub const PopupState = struct {
             }
             var argv: [8][:0]const u8 = undefined;
             for (tokens[0..tc], 0..) |t, i| argv[i] = t;
-            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, .{
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, Scrollback.default_max_lines, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
                 .skip_shell_integration = true,
@@ -142,7 +143,7 @@ pub const PopupState = struct {
             defer allocator.free(cmd_z);
 
             const shell_argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
-            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, .{
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, Scrollback.default_max_lines, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
                 .skip_shell_integration = true,

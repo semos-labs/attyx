@@ -10,7 +10,7 @@ const expectSnapshot = helpers.expectSnapshot;
 
 test "attr: scroll region set and reset" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 6);
+    var engine = try Engine.init(alloc, 5, 6, 100);
     defer engine.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), engine.state.scroll_top);
@@ -27,7 +27,7 @@ test "attr: scroll region set and reset" {
 
 test "attr: invalid scroll region is ignored" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 6);
+    var engine = try Engine.init(alloc, 5, 6, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[2;4r");
@@ -179,7 +179,7 @@ test "golden: RI outside region just moves cursor up" {
 
 test "default scroll region is full screen" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 5, 4);
+    var t = try TerminalState.init(alloc, 5, 4, 100);
     defer t.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), t.scroll_top);
@@ -188,7 +188,7 @@ test "default scroll region is full screen" {
 
 test "reverse index at top of region scrolls down" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 5, 2);
+    var t = try TerminalState.init(alloc, 5, 2, 100);
     defer t.deinit();
 
     t.grid.setCell(1, 0, .{ .char = 'B' });

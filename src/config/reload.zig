@@ -31,7 +31,7 @@ test "no_config returns default AppConfig" {
     const cfg = try loadReloadedConfig(std.testing.allocator, true, null, &.{});
     try std.testing.expectEqual(@as(u16, 14), cfg.font_size);
     try std.testing.expectEqualStrings("JetBrains Mono", cfg.font_family);
-    try std.testing.expectEqual(@as(u32, 20_000), cfg.scrollback_lines);
+    try std.testing.expectEqual(@as(u32, 5_000), cfg.scrollback_lines);
     try std.testing.expect(cfg.reflow_enabled);
     try std.testing.expect(cfg.cursor_blink);
 }

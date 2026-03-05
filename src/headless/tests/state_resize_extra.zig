@@ -7,7 +7,7 @@ const TerminalState = @import("../../term/state.zig").TerminalState;
 
 test "resize: scrollback migration on col change" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     // Fill row 0 and scroll it into scrollback via LF overflow
@@ -32,7 +32,7 @@ test "resize: scrollback migration on col change" {
 
 test "resize: alt screen resize no reflow" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.apply(.enter_alt_screen);
@@ -51,7 +51,7 @@ test "resize: alt screen resize no reflow" {
 
 test "resize: reflow_on_resize = false skips reflow" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.reflow_on_resize = false;
@@ -68,7 +68,7 @@ test "resize: reflow_on_resize = false skips reflow" {
 
 test "resize: viewport_offset reset to 0" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.viewport_offset = 10;
@@ -80,7 +80,7 @@ test "resize: right-aligned content stripped on shrink" {
     const alloc = std.testing.allocator;
     const Grid = @import("../../term/grid.zig");
     const Style = Grid.Style;
-    var t = try TerminalState.init(alloc, 4, 40);
+    var t = try TerminalState.init(alloc, 4, 40, 100);
     defer t.deinit();
 
     const cyan = Style{ .fg = .{ .ansi = 6 } };

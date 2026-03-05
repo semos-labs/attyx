@@ -39,8 +39,9 @@ pub const Pane = struct {
         cols: u16,
         argv: ?[]const [:0]const u8,
         cwd: ?[*:0]const u8,
+        scrollback_lines: usize,
     ) !Pane {
-        return spawnOpts(allocator, rows, cols, argv, cwd, .{});
+        return spawnOpts(allocator, rows, cols, argv, cwd, scrollback_lines, .{});
     }
 
     pub const SpawnOpts = struct {
@@ -55,9 +56,10 @@ pub const Pane = struct {
         cols: u16,
         argv: ?[]const [:0]const u8,
         cwd: ?[*:0]const u8,
+        scrollback_lines: usize,
         opts: SpawnOpts,
     ) !Pane {
-        var engine = try Engine.init(allocator, rows, cols);
+        var engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         errdefer engine.deinit();
 
         const pty = try Pty.spawn(.{
@@ -80,8 +82,8 @@ pub const Pane = struct {
     /// Create a Pane backed by a daemon PTY (engine only, no local PTY spawn).
     /// I/O goes through the shared session socket. The local PTY fields are
     /// unused and deinit skips PTY cleanup when daemon_pane_id is set.
-    pub fn initDaemonBacked(allocator: Allocator, rows: u16, cols: u16) !Pane {
-        const engine = try Engine.init(allocator, rows, cols);
+    pub fn initDaemonBacked(allocator: Allocator, rows: u16, cols: u16, scrollback_lines: usize) !Pane {
+        const engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         return .{
             .engine = engine,
             .pty = .{ .master = -1, .pid = 0 },

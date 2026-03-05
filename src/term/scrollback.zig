@@ -18,7 +18,7 @@ pub const Scrollback = struct {
     count: usize = 0,
     allocator: std.mem.Allocator,
 
-    pub const default_max_lines: usize = 10_000;
+    pub const default_max_lines: usize = 5_000;
 
     pub fn init(allocator: std.mem.Allocator, max_lines: usize, cols: usize) !Scrollback {
         std.debug.assert(max_lines > 0 and cols > 0);

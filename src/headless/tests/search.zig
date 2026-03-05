@@ -3,7 +3,7 @@ const Engine = @import("../../term/engine.zig").Engine;
 const SearchState = @import("../../term/search.zig").SearchState;
 
 test "search: find text in engine grid" {
-    var eng = try Engine.init(std.testing.allocator, 5, 80);
+    var eng = try Engine.init(std.testing.allocator, 5, 80, 100);
     defer eng.deinit();
 
     eng.feed("hello world\r\n");
@@ -17,7 +17,7 @@ test "search: find text in engine grid" {
 }
 
 test "search: find text pushed into scrollback" {
-    var eng = try Engine.init(std.testing.allocator, 3, 20);
+    var eng = try Engine.init(std.testing.allocator, 3, 20, 100);
     defer eng.deinit();
 
     eng.feed("error one\r\n");
@@ -34,7 +34,7 @@ test "search: find text pushed into scrollback" {
 }
 
 test "search: navigation scrolls through matches" {
-    var eng = try Engine.init(std.testing.allocator, 4, 40);
+    var eng = try Engine.init(std.testing.allocator, 4, 40, 100);
     defer eng.deinit();
 
     eng.feed("aaa\r\n");
@@ -58,7 +58,7 @@ test "search: navigation scrolls through matches" {
 }
 
 test "search: viewport offset for current match" {
-    var eng = try Engine.init(std.testing.allocator, 3, 20);
+    var eng = try Engine.init(std.testing.allocator, 3, 20, 100);
     defer eng.deinit();
 
     // Push many lines to build scrollback
@@ -77,7 +77,7 @@ test "search: viewport offset for current match" {
 }
 
 test "search: clear resets state" {
-    var eng = try Engine.init(std.testing.allocator, 4, 40);
+    var eng = try Engine.init(std.testing.allocator, 4, 40, 100);
     defer eng.deinit();
 
     eng.feed("hello\r\n");

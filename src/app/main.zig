@@ -154,7 +154,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var state = try TerminalState.init(allocator, 24, 80);
+    var state = try TerminalState.init(allocator, 24, 80, @import("attyx").Scrollback.default_max_lines);
     defer state.deinit();
 
     populateDemo(&state);

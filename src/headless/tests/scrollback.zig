@@ -58,7 +58,7 @@ test "scrollback: clear resets count" {
 
 test "scrollback: integration — scroll_up saves top row" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 4);
+    var engine = try Engine.init(alloc, 3, 4, 100);
     defer engine.deinit();
 
     // Fill 3 rows
@@ -85,7 +85,7 @@ test "scrollback: integration — scroll_up saves top row" {
 
 test "scrollback: alt screen does not save" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 4);
+    var engine = try Engine.init(alloc, 3, 4, 100);
     defer engine.deinit();
 
     engine.feed("AAAA\r\nBBBB\r\nCCCC");
@@ -106,7 +106,7 @@ test "scrollback: alt screen does not save" {
 
 test "scrollback: CSI scroll_up saves multiple rows" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 4, 3);
+    var engine = try Engine.init(alloc, 4, 3, 100);
     defer engine.deinit();
 
     engine.feed("AAA\r\nBBB\r\nCCC\r\nDDD");
@@ -122,7 +122,7 @@ test "scrollback: CSI scroll_up saves multiple rows" {
 
 test "scrollback: viewport_offset bumped on scroll when >0" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 4);
+    var engine = try Engine.init(alloc, 3, 4, 100);
     defer engine.deinit();
 
     engine.feed("AAAA\r\nBBBB\r\nCCCC");
@@ -143,7 +143,7 @@ test "scrollback: viewport_offset bumped on scroll when >0" {
 
 test "scrollback: resize migrates scrollback on column change" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 4);
+    var engine = try Engine.init(alloc, 3, 4, 100);
     defer engine.deinit();
 
     engine.feed("AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
@@ -161,7 +161,7 @@ test "scrollback: resize migrates scrollback on column change" {
 
 test "scrollback: vertical shrink saves content, grow preserves scrollback" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 4, 4);
+    var engine = try Engine.init(alloc, 4, 4, 100);
     defer engine.deinit();
 
     // Fill all 4 rows, cursor ends at row 3
@@ -193,7 +193,7 @@ test "scrollback: vertical shrink saves content, grow preserves scrollback" {
 
 test "scrollback: col-change resize saves dropped rows via reflow" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 4, 6);
+    var engine = try Engine.init(alloc, 4, 6, 100);
     defer engine.deinit();
 
     // Fill 4 rows at 6 cols, cursor ends at row 3

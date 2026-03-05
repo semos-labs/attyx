@@ -12,7 +12,7 @@ const expectSnapshot = helpers.expectSnapshot;
 
 test "attr: OSC 8 hyperlink attaches link_id to cells" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;https://example.com\x1b\\");
@@ -36,7 +36,7 @@ test "attr: OSC 8 hyperlink attaches link_id to cells" {
 
 test "attr: multiple OSC 8 links get different IDs" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;https://a.com\x1b\\A");
@@ -54,7 +54,7 @@ test "attr: multiple OSC 8 links get different IDs" {
 
 test "attr: OSC 8 with BEL terminator" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;https://bel.com\x07X");
@@ -67,7 +67,7 @@ test "attr: OSC 8 with BEL terminator" {
 
 test "attr: OSC 8 survives chunked input" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;https://examp");
@@ -83,7 +83,7 @@ test "attr: OSC 8 survives chunked input" {
 
 test "attr: OSC overflow is safely ignored" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;");
@@ -109,7 +109,7 @@ test "golden: OSC sequences don't affect character output" {
 
 test "attr: OSC 2 sets terminal title" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]2;MyTitle\x07");
@@ -118,7 +118,7 @@ test "attr: OSC 2 sets terminal title" {
 
 test "attr: OSC 0 also sets terminal title" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]0;WindowTitle\x1b\\");
@@ -127,7 +127,7 @@ test "attr: OSC 0 also sets terminal title" {
 
 test "attr: title is replaced on subsequent OSC 2" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]2;First\x07");
@@ -141,7 +141,7 @@ test "attr: title is replaced on subsequent OSC 2" {
 
 test "printed cells carry pen_link_id" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.pen_link_id = 42;
@@ -151,7 +151,7 @@ test "printed cells carry pen_link_id" {
 
 test "startHyperlink allocates URI and sets pen_link_id" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .hyperlink_start = "https://example.com" });
@@ -161,7 +161,7 @@ test "startHyperlink allocates URI and sets pen_link_id" {
 
 test "endHyperlink clears pen_link_id" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .hyperlink_start = "https://example.com" });
@@ -171,7 +171,7 @@ test "endHyperlink clears pen_link_id" {
 
 test "getLinkUri returns null for id 0 and unknown ids" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     try std.testing.expect(t.getLinkUri(0) == null);
@@ -180,7 +180,7 @@ test "getLinkUri returns null for id 0 and unknown ids" {
 
 test "OSC 8 link spans multiple cells with same link_id" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 20);
+    var engine = try Engine.init(alloc, 2, 20, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]8;;https://foo.bar\x1b\\");
@@ -204,7 +204,7 @@ test "OSC 8 link spans multiple cells with same link_id" {
 
 test "setTitle stores and replaces title" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .set_title = "Hello" });
@@ -251,7 +251,7 @@ test "parser: OSC 7337 unknown sub-command returns nop" {
 
 test "state: inject buffer fills and drains correctly" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     // Initially empty
@@ -269,7 +269,7 @@ test "state: inject buffer fills and drains correctly" {
 
 test "integration: OSC 7337 through engine produces drainMainInject payload" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 20);
+    var engine = try Engine.init(alloc, 2, 20, 100);
     defer engine.deinit();
 
     engine.feed("\x1b]7337;write-main;tmux attach -t 0\n\x07");

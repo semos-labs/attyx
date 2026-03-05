@@ -416,12 +416,9 @@ pub fn run(
 
     // Always spawn a local Pane (provides Engine + TabManager integration).
     // In session mode, the Pane's PTY is idle — I/O goes through the daemon socket.
-    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null);
+    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null, config.scrollback_lines);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
-    if (config.scrollback_lines != 20_000) {
-        initial_pane.engine.state.scrollback.max_lines = config.scrollback_lines;
-    }
 
     // Transfer SessionClient to heap — shared by all panes via ctx.
     // Assign daemon_pane_id to the initial pane and send focus_panes.
@@ -451,7 +448,7 @@ pub fn run(
             if (layout_codec.deserialize(heap_sc.layout_buf[0..heap_sc.layout_len])) |info| {
                 if (info.tab_count > 0) {
                     tab_mgr.reset(); // tear down initial pane
-                    tab_mgr.reconstructFromLayout(&info, initial_pty_rows, config.cols) catch {
+                    tab_mgr.reconstructFromLayout(&info, initial_pty_rows, config.cols, config.scrollback_lines) catch {
                         logging.err("session", "layout reconstruction failed", .{});
                     };
                     if (tab_mgr.count > 0) {

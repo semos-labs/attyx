@@ -22,9 +22,9 @@ pub const Engine = struct {
 
     const tmux_artifact = "Ptmux;]";
 
-    pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !Engine {
+    pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize, scrollback_lines: usize) !Engine {
         return .{
-            .state = try TerminalState.init(allocator, rows, cols),
+            .state = try TerminalState.init(allocator, rows, cols, scrollback_lines),
         };
     }
 
@@ -99,7 +99,7 @@ pub const Engine = struct {
 
 test "engine feed produces same result as direct apply" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 2, 4);
+    var e = try Engine.init(alloc, 2, 4, 100);
     defer e.deinit();
 
     e.feed("Hi");
@@ -110,7 +110,7 @@ test "engine feed produces same result as direct apply" {
 
 test "literal Ptmux;] artifact is suppressed" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 2, 40);
+    var e = try Engine.init(alloc, 2, 40, 100);
     defer e.deinit();
 
     e.feed("AB" ++ "Ptmux;]" ++ "CD");
@@ -122,7 +122,7 @@ test "literal Ptmux;] artifact is suppressed" {
 
 test "Ptmux;] filter works across feed boundaries" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 2, 40);
+    var e = try Engine.init(alloc, 2, 40, 100);
     defer e.deinit();
 
     e.feed("XPtmu");
@@ -134,7 +134,7 @@ test "Ptmux;] filter works across feed boundaries" {
 
 test "partial Ptmux match flushes on mismatch" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 2, 40);
+    var e = try Engine.init(alloc, 2, 40, 100);
     defer e.deinit();
 
     // "Ptm" doesn't complete the pattern — should be printed.
@@ -147,7 +147,7 @@ test "partial Ptmux match flushes on mismatch" {
 
 test "OSC 0 sets window title" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 4, 20);
+    var e = try Engine.init(alloc, 4, 20, 100);
     defer e.deinit();
 
     // OSC 0 ; title BEL
@@ -158,7 +158,7 @@ test "OSC 0 sets window title" {
 
 test "OSC 2 sets window title" {
     const alloc = std.testing.allocator;
-    var e = try Engine.init(alloc, 4, 20);
+    var e = try Engine.init(alloc, 4, 20, 100);
     defer e.deinit();
 
     // OSC 2 ; title ST (ESC \)
