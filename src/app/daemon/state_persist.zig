@@ -1,22 +1,20 @@
 const std = @import("std");
 const DaemonSession = @import("session.zig").DaemonSession;
-const session_connect = @import("../session_connect.zig");
 
 const max_sessions: usize = 32;
 
 // ── State file path ──
 
 pub fn getStatePath(buf: *[512]u8) ?[]const u8 {
-    const suffix = session_connect.exePathHash();
     if (comptime @import("builtin").os.tag == .macos) {
         const home = std.posix.getenv("HOME") orelse return null;
-        return std.fmt.bufPrint(buf, "{s}/Library/Application Support/attyx/recent-{s}.json", .{ home, suffix }) catch null;
+        return std.fmt.bufPrint(buf, "{s}/Library/Application Support/attyx/recent.json", .{home}) catch null;
     } else {
         const state_home = std.posix.getenv("XDG_STATE_HOME") orelse blk: {
             const home = std.posix.getenv("HOME") orelse return null;
             break :blk std.fmt.bufPrint(buf, "{s}/.local/state", .{home}) catch return null;
         };
-        return std.fmt.bufPrint(buf, "{s}/attyx/recent-{s}.json", .{ state_home, suffix }) catch null;
+        return std.fmt.bufPrint(buf, "{s}/attyx/recent.json", .{state_home}) catch null;
     }
 }
 
