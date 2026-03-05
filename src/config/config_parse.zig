@@ -362,6 +362,18 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    if (Lookup.get(root, "program", "working-directory")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_working_directory) |old| allocator.free(old);
+            config.working_directory = dupe;
+            config._owned_working_directory = dupe;
+        } else {
+            std.debug.print("error: {s}: program.working-directory must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [logging]
     if (Lookup.get(root, "logging", "level")) |v| {
         if (v == .string) {

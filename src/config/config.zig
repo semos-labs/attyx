@@ -139,6 +139,7 @@ pub const AppConfig = struct {
     // [program]
     program: ?[]const u8 = null,
     program_args: ?[]const []const u8 = null,
+    working_directory: ?[]const u8 = null,
 
     // [logging]
     log_level: ?[]const u8 = null,
@@ -192,6 +193,7 @@ pub const AppConfig = struct {
     _owned_fallback_items: ?[]const []const u8 = null,
     _owned_program: ?[]const u8 = null,
     _owned_program_args: ?[]const []const u8 = null,
+    _owned_working_directory: ?[]const u8 = null,
     _owned_log_level: ?[]const u8 = null,
     _owned_log_file: ?[]const u8 = null,
 
@@ -210,6 +212,7 @@ pub const AppConfig = struct {
         }
         if (self._owned_log_level) |s| alloc.free(s);
         if (self._owned_log_file)  |s| alloc.free(s);
+        if (self._owned_working_directory) |s| alloc.free(s);
         if (self._owned_session_icon_filter) |s| alloc.free(s);
         if (self._owned_session_icon_session) |s| alloc.free(s);
         if (self._owned_session_icon_new) |s| alloc.free(s);

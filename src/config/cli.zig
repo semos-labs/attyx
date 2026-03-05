@@ -128,6 +128,8 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.cursor_trail = false;
         } else if (std.mem.eql(u8, arg, "--shell")) {
             result.config.program = requireArg(args, &i, "--shell");
+        } else if (std.mem.eql(u8, arg, "--working-directory") or std.mem.eql(u8, arg, "-d")) {
+            result.config.working_directory = requireArg(args, &i, "--working-directory");
         } else if (std.mem.eql(u8, arg, "--background-opacity")) {
             const val = requireArg(args, &i, "--background-opacity");
             const raw = std.fmt.parseFloat(f32, val) catch fatal("invalid --background-opacity value");
@@ -241,6 +243,9 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         } else if (std.mem.eql(u8, arg, "--shell")) {
             i += 1;
             if (i < args.len) config.program = args[i];
+        } else if (std.mem.eql(u8, arg, "--working-directory") or std.mem.eql(u8, arg, "-d")) {
+            i += 1;
+            if (i < args.len) config.working_directory = args[i];
         } else if (std.mem.eql(u8, arg, "--background-opacity")) {
             i += 1;
             if (i < args.len)
@@ -351,6 +356,8 @@ pub fn printUsage() void {
         \\  --cursor-trail / --no-cursor-trail
         \\                             Enable/disable cursor trail effect
         \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
+        \\  -d, --working-directory <path>
+        \\                             Initial working directory (default: ~)
         \\  --background-opacity <f>   Background opacity 0.0-1.0 (default: 1.0)
         \\  --background-blur <int>    Background blur radius when opacity < 1 (default: 30)
         \\  --decorations / --no-decorations

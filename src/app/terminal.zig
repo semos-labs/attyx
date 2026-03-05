@@ -346,9 +346,10 @@ pub fn run(
         }
     }
 
-    // Capture process CWD for session creation (defaults to $HOME).
+    // Resolve initial working directory: config > $HOME > process CWD > /
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const initial_cwd: []const u8 = posix.getcwd(&cwd_buf) catch if (std.posix.getenv("HOME")) |h| h else "/";
+    const initial_cwd: []const u8 = config.working_directory orelse
+        (std.posix.getenv("HOME") orelse (posix.getcwd(&cwd_buf) catch "/"));
 
     // In session mode: attach to last active session, or create a new one.
     var initial_pane_ids: [32]u32 = .{0} ** 32;
