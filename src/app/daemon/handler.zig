@@ -89,6 +89,13 @@ fn handleCreate(
         cwd_z_buf[create.cwd.len] = 0;
         break :blk @ptrCast(&cwd_z_buf);
     } else null;
+    // Null-terminate shell program
+    var shell_z_buf: [257]u8 = undefined;
+    const shell_z: ?[*:0]const u8 = if (create.shell.len > 0 and create.shell.len < shell_z_buf.len) blk: {
+        @memcpy(shell_z_buf[0..create.shell.len], create.shell);
+        shell_z_buf[create.shell.len] = 0;
+        break :blk @ptrCast(&shell_z_buf);
+    } else null;
     const initial_pane_id = next_pane_id.*;
     next_pane_id.* += 1;
     sessions[slot_idx] = DaemonSession.spawn(
@@ -100,6 +107,7 @@ fn handleCreate(
         replay_capacity,
         cwd_z,
         initial_pane_id,
+        shell_z,
     ) catch {
         cl.sendError(3, "spawn failed");
         return;

@@ -49,11 +49,12 @@ pub fn decodeHeader(buf: *const [header_size]u8) !struct { msg_type: MessageType
 
 // ── Encode helpers ──
 
-/// Encode Create message payload: name_len:u16, name:[N]u8, rows:u16, cols:u16, cwd_len:u16, cwd:[M]u8
-pub fn encodeCreate(buf: []u8, name: []const u8, rows: u16, cols: u16, cwd: []const u8) ![]u8 {
+/// Encode Create message payload: name_len:u16, name:[N]u8, rows:u16, cols:u16, cwd_len:u16, cwd:[M]u8, shell_len:u16, shell:[K]u8
+pub fn encodeCreate(buf: []u8, name: []const u8, rows: u16, cols: u16, cwd: []const u8, shell: []const u8) ![]u8 {
     const name_len: u16 = @intCast(@min(name.len, 64));
     const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
-    const total = 2 + name_len + 2 + 2 + 2 + cwd_len;
+    const shell_len: u16 = @intCast(@min(shell.len, 256));
+    const total = 2 + name_len + 2 + 2 + 2 + cwd_len + 2 + shell_len;
     if (buf.len < total) return error.BufferTooSmall;
     std.mem.writeInt(u16, buf[0..2], name_len, .little);
     @memcpy(buf[2 .. 2 + name_len], name[0..name_len]);
@@ -62,6 +63,9 @@ pub fn encodeCreate(buf: []u8, name: []const u8, rows: u16, cols: u16, cwd: []co
     const cwd_off = 6 + @as(usize, name_len);
     std.mem.writeInt(u16, buf[cwd_off..][0..2], cwd_len, .little);
     @memcpy(buf[cwd_off + 2 .. cwd_off + 2 + cwd_len], cwd[0..cwd_len]);
+    const shell_off = cwd_off + 2 + cwd_len;
+    std.mem.writeInt(u16, buf[shell_off..][0..2], shell_len, .little);
+    @memcpy(buf[shell_off + 2 .. shell_off + 2 + shell_len], shell[0..shell_len]);
     return buf[0..total];
 }
 
@@ -122,7 +126,7 @@ pub fn encodeError(buf: []u8, code: u8, msg: []const u8) ![]u8 {
 
 // ── Decode helpers ──
 
-pub const CreateMsg = struct { name: []const u8, rows: u16, cols: u16, cwd: []const u8 };
+pub const CreateMsg = struct { name: []const u8, rows: u16, cols: u16, cwd: []const u8, shell: []const u8 };
 
 pub fn decodeCreate(payload: []const u8) !CreateMsg {
     if (payload.len < 6) return error.PayloadTooShort;
@@ -131,10 +135,20 @@ pub fn decodeCreate(payload: []const u8) !CreateMsg {
     const after_cols = 6 + @as(usize, name_len);
     // CWD field: cwd_len:u16, cwd:[M]u8 (optional for backward compat)
     var cwd: []const u8 = "";
+    var after_cwd: usize = after_cols;
     if (payload.len >= after_cols + 2) {
         const cwd_len = std.mem.readInt(u16, payload[after_cols..][0..2], .little);
         if (payload.len >= after_cols + 2 + cwd_len) {
             cwd = payload[after_cols + 2 .. after_cols + 2 + cwd_len];
+            after_cwd = after_cols + 2 + cwd_len;
+        }
+    }
+    // Shell field: shell_len:u16, shell:[K]u8 (optional for backward compat)
+    var shell: []const u8 = "";
+    if (payload.len >= after_cwd + 2) {
+        const shell_len = std.mem.readInt(u16, payload[after_cwd..][0..2], .little);
+        if (payload.len >= after_cwd + 2 + shell_len) {
+            shell = payload[after_cwd + 2 .. after_cwd + 2 + shell_len];
         }
     }
     return .{
@@ -142,6 +156,7 @@ pub fn decodeCreate(payload: []const u8) !CreateMsg {
         .rows = std.mem.readInt(u16, payload[2 + name_len ..][0..2], .little),
         .cols = std.mem.readInt(u16, payload[4 + name_len ..][0..2], .little),
         .cwd = cwd,
+        .shell = shell,
     };
 }
 
@@ -478,12 +493,22 @@ test "header round-trip" {
 
 test "create round-trip" {
     var buf: [256]u8 = undefined;
-    const payload = try encodeCreate(&buf, "my-session", 24, 80, "/home/user/project");
+    const payload = try encodeCreate(&buf, "my-session", 24, 80, "/home/user/project", "/usr/bin/fish");
     const msg = try decodeCreate(payload);
     try std.testing.expectEqualStrings("my-session", msg.name);
     try std.testing.expectEqual(@as(u16, 24), msg.rows);
     try std.testing.expectEqual(@as(u16, 80), msg.cols);
     try std.testing.expectEqualStrings("/home/user/project", msg.cwd);
+    try std.testing.expectEqualStrings("/usr/bin/fish", msg.shell);
+}
+
+test "create round-trip without shell (backward compat)" {
+    var buf: [256]u8 = undefined;
+    const payload = try encodeCreate(&buf, "my-session", 24, 80, "/home/user/project", "");
+    const msg = try decodeCreate(payload);
+    try std.testing.expectEqualStrings("my-session", msg.name);
+    try std.testing.expectEqualStrings("/home/user/project", msg.cwd);
+    try std.testing.expectEqualStrings("", msg.shell);
 }
 
 test "create round-trip without cwd (backward compat)" {

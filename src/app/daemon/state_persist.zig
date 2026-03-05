@@ -88,6 +88,8 @@ fn writeSession(w: anytype, s: *const DaemonSession) !void {
     try writeJsonString(w, name);
     try w.writeAll("\",\n      \"cwd\": \"");
     try writeJsonString(w, cwd);
+    try w.writeAll("\",\n      \"shell\": \"");
+    try writeJsonString(w, s.shell[0..s.shell_len]);
     try w.print("\",\n      \"rows\": {d},\n      \"cols\": {d},\n      \"layout\": \"", .{ s.rows, s.cols });
     // Hex-encode layout blob
     const hex_chars = "0123456789abcdef";
@@ -169,6 +171,11 @@ pub fn load(
             const clen: u16 = @intCast(@min(cwd.len, 1024));
             @memcpy(s.cwd[0..clen], cwd[0..clen]);
             s.cwd_len = clen;
+        }
+        if (findJsonString(obj, "shell")) |shell| {
+            const slen: u16 = @intCast(@min(shell.len, 256));
+            @memcpy(s.shell[0..slen], shell[0..slen]);
+            s.shell_len = slen;
         }
         if (findJsonString(obj, "layout")) |hex| {
             const decoded_len = @min(hex.len / 2, s.layout_data.len);

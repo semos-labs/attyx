@@ -300,7 +300,7 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     else
         cwd;
     const session_name = if (name.len > 0) name else "shell";
-    const new_id = sc.createSession(session_name, pty_rows, ctx.grid_cols, cwd) catch |err| {
+    const new_id = sc.createSession(session_name, pty_rows, ctx.grid_cols, cwd, "") catch |err| {
         logging.err("session-picker", "create failed: {}", .{err});
         return;
     };

@@ -28,10 +28,17 @@ pub const DaemonPane = struct {
         cols: u16,
         replay_capacity: usize,
         cwd: ?[*:0]const u8,
+        shell: ?[*:0]const u8,
     ) !DaemonPane {
+        // Build argv from shell if configured, otherwise PTY falls back to $SHELL.
+        var shell_argv: [1][:0]const u8 = undefined;
+        const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
+            shell_argv[0] = std.mem.sliceTo(s, 0);
+            break :blk &shell_argv;
+        } else null;
         return .{
             .id = id,
-            .pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .cwd = cwd }),
+            .pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .cwd = cwd, .argv = argv }),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,

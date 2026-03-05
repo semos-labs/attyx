@@ -56,9 +56,9 @@ pub const SessionClient = struct {
     }
 
     /// Create a new session on the daemon. Returns session ID.
-    pub fn createSession(self: *SessionClient, name: []const u8, rows: u16, cols: u16, cwd: []const u8) !u32 {
-        var payload_buf: [4224]u8 = undefined; // 128 name + 4096 cwd + overhead
-        const payload = try protocol.encodeCreate(&payload_buf, name, rows, cols, cwd);
+    pub fn createSession(self: *SessionClient, name: []const u8, rows: u16, cols: u16, cwd: []const u8, shell: []const u8) !u32 {
+        var payload_buf: [4484]u8 = undefined; // 128 name + 4096 cwd + 256 shell + overhead
+        const payload = try protocol.encodeCreate(&payload_buf, name, rows, cols, cwd, shell);
         try self.sendMessage(.create, payload);
         return self.waitForResponse(.created, 5000);
     }

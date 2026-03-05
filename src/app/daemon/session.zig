@@ -22,6 +22,10 @@ pub const DaemonSession = struct {
     cwd: [1024]u8 = .{0} ** 1024,
     cwd_len: u16 = 0,
 
+    /// Session shell program — used as default shell for new panes.
+    shell: [256]u8 = .{0} ** 256,
+    shell_len: u16 = 0,
+
     /// Backward-compat: the original "rows/cols" for the initial pane / session-level resize.
     rows: u16,
     cols: u16,
@@ -37,6 +41,7 @@ pub const DaemonSession = struct {
         replay_capacity: usize,
         cwd: ?[*:0]const u8,
         initial_pane_id: u32,
+        shell: ?[*:0]const u8,
     ) !DaemonSession {
         var session = DaemonSession{
             .id = id,
@@ -55,7 +60,15 @@ pub const DaemonSession = struct {
             session.cwd_len = @intCast(clen);
         }
 
-        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd);
+        // Store session shell so new panes inherit it.
+        if (shell) |s| {
+            const shell_slice = std.mem.sliceTo(s, 0);
+            const slen = @min(shell_slice.len, 256);
+            @memcpy(session.shell[0..slen], shell_slice[0..slen]);
+            session.shell_len = @intCast(slen);
+        }
+
+        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd, shell);
         session.pane_count = 1;
         return session;
     }
@@ -75,7 +88,8 @@ pub const DaemonSession = struct {
             if (slot.* == null) break i;
         } else return error.TooManyPanes;
         const cwd: ?[*:0]const u8 = cwd_override orelse if (self.cwd_len > 0) @as([*:0]const u8, self.cwd[0..self.cwd_len :0]) else null;
-        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd);
+        const shell: ?[*:0]const u8 = if (self.shell_len > 0) @as([*:0]const u8, self.shell[0..self.shell_len :0]) else null;
+        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd, shell);
         self.pane_count += 1;
         return pane_id;
     }
