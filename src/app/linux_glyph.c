@@ -174,9 +174,21 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
 
-    // 1. Glyph index lookup: primary font → user fallbacks → system fallback
-    FT_Face face = gc->ft_face;
-    FT_UInt gi   = FT_Get_Char_Index(face, cp);
+    // Extract style bits and base codepoint from the key.
+    int styleBold   = (cp & GLYPH_BOLD_BIT)   ? 1 : 0;
+    int styleItalic = (cp & GLYPH_ITALIC_BIT)  ? 1 : 0;
+    uint32_t baseCp = cp & 0x1FFFFF;
+
+    // 1. Select styled face, then glyph index lookup
+    FT_Face styledFace = gc->ft_face;
+    if (styleBold && styleItalic && gc->ft_bold_italic)
+        styledFace = gc->ft_bold_italic;
+    else if (styleBold && gc->ft_bold)
+        styledFace = gc->ft_bold;
+    else if (styleItalic && gc->ft_italic)
+        styledFace = gc->ft_italic;
+    FT_Face face = styledFace;
+    FT_UInt gi   = FT_Get_Char_Index(face, baseCp);
 
     if (gi == 0) {
         FT_Face fallback = NULL;
@@ -186,7 +198,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             FT_Face candidate;
             if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
                 FT_Set_Pixel_Sizes(candidate, 0, (int)gc->glyph_h);
-                FT_UInt cgi = FT_Get_Char_Index(candidate, cp);
+                FT_UInt cgi = FT_Get_Char_Index(candidate, baseCp);
                 if (cgi != 0) {
                     gi = cgi;
                     fallback = candidate;
@@ -201,7 +213,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         if (gi == 0) {
             FcPattern* pat = FcPatternCreate();
             FcCharSet* cs = FcCharSetCreate();
-            FcCharSetAddChar(cs, cp);
+            FcCharSetAddChar(cs, baseCp);
             FcPatternAddCharSet(pat, FC_CHARSET, cs);
             FcConfigSubstitute(NULL, pat, FcMatchPattern);
             FcDefaultSubstitute(pat);
@@ -213,7 +225,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 FcPatternGetInteger(match, FC_INDEX, 0, &index);
                 if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallback) == 0) {
                     FT_Set_Pixel_Sizes(fallback, 0, (int)gc->glyph_h);
-                    gi = FT_Get_Char_Index(fallback, cp);
+                    gi = FT_Get_Char_Index(fallback, baseCp);
                     if (gi != 0) face = fallback;
                 }
                 FcPatternDestroy(match);
@@ -224,11 +236,12 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     }
 
     // Block elements are drawn as geometry — no glyph needed.
-    bool isBlock = (cp >= 0x2580 && cp <= 0x259F);
+    bool isBlock = (baseCp >= 0x2580 && baseCp <= 0x259F);
 
     // 2. If no glyph found and not a geometry-drawn block char, return blank slot.
     if (gi == 0 && !isBlock) {
-        if (face != gc->ft_face) FT_Done_Face(face);
+        if (face != gc->ft_face && face != gc->ft_bold && face != gc->ft_italic
+            && face != gc->ft_bold_italic) FT_Done_Face(face);
         if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
         int blankSlot = gc->next_slot++;
         glyphCacheInsert(gc, cp, blankSlot);
@@ -249,11 +262,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     //    Wide glyphs get a 2-cell atlas slot and 2×gw renderer quad — same
     //    approach as Ghostty/WezTerm; the icon bleeds into the next cell at
     //    full size rather than being squished or clipped.
-    bool isPowerline = (cp >= 0xE0B0 && cp <= 0xE0D4)
-                    || (cp >= 0x2500 && cp <= 0x257F);
+    bool isPowerline = (baseCp >= 0xE0B0 && baseCp <= 0xE0D4)
+                    || (baseCp >= 0x2500 && baseCp <= 0x257F);
     // isBlock declared above (needed before the early-return check)
     bool wide = false;
-    if (!isPowerline && !isBlock && canBeWide(cp)) {
+    if (!isPowerline && !isBlock && canBeWide(baseCp)) {
         int adv_px   = (int)(face->glyph->advance.x >> 6);
         int ink_right = face->glyph->bitmap_left + (int)bmp->width;
         int src_w    = adv_px > ink_right ? adv_px : ink_right;
@@ -301,7 +314,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, ac * gw, ar * gh, renderW, gh,
                         GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         free(pixels);
-        if (face != gc->ft_face) FT_Done_Face(face);
+        if (face != gc->ft_face && face != gc->ft_bold && face != gc->ft_italic
+            && face != gc->ft_bold_italic) FT_Done_Face(face);
         int encoded = (wide ? GLYPH_WIDE_BIT : 0) | GLYPH_COLOR_BIT | slot;
         glyphCacheInsert(gc, cp, encoded);
         return encoded;
@@ -335,31 +349,31 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         // Render block/quadrant elements as pure geometry — no font glyph needed.
         // Pixel buffer is top-to-bottom: row 0 = top of cell, row gh-1 = bottom.
         bool drawn = false;
-        if (cp >= 0x2581 && cp <= 0x2588) {
+        if (baseCp >= 0x2581 && baseCp <= 0x2588) {
             // LOWER ONE-EIGHTH .. FULL BLOCK (U+2581–U+2588)
-            int eighths = (int)(cp - 0x2580); // 1..8
+            int eighths = (int)(baseCp - 0x2580); // 1..8
             int blockH  = (int)roundf((float)gh * eighths / 8.0f);
             int y0 = gh - blockH;
             for (int dy = y0; dy < gh; dy++)
                 for (int dx = 0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp == 0x2580) {
+        } else if (baseCp == 0x2580) {
             // UPPER HALF BLOCK
             int blockH = (int)roundf((float)gh / 2.0f);
             for (int dy = 0; dy < blockH; dy++)
                 for (int dx = 0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp >= 0x2589 && cp <= 0x258F) {
+        } else if (baseCp >= 0x2589 && baseCp <= 0x258F) {
             // LEFT SEVEN-EIGHTHS .. LEFT ONE-EIGHTH BLOCK (U+2589–U+258F)
-            int eighths = (int)(0x2590 - cp); // 7..1
+            int eighths = (int)(0x2590 - baseCp); // 7..1
             int blockW  = (int)roundf((float)gw * eighths / 8.0f);
             for (int dy = 0; dy < gh; dy++)
                 for (int dx = 0; dx < blockW; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp == 0x2590) {
+        } else if (baseCp == 0x2590) {
             // RIGHT HALF BLOCK
             int blockW = (int)roundf((float)gw / 2.0f);
             int x0 = gw - blockW;
@@ -367,14 +381,14 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 for (int dx = x0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp == 0x2594) {
+        } else if (baseCp == 0x2594) {
             // UPPER ONE EIGHTH BLOCK
             int blockH = (int)roundf((float)gh / 8.0f);
             for (int dy = 0; dy < blockH; dy++)
                 for (int dx = 0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp == 0x2595) {
+        } else if (baseCp == 0x2595) {
             // RIGHT ONE EIGHTH BLOCK
             int blockW = (int)roundf((float)gw / 8.0f);
             int x0 = gw - blockW;
@@ -382,19 +396,19 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 for (int dx = x0; dx < gw; dx++)
                     pixels[dy * gw + dx] = 255;
             drawn = true;
-        } else if (cp >= 0x2591 && cp <= 0x2593) {
+        } else if (baseCp >= 0x2591 && baseCp <= 0x2593) {
             // SHADE CHARACTERS — render as solid fills at fractional brightness.
             // ░ = 25%, ▒ = 50%, ▓ = 75%
             static const uint8_t shadeVal[] = {64, 128, 191};
-            uint8_t v = shadeVal[cp - 0x2591];
+            uint8_t v = shadeVal[baseCp - 0x2591];
             for (int dy = 0; dy < gh; dy++)
                 for (int dx = 0; dx < gw; dx++)
                     pixels[dy * gw + dx] = v;
             drawn = true;
-        } else if (cp >= 0x2596 && cp <= 0x259F) {
+        } else if (baseCp >= 0x2596 && baseCp <= 0x259F) {
             // QUADRANT BLOCKS — bits: UL=1, UR=2, BL=4, BR=8
             static const int quadBits[] = {4, 8, 1, 13, 9, 7, 11, 2, 6, 14};
-            int bits = quadBits[cp - 0x2596];
+            int bits = quadBits[baseCp - 0x2596];
             int hw = (int)roundf((float)gw / 2.0f);
             int hh = (int)roundf((float)gh / 2.0f);
             for (int dy = 0; dy < gh; dy++) {
@@ -444,7 +458,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         }
     }
 
-    if (face != gc->ft_face) FT_Done_Face(face);
+    if (face != gc->ft_face && face != gc->ft_bold && face != gc->ft_italic
+            && face != gc->ft_bold_italic) FT_Done_Face(face);
 
     // 7. Upload to atlas
     glBindTexture(GL_TEXTURE_2D, gc->texture);

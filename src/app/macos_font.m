@@ -172,6 +172,22 @@ GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     gc.texture       = tex;
     gc.color_texture = nil; // Lazy — created on first color glyph
     gc.font       = (CTFontRef)CFRetain(font);
+
+    // Derive bold/italic/bold-italic variants using symbolic traits.
+    // Falls back to the regular font if a variant isn't available.
+    CTFontRef boldFont = CTFontCreateCopyWithSymbolicTraits(
+        font, 0.0, NULL, kCTFontBoldTrait, kCTFontBoldTrait);
+    gc.font_bold = boldFont ? boldFont : (CTFontRef)CFRetain(font);
+
+    CTFontRef italicFont = CTFontCreateCopyWithSymbolicTraits(
+        font, 0.0, NULL, kCTFontItalicTrait, kCTFontItalicTrait);
+    gc.font_italic = italicFont ? italicFont : (CTFontRef)CFRetain(font);
+
+    CTFontRef boldItalicFont = CTFontCreateCopyWithSymbolicTraits(
+        font, 0.0, NULL, kCTFontBoldTrait | kCTFontItalicTrait,
+        kCTFontBoldTrait | kCTFontItalicTrait);
+    gc.font_bold_italic = boldItalicFont ? boldItalicFont : (CTFontRef)CFRetain(font);
+
     gc.glyph_w    = gw;
     gc.glyph_h    = gh;
     gc.scale      = (float)scale;

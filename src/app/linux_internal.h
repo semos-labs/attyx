@@ -149,6 +149,9 @@ typedef struct __attribute__((packed)) {
 #define GLYPH_WIDE_BIT   (1 << 30)
 // Bit 29 flags a color emoji glyph stored in color_texture (GL_RGBA8), not texture (GL_R8).
 #define GLYPH_COLOR_BIT  (1 << 29)
+// Style bits encoded in cache keys (bits 21-22 of the codepoint key).
+#define GLYPH_BOLD_BIT   (1 << 21)
+#define GLYPH_ITALIC_BIT (1 << 22)
 
 typedef struct {
     uint32_t codepoint;
@@ -160,6 +163,9 @@ typedef struct {
     GLuint     color_texture;   // GL_RGBA8 — color emoji (premultiplied BGRA→RGBA)
     FT_Library ft_lib;
     FT_Face    ft_face;
+    FT_Face    ft_bold;
+    FT_Face    ft_italic;
+    FT_Face    ft_bold_italic;
     float      glyph_w;
     float      glyph_h;
     float      scale;
@@ -222,7 +228,7 @@ typedef struct {
 
 uint32_t          ligatureKey(const uint32_t* cps, int count);
 bool              isLigaTrigger(uint32_t ch);
-const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count);
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count, int style);
 void              ligatureCacheClear(void);
 
 // ---------------------------------------------------------------------------

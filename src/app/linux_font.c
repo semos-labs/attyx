@@ -11,6 +11,56 @@
 static float s_ref_h_pt = 0.0f;
 static float s_ref_w_pt = 0.0f;
 
+// Find a styled variant (bold/italic) of a font family via Fontconfig.
+static char* findFontPathStyled(const char* family, int wantBold, int wantItalic) {
+    FcConfig* config = FcInitLoadConfigAndFonts();
+    FcPattern* pat = FcPatternCreate();
+    FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)family);
+    FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+    if (wantBold)
+        FcPatternAddInteger(pat, FC_WEIGHT, FC_WEIGHT_BOLD);
+    if (wantItalic)
+        FcPatternAddInteger(pat, FC_SLANT, FC_SLANT_ITALIC);
+    FcConfigSubstitute(config, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+
+    FcResult result;
+    FcPattern* match = FcFontMatch(config, pat, &result);
+    char* path = NULL;
+    if (match) {
+        // Verify the match actually has the requested style
+        int matchWeight = 0, matchSlant = 0;
+        FcPatternGetInteger(match, FC_WEIGHT, 0, &matchWeight);
+        FcPatternGetInteger(match, FC_SLANT, 0, &matchSlant);
+        bool ok = true;
+        if (wantBold && matchWeight < FC_WEIGHT_BOLD) ok = false;
+        if (wantItalic && matchSlant < FC_SLANT_ITALIC) ok = false;
+        if (ok) {
+            FcChar8* file;
+            if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch)
+                path = strdup((char*)file);
+        }
+        FcPatternDestroy(match);
+    }
+    FcPatternDestroy(pat);
+    FcConfigDestroy(config);
+    return path;
+}
+
+static FT_Face loadStyledFace(FT_Library ft_lib, const char* family, int fontSize,
+                               int wantBold, int wantItalic) {
+    char* path = findFontPathStyled(family, wantBold, wantItalic);
+    if (!path) return NULL;
+    FT_Face face;
+    if (FT_New_Face(ft_lib, path, 0, &face) != 0) {
+        free(path);
+        return NULL;
+    }
+    free(path);
+    FT_Set_Pixel_Sizes(face, 0, fontSize);
+    return face;
+}
+
 GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     // Font family: prefer config (g_font_family), fall back to env, then defaults.
     char* fontPath = NULL;
@@ -106,6 +156,12 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     gc.color_texture = colorTex;
     gc.ft_lib     = ft_lib;
     gc.ft_face    = face;
+
+    // Load bold/italic/bold-italic face variants (NULL if unavailable).
+    const char* family = (g_font_family_len > 0) ? g_font_family : "Monospace";
+    gc.ft_bold         = loadStyledFace(ft_lib, family, fontSize, 1, 0);
+    gc.ft_italic       = loadStyledFace(ft_lib, family, fontSize, 0, 1);
+    gc.ft_bold_italic  = loadStyledFace(ft_lib, family, fontSize, 1, 1);
     gc.glyph_w    = gw;
     gc.glyph_h    = gh;
     gc.scale      = contentScale;

@@ -197,6 +197,9 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
     // Release old Core Text font. Metal textures are ARC-managed (released
     // automatically when _glyphCache struct fields are overwritten below).
     if (_glyphCache.font) CFRelease(_glyphCache.font);
+    if (_glyphCache.font_bold) CFRelease(_glyphCache.font_bold);
+    if (_glyphCache.font_italic) CFRelease(_glyphCache.font_italic);
+    if (_glyphCache.font_bold_italic) CFRelease(_glyphCache.font_bold_italic);
 
     CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
     _glyphCache = createGlyphCache(_device, scale);

@@ -86,6 +86,9 @@ void linux_rebuild_font(void) {
     FT_Library ft_lib = g_gc.ft_lib;
     glDeleteTextures(1, &g_gc.texture);
     FT_Done_Face(g_gc.ft_face);
+    if (g_gc.ft_bold) FT_Done_Face(g_gc.ft_bold);
+    if (g_gc.ft_italic) FT_Done_Face(g_gc.ft_italic);
+    if (g_gc.ft_bold_italic) FT_Done_Face(g_gc.ft_bold_italic);
 
     g_gc = createGlyphCache(ft_lib, g_content_scale);
     ligatureCacheClear();
@@ -589,7 +592,9 @@ int drawFrame(void) {
                 if (runLen >= 2) {
                     uint32_t cps[MAX_LIGA_LEN];
                     for (int k = 0; k < runLen; k++) cps[k] = cells[i+k].character;
-                    const LigaResult* lr = shapeLigatureRun(&g_gc, cps, runLen);
+                    int ligaStyle = ((cell->flags & 0x01) ? 1 : 0)
+                                  | ((cell->flags & 0x10) ? 2 : 0);
+                    const LigaResult* lr = shapeLigatureRun(&g_gc, cps, runLen, ligaStyle);
                     atlasW = (float)g_gc.atlas_w;
                     if (lr && lr->hasAlternates) {
                         for (int k = 0; k < runLen; k++) {
@@ -633,6 +638,9 @@ int drawFrame(void) {
             float x1 = x0 + gw, y1 = y0 + gh;
 
             uint32_t key = ch;
+            uint8_t fl = cell->flags;
+            if (fl & 0x01) key |= GLYPH_BOLD_BIT;
+            if (fl & 0x10) key |= GLYPH_ITALIC_BIT;
             bool hasCombining = (cell->combining[0] != 0);
             if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
 
@@ -640,7 +648,7 @@ int drawFrame(void) {
             if (rawSlot < 0) {
                 rawSlot = hasCombining
                     ? glyphCacheRasterizeCombined(&g_gc, ch, cell->combining[0], cell->combining[1])
-                    : glyphCacheRasterize(&g_gc, ch);
+                    : glyphCacheRasterize(&g_gc, key);
                 atlasW = (float)g_gc.atlas_w;
             }
 
