@@ -68,23 +68,24 @@ pub const TabManager = struct {
         rows: u16,
         cols: u16,
         cwd: ?[*:0]const u8,
+        scrollback_lines: usize,
     ) !void {
         if (self.count >= max_tabs) return error.TooManyTabs;
 
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
-        pane.* = try Pane.spawn(self.allocator, rows, cols, null, cwd);
+        pane.* = try Pane.spawn(self.allocator, rows, cols, null, cwd, scrollback_lines);
 
         self.insertTab(pane, rows, cols);
     }
 
     /// Add a new tab backed by a daemon PTY (no local PTY spawn).
-    pub fn addDaemonTab(self: *TabManager, rows: u16, cols: u16) !*Pane {
+    pub fn addDaemonTab(self: *TabManager, rows: u16, cols: u16, scrollback_lines: usize) !*Pane {
         if (self.count >= max_tabs) return error.TooManyTabs;
 
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
-        pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols);
+        pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
 
         self.insertTab(pane, rows, cols);
         return pane;
@@ -285,6 +286,7 @@ pub const TabManager = struct {
         info: *const layout_codec.LayoutInfo,
         rows: u16,
         cols: u16,
+        scrollback_lines: usize,
     ) !void {
         self.reset();
 
@@ -302,7 +304,7 @@ pub const TabManager = struct {
                     .leaf => {
                         const pane = try self.allocator.create(Pane);
                         errdefer self.allocator.destroy(pane);
-                        pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols);
+                        pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
                         pane.daemon_pane_id = node.pane_id;
                         sl.pool[ni] = .{ .tag = .leaf, .pane = pane };
                         pane_count += 1;

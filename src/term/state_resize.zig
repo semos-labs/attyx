@@ -105,7 +105,7 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
     if (new_cols != self.scrollback.cols) {
         var new_sb = try scrollback_mod.Scrollback.init(
             self.grid.allocator,
-            scrollback_mod.Scrollback.default_max_lines,
+            self.scrollback.max_lines,
             new_cols,
         );
         for (0..self.scrollback.count) |i| {

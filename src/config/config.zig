@@ -115,7 +115,7 @@ pub const AppConfig = struct {
     theme_background: ?Rgb = null,
 
     // [scrollback]
-    scrollback_lines: u32 = 20_000,
+    scrollback_lines: u32 = 5_000,
 
     // [reflow]
     reflow_enabled: bool = true,
@@ -354,7 +354,7 @@ pub fn loadFromDefaultPath(allocator: std.mem.Allocator, config: *AppConfig) !vo
 test "default config has expected values" {
     const cfg = AppConfig{};
     try std.testing.expectEqual(@as(u16, 14), cfg.font_size);
-    try std.testing.expectEqual(@as(u32, 20_000), cfg.scrollback_lines);
+    try std.testing.expectEqual(@as(u32, 5_000), cfg.scrollback_lines);
     try std.testing.expect(cfg.reflow_enabled);
     try std.testing.expect(cfg.cursor_blink);
     try std.testing.expectEqual(CursorShapeConfig.block, cfg.cursor_shape);

@@ -378,6 +378,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                                 result.pane.allocator,
                                                 rows,
                                                 cols,
+                                                ctx.applied_scrollback_lines,
                                             ) catch continue;
                                             result.pane.needs_engine_reinit = false;
                                         }
@@ -613,7 +614,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     terminal.g_session_client = null;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
-    pane.* = Pane.spawn(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, null, null) catch {
+    pane.* = Pane.spawn(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch {
         ctx.tab_mgr.allocator.destroy(pane);
         return;
     };

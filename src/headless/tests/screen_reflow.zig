@@ -9,7 +9,7 @@ test "resize: styled text reflows correctly on shrink" {
     const alloc = std.testing.allocator;
     const Grid = @import("../../term/grid.zig");
     const Style = Grid.Style;
-    var t = try TerminalState.init(alloc, 4, 10);
+    var t = try TerminalState.init(alloc, 4, 10, 100);
     defer t.deinit();
 
     const cyan = Style{ .fg = .{ .ansi = 6 } };
@@ -143,7 +143,7 @@ test "resize: rapid shrink cycles with styled prompt don't cascade" {
     const alloc = std.testing.allocator;
     const Grid = @import("../../term/grid.zig");
     const Style = Grid.Style;
-    var t = try TerminalState.init(alloc, 24, 40);
+    var t = try TerminalState.init(alloc, 24, 40, 100);
     defer t.deinit();
 
     const cyan = Style{ .fg = .{ .ansi = 6 } };
@@ -220,7 +220,7 @@ test "resize: right-aligned prompt with styled gap — shrink cycles" {
     const alloc = std.testing.allocator;
     const Grid = @import("../../term/grid.zig");
     const Style = Grid.Style;
-    var t = try TerminalState.init(alloc, 24, 40);
+    var t = try TerminalState.init(alloc, 24, 40, 100);
     defer t.deinit();
 
     const cyan = Style{ .fg = .{ .ansi = 6 } };
@@ -296,7 +296,7 @@ test "resize: right-aligned content stripped before reflow on shrink" {
     const alloc = std.testing.allocator;
     const Grid = @import("../../term/grid.zig");
     const Style = Grid.Style;
-    var t = try TerminalState.init(alloc, 4, 40);
+    var t = try TerminalState.init(alloc, 4, 40, 100);
     defer t.deinit();
 
     const cyan = Style{ .fg = .{ .ansi = 6 } };
@@ -345,7 +345,7 @@ test "resize: right-aligned content stripped before reflow on shrink" {
 
 test "resize: auto-wrapped line rejoins on grow and re-wraps on shrink" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 4);
+    var t = try TerminalState.init(alloc, 4, 4, 100);
     defer t.deinit();
 
     // Print 5 chars to trigger auto-wrap: "ABCD" on row 0, "E" on row 1

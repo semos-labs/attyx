@@ -8,7 +8,7 @@ const Color = @import("../../term/grid.zig").Color;
 
 test "attr: 256-color foreground (38;5;n)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;5;196mA");
@@ -19,7 +19,7 @@ test "attr: 256-color foreground (38;5;n)" {
 
 test "attr: 256-color background (48;5;n)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[48;5;25mB");
@@ -30,7 +30,7 @@ test "attr: 256-color background (48;5;n)" {
 
 test "attr: truecolor foreground (38;2;r;g;b)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;2;1;2;3mC");
@@ -41,7 +41,7 @@ test "attr: truecolor foreground (38;2;r;g;b)" {
 
 test "attr: truecolor background (48;2;r;g;b)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[48;2;9;8;7mD");
@@ -52,7 +52,7 @@ test "attr: truecolor background (48;2;r;g;b)" {
 
 test "attr: SGR 39 resets truecolor fg to default" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;2;1;2;3mX\x1b[39mY");
@@ -65,7 +65,7 @@ test "attr: SGR 39 resets truecolor fg to default" {
 
 test "attr: SGR 0 resets 256-color bg and all flags" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[1;48;5;25mX\x1b[0mY");
@@ -81,7 +81,7 @@ test "attr: SGR 0 resets 256-color bg and all flags" {
 
 test "attr: combined 256-color fg + truecolor bg in one sequence" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;5;196;48;2;10;20;30mZ");
@@ -92,7 +92,7 @@ test "attr: combined 256-color fg + truecolor bg in one sequence" {
 
 test "attr: bright foreground colors (90–97)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[91mA\x1b[97mB");
@@ -102,7 +102,7 @@ test "attr: bright foreground colors (90–97)" {
 
 test "attr: bright background colors (100–107)" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[101mA\x1b[107mB");
@@ -112,7 +112,7 @@ test "attr: bright background colors (100–107)" {
 
 test "attr: truncated 38;5 is gracefully ignored" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;5mA");
@@ -121,7 +121,7 @@ test "attr: truncated 38;5 is gracefully ignored" {
 
 test "attr: truncated 38;2;r;g is gracefully ignored" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;2;1;2mA");
@@ -130,7 +130,7 @@ test "attr: truncated 38;2;r;g is gracefully ignored" {
 
 test "attr: truecolor fg survives chunked input" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[38;2;1;");
@@ -146,7 +146,7 @@ test "attr: truecolor fg survives chunked input" {
 
 test "attr: SGR 7 sets reverse flag" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[7mA");
@@ -156,7 +156,7 @@ test "attr: SGR 7 sets reverse flag" {
 
 test "attr: SGR 27 clears reverse flag" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[7mA\x1b[27mB");
@@ -166,7 +166,7 @@ test "attr: SGR 27 clears reverse flag" {
 
 test "attr: SGR 0 resets reverse flag" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[7mA\x1b[0mB");
@@ -176,7 +176,7 @@ test "attr: SGR 0 resets reverse flag" {
 
 test "attr: SGR 22 clears bold, SGR 24 clears underline" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[1;4mA\x1b[22mB\x1b[24mC");
@@ -195,7 +195,7 @@ test "attr: SGR 22 clears bold, SGR 24 clears underline" {
 
 test "attr: save/restore also captures scroll region" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 4);
+    var engine = try Engine.init(alloc, 5, 4, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[2;4r");

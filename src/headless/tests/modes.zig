@@ -8,7 +8,7 @@ const MouseTrackingMode = @import("../../term/actions.zig").MouseTrackingMode;
 // ===========================================================================
 
 test "attr: CSI ?1h enables application cursor keys" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     try std.testing.expect(!engine.state.cursor_keys_app);
     engine.feed("\x1b[?1h");
@@ -16,7 +16,7 @@ test "attr: CSI ?1h enables application cursor keys" {
 }
 
 test "attr: CSI ?1l disables application cursor keys" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1h");
     try std.testing.expect(engine.state.cursor_keys_app);
@@ -25,7 +25,7 @@ test "attr: CSI ?1l disables application cursor keys" {
 }
 
 test "attr: DECCKM persists across alt screen switch" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1h");
     engine.feed("\x1b[?1049h");
@@ -39,7 +39,7 @@ test "attr: DECCKM persists across alt screen switch" {
 // ===========================================================================
 
 test "attr: CSI ?2004h enables bracketed paste" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     try std.testing.expect(!engine.state.bracketed_paste);
     engine.feed("\x1b[?2004h");
@@ -47,7 +47,7 @@ test "attr: CSI ?2004h enables bracketed paste" {
 }
 
 test "attr: CSI ?2004l disables bracketed paste" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?2004h");
     try std.testing.expect(engine.state.bracketed_paste);
@@ -60,7 +60,7 @@ test "attr: CSI ?2004l disables bracketed paste" {
 // ===========================================================================
 
 test "attr: CSI ?1000h sets x10 mouse tracking" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     try std.testing.expectEqual(MouseTrackingMode.off, engine.state.mouse_tracking);
     engine.feed("\x1b[?1000h");
@@ -68,21 +68,21 @@ test "attr: CSI ?1000h sets x10 mouse tracking" {
 }
 
 test "attr: CSI ?1002h sets button_event tracking" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1002h");
     try std.testing.expectEqual(MouseTrackingMode.button_event, engine.state.mouse_tracking);
 }
 
 test "attr: CSI ?1003h sets any_event tracking" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1003h");
     try std.testing.expectEqual(MouseTrackingMode.any_event, engine.state.mouse_tracking);
 }
 
 test "attr: disabling active mouse mode falls back to off" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1003h");
     try std.testing.expectEqual(MouseTrackingMode.any_event, engine.state.mouse_tracking);
@@ -91,7 +91,7 @@ test "attr: disabling active mouse mode falls back to off" {
 }
 
 test "attr: disabling inactive mouse mode is a no-op" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1003h");
     engine.feed("\x1b[?1000l");
@@ -99,7 +99,7 @@ test "attr: disabling inactive mouse mode is a no-op" {
 }
 
 test "attr: enabling new mouse mode overrides previous" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1000h");
     try std.testing.expectEqual(MouseTrackingMode.x10, engine.state.mouse_tracking);
@@ -112,7 +112,7 @@ test "attr: enabling new mouse mode overrides previous" {
 // ===========================================================================
 
 test "attr: CSI ?1006h enables SGR mouse" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     try std.testing.expect(!engine.state.mouse_sgr);
     engine.feed("\x1b[?1006h");
@@ -120,7 +120,7 @@ test "attr: CSI ?1006h enables SGR mouse" {
 }
 
 test "attr: CSI ?1006l disables SGR mouse" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1006h");
     engine.feed("\x1b[?1006l");
@@ -132,7 +132,7 @@ test "attr: CSI ?1006l disables SGR mouse" {
 // ===========================================================================
 
 test "attr: compound CSI ?1000;1006h enables both" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1000;1006h");
     try std.testing.expectEqual(MouseTrackingMode.x10, engine.state.mouse_tracking);
@@ -140,7 +140,7 @@ test "attr: compound CSI ?1000;1006h enables both" {
 }
 
 test "attr: compound CSI ?1000;1006l disables both" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1000;1006h");
     engine.feed("\x1b[?1000;1006l");
@@ -153,7 +153,7 @@ test "attr: compound CSI ?1000;1006l disables both" {
 // ===========================================================================
 
 test "attr: mouse modes persist across alt screen switch" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?1003h");
     engine.feed("\x1b[?1006h");
@@ -173,20 +173,20 @@ test "attr: mouse modes persist across alt screen switch" {
 // ===========================================================================
 
 test "attr: auto_wrap defaults to true" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     try std.testing.expect(engine.state.auto_wrap);
 }
 
 test "attr: CSI ?7l disables auto-wrap" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?7l");
     try std.testing.expect(!engine.state.auto_wrap);
 }
 
 test "attr: CSI ?7h re-enables auto-wrap" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?7l");
     engine.feed("\x1b[?7h");
@@ -194,7 +194,7 @@ test "attr: CSI ?7h re-enables auto-wrap" {
 }
 
 test "attr: auto-wrap off keeps cursor at last column" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?7l");
     engine.feed("ABCDE");
@@ -208,7 +208,7 @@ test "attr: auto-wrap off keeps cursor at last column" {
 }
 
 test "attr: deferred wrap sets wrap_next flag" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("ABCD");
     try std.testing.expect(engine.state.wrap_next);
@@ -217,7 +217,7 @@ test "attr: deferred wrap sets wrap_next flag" {
 }
 
 test "attr: cursor movement clears wrap_next" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("ABCD");
     try std.testing.expect(engine.state.wrap_next);
@@ -226,7 +226,7 @@ test "attr: cursor movement clears wrap_next" {
 }
 
 test "attr: CR clears wrap_next" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("ABCD");
     try std.testing.expect(engine.state.wrap_next);
@@ -313,7 +313,7 @@ test "attr: encodeMouse off returns empty" {
 // ===========================================================================
 
 test "attr: CSI ?2004h split across chunks" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[?20");
     engine.feed("04h");
@@ -321,7 +321,7 @@ test "attr: CSI ?2004h split across chunks" {
 }
 
 test "attr: CSI ?1003h split across chunks" {
-    var engine = try Engine.init(std.testing.allocator, 2, 4);
+    var engine = try Engine.init(std.testing.allocator, 2, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b");
     engine.feed("[");

@@ -55,7 +55,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                     logging.err("tabs", "create daemon pane failed: {}", .{err});
                     return;
                 };
-                const new_pane = ctx.tab_mgr.addDaemonTab(rows, cols) catch |err| {
+                const new_pane = ctx.tab_mgr.addDaemonTab(rows, cols, ctx.applied_scrollback_lines) catch |err| {
                     logging.err("tabs", "addDaemonTab failed: {}", .{err});
                     return;
                 };
@@ -65,7 +65,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 // Non-session mode: spawn a local PTY with foreground CWD.
                 const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
                 defer if (cwd_z) |z| ctx.allocator.free(z);
-                ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null) catch |err| {
+                ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch |err| {
                     logging.err("tabs", "addTab failed: {}", .{err});
                     return;
                 };

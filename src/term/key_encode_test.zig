@@ -344,7 +344,7 @@ test "kitty all_keys: shift+F5 uses CSI u with mods" {
 test "kitty flags: push and query" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     try testing.expectEqual(@as(u5, 0), state.kittyFlags());
@@ -359,7 +359,7 @@ test "kitty flags: push and query" {
 test "kitty flags: pop" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     state.apply(.{ .kitty_push_flags = 1 });
@@ -374,7 +374,7 @@ test "kitty flags: pop" {
 test "kitty flags: pop more than stack" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     state.apply(.{ .kitty_push_flags = 3 });
@@ -385,7 +385,7 @@ test "kitty flags: pop more than stack" {
 test "kitty flags: query response" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     state.apply(.{ .kitty_push_flags = 5 });
@@ -397,7 +397,7 @@ test "kitty flags: query response" {
 test "kitty flags: reset on alt screen enter" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     state.apply(.{ .kitty_push_flags = 3 });
@@ -498,7 +498,7 @@ test "parser: ESC > → reset_keypad_app_mode" {
 test "state: keypad_app_mode toggle" {
     const alloc = std.testing.allocator;
     const TerminalState = @import("state.zig").TerminalState;
-    var state = try TerminalState.init(alloc, 4, 10);
+    var state = try TerminalState.init(alloc, 4, 10, 100);
     defer state.deinit();
 
     try testing.expectEqual(false, state.keypad_app_mode);

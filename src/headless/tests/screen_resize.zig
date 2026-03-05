@@ -7,7 +7,7 @@ const TerminalState = @import("../../term/state.zig").TerminalState;
 
 test "resize: grow preserves content" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -25,7 +25,7 @@ test "resize: grow preserves content" {
 
 test "resize: shrink reflows content" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     // Print "ABCD" — 4 chars at 8-col width, NOT a wrapped line
@@ -53,7 +53,7 @@ test "resize: shrink reflows content" {
 
 test "resize: shrink then grow restores content" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -78,7 +78,7 @@ test "resize: shrink then grow restores content" {
 
 test "resize: cursor mapped through reflow" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     // Print 6 chars, cursor ends at (0, 6)
@@ -100,7 +100,7 @@ test "resize: cursor mapped through reflow" {
 
 test "resize: cursor clamped to new bounds" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 10, 20);
+    var t = try TerminalState.init(alloc, 10, 20, 100);
     defer t.deinit();
 
     t.cursor = .{ .row = 8, .col = 15 };
@@ -113,7 +113,7 @@ test "resize: cursor clamped to new bounds" {
 
 test "resize: scroll region reset when invalid" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 10, 20);
+    var t = try TerminalState.init(alloc, 10, 20, 100);
     defer t.deinit();
 
     t.scroll_top = 2;
@@ -127,7 +127,7 @@ test "resize: scroll region reset when invalid" {
 
 test "resize: saved cursor clamped" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 10, 20);
+    var t = try TerminalState.init(alloc, 10, 20, 100);
     defer t.deinit();
 
     t.cursor = .{ .row = 7, .col = 15 };
@@ -142,7 +142,7 @@ test "resize: saved cursor clamped" {
 
 test "resize: both buffers resized" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'M' });
@@ -161,7 +161,7 @@ test "resize: both buffers resized" {
 
 test "resize: wrap_next cleared" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
@@ -177,7 +177,7 @@ test "resize: wrap_next cleared" {
 
 test "resize: same size is no-op" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'X' });
@@ -191,7 +191,7 @@ test "resize: same size is no-op" {
 
 test "resize: marks all rows dirty" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 8);
+    var t = try TerminalState.init(alloc, 4, 8, 100);
     defer t.deinit();
 
     t.dirty.clear();

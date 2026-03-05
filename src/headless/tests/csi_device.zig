@@ -8,7 +8,7 @@ const CursorShape = @import("../../term/actions.zig").CursorShape;
 
 test "CSI 6 n: cursor position report" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 10, 20);
+    var engine = try Engine.init(alloc, 10, 20, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[5;12H");
@@ -21,7 +21,7 @@ test "CSI 6 n: cursor position report" {
 
 test "CSI 6 n: cursor at origin" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[6n");
@@ -33,7 +33,7 @@ test "CSI 6 n: cursor at origin" {
 
 test "CSI 5 n: device status OK" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[5n");
@@ -45,7 +45,7 @@ test "CSI 5 n: device status OK" {
 
 test "CSI c: primary device attributes" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[c");
@@ -57,7 +57,7 @@ test "CSI c: primary device attributes" {
 
 test "CSI 0 c: primary device attributes explicit param" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[0c");
@@ -69,7 +69,7 @@ test "CSI 0 c: primary device attributes explicit param" {
 
 test "CSI > c: secondary device attributes" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[>c");
@@ -81,7 +81,7 @@ test "CSI > c: secondary device attributes" {
 
 test "CSI > 0 c: secondary device attributes explicit param" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[>0c");
@@ -93,7 +93,7 @@ test "CSI > 0 c: secondary device attributes explicit param" {
 
 test "drainResponse clears buffer" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[6n");
@@ -104,7 +104,7 @@ test "drainResponse clears buffer" {
 
 test "multiple DSR responses accumulate" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 5);
+    var engine = try Engine.init(alloc, 5, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[5n\x1b[6n");
@@ -116,7 +116,7 @@ test "multiple DSR responses accumulate" {
 
 test "tmux passthrough with inner OSC hyperlink is silently consumed" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 40);
+    var engine = try Engine.init(alloc, 5, 40, 100);
     defer engine.deinit();
 
     // Simulate: "AB" then tmux passthrough wrapping OSC 8 hyperlink
@@ -136,7 +136,7 @@ test "tmux passthrough with inner OSC hyperlink is silently consumed" {
 
 test "C1 DCS (0x90) payload is silently consumed" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 20);
+    var engine = try Engine.init(alloc, 5, 20, 100);
     defer engine.deinit();
 
     // 8-bit DCS: \x90 payload \x9C (C1 ST).  Nothing should print.
@@ -149,7 +149,7 @@ test "C1 DCS (0x90) payload is silently consumed" {
 
 test "APC Kitty graphics payload is silently consumed" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 40);
+    var engine = try Engine.init(alloc, 5, 40, 100);
     defer engine.deinit();
 
     // ESC _ G ... ESC \  (Kitty graphics protocol)
@@ -166,7 +166,7 @@ test "APC Kitty graphics payload is silently consumed" {
 
 test "DECSCUSR: CSI 2 SP q sets steady block" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     try std.testing.expectEqual(CursorShape.blinking_block, engine.state.cursor_shape);
@@ -176,7 +176,7 @@ test "DECSCUSR: CSI 2 SP q sets steady block" {
 
 test "DECSCUSR: CSI 5 SP q sets blinking bar" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[5 q");
@@ -185,7 +185,7 @@ test "DECSCUSR: CSI 5 SP q sets blinking bar" {
 
 test "DECSCUSR: CSI 0 SP q resets to blinking block" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[6 q");
@@ -196,7 +196,7 @@ test "DECSCUSR: CSI 0 SP q resets to blinking block" {
 
 test "DECSCUSR: CSI 3 SP q sets blinking underline" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[3 q");
@@ -205,7 +205,7 @@ test "DECSCUSR: CSI 3 SP q sets blinking underline" {
 
 test "DECSCUSR: CSI 4 SP q sets steady underline" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[4 q");
@@ -218,7 +218,7 @@ test "DECSCUSR: CSI 4 SP q sets steady underline" {
 
 test "DEC mode 25: CSI ?25l hides cursor" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     try std.testing.expect(engine.state.cursor_visible);
@@ -228,7 +228,7 @@ test "DEC mode 25: CSI ?25l hides cursor" {
 
 test "DEC mode 25: CSI ?25h shows cursor" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[?25l");
@@ -243,7 +243,7 @@ test "DEC mode 25: CSI ?25h shows cursor" {
 
 test "cursor shape + visibility combined" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[5 q");
@@ -265,7 +265,7 @@ test "cursor shape + visibility combined" {
 
 test "cursor shape persists across alt screen switch" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 5, 10);
+    var engine = try Engine.init(alloc, 5, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[4 q");

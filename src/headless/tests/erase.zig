@@ -8,7 +8,7 @@ const Cell = @import("../../term/grid.zig").Cell;
 
 test "ED to_end: marks dirty rows from cursor to end" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 6);
+    var t = try TerminalState.init(alloc, 4, 6, 100);
     defer t.deinit();
 
     for ("Hello!") |ch| t.apply(.{ .print = ch });
@@ -40,7 +40,7 @@ test "ED to_end: marks dirty rows from cursor to end" {
 
 test "ED to_start: marks dirty rows from start to cursor" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 6);
+    var t = try TerminalState.init(alloc, 4, 6, 100);
     defer t.deinit();
 
     for ("AAAAAA") |ch| t.apply(.{ .print = ch });
@@ -76,7 +76,7 @@ test "ED to_start: marks dirty rows from start to cursor" {
 
 test "ED all (main): saves content to scrollback before clear" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 4);
+    var t = try TerminalState.init(alloc, 4, 4, 100);
     defer t.deinit();
 
     for ("ABCD") |ch| t.apply(.{ .print = ch });
@@ -97,7 +97,7 @@ test "ED all (main): saves content to scrollback before clear" {
 
 test "ED all (alt): does NOT save to scrollback" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 4);
+    var t = try TerminalState.init(alloc, 4, 4, 100);
     defer t.deinit();
 
     t.apply(.enter_alt_screen);
@@ -115,7 +115,7 @@ test "ED all (alt): does NOT save to scrollback" {
 
 test "ED scrollback: clears scrollback and resets viewport_offset" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 4);
+    var t = try TerminalState.init(alloc, 4, 4, 100);
     defer t.deinit();
 
     // Push some lines to scrollback via ED all
@@ -138,7 +138,7 @@ test "ED scrollback: clears scrollback and resets viewport_offset" {
 
 test "EL to_end: clears row_wrapped flag" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 4, 4);
+    var t = try TerminalState.init(alloc, 4, 4, 100);
     defer t.deinit();
 
     // Fill row and trigger wrap
@@ -159,7 +159,7 @@ test "EL to_end: clears row_wrapped flag" {
 
 test "EL to_start: clears cells from start to cursor inclusive" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 6);
+    var t = try TerminalState.init(alloc, 2, 6, 100);
     defer t.deinit();
 
     for ("ABCDEF") |ch| t.apply(.{ .print = ch });
@@ -178,7 +178,7 @@ test "EL to_start: clears cells from start to cursor inclusive" {
 
 test "EL all: clears entire row" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 6);
+    var t = try TerminalState.init(alloc, 2, 6, 100);
     defer t.deinit();
 
     for ("ABCDEF") |ch| t.apply(.{ .print = ch });

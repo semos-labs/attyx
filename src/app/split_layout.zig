@@ -73,6 +73,7 @@ pub const SplitLayout = struct {
         dir: Direction,
         allocator: Allocator,
         pty_master: std.posix.fd_t,
+        scrollback_lines: usize,
     ) !void {
         const fg_cwd = platform.getForegroundCwd(allocator, pty_master);
         defer if (fg_cwd) |cwd| allocator.free(cwd);
@@ -90,6 +91,7 @@ pub const SplitLayout = struct {
             child_size.cols,
             null,
             if (cwd_z) |z| z.ptr else null,
+            scrollback_lines,
         );
 
         try self.splitPaneWith(dir, new_pane);

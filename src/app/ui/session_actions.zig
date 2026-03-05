@@ -234,7 +234,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     // Reconstruct tabs from layout blob
     if (sc.layout_len > 0) {
         if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
-            ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, ctx.grid_cols) catch {};
+            ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {};
         } else |_| {}
     }
 
@@ -242,7 +242,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     if (ctx.tab_mgr.count == 0 and attach_result.pane_count > 0) {
         const Pane = @import("../pane.zig").Pane;
         const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
-        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols) catch {
+        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
             ctx.tab_mgr.allocator.destroy(pane);
             return;
         };

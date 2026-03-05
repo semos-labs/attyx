@@ -194,8 +194,8 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 }
 
 - (void)rebuildFont:(MTKView*)view {
-    // Release old Core Text font. Metal texture is ARC-managed and released
-    // automatically when _glyphCache is overwritten below.
+    // Release old Core Text font. Metal textures are ARC-managed (released
+    // automatically when _glyphCache struct fields are overwritten below).
     if (_glyphCache.font) CFRelease(_glyphCache.font);
 
     CGFloat scale = [NSScreen mainScreen].backingScaleFactor;

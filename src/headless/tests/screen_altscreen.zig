@@ -62,7 +62,7 @@ test "golden: entering alt twice is idempotent" {
 
 test "attr: cursor restored when leaving alt screen" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 5);
+    var engine = try Engine.init(alloc, 3, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[2;3H");
@@ -108,7 +108,7 @@ test "golden: CSI s/u save and restore cursor" {
 
 test "attr: save/restore preserves pen attributes" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 5);
+    var engine = try Engine.init(alloc, 2, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[31m");
@@ -122,7 +122,7 @@ test "attr: save/restore preserves pen attributes" {
 
 test "attr: saved cursor is per-buffer" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 3, 5);
+    var engine = try Engine.init(alloc, 3, 5, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[2;3H");
@@ -145,7 +145,7 @@ test "attr: saved cursor is per-buffer" {
 
 test "enter alt screen clears grid and resets cursor" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'X' });
@@ -159,7 +159,7 @@ test "enter alt screen clears grid and resets cursor" {
 
 test "leave alt screen restores main buffer" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 2, 4);
+    var t = try TerminalState.init(alloc, 2, 4, 100);
     defer t.deinit();
 
     t.apply(.{ .print = 'M' });
@@ -175,7 +175,7 @@ test "leave alt screen restores main buffer" {
 
 test "save and restore cursor" {
     const alloc = std.testing.allocator;
-    var t = try TerminalState.init(alloc, 3, 4);
+    var t = try TerminalState.init(alloc, 3, 4, 100);
     defer t.deinit();
 
     t.cursor = .{ .row = 1, .col = 2 };

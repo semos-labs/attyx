@@ -101,14 +101,14 @@ pub const TerminalState = struct {
     kitty_kbd_flags: [16]u5 = .{0} ** 16,
     kitty_kbd_stack_len: u4 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize) !TerminalState {
+    pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize, scrollback_lines: usize) !TerminalState {
         var main_grid = try Grid.init(allocator, rows, cols);
         errdefer main_grid.deinit();
         var alt_grid = try Grid.init(allocator, rows, cols);
         errdefer alt_grid.deinit();
         const sb = try scrollback_mod.Scrollback.init(
             allocator,
-            scrollback_mod.Scrollback.default_max_lines,
+            scrollback_lines,
             cols,
         );
         const gs = try allocator.create(graphics_store_mod.GraphicsStore);

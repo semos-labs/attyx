@@ -71,7 +71,7 @@ test "parser: APC with C1 ST terminator" {
 
 test "parser: APC graphics across feed boundaries" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     // Split the sequence across feeds.

@@ -141,7 +141,7 @@ test "golden: multiple CSI sequences with text" {
 
 test "attr: SGR 31m sets foreground to red" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[31mA\x1b[0mB");
@@ -154,7 +154,7 @@ test "attr: SGR 31m sets foreground to red" {
 
 test "attr: SGR 0m resets all attributes" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[1;31;4mA\x1b[0mB");
@@ -172,7 +172,7 @@ test "attr: SGR 0m resets all attributes" {
 
 test "attr: SGR sets foreground and background independently" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[32;43mA");
@@ -184,7 +184,7 @@ test "attr: SGR sets foreground and background independently" {
 
 test "attr: SGR 39 resets fg, 49 resets bg" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[31;42mA\x1b[39mB\x1b[49mC");
@@ -204,7 +204,7 @@ test "attr: SGR 39 resets fg, 49 resets bg" {
 
 test "attr: bold and underline flags" {
     const alloc = std.testing.allocator;
-    var engine = try Engine.init(alloc, 2, 10);
+    var engine = try Engine.init(alloc, 2, 10, 100);
     defer engine.deinit();
 
     engine.feed("\x1b[1mB\x1b[4mU\x1b[0mN");
@@ -384,7 +384,7 @@ test "golden: CSI SGR split across chunks preserves color" {
     defer alloc.free(snap);
     try std.testing.expectEqualStrings("AB  \n", snap);
 
-    var engine = try Engine.init(alloc, 1, 4);
+    var engine = try Engine.init(alloc, 1, 4, 100);
     defer engine.deinit();
     engine.feed("\x1b[3");
     engine.feed("1mAB");

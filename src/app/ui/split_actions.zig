@@ -36,7 +36,7 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
         sc.sendCreatePane(sz.rows, sz.cols, resolved.cwd orelse "") catch return;
         const pane_id = sc.waitForPaneCreated(5000) catch return;
         const new_pane = ctx.allocator.create(Pane) catch return;
-        new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols) catch {
+        new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols, ctx.applied_scrollback_lines) catch {
             ctx.allocator.destroy(new_pane);
             return;
         };
@@ -47,7 +47,7 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
             return;
         };
     } else {
-        layout.splitPane(dir, ctx.allocator, publish.ctxPty(ctx).master) catch return;
+        layout.splitPane(dir, ctx.allocator, publish.ctxPty(ctx).master, ctx.applied_scrollback_lines) catch return;
     }
 
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
