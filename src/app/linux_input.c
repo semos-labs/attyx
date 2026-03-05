@@ -147,8 +147,32 @@ static void glfwToKeyCombo(int key, int mods, uint16_t* outKey, uint32_t* outCp)
     }
 }
 
+// Remap numpad keys to navigation when NumLock is off (standard PC behavior).
+// GLFW always reports GLFW_KEY_KP_* regardless of numlock state, so we fix it here.
+static int remapNumpadIfNoNumlock(int key, int mods) {
+    if (mods & GLFW_MOD_NUM_LOCK) return key;
+    switch (key) {
+        case GLFW_KEY_KP_0:       return GLFW_KEY_INSERT;
+        case GLFW_KEY_KP_1:       return GLFW_KEY_END;
+        case GLFW_KEY_KP_2:       return GLFW_KEY_DOWN;
+        case GLFW_KEY_KP_3:       return GLFW_KEY_PAGE_DOWN;
+        case GLFW_KEY_KP_4:       return GLFW_KEY_LEFT;
+        case GLFW_KEY_KP_5:       return -1; // no function
+        case GLFW_KEY_KP_6:       return GLFW_KEY_RIGHT;
+        case GLFW_KEY_KP_7:       return GLFW_KEY_HOME;
+        case GLFW_KEY_KP_8:       return GLFW_KEY_UP;
+        case GLFW_KEY_KP_9:       return GLFW_KEY_PAGE_UP;
+        case GLFW_KEY_KP_DECIMAL: return GLFW_KEY_DELETE;
+        default:                  return key;
+    }
+}
+
 static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mods) {
     (void)w; (void)scancode;
+
+    // Remap numpad digit keys to navigation when NumLock is off
+    key = remapNumpadIfNoNumlock(key, mods);
+    if (key < 0) return; // KP_5 with no numlock has no function
 
     // Handle key releases for kitty protocol
     if (action == GLFW_RELEASE) {
@@ -1097,6 +1121,8 @@ void linux_set_error_callback(void) {
 
 // Register all window callbacks (must be called after window creation).
 void linux_register_callbacks(GLFWwindow* win) {
+    // Enable lock-key modifier bits so we get GLFW_MOD_NUM_LOCK in key callbacks.
+    glfwSetInputMode(win, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
     glfwSetFramebufferSizeCallback(win, framebufferSizeCallback);
     glfwSetKeyCallback(win, keyCallback);
     glfwSetCharCallback(win, charCallback);
