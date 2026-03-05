@@ -203,12 +203,13 @@ const zsh_script =
     \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
     \\fi
     \\unset __ATTYX_BIN_DIR
-    \\# OSC 7: report cwd on every directory change
+    \\# OSC 7: report cwd on directory changes and on every prompt
     \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
     \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
     \\# OSC 7337: report PATH for popup commands
     \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" }
-    \\[[ -z "${precmd_functions[(r)__attyx_report_path]}" ]] && precmd_functions+=(__attyx_report_path)
+    \\__attyx_precmd() { __attyx_chpwd; __attyx_report_path }
+    \\[[ -z "${precmd_functions[(r)__attyx_precmd]}" ]] && precmd_functions+=(__attyx_precmd)
     \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
     \\__attyx_chpwd
     \\
@@ -238,12 +239,13 @@ const fish_script =
     \\  set -gx PATH $__ATTYX_BIN_DIR $PATH
     \\end
     \\set -e __ATTYX_BIN_DIR
-    \\# OSC 7: report cwd
+    \\# OSC 7: report cwd on directory changes and on every prompt
     \\function __attyx_chpwd --on-variable PWD
     \\  printf '\e]7;file://%s%s\a' (hostname) "$PWD"
     \\end
-    \\# OSC 7337: report PATH for popup commands
+    \\# OSC 7337: report PATH for popup commands; also report CWD on prompt
     \\function __attyx_report_path --on-event fish_prompt
+    \\  __attyx_chpwd
     \\  printf '\e]7337;set-path;%s\a' "$PATH"
     \\end
     \\__attyx_chpwd

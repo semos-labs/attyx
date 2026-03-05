@@ -140,6 +140,12 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
     }
 }
 
+/// Convert a cell/row count to a ratio delta relative to the total dimension.
+fn cellsToRatio(cells: u16, total: u16) f32 {
+    if (total == 0) return 0.05;
+    return @as(f32, @floatFromInt(cells)) / @as(f32, @floatFromInt(total));
+}
+
 pub fn processSplitActions(ctx: *PtyThreadCtx) void {
     const action_raw = @atomicRmw(i32, &input.g_split_action_request, .Xchg, 0, .seq_cst);
     if (action_raw == 0) return;
@@ -188,7 +194,8 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         .pane_resize_left, .pane_resize_right => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             if (layout.findResizeTarget(.vertical)) |target| {
-                const delta: f32 = if (action == .pane_resize_left) -0.05 else 0.05;
+                const step = cellsToRatio(ctx.split_resize_step, ctx.grid_cols);
+                const delta: f32 = if (action == .pane_resize_left) -step else step;
                 if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
                     split_actions_mod.notifyPaneSizes(ctx, layout);
                     switchActiveTab(ctx);
@@ -198,8 +205,25 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         .pane_resize_up, .pane_resize_down => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             if (layout.findResizeTarget(.horizontal)) |target| {
-                const delta: f32 = if (action == .pane_resize_up) -0.05 else 0.05;
+                const step = cellsToRatio(ctx.split_resize_step, pty_rows);
+                const delta: f32 = if (action == .pane_resize_up) -step else step;
                 if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                    split_actions_mod.notifyPaneSizes(ctx, layout);
+                    switchActiveTab(ctx);
+                }
+            }
+        },
+        .pane_resize_grow, .pane_resize_shrink => {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            if (layout.findSmartResizeTarget()) |target| {
+                const total = if (target.direction == .vertical) ctx.grid_cols else pty_rows;
+                const step = cellsToRatio(ctx.split_resize_step, total);
+                // Grow = increase focused pane's share.
+                // If focused is first child (left/top), grow means increase ratio.
+                // If focused is second child (right/bottom), grow means decrease ratio.
+                const sign: f32 = if (target.is_first_child) 1.0 else -1.0;
+                const grow_sign: f32 = if (action == .pane_resize_grow) sign else -sign;
+                if (layout.resizeNode(target.branch, step * grow_sign, pty_rows, ctx.grid_cols)) {
                     split_actions_mod.notifyPaneSizes(ctx, layout);
                     switchActiveTab(ctx);
                 }
@@ -390,14 +414,24 @@ pub fn resolveFocusedCwd(ctx: *PtyThreadCtx, osc7_buf: *[statusbar.max_output_le
     // Skip when altscreen is active — the foreground process (vim, less, etc.)
     // may have a different CWD; prefer the shell's last OSC 7 report instead.
     if (!pane.engine.state.alt_active and pane.daemon_pane_id == null and pane.pty.master >= 0) {
-        if (platform.getForegroundCwd(ctx.allocator, pane.pty.master)) |cwd|
+        if (platform.getForegroundCwd(ctx.allocator, pane.pty.master)) |cwd| {
+            logging.info("cwd", "resolved via platform: {s}", .{cwd});
             return .{ .cwd = cwd, .owned = true };
+        }
+        logging.info("cwd", "platform lookup failed, trying OSC 7 fallback", .{});
     }
     // Fallback: OSC 7 working directory from engine state
     if (pane.engine.state.working_directory) |uri| {
-        if (statusbar.parseFileUri(uri, osc7_buf)) |path|
+        if (statusbar.parseFileUri(uri, osc7_buf)) |path| {
+            logging.info("cwd", "resolved via OSC 7: {s}", .{path});
             return .{ .cwd = path, .owned = false };
+        }
     }
+    logging.info("cwd", "resolution failed: no platform cwd, no OSC 7 (alt={}, daemon={}, master={})", .{
+        pane.engine.state.alt_active,
+        pane.daemon_pane_id != null,
+        pane.pty.master,
+    });
     return .{ .cwd = null, .owned = false };
 }
 
@@ -643,6 +677,9 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
         );
         keybinds_mod.installTable(&new_table);
     }
+    // Split resize step
+    ctx.split_resize_step = new_cfg.split_resize_step;
+
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});
 }

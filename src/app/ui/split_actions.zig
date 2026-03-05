@@ -64,7 +64,13 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
             return;
         };
     } else {
-        layout.splitPane(dir, ctx.allocator, publish.ctxPty(ctx).master, ctx.applied_scrollback_lines) catch return;
+        // Resolve CWD with full fallback chain (platform lookup + OSC 7).
+        // splitPane's internal getForegroundCwd has no OSC 7 fallback, which
+        // caused new splits to start in $HOME when the platform lookup failed.
+        var osc7_buf_local: [statusbar.max_output_len]u8 = undefined;
+        const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf_local);
+        defer if (resolved.owned) if (resolved.cwd) |cwd_alloc| ctx.allocator.free(cwd_alloc);
+        layout.splitPaneResolved(dir, ctx.allocator, resolved.cwd, ctx.applied_scrollback_lines) catch return;
     }
 
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));

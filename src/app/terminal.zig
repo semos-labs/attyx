@@ -80,6 +80,8 @@ pub const PtyThreadCtx = struct {
     session_icon_new: []const u8 = "+",
     session_icon_active: []const u8 = "(active)",
     session_icon_recent: []const u8 = "",
+    // Split resize step in cells/rows per keypress
+    split_resize_step: u16 = 4,
 };
 
 // ---------------------------------------------------------------------------
@@ -626,6 +628,7 @@ pub fn run(
         .session_icon_recent = config.session_icon_recent,
         .last_focus_panes = initial_focus_panes,
         .last_focus_count = initial_focus_count,
+        .split_resize_step = config.split_resize_step,
     };
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});

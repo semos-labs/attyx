@@ -97,6 +97,35 @@ pub const SplitLayout = struct {
         try self.splitPaneWith(dir, new_pane);
     }
 
+    /// Split the focused pane using a pre-resolved CWD (with full fallback chain).
+    /// Preferred over splitPane() which only uses getForegroundCwd.
+    pub fn splitPaneResolved(
+        self: *SplitLayout,
+        dir: Direction,
+        allocator: Allocator,
+        cwd: ?[]const u8,
+        scrollback_lines: usize,
+    ) !void {
+        const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
+        defer if (cwd_z) |z| allocator.free(z);
+
+        const rect = self.pool[self.focused].rect;
+        const child_size = self.splitChildSize(dir, rect) orelse return error.TooSmall;
+
+        const new_pane = try allocator.create(Pane);
+        errdefer allocator.destroy(new_pane);
+        new_pane.* = try Pane.spawn(
+            allocator,
+            child_size.rows,
+            child_size.cols,
+            null,
+            if (cwd_z) |z| z.ptr else null,
+            scrollback_lines,
+        );
+
+        try self.splitPaneWith(dir, new_pane);
+    }
+
     /// Split the focused pane, inserting a pre-created pane as the new child.
     pub fn splitPaneWith(self: *SplitLayout, dir: Direction, new_pane: *Pane) !void {
         if (self.pane_count >= max_panes) return error.TooManyPanes;
@@ -511,6 +540,27 @@ pub const SplitLayout = struct {
             if (self.pool[parent].direction == dir) return parent;
             cur = parent;
         }
+    }
+
+    pub const SmartTarget = struct {
+        branch: u8,
+        is_first_child: bool, // true = focused pane is in children[0] subtree
+        direction: Direction,
+    };
+
+    /// Find the immediate parent branch of the focused leaf.
+    /// Returns the branch index, its split direction, and whether the focused
+    /// pane is in the first (left/top) child subtree.
+    pub fn findSmartResizeTarget(self: *SplitLayout) ?SmartTarget {
+        const leaf = self.focused;
+        if (leaf == null_index) return null;
+        const parent = self.findParent(leaf);
+        if (parent == null_index) return null;
+        return .{
+            .branch = parent,
+            .is_first_child = self.pool[parent].children[0] == leaf,
+            .direction = self.pool[parent].direction,
+        };
     }
 
     pub fn isZoomed(self: *const SplitLayout) bool {

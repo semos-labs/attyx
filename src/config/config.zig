@@ -162,6 +162,9 @@ pub const AppConfig = struct {
     statusbar: ?StatusbarConfig = null,
     _owned_statusbar: bool = false,
 
+    // [splits]
+    split_resize_step: u16 = 4,
+
     // [tabs]
     tab_appearance: TabAppearance = .builtin,
     tab_always_show: bool = false,

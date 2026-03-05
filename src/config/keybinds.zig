@@ -112,6 +112,8 @@ pub const Action = enum(u8) {
     copy_mode_enter = 80,
     tab_move_left = 81,
     tab_move_right = 82,
+    pane_resize_grow = 83,
+    pane_resize_shrink = 84,
     _,
 
     /// Return the popup index if this is a popup_toggle action.

@@ -310,6 +310,21 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    // [splits]
+    if (Lookup.get(root, "splits", "resize_step")) |v| {
+        if (v == .int) {
+            if (v.int >= 1 and v.int <= 50) {
+                config.split_resize_step = @intCast(v.int);
+            } else {
+                std.debug.print("error: {s}: splits.resize_step must be between 1 and 50\n", .{path});
+                return error.ConfigValidationError;
+            }
+        } else {
+            std.debug.print("error: {s}: splits.resize_step must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [tabs]
     if (Lookup.get(root, "tabs", "appearance")) |v| {
         if (v == .string) {

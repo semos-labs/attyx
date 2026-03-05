@@ -72,6 +72,8 @@ pub const registry = [_]CommandDef{
     .{ .action = .pane_resize_down, .name = "pane_resize_down", .description = "Resize pane down", .scope = .global, .mac_hotkey = "cmd+ctrl+j", .linux_hotkey = "ctrl+alt+j" },
     .{ .action = .pane_resize_left, .name = "pane_resize_left", .description = "Resize pane left", .scope = .global, .mac_hotkey = "cmd+ctrl+h", .linux_hotkey = "ctrl+alt+h" },
     .{ .action = .pane_resize_right, .name = "pane_resize_right", .description = "Resize pane right", .scope = .global, .mac_hotkey = "cmd+ctrl+l", .linux_hotkey = "ctrl+alt+l" },
+    .{ .action = .pane_resize_grow, .name = "pane_resize_grow", .description = "Grow focused pane", .scope = .global, .mac_hotkey = "cmd+ctrl+=", .linux_hotkey = "ctrl+alt+=" },
+    .{ .action = .pane_resize_shrink, .name = "pane_resize_shrink", .description = "Shrink focused pane", .scope = .global, .mac_hotkey = "cmd+ctrl+-", .linux_hotkey = "ctrl+alt+-" },
     .{ .action = .clear_screen, .name = "clear_screen", .description = "Clear screen and scrollback", .scope = .global, .mac_hotkey = "cmd+k", .linux_hotkey = "ctrl+shift+k" },
     .{ .action = .session_switcher_toggle, .name = "session_switcher_toggle", .description = "Toggle session switcher", .scope = .global, .mac_hotkey = "ctrl+shift+s", .linux_hotkey = "ctrl+shift+s" },
     .{ .action = .session_create, .name = "session_create", .description = "Create new session", .scope = .global, .mac_hotkey = "ctrl+shift+n", .linux_hotkey = "ctrl+shift+n" },
