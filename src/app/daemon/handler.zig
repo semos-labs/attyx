@@ -277,6 +277,7 @@ fn handleFocusPanes(
                     if (n == 0) break;
                 }
                 cl.sendPaneReplay(pane);
+                cl.sendReplayEnd(new_id);
             }
         }
     }

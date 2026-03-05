@@ -249,6 +249,16 @@ pub const DaemonClient = struct {
         self.sendRaw(&buf);
     }
 
+    /// Send a ReplayEnd notification for a pane, signaling that scrollback
+    /// replay is complete and real-time data follows.
+    pub fn sendReplayEnd(self: *DaemonClient, pane_id: u32) void {
+        var buf: [protocol.header_size + 4]u8 = undefined;
+        var payload: [4]u8 = undefined;
+        std.mem.writeInt(u32, &payload, pane_id, .little);
+        _ = protocol.encodeMessage(&buf, .replay_end, &payload) catch return;
+        self.sendRaw(&buf);
+    }
+
     /// Send a PaneProcName notification.
     pub fn sendPaneProcName(self: *DaemonClient, pane_id: u32, name: []const u8) void {
         var buf: [protocol.header_size + 4 + 1 + 64]u8 = undefined;

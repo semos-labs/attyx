@@ -27,6 +27,7 @@ pub const DaemonMessage = union(enum) {
     pane_created: u32,
     pane_died: struct { pane_id: u32, exit_code: u8 },
     pane_proc_name: struct { pane_id: u32, name: []const u8 },
+    replay_end: u32, // pane_id whose replay just finished
     session_attached: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
     session_list: void,
     session_created: u32,
@@ -295,7 +296,10 @@ pub const SessionClient = struct {
 
             switch (header.msg_type) {
                 .pane_output => {
-                    if (payload.len < 4) { self.consumeBytes(total); continue; }
+                    if (payload.len < 4) {
+                        self.consumeBytes(total);
+                        continue;
+                    }
                     const pane_id = std.mem.readInt(u32, payload[0..4], .little);
                     const data = payload[4..];
                     const len = data.len;
@@ -329,6 +333,15 @@ pub const SessionClient = struct {
                     @memcpy(self.output_buf[0..nlen], msg.name);
                     self.consumeBytes(total);
                     return .{ .pane_proc_name = .{ .pane_id = msg.pane_id, .name = self.output_buf[0..nlen] } };
+                },
+                .replay_end => {
+                    if (payload.len < 4) {
+                        self.consumeBytes(total);
+                        continue;
+                    }
+                    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+                    self.consumeBytes(total);
+                    return .{ .replay_end = pane_id };
                 },
                 .session_list => {
                     self.parseSessionList(payload);

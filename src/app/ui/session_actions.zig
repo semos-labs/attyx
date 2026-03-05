@@ -67,7 +67,6 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
             }
             if (!was_focused) {
                 leaf.pane.needs_engine_reinit = true;
-                leaf.pane.suppress_responses = true;
             }
         }
     }
