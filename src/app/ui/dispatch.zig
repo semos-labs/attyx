@@ -35,6 +35,17 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         return 1;
     }
 
+    // When a popup is active, block all non-popup actions so the
+    // underlying UI doesn't react to keybinds (e.g. tab switching).
+    // Popup-specific actions (toggle, send_sequence, session_create/kill)
+    // are handled above or below; everything else is consumed silently.
+    if (c.g_popup_active != 0) {
+        switch (action) {
+            .send_sequence, .session_create, .session_kill => {},
+            else => return 1,
+        }
+    }
+
     // Tab actions
     switch (action) {
         .tab_new, .tab_close, .tab_next, .tab_prev,
