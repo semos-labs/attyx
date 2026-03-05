@@ -66,22 +66,12 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
                 }
             }
             if (!was_focused) {
-                // Reinit the engine immediately so switchActiveTab never
-                // renders stale content from a prior focus cycle.  The
-                // daemon will replay scrollback into this fresh engine.
-                const rows: u16 = @intCast(leaf.pane.engine.state.grid.rows);
-                const cols: u16 = @intCast(leaf.pane.engine.state.grid.cols);
-                leaf.pane.engine.deinit();
-                leaf.pane.engine = @import("attyx").Engine.init(
-                    leaf.pane.allocator,
-                    rows,
-                    cols,
-                    ctx.applied_scrollback_lines,
-                ) catch {
-                    leaf.pane.needs_engine_reinit = true;
-                    continue;
-                };
-                leaf.pane.needs_engine_reinit = false;
+                // Defer the engine reinit until the first replay byte
+                // arrives (handled in event_loop.zig). This keeps the
+                // old engine content visible during the tab switch,
+                // avoiding a blank flash before the daemon replay
+                // populates the altscreen/content.
+                leaf.pane.needs_engine_reinit = true;
             }
         }
     }

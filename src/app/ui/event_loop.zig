@@ -373,13 +373,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                         if (result.pane.needs_engine_reinit) {
                                             const rows: u16 = @intCast(result.pane.engine.state.grid.rows);
                                             const cols: u16 = @intCast(result.pane.engine.state.grid.cols);
-                                            result.pane.engine.deinit();
-                                            result.pane.engine = @import("attyx").Engine.init(
+                                            const new_engine = @import("attyx").Engine.init(
                                                 result.pane.allocator,
                                                 rows,
                                                 cols,
                                                 ctx.applied_scrollback_lines,
                                             ) catch continue;
+                                            result.pane.engine.deinit();
+                                            result.pane.engine = new_engine;
                                             result.pane.needs_engine_reinit = false;
                                         }
                                         if (result.pane == active_focused_pane) {
