@@ -98,8 +98,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
     const icon_filter = std.posix.getenv("ATTYX_ICON_FILTER") orelse ">";
     const icon_session = std.posix.getenv("ATTYX_ICON_SESSION") orelse "";
     const icon_new = std.posix.getenv("ATTYX_ICON_NEW") orelse "+";
-    const icon_active = std.posix.getenv("ATTYX_ICON_ACTIVE") orelse "(active)";
-    const icon_recent = std.posix.getenv("ATTYX_ICON_RECENT") orelse "";
+    const icon_active = std.posix.getenv("ATTYX_ICON_ACTIVE") orelse "\xe2\x97\x8f";
+    const icon_recent = std.posix.getenv("ATTYX_ICON_RECENT") orelse "\xe2\x97\x8b";
 
     // Get current working directory for "create" action
     var cwd_buf: [4096]u8 = undefined;

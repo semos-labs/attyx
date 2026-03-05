@@ -74,26 +74,25 @@ pub fn render(
                 pos += writeSlice(&buf, pos, "    ");
             }
 
-            if (icon_session.len > 0) {
+            // Icon: active > recent > session
+            const icon = if (is_current and icon_active.len > 0)
+                icon_active
+            else if (!e.alive and icon_recent.len > 0)
+                icon_recent
+            else
+                icon_session;
+            if (icon.len > 0) {
                 pos += writeSlice(&buf, pos, "\x1b[90m");
-                pos += writeSlice(&buf, pos, icon_session);
+                pos += writeSlice(&buf, pos, icon);
                 pos += writeSlice(&buf, pos, "\x1b[0m ");
             }
 
-            if (is_current) {
-                pos += writeSlice(&buf, pos, "\x1b[1m");
+            if (!e.alive) {
+                pos += writeSlice(&buf, pos, "\x1b[90m");
                 pos += writeSlice(&buf, pos, e.getName());
                 pos += writeSlice(&buf, pos, "\x1b[0m");
-                pos += writeSlice(&buf, pos, " \x1b[90m");
-                pos += writeSlice(&buf, pos, icon_active);
-                pos += writeSlice(&buf, pos, "\x1b[0m");
-            } else if (!e.alive) {
-                if (icon_recent.len > 0) {
-                    pos += writeSlice(&buf, pos, "\x1b[90m");
-                    pos += writeSlice(&buf, pos, icon_recent);
-                    pos += writeSlice(&buf, pos, " \x1b[0m");
-                }
-                pos += writeSlice(&buf, pos, "\x1b[90m");
+            } else if (is_current) {
+                pos += writeSlice(&buf, pos, "\x1b[1m");
                 pos += writeSlice(&buf, pos, e.getName());
                 pos += writeSlice(&buf, pos, "\x1b[0m");
             } else {

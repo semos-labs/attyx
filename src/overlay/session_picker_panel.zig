@@ -51,8 +51,13 @@ pub fn renderSessionPicker(
             var label_buf: [128]u8 = undefined;
             var label_len: usize = 0;
 
-            // Session icon (use recent icon for dead sessions)
-            const sess_icon = if (!e.alive and icons.recent.len > 0) icons.recent else icons.session;
+            // Session icon: active > recent > session
+            const sess_icon = if (is_current and icons.active.len > 0)
+                icons.active
+            else if (!e.alive and icons.recent.len > 0)
+                icons.recent
+            else
+                icons.session;
             if (sess_icon.len > 0) {
                 @memcpy(label_buf[label_len..][0..sess_icon.len], sess_icon);
                 label_len += sess_icon.len;
@@ -64,16 +69,6 @@ pub fn renderSessionPicker(
             const name_copy_len = @min(name.len, label_buf.len - label_len);
             @memcpy(label_buf[label_len..][0..name_copy_len], name[0..name_copy_len]);
             label_len += name_copy_len;
-
-            // Active suffix
-            if (is_current and icons.active.len > 0) {
-                if (label_len + 1 + icons.active.len <= label_buf.len) {
-                    label_buf[label_len] = ' ';
-                    label_len += 1;
-                    @memcpy(label_buf[label_len..][0..icons.active.len], icons.active);
-                    label_len += icons.active.len;
-                }
-            }
 
             const label_copy = tmp.dupe(u8, label_buf[0..label_len]) catch "";
 

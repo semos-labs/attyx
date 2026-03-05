@@ -91,12 +91,8 @@ pub const TabManager = struct {
     }
 
     fn insertTab(self: *TabManager, pane: *Pane, rows: u16, cols: u16) void {
-        // Insert after active tab: shift everything right
-        const insert_at: u8 = self.active + 1;
-        var i: u8 = self.count;
-        while (i > insert_at) : (i -= 1) {
-            self.tabs[i] = self.tabs[i - 1];
-        }
+        // Append new tab at the end
+        const insert_at: u8 = self.count;
         var layout = SplitLayout.init(pane);
         layout.setGaps(self.split_gap_h, self.split_gap_v);
         layout.layout(rows, cols);
