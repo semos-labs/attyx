@@ -38,9 +38,33 @@ pub fn connectToSocket() !posix.fd_t {
     return error.DaemonConnectFailed;
 }
 
+/// Socket path includes a hash of the executable path so that different
+/// builds (e.g. stable vs develop) each get their own daemon instance,
+/// while multiple windows of the same build share one.
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     const home = std.posix.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions.sock", .{home}) catch null;
+    const suffix = exePathHash();
+    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions-{s}.sock", .{ home, suffix }) catch null;
+}
+
+fn exePathHash() []const u8 {
+    const Static = struct {
+        var computed: bool = false;
+        var hex: [8]u8 = undefined;
+    };
+    if (Static.computed) return &Static.hex;
+
+    var exe_buf: [1024]u8 = undefined;
+    const exe = getExePath(&exe_buf) orelse "attyx";
+    const hash = std.hash.Fnv1a_32.hash(exe);
+    const hex_chars = "0123456789abcdef";
+    inline for (0..4) |i| {
+        const byte: u8 = @truncate(hash >> @intCast(i * 8));
+        Static.hex[i * 2] = hex_chars[byte >> 4];
+        Static.hex[i * 2 + 1] = hex_chars[byte & 0x0f];
+    }
+    Static.computed = true;
+    return &Static.hex;
 }
 
 fn probeAlive(fd: posix.fd_t) bool {

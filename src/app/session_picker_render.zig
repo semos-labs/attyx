@@ -21,6 +21,7 @@ pub fn render(
     icon_session: []const u8,
     icon_new: []const u8,
     icon_active: []const u8,
+    icon_recent: []const u8,
     confirm_kill: ?u8,
     renaming: ?u8,
     rename_text: []const u8,
@@ -87,6 +88,11 @@ pub fn render(
                 pos += writeSlice(&buf, pos, icon_active);
                 pos += writeSlice(&buf, pos, "\x1b[0m");
             } else if (!e.alive) {
+                if (icon_recent.len > 0) {
+                    pos += writeSlice(&buf, pos, "\x1b[90m");
+                    pos += writeSlice(&buf, pos, icon_recent);
+                    pos += writeSlice(&buf, pos, " \x1b[0m");
+                }
                 pos += writeSlice(&buf, pos, "\x1b[90m");
                 pos += writeSlice(&buf, pos, e.getName());
                 pos += writeSlice(&buf, pos, "\x1b[0m");

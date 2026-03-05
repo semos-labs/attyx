@@ -7,6 +7,7 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
 const handler = @import("handler.zig");
+const session_connect = @import("../session_connect.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -18,10 +19,9 @@ fn signalHandler(_: c_int) callconv(.c) void {
     g_running = false;
 }
 
-/// Get the default socket path: ~/.config/attyx/sessions.sock
+/// Socket path — delegates to session_connect so client and daemon agree.
 fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions.sock", .{home}) catch null;
+    return session_connect.getSocketPath(buf);
 }
 
 /// Ensure parent directory exists.

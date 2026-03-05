@@ -170,10 +170,12 @@ pub const AppConfig = struct {
     session_icon_session: []const u8 = "",
     session_icon_new: []const u8 = "+",
     session_icon_active: []const u8 = "(active)",
+    session_icon_recent: []const u8 = "",
     _owned_session_icon_filter: ?[]const u8 = null,
     _owned_session_icon_session: ?[]const u8 = null,
     _owned_session_icon_new: ?[]const u8 = null,
     _owned_session_icon_active: ?[]const u8 = null,
+    _owned_session_icon_recent: ?[]const u8 = null,
 
     // [updates]
     check_updates: bool = true,
@@ -212,6 +214,7 @@ pub const AppConfig = struct {
         if (self._owned_session_icon_session) |s| alloc.free(s);
         if (self._owned_session_icon_new) |s| alloc.free(s);
         if (self._owned_session_icon_active) |s| alloc.free(s);
+        if (self._owned_session_icon_recent) |s| alloc.free(s);
         if (self._owned_statusbar) {
             if (self.statusbar) |*sb| statusbar_config.deinitStatusbar(alloc, sb);
         }

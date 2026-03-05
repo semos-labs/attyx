@@ -166,6 +166,9 @@ fn refreshList(ctx: *PtyThreadCtx, state: *SessionPickerState) void {
         @memcpy(state.entries[i].name[0..le.name_len], le.name[0..le.name_len]);
     }
     state.entry_count = count;
+    // Re-sort: current → alive → dead (recent).
+    const overlay_picker = @import("attyx").overlay_session_picker;
+    overlay_picker.sortEntries(state.entries[0..count], state.current_session_id);
     state.applyFilter();
     const total = state.totalCount();
     if (state.selected >= total) {
@@ -200,6 +203,7 @@ pub fn relayout(ctx: *PtyThreadCtx) void {
         .session = ctx.session_icon_session,
         .new = ctx.session_icon_new,
         .active = ctx.session_icon_active,
+        .recent = ctx.session_icon_recent,
     };
 
     const result = picker_panel.renderSessionPicker(
@@ -233,6 +237,7 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
         .session = ctx.session_icon_session,
         .new = ctx.session_icon_new,
         .active = ctx.session_icon_active,
+        .recent = ctx.session_icon_recent,
     };
 
     const result = picker_panel.renderSessionPicker(

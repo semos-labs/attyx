@@ -161,6 +161,19 @@ pub const DaemonSession = struct {
         return code;
     }
 
+    /// Kill all panes but preserve session metadata (name, layout, CWD).
+    /// The session becomes a "recent" entry that can be revived on attach.
+    pub fn killAllPanes(self: *DaemonSession) void {
+        for (&self.panes) |*slot| {
+            if (slot.*) |*p| {
+                p.deinit();
+                slot.* = null;
+            }
+        }
+        self.pane_count = 0;
+        self.alive = false;
+    }
+
     pub fn getName(self: *const DaemonSession) []const u8 {
         return self.name[0..self.name_len];
     }

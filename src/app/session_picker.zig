@@ -91,11 +91,15 @@ pub fn run(allocator: std.mem.Allocator) !void {
         break :blk std.fmt.parseInt(u32, env_val, 10) catch null;
     };
 
+    // Sort: current → alive → dead (recent).
+    sortEntries(entries[0..entry_count], current_session_id);
+
     // Read configurable icons from env (set by parent via config)
     const icon_filter = std.posix.getenv("ATTYX_ICON_FILTER") orelse ">";
     const icon_session = std.posix.getenv("ATTYX_ICON_SESSION") orelse "";
     const icon_new = std.posix.getenv("ATTYX_ICON_NEW") orelse "+";
     const icon_active = std.posix.getenv("ATTYX_ICON_ACTIVE") orelse "(active)";
+    const icon_recent = std.posix.getenv("ATTYX_ICON_RECENT") orelse "";
 
     // Get current working directory for "create" action
     var cwd_buf: [4096]u8 = undefined;
@@ -161,7 +165,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
     var term_rows = getTermRows();
     scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
-    picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
+    picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, icon_recent, confirm_kill, renaming, rename_buf[0..rename_len]);
 
     while (true) {
         // Poll stdin with timeout so we can check the SIGWINCH flag.
@@ -172,7 +176,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
         if (g_resized.swap(false, .acq_rel)) {
             term_rows = getTermRows();
             scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
-            picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
+            picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, icon_recent, confirm_kill, renaming, rename_buf[0..rename_len]);
         }
 
         if (poll_fds[0].revents & 0x0001 == 0) continue;
@@ -250,9 +254,12 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     outputCreateAction(cwd);
                     std.process.exit(0);
                 },
-                0x18 => { // Ctrl-X — kill selected session
+                0x18 => { // Ctrl-X — kill selected session (only alive)
                     if (filtered_count > 0 and selected < filtered_count) {
-                        confirm_kill = selected;
+                        const e = &entries[filtered_indices[selected]];
+                        if (e.alive) {
+                            confirm_kill = selected;
+                        }
                     }
                 },
                 0x12 => { // Ctrl-R — rename selected session
@@ -301,9 +308,12 @@ pub fn run(allocator: std.mem.Allocator) !void {
                 else => {},
             }
         } else if (key.len == 4 and key[0] == 0x1b and key[1] == '[' and key[2] == '3' and key[3] == '~') {
-            // Forward Delete key — request kill confirmation
+            // Forward Delete key — request kill confirmation (only alive)
             if (filtered_count > 0 and selected < filtered_count) {
-                confirm_kill = selected;
+                const e = &entries[filtered_indices[selected]];
+                if (e.alive) {
+                    confirm_kill = selected;
+                }
             }
         } else if (key.len >= 2 and key[0] == 0x1b) {
             // Esc + something — treat as Esc
@@ -312,7 +322,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
         term_rows = getTermRows();
         scroll_offset = adjustScroll(selected, scroll_offset, filtered_count +| 1, term_rows);
-        picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, confirm_kill, renaming, rename_buf[0..rename_len]);
+        picker_render.render(&entries, entry_count, &filtered_indices, filtered_count, selected, scroll_offset, term_rows, filter_buf[0..filter_len], current_session_id, icon_filter, icon_session, icon_new, icon_active, icon_recent, confirm_kill, renaming, rename_buf[0..rename_len]);
     }
 }
 
@@ -334,6 +344,9 @@ fn killAndRefresh(
     var no_fds = [0]posix.pollfd{};
     _ = posix.poll(&no_fds, 50) catch {};
     fetchSessionList(sock_fd, entries, entry_count);
+    // Re-sort after refresh so dead sessions move to the end.
+    // current_session_id is not available here; pass null (current stays in-place).
+    sortEntries(entries[0..entry_count.*], null);
     filtered_count.* = applyFilter(entries, entry_count.*, filter, filtered_indices);
     const total = filtered_count.* +| 1;
     if (selected.* >= total) selected.* = if (filtered_count.* > 0) filtered_count.* - 1 else 0;
@@ -469,6 +482,29 @@ fn applyFilter(entries: *const [max_entries]Entry, count: u8, filter: []const u8
         }
     }
     return n;
+}
+
+/// Sort entries: current session first → other alive → dead (recent).
+fn sortEntries(entries: []Entry, current_id: ?u32) void {
+    for (1..entries.len) |i| {
+        const tmp = entries[i];
+        const tmp_key = entryPriority(tmp, current_id);
+        var j: usize = i;
+        while (j > 0) {
+            const prev_key = entryPriority(entries[j - 1], current_id);
+            if (prev_key <= tmp_key) break;
+            entries[j] = entries[j - 1];
+            j -= 1;
+        }
+        entries[j] = tmp;
+    }
+}
+
+fn entryPriority(e: Entry, current_id: ?u32) u8 {
+    if (current_id) |cid| {
+        if (e.id == cid) return 0;
+    }
+    return if (e.alive) 1 else 2;
 }
 
 fn fuzzyMatch(name: []const u8, query: []const u8) bool {

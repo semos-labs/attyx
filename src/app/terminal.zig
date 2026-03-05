@@ -78,6 +78,7 @@ pub const PtyThreadCtx = struct {
     session_icon_session: []const u8 = "",
     session_icon_new: []const u8 = "+",
     session_icon_active: []const u8 = "(active)",
+    session_icon_recent: []const u8 = "",
 };
 
 // ---------------------------------------------------------------------------
@@ -620,6 +621,7 @@ pub fn run(
         .session_icon_session = config.session_icon_session,
         .session_icon_new = config.session_icon_new,
         .session_icon_active = config.session_icon_active,
+        .session_icon_recent = config.session_icon_recent,
         .last_focus_panes = initial_focus_panes,
         .last_focus_count = initial_focus_count,
     };

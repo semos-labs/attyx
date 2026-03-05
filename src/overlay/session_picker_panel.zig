@@ -19,6 +19,7 @@ pub const Icons = struct {
     session: []const u8 = "",
     new: []const u8 = "+",
     active: []const u8 = "(active)",
+    recent: []const u8 = "",
 };
 
 pub fn renderSessionPicker(
@@ -50,10 +51,11 @@ pub fn renderSessionPicker(
             var label_buf: [128]u8 = undefined;
             var label_len: usize = 0;
 
-            // Session icon
-            if (icons.session.len > 0) {
-                @memcpy(label_buf[label_len..][0..icons.session.len], icons.session);
-                label_len += icons.session.len;
+            // Session icon (use recent icon for dead sessions)
+            const sess_icon = if (!e.alive and icons.recent.len > 0) icons.recent else icons.session;
+            if (sess_icon.len > 0) {
+                @memcpy(label_buf[label_len..][0..sess_icon.len], sess_icon);
+                label_len += sess_icon.len;
                 label_buf[label_len] = ' ';
                 label_len += 1;
             }

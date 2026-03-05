@@ -3,6 +3,7 @@ const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
+const layout_codec = @import("../layout_codec.zig");
 
 const max_sessions: usize = 32;
 const replay_capacity: usize = RingBuffer.default_capacity;
@@ -19,7 +20,7 @@ pub fn handleMessage(
     switch (msg.msg_type) {
         .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
         .list => cl.sendSessionListFromSlots(sessions),
-        .attach => handleAttach(cl, msg.payload, sessions),
+        .attach => handleAttach(cl, msg.payload, sessions, next_pane_id, session_count, allocator),
         .detach => {
             cl.attached_session = null;
             cl.active_pane_count = 0;
@@ -54,12 +55,27 @@ fn handleCreate(
         return;
     };
     if (session_count.* >= max_sessions) {
-        cl.sendError(2, "max sessions reached");
-        return;
+        // Try to evict a dead (recent) session to make room.
+        var evicted = false;
+        for (sessions) |*slot| {
+            if (slot.*) |*s| {
+                if (!s.alive) {
+                    s.deinit();
+                    slot.* = null;
+                    evicted = true;
+                    break;
+                }
+            }
+        }
+        if (!evicted) {
+            cl.sendError(2, "max sessions reached");
+            return;
+        }
     }
     const slot_idx = for (sessions, 0..) |*slot, i| {
         if (slot.* == null) break i;
     } else {
+        // All slots occupied (shouldn't happen after eviction, but guard anyway).
         cl.sendError(2, "max sessions reached");
         return;
     };
@@ -99,6 +115,9 @@ fn handleAttach(
     cl: *DaemonClient,
     payload: []const u8,
     sessions: *[max_sessions]?DaemonSession,
+    next_pane_id: *u32,
+    session_count: *usize,
+    allocator: std.mem.Allocator,
 ) void {
     const attach = protocol.decodeAttach(payload) catch {
         cl.sendError(1, "invalid attach payload");
@@ -109,6 +128,12 @@ fn handleAttach(
         return;
     };
     cl.attached_session = attach.session_id;
+
+    // Revive dead (recent) sessions by spawning fresh panes.
+    if (!session.alive) {
+        reviveSession(session, attach.rows, attach.cols, next_pane_id, session_count, allocator);
+    }
+
     session.resize(attach.rows, attach.cols) catch {};
     // Send V2 attached with layout blob and pane IDs.
     // Replay is NOT sent here — the client requests it via focus_panes.
@@ -124,9 +149,16 @@ fn handleKill(
     for (sessions) |*slot| {
         if (slot.*) |*s| {
             if (s.id == kill_id) {
-                s.deinit();
-                slot.* = null;
-                session_count.* -= 1;
+                if (s.alive) {
+                    // Soft-kill: preserve session metadata, kill PTYs only.
+                    // Session stays in its slot as a "recent" entry.
+                    s.killAllPanes();
+                    session_count.* -= 1;
+                } else {
+                    // Already dead — fully destroy it.
+                    s.deinit();
+                    slot.* = null;
+                }
                 break;
             }
         }
@@ -270,6 +302,68 @@ fn handleSaveLayout(
     const len: u16 = @intCast(@min(payload.len, session.layout_data.len));
     @memcpy(session.layout_data[0..len], payload[0..len]);
     session.layout_len = len;
+}
+
+// ── Session revive ──
+
+/// Revive a dead (recent) session by spawning fresh panes to match its layout.
+/// Remaps old pane IDs in the layout blob to the newly spawned pane IDs.
+fn reviveSession(
+    session: *DaemonSession,
+    rows: u16,
+    cols: u16,
+    next_pane_id: *u32,
+    session_count: *usize,
+    allocator: std.mem.Allocator,
+) void {
+    const cwd: ?[*:0]const u8 = if (session.cwd_len > 0)
+        @as([*:0]const u8, session.cwd[0..session.cwd_len :0])
+    else
+        null;
+
+    // Try to revive using the layout blob.
+    if (session.layout_len > 0) {
+        if (layout_codec.deserialize(session.layout_data[0..session.layout_len])) |*info_const| {
+            var info = info_const.*;
+            var old_ids: [layout_codec.max_tabs * layout_codec.max_nodes_per_tab]u32 = undefined;
+            var new_ids: [layout_codec.max_tabs * layout_codec.max_nodes_per_tab]u32 = undefined;
+            const leaf_count = layout_codec.collectLeafPaneIds(&info, &old_ids);
+
+            // Spawn one pane per leaf.
+            var spawned: u32 = 0;
+            for (0..leaf_count) |i| {
+                const pane_id = next_pane_id.*;
+                next_pane_id.* += 1;
+                new_ids[i] = pane_id;
+                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd) catch continue;
+                if (session.findPane(pane_id)) |pane| {
+                    setNonBlocking(pane.pty.master);
+                }
+                spawned += 1;
+            }
+
+            if (spawned > 0) {
+                // Remap pane IDs in the layout and re-serialize.
+                layout_codec.remapPaneIds(&info, old_ids[0..leaf_count], new_ids[0..leaf_count]);
+                if (layout_codec.serialize(&info, &session.layout_data)) |len| {
+                    session.layout_len = len;
+                } else |_| {}
+                session.alive = true;
+                session_count.* += 1;
+                return;
+            }
+        } else |_| {}
+    }
+
+    // Fallback: spawn a single pane (no layout or deserialization failed).
+    const pane_id = next_pane_id.*;
+    next_pane_id.* += 1;
+    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd) catch return;
+    if (session.findPane(pane_id)) |pane| {
+        setNonBlocking(pane.pty.master);
+    }
+    session.alive = true;
+    session_count.* += 1;
 }
 
 // ── Helpers ──

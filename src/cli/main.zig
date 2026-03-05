@@ -158,13 +158,9 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
 
 pub fn doKillDaemon() void {
     const stdout = std.fs.File.stdout();
-    const home = std.posix.getenv("HOME") orelse {
-        stdout.writeAll("error: HOME not set\n") catch {};
-        return;
-    };
     var path_buf: [256]u8 = undefined;
-    const socket_path = std.fmt.bufPrint(&path_buf, "{s}/.config/attyx/sessions.sock", .{home}) catch {
-        stdout.writeAll("error: path too long\n") catch {};
+    const socket_path = getSocketPath(&path_buf) orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
 
@@ -273,6 +269,50 @@ pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) voi
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ label, value }) catch return;
     stdout.writeAll(line) catch {};
+}
+
+// ── Socket path (must match session_connect.zig) ──
+
+extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
+
+fn getSocketPath(buf: *[256]u8) ?[]const u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    const suffix = exePathHash();
+    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions-{s}.sock", .{ home, suffix }) catch null;
+}
+
+fn exePathHash() []const u8 {
+    const Static = struct {
+        var computed: bool = false;
+        var hex: [8]u8 = undefined;
+    };
+    if (Static.computed) return &Static.hex;
+
+    var exe_buf: [1024]u8 = undefined;
+    const exe = getExePath(&exe_buf) orelse "attyx";
+    const hash_val = std.hash.Fnv1a_32.hash(exe);
+    const hex_chars = "0123456789abcdef";
+    inline for (0..4) |i| {
+        const byte: u8 = @truncate(hash_val >> @intCast(i * 8));
+        Static.hex[i * 2] = hex_chars[byte >> 4];
+        Static.hex[i * 2 + 1] = hex_chars[byte & 0x0f];
+    }
+    Static.computed = true;
+    return &Static.hex;
+}
+
+fn getExePath(buf: *[1024]u8) ?[]const u8 {
+    if (comptime @import("builtin").os.tag == .macos) {
+        var size: u32 = buf.len;
+        if (_NSGetExecutablePath(buf, &size) == 0) {
+            return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
+        }
+    } else {
+        const n = readlink("/proc/self/exe", buf, buf.len);
+        if (n > 0) return buf[0..@intCast(n)];
+    }
+    return null;
 }
 
 /// Find the JSON object substring containing "is_current":true

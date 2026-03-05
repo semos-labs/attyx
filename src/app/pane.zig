@@ -21,6 +21,9 @@ pub const Pane = struct {
     /// When true, the engine will be reinitialized before the next data feed
     /// (deferred reinit to prevent blank-screen gap between focus and replay).
     needs_engine_reinit: bool = false,
+    /// When true, discard terminal responses instead of sending them.
+    /// Set during scrollback replay to prevent duplicate DA/DECRPM/etc.
+    suppress_responses: bool = false,
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,

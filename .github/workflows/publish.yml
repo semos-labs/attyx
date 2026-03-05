@@ -179,14 +179,12 @@ jobs:
           TITLE="Attyx v${VERSION}"
           DATE=$(date -u '+%Y-%m-%d')
           BODY=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPO" --json body -q .body)
-          SUMMARY=$(echo "$BODY" | head -n 5 | tr '\n' ' ' | sed 's/^[#* -]*//' | cut -c1-100 | sed 's/[[:space:]]*$//')
 
           cat > "${VERSION}.md" <<NOTES
           ---
           version: "${VERSION}"
           title: "${TITLE}"
           date: ${DATE}
-          summary: "${SUMMARY}"
           ---
 
           ${BODY}

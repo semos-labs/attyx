@@ -529,6 +529,7 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         .{ "icon_session", &config.session_icon_session, &config._owned_session_icon_session },
         .{ "icon_new", &config.session_icon_new, &config._owned_session_icon_new },
         .{ "icon_active", &config.session_icon_active, &config._owned_session_icon_active },
+        .{ "icon_recent", &config.session_icon_recent, &config._owned_session_icon_recent },
     }) |kv| {
         if (Lookup.get(root, "sessions", kv[0])) |v| {
             if (v == .string) {

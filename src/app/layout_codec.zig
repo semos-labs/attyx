@@ -170,6 +170,51 @@ pub fn deserialize(data: []const u8) !LayoutInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Pane ID helpers — used by session revive to remap old→new IDs.
+// ---------------------------------------------------------------------------
+
+/// Collect all leaf pane IDs from a LayoutInfo. Returns the count.
+pub fn collectLeafPaneIds(info: *const LayoutInfo, out: []u32) u32 {
+    var count: u32 = 0;
+    for (0..info.tab_count) |ti| {
+        const tab = &info.tabs[ti];
+        for (0..tab.node_count) |ni| {
+            if (tab.nodes[ni].tag == .leaf) {
+                if (count < out.len) {
+                    out[count] = tab.nodes[ni].pane_id;
+                    count += 1;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+/// Replace old pane IDs with new ones in all leaf nodes and focused_pane_id.
+pub fn remapPaneIds(info: *LayoutInfo, old_ids: []const u32, new_ids: []const u32) void {
+    for (0..info.tab_count) |ti| {
+        const tab = &info.tabs[ti];
+        for (0..tab.node_count) |ni| {
+            if (tab.nodes[ni].tag == .leaf) {
+                for (0..old_ids.len) |k| {
+                    if (tab.nodes[ni].pane_id == old_ids[k]) {
+                        tab.nodes[ni].pane_id = new_ids[k];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Remap focused_pane_id
+    for (0..old_ids.len) |k| {
+        if (info.focused_pane_id == old_ids[k]) {
+            info.focused_pane_id = new_ids[k];
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -303,4 +348,38 @@ test "round-trip with tab titles" {
     try std.testing.expectEqualStrings("vim", decoded.tabs[0].getTitle().?);
     try std.testing.expectEqual(@as(u8, 0), decoded.tabs[1].title_len);
     try std.testing.expect(decoded.tabs[1].getTitle() == null);
+}
+
+test "collectLeafPaneIds: collects all leaves" {
+    var info = LayoutInfo{};
+    info.tab_count = 1;
+    info.focused_pane_id = 2;
+    info.tabs[0].node_count = 3;
+    info.tabs[0].root_idx = 0;
+    info.tabs[0].nodes[0] = .{ .tag = .branch, .direction = .vertical, .ratio_x100 = 50, .child_left = 1, .child_right = 2 };
+    info.tabs[0].nodes[1] = .{ .tag = .leaf, .pane_id = 10 };
+    info.tabs[0].nodes[2] = .{ .tag = .leaf, .pane_id = 20 };
+
+    var ids: [16]u32 = undefined;
+    const count = collectLeafPaneIds(&info, &ids);
+    try std.testing.expectEqual(@as(u32, 2), count);
+    try std.testing.expectEqual(@as(u32, 10), ids[0]);
+    try std.testing.expectEqual(@as(u32, 20), ids[1]);
+}
+
+test "remapPaneIds: remaps leaves and focused" {
+    var info = LayoutInfo{};
+    info.tab_count = 1;
+    info.focused_pane_id = 10;
+    info.tabs[0].node_count = 2;
+    info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = 10 };
+    info.tabs[0].nodes[1] = .{ .tag = .leaf, .pane_id = 20 };
+
+    const old = [_]u32{ 10, 20 };
+    const new = [_]u32{ 100, 200 };
+    remapPaneIds(&info, &old, &new);
+
+    try std.testing.expectEqual(@as(u32, 100), info.tabs[0].nodes[0].pane_id);
+    try std.testing.expectEqual(@as(u32, 200), info.tabs[0].nodes[1].pane_id);
+    try std.testing.expectEqual(@as(u32, 100), info.focused_pane_id);
 }

@@ -50,13 +50,19 @@ pub const SessionPickerState = struct {
     visible_rows: u8 = 10,
 
     /// Load session entries and initialize state.
+    /// Sorts: current session first, then other alive sessions, then dead (recent).
     pub fn load(self: *SessionPickerState, entries: []const SessionEntry, count: u8, current_id: ?u32) void {
         const n: u8 = @intCast(@min(count, max_entries));
+        // Copy entries first.
         for (0..n) |i| {
             self.entries[i] = entries[i];
         }
         self.entry_count = n;
         self.current_session_id = current_id;
+
+        // Sort: current → alive → dead. Stable order within groups.
+        sortEntries(self.entries[0..n], current_id);
+
         self.selected = 0;
         self.scroll_offset = 0;
         self.mode = .browsing;
@@ -187,9 +193,12 @@ pub const SessionPickerState = struct {
                     self.mode = .renaming;
                 }
             },
-            12 => { // Ctrl-X — kill
+            12 => { // Ctrl-X — kill (only for alive sessions)
                 if (self.filtered_count > 0 and self.selected < self.filtered_count) {
-                    self.mode = .confirm_kill;
+                    const e = &self.entries[self.filtered_indices[self.selected]];
+                    if (e.alive) {
+                        self.mode = .confirm_kill;
+                    }
                 }
             },
             13 => { // Ctrl-U — clear filter
@@ -252,6 +261,31 @@ pub const SessionPickerState = struct {
         }
     }
 };
+
+/// Sort entries: current session first → other alive → dead (recent).
+/// Stable within each group (preserves original order).
+pub fn sortEntries(entries: []SessionEntry, current_id: ?u32) void {
+    // Insertion sort with a priority key: 0=current, 1=alive, 2=dead.
+    for (1..entries.len) |i| {
+        const tmp = entries[i];
+        const tmp_key = entryPriority(tmp, current_id);
+        var j: usize = i;
+        while (j > 0) {
+            const prev_key = entryPriority(entries[j - 1], current_id);
+            if (prev_key <= tmp_key) break;
+            entries[j] = entries[j - 1];
+            j -= 1;
+        }
+        entries[j] = tmp;
+    }
+}
+
+pub fn entryPriority(e: SessionEntry, current_id: ?u32) u8 {
+    if (current_id) |cid| {
+        if (e.id == cid) return 0;
+    }
+    return if (e.alive) 1 else 2;
+}
 
 fn fuzzyMatch(name: []const u8, query: []const u8) bool {
     if (query.len > name.len) return false;

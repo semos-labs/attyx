@@ -388,7 +388,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                         if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                                         result.pane.engine.feed(out.data);
                                         if (result.pane.engine.state.drainResponse()) |resp| {
-                                            sc.sendPaneInput(out.pane_id, resp) catch {};
+                                            if (!result.pane.suppress_responses) {
+                                                sc.sendPaneInput(out.pane_id, resp) catch {};
+                                            }
                                         }
                                     }
                                 },
@@ -437,6 +439,21 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 else => {},
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // Clear suppress_responses after replay batch is fully processed.
+        // All replay pane_output messages arrive in one burst from the daemon,
+        // so once readMessage() drains them, real-time data follows next cycle.
+        if (session_fd_idx != null) {
+            for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+                if (maybe_layout.*) |*lay| {
+                    var sr_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                    const sr_lc = lay.collectLeaves(&sr_leaves);
+                    for (sr_leaves[0..sr_lc]) |leaf| {
+                        leaf.pane.suppress_responses = false;
                     }
                 }
             }

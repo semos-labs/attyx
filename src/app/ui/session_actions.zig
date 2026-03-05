@@ -67,6 +67,7 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
             }
             if (!was_focused) {
                 leaf.pane.needs_engine_reinit = true;
+                leaf.pane.suppress_responses = true;
             }
         }
     }
@@ -149,6 +150,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
     setenvSlice(ctx.allocator, "ATTYX_ICON_SESSION", ctx.session_icon_session);
     setenvSlice(ctx.allocator, "ATTYX_ICON_NEW", ctx.session_icon_new);
     setenvSlice(ctx.allocator, "ATTYX_ICON_ACTIVE", ctx.session_icon_active);
+    setenvSlice(ctx.allocator, "ATTYX_ICON_RECENT", ctx.session_icon_recent);
 
     // Pass cursor config — DECSCUSR value: block=1/2, underline=3/4, bar=5/6 (odd=blink)
     {
