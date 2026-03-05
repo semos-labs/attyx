@@ -80,6 +80,11 @@ pub const PtyThreadCtx = struct {
     session_icon_new: []const u8 = "+",
     session_icon_active: []const u8 = "(active)",
     session_icon_recent: []const u8 = "",
+    session_icon_folder: []const u8 = "\xe2\x96\xb8",
+    // Session finder config
+    session_finder_root: []const u8 = "~",
+    session_finder_depth: u8 = 4,
+    session_finder_show_hidden: bool = false,
     // Split resize step in cells/rows per keypress
     split_resize_step: u16 = 4,
 };
@@ -626,6 +631,10 @@ pub fn run(
         .session_icon_new = config.session_icon_new,
         .session_icon_active = config.session_icon_active,
         .session_icon_recent = config.session_icon_recent,
+        .session_icon_folder = config.session_icon_folder,
+        .session_finder_root = config.session_finder_root,
+        .session_finder_depth = config.session_finder_depth,
+        .session_finder_show_hidden = config.session_finder_show_hidden,
         .last_focus_panes = initial_focus_panes,
         .last_focus_count = initial_focus_count,
         .split_resize_step = config.split_resize_step,

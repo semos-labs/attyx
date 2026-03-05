@@ -20,6 +20,7 @@ pub const Icons = struct {
     new: []const u8 = "+",
     active: []const u8 = "(active)",
     recent: []const u8 = "",
+    folder: []const u8 = "\xe2\x96\xb8",
 };
 
 pub fn renderSessionPicker(
@@ -35,7 +36,8 @@ pub fn renderSessionPicker(
     const tmp = arena.allocator();
 
     // Build menu items from state
-    var menu_items: [picker_state.max_entries + 1]Element.MenuItem = undefined;
+    const max_menu = picker_state.max_entries + picker_state.max_fs_results + 1;
+    var menu_items: [max_menu]Element.MenuItem = undefined;
     var menu_count: u16 = 0;
 
     const vis_start = state.scroll_offset;
@@ -75,6 +77,30 @@ pub fn renderSessionPicker(
             menu_items[menu_count] = .{
                 .label = label_copy,
                 .enabled = e.alive,
+            };
+        } else if (i < state.filtered_count +| state.fs_count) {
+            // Filesystem result entry
+            const fs_idx = i - state.filtered_count;
+            const fs_entry = &state.fs_results[fs_idx];
+            const fs_path = fs_entry.getPath();
+
+            var fs_buf: [280]u8 = undefined;
+            var fs_len: usize = 0;
+            if (icons.folder.len > 0) {
+                @memcpy(fs_buf[fs_len..][0..icons.folder.len], icons.folder);
+                fs_len += icons.folder.len;
+                fs_buf[fs_len] = ' ';
+                fs_len += 1;
+            }
+
+            const copy_len = @min(fs_path.len, fs_buf.len - fs_len);
+            @memcpy(fs_buf[fs_len..][0..copy_len], fs_path[0..copy_len]);
+            fs_len += copy_len;
+
+            const fs_copy = tmp.dupe(u8, fs_buf[0..fs_len]) catch "";
+            menu_items[menu_count] = .{
+                .label = fs_copy,
+                .enabled = true,
             };
         } else {
             // "New session" entry

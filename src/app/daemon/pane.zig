@@ -85,8 +85,26 @@ pub const DaemonPane = struct {
     }
 
     /// Write input bytes to PTY master (keystrokes from client).
+    /// Handles short writes and WouldBlock on non-blocking PTY fds
+    /// by retrying with a brief sleep (bounded to avoid stalling the
+    /// daemon event loop for too long).
     pub fn writeInput(self: *DaemonPane, bytes: []const u8) !void {
-        _ = try self.pty.writeToPty(bytes);
+        var offset: usize = 0;
+        var retries: u32 = 0;
+        const max_retries: u32 = 50; // 50ms max stall
+        while (offset < bytes.len) {
+            const n = self.pty.writeToPty(bytes[offset..]) catch |err| {
+                if (err == error.WouldBlock) {
+                    retries += 1;
+                    if (retries >= max_retries) return; // give up, don't stall daemon
+                    posix.nanosleep(0, 1_000_000); // 1ms
+                    continue;
+                }
+                return err;
+            };
+            offset += n;
+            retries = 0;
+        }
     }
 
     /// Resize the PTY.

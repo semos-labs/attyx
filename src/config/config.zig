@@ -171,11 +171,17 @@ pub const AppConfig = struct {
 
     // [sessions]
     sessions_enabled: bool = false,
+    session_finder_root: []const u8 = "~",
+    session_finder_depth: u8 = 4,
+    session_finder_show_hidden: bool = false,
+    _owned_session_finder_root: ?[]const u8 = null,
     session_icon_filter: []const u8 = ">",
     session_icon_session: []const u8 = "",
     session_icon_new: []const u8 = "+",
     session_icon_active: []const u8 = "\xe2\x97\x8f",
     session_icon_recent: []const u8 = "\xe2\x97\x8b",
+    session_icon_folder: []const u8 = "\xe2\x96\xb8",
+    _owned_session_icon_folder: ?[]const u8 = null,
     _owned_session_icon_filter: ?[]const u8 = null,
     _owned_session_icon_session: ?[]const u8 = null,
     _owned_session_icon_new: ?[]const u8 = null,
@@ -217,6 +223,8 @@ pub const AppConfig = struct {
         if (self._owned_log_level) |s| alloc.free(s);
         if (self._owned_log_file)  |s| alloc.free(s);
         if (self._owned_working_directory) |s| alloc.free(s);
+        if (self._owned_session_finder_root) |s| alloc.free(s);
+        if (self._owned_session_icon_folder) |s| alloc.free(s);
         if (self._owned_session_icon_filter) |s| alloc.free(s);
         if (self._owned_session_icon_session) |s| alloc.free(s);
         if (self._owned_session_icon_new) |s| alloc.free(s);
