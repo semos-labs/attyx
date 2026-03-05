@@ -79,11 +79,9 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
                     ctx.applied_scrollback_lines,
                 ) catch {
                     leaf.pane.needs_engine_reinit = true;
-                    leaf.pane.suppress_responses = true;
                     continue;
                 };
                 leaf.pane.needs_engine_reinit = false;
-                leaf.pane.suppress_responses = true;
             }
         }
     }
