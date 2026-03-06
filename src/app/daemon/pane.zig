@@ -4,6 +4,7 @@ const Pty = @import("../pty.zig").Pty;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
 
+
 /// A daemon-managed pane wrapping a PTY process and replay buffer.
 /// Multiple DaemonPanes live inside a DaemonSession.
 pub const DaemonPane = struct {
@@ -50,11 +51,34 @@ pub const DaemonPane = struct {
     pub fn readPty(self: *DaemonPane, buf: []u8) !usize {
         const n = try self.pty.read(buf);
         if (n > 0) {
-            self.replay.write(buf[0..n]);
-            self.trackModes(buf[0..n]);
-            self.interceptQueries(buf[0..n]);
+            const data = buf[0..n];
+            // Detect CSI 3J (Erase Saved Lines) and truncate the replay
+            // buffer so replayed sessions don't resurrect cleared scrollback.
+            if (findLastEraseScrollback(data)) |pos| {
+                self.replay.clear();
+                self.replay.write(data[pos..]);
+            } else {
+                self.replay.write(data);
+            }
+            self.trackModes(data);
+            self.interceptQueries(data);
         }
         return n;
+    }
+
+    /// Scan for the last occurrence of CSI 3 J (`\x1b[3J`) in `data`.
+    /// Returns the byte offset just past the sequence, or null if not found.
+    fn findLastEraseScrollback(data: []const u8) ?usize {
+        if (data.len < 4) return null;
+        var found: ?usize = null;
+        var i: usize = 0;
+        while (i + 3 < data.len) : (i += 1) {
+            if (data[i] == '\x1b' and data[i + 1] == '[' and data[i + 2] == '3' and data[i + 3] == 'J') {
+                found = i + 4;
+                i += 3; // skip past, loop will +1
+            }
+        }
+        return found;
     }
 
     /// Scan output for terminal mode changes we need to restore on replay.

@@ -6,6 +6,7 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
 
+
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
 const replay_capacity: usize = RingBuffer.default_capacity;
