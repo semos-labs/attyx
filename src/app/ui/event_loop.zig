@@ -7,6 +7,9 @@ const logging = @import("../../logging/log.zig");
 const split_layout_mod = @import("../split_layout.zig");
 const split_render = @import("../split_render.zig");
 
+const overlay_mod = attyx.overlay_mod;
+const update_check = attyx.overlay_update_check;
+
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
@@ -77,6 +80,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     defer {
         if (ai.g_update_checker) |*uc| uc.tryJoin();
         ai.g_update_checker = null;
+    }
+
+    // Show legacy daemon notification if connected to an outdated daemon
+    if (ctx.session_client) |sc| {
+        if (sc.legacy_daemon) showLegacyDaemonOverlay(ctx);
     }
 
     outer: while (c.attyx_should_quit() == 0) {
@@ -614,6 +622,79 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 }
 
 fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
+    const SessionClient = @import("../session_client.zig").SessionClient;
+    const sess_connect = @import("../session_connect.zig");
+
+    // Save session ID for re-attach after hot-upgrade
+    var saved_session_id: ?u32 = null;
+    if (ctx.session_client) |sc| {
+        saved_session_id = sc.attached_session_id;
+        sc.deinit();
+        ctx.allocator.destroy(sc);
+    }
+    ctx.session_client = null;
+    terminal.g_session_client = null;
+
+    // Attempt soft reconnect with backoff: 200ms, 400ms, 800ms, 1600ms
+    var delay_ns: u64 = 200_000_000;
+    for (0..4) |_| {
+        if (c.attyx_should_quit() != 0) return;
+        posix.nanosleep(0, delay_ns);
+
+        const heap_sc = ctx.allocator.create(SessionClient) catch {
+            delay_ns *= 2;
+            continue;
+        };
+        heap_sc.* = SessionClient.connect(ctx.allocator) catch {
+            ctx.allocator.destroy(heap_sc);
+            delay_ns *= 2;
+            continue;
+        };
+
+        // Drain the probe response left by connectToSocket's probeAlive
+        _ = heap_sc.recvData();
+        while (heap_sc.readMessage()) |_| {}
+
+        // Try to re-attach to old session (works after hot-upgrade).
+        // On daemon kill, the session won't exist — fall through to local PTY.
+        if (saved_session_id) |sid| {
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            heap_sc.attach(sid, pty_rows, ctx.grid_cols) catch {
+                heap_sc.deinit();
+                ctx.allocator.destroy(heap_sc);
+                delay_ns *= 2;
+                continue;
+            };
+
+            // Wait briefly for attached response to confirm session exists
+            if (heap_sc.waitForAttach(1000)) |_| {
+                ctx.session_client = heap_sc;
+                terminal.g_session_client = heap_sc;
+                sess_connect.setNonBlocking(heap_sc.socket_fd);
+                logging.info("daemon", "soft reconnect successful", .{});
+                return;
+            } else |_| {
+                // Session gone (daemon was killed, not upgraded)
+                heap_sc.deinit();
+                ctx.allocator.destroy(heap_sc);
+                break;
+            }
+        }
+
+        // No saved session — just set up the client
+        ctx.session_client = heap_sc;
+        terminal.g_session_client = heap_sc;
+        sess_connect.setNonBlocking(heap_sc.socket_fd);
+        logging.info("daemon", "soft reconnect (no session) successful", .{});
+        return;
+    }
+
+    // Reconnect failed or old session gone — fall back to local PTY
+    logging.warn("daemon", "soft reconnect failed, falling back to local PTY", .{});
+    hardResetToLocalPty(ctx);
+}
+
+fn hardResetToLocalPty(ctx: *PtyThreadCtx) void {
     const Pane = @import("../pane.zig").Pane;
     const SplitLayout = split_layout_mod.SplitLayout;
     ctx.tab_mgr.reset();
@@ -645,6 +726,26 @@ fn allDaemonPanesDead(ctx: *PtyThreadCtx) bool {
         }
     }
     return true;
+}
+
+fn showLegacyDaemonOverlay(ctx: *PtyThreadCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
+    const result = update_check.layoutLegacyDaemonCard(mgr.allocator) catch return;
+
+    const eng = publish.ctxEngine(ctx);
+    const cols: u16 = @intCast(eng.state.grid.cols);
+    const rows: u16 = @intCast(eng.state.grid.rows);
+    const card_col = if (cols > result.width + 1) cols - result.width - 1 else 0;
+    const card_row = if (rows > result.height + 1) rows - result.height - 1 else 0;
+
+    mgr.setContent(.update_notification, card_col, card_row, result.width, result.height, result.cells) catch {
+        mgr.allocator.free(result.cells);
+        return;
+    };
+    mgr.allocator.free(result.cells);
+    mgr.layers[@intFromEnum(overlay_mod.OverlayId.update_notification)].action_bar = result.action_bar;
+    mgr.show(.update_notification);
+    publish.publishOverlays(ctx);
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {

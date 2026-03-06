@@ -19,6 +19,7 @@ pub const MessageType = enum(u8) {
     pane_resize = 0x0C,
     save_layout = 0x0D,
     rename = 0x0E,
+    hello = 0x0F,
 
     // Daemon → Client
     created = 0x81,
@@ -31,6 +32,7 @@ pub const MessageType = enum(u8) {
     pane_proc_name = 0x8A,
     replay_end = 0x8B,
     layout_sync = 0x8C,
+    hello_ack = 0x8D,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -481,6 +483,25 @@ pub fn decodePaneProcName(payload: []const u8) !PaneProcNameMsg {
     return .{ .pane_id = pane_id, .name = payload[5 .. 5 + name_len] };
 }
 
+// ── Hello / HelloAck (version handshake) ──
+
+/// Encode Hello or HelloAck payload: version_len:u8, version:[N]u8
+pub fn encodeHello(buf: []u8, version: []const u8) ![]u8 {
+    const vlen: u8 = @intCast(@min(version.len, 255));
+    const total: usize = 1 + vlen;
+    if (buf.len < total) return error.BufferTooSmall;
+    buf[0] = vlen;
+    @memcpy(buf[1 .. 1 + vlen], version[0..vlen]);
+    return buf[0..total];
+}
+
+pub fn decodeHello(payload: []const u8) ![]const u8 {
+    if (payload.len < 1) return error.PayloadTooShort;
+    const vlen = payload[0];
+    if (payload.len < 1 + @as(usize, vlen)) return error.PayloadTooShort;
+    return payload[1 .. 1 + vlen];
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -629,4 +650,11 @@ test "rename round-trip" {
     const msg = try decodeRename(payload);
     try std.testing.expectEqual(@as(u32, 42), msg.session_id);
     try std.testing.expectEqualStrings("new-name", msg.name);
+}
+
+test "hello round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodeHello(&buf, "0.2.10");
+    const version = try decodeHello(payload);
+    try std.testing.expectEqualStrings("0.2.10", version);
 }

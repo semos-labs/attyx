@@ -349,7 +349,11 @@ pub fn run(
         if (SessionClient.connect(allocator)) |sc| {
             session_client = sc;
             sessions_enabled = true;
-            logging.info("session", "connected to daemon", .{});
+            if (sc.legacy_daemon) {
+                logging.warn("session", "daemon is running an older version. Save work and run: attyx kill-daemon", .{});
+            } else {
+                logging.info("session", "connected to daemon", .{});
+            }
         } else |err| {
             logging.err("session", "daemon connect failed (falling back to direct PTY): {}", .{err});
         }

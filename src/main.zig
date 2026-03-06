@@ -54,9 +54,20 @@ pub fn main() !void {
             return;
         },
         .daemon => {
-            daemon.run(allocator) catch |err| {
+            daemon.run(allocator, null) catch |err| {
                 var buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "error: daemon failed: {s}\n", .{@errorName(err)}) catch "error: daemon failed\n";
+                std.fs.File.stderr().writeAll(msg) catch {};
+                std.process.exit(1);
+            };
+            return;
+        },
+        .daemon_restore => {
+            // Extract restore path from args: attyx daemon --restore <path>
+            const restore_path: ?[]const u8 = if (args.len > 3) args[3] else null;
+            daemon.run(allocator, restore_path) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "error: daemon restore failed: {s}\n", .{@errorName(err)}) catch "error: daemon restore failed\n";
                 std.fs.File.stderr().writeAll(msg) catch {};
                 std.process.exit(1);
             };

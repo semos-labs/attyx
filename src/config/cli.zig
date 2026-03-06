@@ -20,6 +20,7 @@ pub const Action = enum {
     device,
     uninstall,
     daemon,
+    daemon_restore,
     kill_daemon,
     _session_picker,
 };
@@ -56,7 +57,12 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.action = .uninstall;
             return result;
         } else if (std.mem.eql(u8, first, "daemon")) {
-            result.action = .daemon;
+            // Check for --restore <path> arg
+            if (args.len > 2 and std.mem.eql(u8, args[2], "--restore")) {
+                result.action = .daemon_restore;
+            } else {
+                result.action = .daemon;
+            }
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;

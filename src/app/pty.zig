@@ -55,6 +55,12 @@ pub const Pty = struct {
         skip_shell_integration: bool = false,
     };
 
+    /// Wrap an existing PTY master fd and child pid (e.g. inherited across exec).
+    /// Does NOT spawn a new process — the caller must ensure fd and pid are valid.
+    pub fn fromExisting(master: posix.fd_t, pid: posix.pid_t) Pty {
+        return .{ .master = master, .pid = pid };
+    }
+
     pub fn spawn(opts: SpawnOpts) !Pty {
         var win = Winsize{
             .ws_row = opts.rows,
