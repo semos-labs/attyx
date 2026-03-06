@@ -78,6 +78,9 @@ if (args.includes("-h") || args.includes("--help")) {
   console.log(`    ${cyan("bun release --minor --rc")}   ${dim("minor RC    (0.1.6 → 0.2.0-rc1)")}`);
   console.log(`    ${cyan("bun release --major --rc")}   ${dim("major RC    (0.1.6 → 1.0.0-rc1)")}`);
   console.log();
+  console.log(`  ${bold("Options:")}`);
+  console.log(`    ${cyan("--dry-run, -n")}              ${dim("Show what would happen without making changes")}`);
+  console.log();
   console.log(`  ${bold("RC rules:")}`);
   console.log(`    ${dim("First --rc after a stable release bumps version + appends -rc1")}`);
   console.log(`    ${dim("Subsequent --rc bumps the RC number (rc1 → rc2 → rc3 …)")}`);
@@ -91,36 +94,34 @@ const bumpType = args.includes("--major") ? "major"
   : "patch";
 
 const isRC = args.includes("--rc");
+const isDryRun = args.includes("--dry-run") || args.includes("-n");
 
 async function main() {
   console.log();
 
-  // 1. Clean work tree
-  const status = await $`git status --porcelain`.text();
-  if (status.trim() !== "") {
-    fail("Work tree is not clean — commit or stash first");
-    console.log(dim(status.trimEnd().split("\n").map(l => `      ${l}`).join("\n")));
-    console.log();
-    process.exit(1);
-  }
+  // 1. Resolve current version from latest GitHub tag
+  await $`git fetch --tags origin`.quiet();
+  ok("Fetched tags from origin");
 
-  // 2a. Switch to main and pull latest
-  await $`git checkout main`.quiet();
-  ok("Checked out main");
-
-  const pull = await $`git pull origin main`.quiet();
-  if (pull.exitCode !== 0) {
-    fail("Could not pull latest main");
-    console.log();
-    process.exit(1);
-  }
-  ok("Pulled latest main");
-
-  // 2. Resolve current version from latest tag (including RC tags)
   let latestTag: string;
-  try {
-    latestTag = (await $`git describe --tags --abbrev=0 --match "v*"`.text()).trim();
-  } catch {
+  const tagLines = (await $`git tag -l "v*"`.text()).trim();
+  if (tagLines) {
+    const allTags = tagLines.split("\n").map(t => t.trim()).filter(Boolean);
+    const parsed = allTags
+      .map(t => ({ tag: t, v: parseVersion(t) }))
+      .filter((e): e is { tag: string; v: ParsedVersion } => e.v !== null);
+    parsed.sort((a, b) => {
+      if (a.v.major !== b.v.major) return b.v.major - a.v.major;
+      if (a.v.minor !== b.v.minor) return b.v.minor - a.v.minor;
+      if (a.v.patch !== b.v.patch) return b.v.patch - a.v.patch;
+      // stable > rc, higher rc > lower rc
+      if (a.v.rc === null && b.v.rc === null) return 0;
+      if (a.v.rc === null) return -1;
+      if (b.v.rc === null) return 1;
+      return b.v.rc - a.v.rc;
+    });
+    latestTag = parsed.length > 0 ? parsed[0].tag : "v0.0.0";
+  } else {
     latestTag = "v0.0.0";
   }
 
@@ -164,7 +165,34 @@ async function main() {
   console.log(`  ${bold(latestTag)} ${dim("→")} ${bold(cyan(tag))} ${dim(`(${label})`)}`);
   console.log();
 
-  // 3b. Create release branch
+  if (isDryRun) {
+    ok("Dry run — no changes made");
+    console.log();
+    process.exit(0);
+  }
+
+  // 4. Clean work tree
+  const status = await $`git status --porcelain`.text();
+  if (status.trim() !== "") {
+    fail("Work tree is not clean — commit or stash first");
+    console.log(dim(status.trimEnd().split("\n").map(l => `      ${l}`).join("\n")));
+    console.log();
+    process.exit(1);
+  }
+
+  // 5. Switch to main and pull latest
+  await $`git checkout main`.quiet();
+  ok("Checked out main");
+
+  const pull = await $`git pull origin main`.quiet();
+  if (pull.exitCode !== 0) {
+    fail("Could not pull latest main");
+    console.log();
+    process.exit(1);
+  }
+  ok("Pulled latest main");
+
+  // 6. Create release branch
   const branch = `release-${version}`;
   await $`git checkout -b ${branch}`.quiet();
   ok(`Created branch ${bold(branch)}`);
