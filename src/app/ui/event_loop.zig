@@ -405,6 +405,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                             ) catch continue;
                                             result.pane.engine.deinit();
                                             result.pane.engine = new_engine;
+                                            result.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
                                             result.pane.needs_engine_reinit = false;
                                         }
                                         if (result.pane == active_focused_pane) {
@@ -414,9 +415,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                         if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                                         result.pane.engine.feed(out.data);
                                         // Discard engine responses — the daemon intercepts
-                                        // common queries (DA1, DECRPM, kitty keyboard, etc.)
-                                        // and responds directly to avoid round-trip latency
-                                        // that causes shells to echo stale responses as text.
+                                        // all queries (DA1, DECRPM, kitty keyboard, OSC
+                                        // color queries, etc.) and responds directly to
+                                        // avoid round-trip latency and duplicate responses.
                                         _ = result.pane.engine.state.drainResponse();
                                     }
                                 },

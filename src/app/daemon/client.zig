@@ -48,14 +48,18 @@ pub const DaemonClient = struct {
     pub fn nextMessage(self: *DaemonClient) ?Message {
         if (self.read_len < protocol.header_size) return null;
 
+        // Read payload length from header (first 4 bytes) before decoding
+        // the message type, so we can skip unknown messages cleanly.
+        const payload_len = std.mem.readInt(u32, self.read_buf[0..4], .little);
+        const total = protocol.header_size + payload_len;
+        if (self.read_len < total) return null;
+
         const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-            // Invalid header — skip one byte and try again
-            self.consumeBytes(1);
+            // Unknown message type — skip the entire message (header + payload)
+            // to keep the stream in sync.
+            self.consumeBytes(total);
             return null;
         };
-
-        const total = protocol.header_size + header.payload_len;
-        if (self.read_len < total) return null;
 
         const payload = self.read_buf[protocol.header_size..total];
         // Copy payload to stable msg_buf before consuming,

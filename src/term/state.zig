@@ -14,6 +14,16 @@ pub const Style = grid_mod.Style;
 pub const Action = actions_mod.Action;
 pub const ControlCode = actions_mod.ControlCode;
 
+/// Colors the terminal reports in response to OSC 10/11/12/4 queries.
+/// Set by the app layer from the active theme; defaults match the
+/// built-in renderer palette.
+pub const ThemeColors = struct {
+    fg: grid_mod.Color.Rgb = .{ .r = 220, .g = 220, .b = 220 },
+    bg: grid_mod.Color.Rgb = .{ .r = 30, .g = 30, .b = 36 },
+    cursor: ?grid_mod.Color.Rgb = null,
+    palette: [16]?grid_mod.Color.Rgb = .{null} ** 16,
+};
+
 pub const Cursor = struct {
     row: usize = 0,
     col: usize = 0,
@@ -93,6 +103,9 @@ pub const TerminalState = struct {
     /// Whether to reflow content on resize (configurable, default true).
     reflow_on_resize: bool = true,
 
+    /// Colors reported by OSC 10/11/12/4 queries (set from active theme).
+    theme_colors: ThemeColors = .{},
+
     /// When true, apply() drops all actions until a CR or LF arrives.
     /// Used to suppress the shell echo of injected commands.
     suppress_echo: bool = false,
@@ -159,7 +172,7 @@ pub const TerminalState = struct {
 
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color => {},
             else => {
                 self.wrap_next = false;
             },
@@ -269,6 +282,8 @@ pub const TerminalState = struct {
             .dcs_passthrough => {}, // handled by engine, never reaches here
             .set_keypad_app_mode => self.keypad_app_mode = true,
             .reset_keypad_app_mode => self.keypad_app_mode = false,
+            .query_color => |target| self.respondColorQuery(target),
+            .query_palette_color => |idx| self.respondPaletteColorQuery(idx),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -542,6 +557,8 @@ pub const TerminalState = struct {
     pub const respondSecondaryDeviceAttributes = @import("state_report.zig").respondSecondaryDeviceAttributes;
     pub const respondDecRequestMode = @import("state_report.zig").respondDecRequestMode;
     pub const respondKittyFlags = @import("state_report.zig").respondKittyFlags;
+    pub const respondColorQuery = @import("state_report.zig").respondColorQuery;
+    pub const respondPaletteColorQuery = @import("state_report.zig").respondPaletteColorQuery;
 
     /// Drain the response buffer. Returns the pending response bytes and
     /// resets the buffer. Caller must write these to the PTY.

@@ -73,6 +73,13 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
         layout.splitPaneResolved(dir, ctx.allocator, resolved.cwd, ctx.applied_scrollback_lines) catch return;
     }
 
+    // Set theme colors on the newly created pane's engine.
+    if (layout.focused != 0xFF) {
+        if (layout.pool[layout.focused].pane) |pane| {
+            pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+        }
+    }
+
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     layout.layout(pty_rows, ctx.grid_cols);
 

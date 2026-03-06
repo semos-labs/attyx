@@ -174,6 +174,7 @@ pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
         ctx.allocator.destroy(ps);
         return;
     };
+    ps.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     ps.config_index = 0;
     ctx.popup_state = ps;
     ctx.session_picker_active = true;

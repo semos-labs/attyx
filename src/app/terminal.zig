@@ -432,6 +432,7 @@ pub fn run(
     initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null, config.scrollback_lines);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
+    initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&initial_theme);
 
     // Transfer SessionClient to heap — shared by all panes via ctx.
     // Assign daemon_pane_id to the initial pane and send focus_panes.
@@ -643,6 +644,11 @@ pub fn run(
         .last_focus_count = initial_focus_count,
         .split_resize_step = config.split_resize_step,
     };
+
+    // Push theme colors to all pane engines (covers reconstructed daemon tabs too).
+    publish.publishThemeToEngines(&ctx);
+    // Push theme colors to daemon for direct OSC 10/11/12/4 response.
+    publish.publishThemeToDaemon(&ctx);
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer thread.join();

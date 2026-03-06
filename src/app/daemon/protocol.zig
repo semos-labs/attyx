@@ -20,6 +20,7 @@ pub const MessageType = enum(u8) {
     save_layout = 0x0D,
     rename = 0x0E,
     hello = 0x0F,
+    set_theme_colors = 0x10,
 
     // Daemon → Client
     created = 0x81,
@@ -500,6 +501,35 @@ pub fn decodeHello(payload: []const u8) ![]const u8 {
     const vlen = payload[0];
     if (payload.len < 1 + @as(usize, vlen)) return error.PayloadTooShort;
     return payload[1 .. 1 + vlen];
+}
+
+// ── Theme colors ──
+
+/// Encode SetThemeColors payload: fg[3], bg[3], cursor_set:u8, cursor[3] = 10 bytes
+pub fn encodeThemeColors(buf: []u8, fg: [3]u8, bg: [3]u8, cursor_set: bool, cursor: [3]u8) ![]u8 {
+    if (buf.len < 10) return error.BufferTooSmall;
+    @memcpy(buf[0..3], &fg);
+    @memcpy(buf[3..6], &bg);
+    buf[6] = if (cursor_set) 1 else 0;
+    @memcpy(buf[7..10], &cursor);
+    return buf[0..10];
+}
+
+pub const ThemeColorsMsg = struct {
+    fg: [3]u8,
+    bg: [3]u8,
+    cursor_set: bool,
+    cursor: [3]u8,
+};
+
+pub fn decodeThemeColors(payload: []const u8) !ThemeColorsMsg {
+    if (payload.len < 10) return error.PayloadTooShort;
+    return .{
+        .fg = payload[0..3].*,
+        .bg = payload[3..6].*,
+        .cursor_set = payload[6] != 0,
+        .cursor = payload[7..10].*,
+    };
 }
 
 // ---------------------------------------------------------------------------

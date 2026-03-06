@@ -28,6 +28,13 @@ pub const DaemonPane = struct {
     osc7337_path: [2048]u8 = .{0} ** 2048,
     osc7337_path_len: u16 = 0,
 
+    /// Theme colors for OSC 10/11/12/4 query responses.
+    /// Defaults match Theme.default(). Updated by the client via protocol.
+    theme_fg: [3]u8 = .{ 220, 220, 220 },
+    theme_bg: [3]u8 = .{ 30, 30, 36 },
+    theme_cursor: [3]u8 = .{ 220, 220, 220 },
+    theme_cursor_set: bool = false,
+
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
     pub fn fromRestored(
         allocator: std.mem.Allocator,
@@ -332,6 +339,65 @@ pub const DaemonPane = struct {
                 }
             }
 
+            // OSC sequences: ESC ] <num> ; ? <terminator>
+            if (data[i + 1] == ']') {
+                var j = i + 2;
+                // Parse OSC number
+                var osc_num: u16 = 0;
+                var has_osc_digits = false;
+                while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {
+                    osc_num = osc_num *% 10 +% @as(u16, data[j] - '0');
+                    has_osc_digits = true;
+                }
+                if (has_osc_digits and j < data.len and data[j] == ';') {
+                    j += 1; // skip ';'
+                    // Find terminator to get the rest payload
+                    const payload_start = j;
+                    var term_end: usize = j;
+                    var found_term = false;
+                    while (term_end < data.len) : (term_end += 1) {
+                        if (data[term_end] == 0x07) {
+                            found_term = true;
+                            break;
+                        }
+                        if (data[term_end] == '\x1b' and term_end + 1 < data.len and data[term_end + 1] == '\\') {
+                            found_term = true;
+                            break;
+                        }
+                    }
+                    if (found_term) {
+                        const rest = data[payload_start..term_end];
+                        const advanced = if (data[term_end] == 0x07) term_end + 1 else term_end + 2;
+                        switch (osc_num) {
+                            10 => if (std.mem.eql(u8, rest, "?")) {
+                                self.respondOscColor(10, self.theme_fg);
+                                i = advanced;
+                                continue;
+                            },
+                            11 => if (std.mem.eql(u8, rest, "?")) {
+                                self.respondOscColor(11, self.theme_bg);
+                                i = advanced;
+                                continue;
+                            },
+                            12 => if (std.mem.eql(u8, rest, "?")) {
+                                const c = if (self.theme_cursor_set) self.theme_cursor else self.theme_fg;
+                                self.respondOscColor(12, c);
+                                i = advanced;
+                                continue;
+                            },
+                            4 => {
+                                // OSC 4;N;? — palette query
+                                if (self.parseAndRespondPaletteQuery(rest)) {
+                                    i = advanced;
+                                    continue;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            }
+
             i += 1;
         }
     }
@@ -347,6 +413,72 @@ pub const DaemonPane = struct {
         const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, pm }) catch return;
         _ = self.pty.writeToPty(resp) catch {};
     }
+
+    /// Format and write an OSC color response: ESC ] <num> ; rgb:RRRR/GGGG/BBBB BEL.
+    /// Uses BEL (0x07) terminator for maximum compatibility — some libraries
+    /// (e.g. termbg, terminal-colorsaurus) only parse BEL-terminated responses.
+    fn respondOscColor(self: *DaemonPane, osc_num: u8, rgb: [3]u8) void {
+        var buf: [64]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1b]{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{
+            osc_num,
+            rgb[0], rgb[0],
+            rgb[1], rgb[1],
+            rgb[2], rgb[2],
+        }) catch return;
+        _ = self.pty.writeToPty(resp) catch {};
+    }
+
+    /// Parse "N;?" from an OSC 4 payload and respond with the palette color.
+    fn parseAndRespondPaletteQuery(self: *DaemonPane, rest: []const u8) bool {
+        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return false;
+        if (!std.mem.eql(u8, rest[semi + 1 ..], "?")) return false;
+        const idx = std.fmt.parseInt(u8, rest[0..semi], 10) catch return false;
+        const rgb = paletteRgb(idx);
+        var buf: [64]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1b]4;{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{
+            idx,
+            rgb[0], rgb[0],
+            rgb[1], rgb[1],
+            rgb[2], rgb[2],
+        }) catch return false;
+        _ = self.pty.writeToPty(resp) catch return false;
+        return true;
+    }
+
+    /// Standard 256-color palette lookup.
+    fn paletteRgb(n: u8) [3]u8 {
+        if (n < 16) return ansi16[n];
+        if (n < 232) {
+            const idx = n - 16;
+            return .{ cubeComp(idx / 36), cubeComp((idx / 6) % 6), cubeComp(idx % 6) };
+        }
+        const g: u8 = @intCast(@as(u16, 8) + @as(u16, n - 232) * 10);
+        return .{ g, g, g };
+    }
+
+    fn cubeComp(idx: u8) u8 {
+        if (idx == 0) return 0;
+        return @intCast(@as(u16, 55) + @as(u16, idx) * 40);
+    }
+
+    const ansi16 = [16][3]u8{
+        .{ 0, 0, 0 },
+        .{ 170, 0, 0 },
+        .{ 0, 170, 0 },
+        .{ 170, 85, 0 },
+        .{ 0, 0, 170 },
+        .{ 170, 0, 170 },
+        .{ 0, 170, 170 },
+        .{ 170, 170, 170 },
+        .{ 85, 85, 85 },
+        .{ 255, 85, 85 },
+        .{ 85, 255, 85 },
+        .{ 255, 255, 85 },
+        .{ 85, 85, 255 },
+        .{ 255, 85, 255 },
+        .{ 85, 255, 255 },
+        .{ 255, 255, 255 },
+    };
 
     pub fn deinit(self: *DaemonPane) void {
         self.pty.deinit();
