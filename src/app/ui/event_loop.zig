@@ -39,6 +39,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLHUP: i16 = 0x0010;
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
+    var last_publish_ns: i128 = 0;
+    const min_frame_ns: i128 = 16 * std.time.ns_per_ms; // ~60fps publish cap
 
     // Save layout to daemon on clean shutdown (before terminal.zig closes the socket).
     defer {
@@ -547,6 +549,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             ctx.sync_start_ns = 0;
         }
 
+        // Frame-rate throttle: always drain PTY data (above) to prevent
+        // kernel buffer backpressure, but only publish to the renderer at
+        // ~60fps. Viewport changes and force redraws bypass the throttle.
+        if (need_update_final and !viewport_changed and !search_vp_changed and !actions.g_force_full_redraw) {
+            const now_ns = std.time.nanoTimestamp();
+            if (now_ns - last_publish_ns < min_frame_ns) continue;
+        }
+
         if (need_update_final) {
             c.attyx_begin_cell_update();
             const layout = ctx.tab_mgr.activeLayout();
@@ -578,18 +588,23 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 terminal.g_pane_rect_col = 0;
                 terminal.g_pane_rect_rows = pty_rows_s;
                 terminal.g_pane_rect_cols = @intCast(ctx.grid_cols);
-                const total = publish.ctxEngine(ctx).state.grid.rows * publish.ctxEngine(ctx).state.grid.cols;
-                publish.fillCells(ctx.cells[0..total], publish.ctxEngine(ctx), total, &ctx.active_theme);
-                const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
+                const eng = publish.ctxEngine(ctx);
+                const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw;
+                if (full_redraw) {
+                    eng.state.dirty.markAll(eng.state.grid.rows);
+                }
+                const total = eng.state.grid.rows * eng.state.grid.cols;
+                publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, &eng.state.dirty);
+                const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
                 c.attyx_set_cursor(
-                    @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                    @intCast(publish.ctxEngine(ctx).state.cursor.col),
+                    @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
+                    @intCast(eng.state.cursor.col),
                 );
-                if (viewport_changed or search_vp_changed or actions.g_force_full_redraw) {
+                if (full_redraw) {
                     c.attyx_mark_all_dirty();
                     actions.g_force_full_redraw = false;
                 } else {
-                    c.attyx_set_dirty(&publish.ctxEngine(ctx).state.dirty.bits);
+                    c.attyx_set_dirty(&eng.state.dirty.bits);
                 }
             }
             publish.ctxEngine(ctx).state.dirty.clear();
@@ -603,6 +618,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_end_cell_update();
             publish.publishState(ctx);
             last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
+            last_publish_ns = std.time.nanoTimestamp();
 
             if (got_data) {
                 const h = state_hash.hash(&publish.ctxEngine(ctx).state);

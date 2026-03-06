@@ -106,7 +106,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
         c.attyx_mark_all_dirty();
     } else {
         const new_total = nr * nc;
-        publish.fillCells(ctx.cells[0..new_total], publish.ctxEngine(ctx), new_total, &ctx.active_theme);
+        publish.fillCells(ctx.cells[0..new_total], publish.ctxEngine(ctx), new_total, &ctx.active_theme, null);
         const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
         c.attyx_set_cursor(
             @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),

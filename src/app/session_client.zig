@@ -41,6 +41,7 @@ pub const SessionClient = struct {
     socket_fd: posix.fd_t = -1,
     read_buf: [65536]u8 = undefined,
     read_len: usize = 0,
+    read_off: usize = 0,
     output_buf: [65536]u8 = undefined,
     layout_buf: [4096]u8 = undefined,
     layout_len: u16 = 0,
@@ -119,10 +120,11 @@ pub const SessionClient = struct {
         if (n == 0) return;
         self.read_len += n;
 
-        if (self.read_len >= protocol.header_size) {
-            const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch return;
+        if (self.availableBytes() >= protocol.header_size) {
+            const buf = self.read_buf[self.read_off..self.read_len];
+            const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch return;
             const total = protocol.header_size + header.payload_len;
-            if (self.read_len >= total and header.msg_type == .hello_ack) {
+            if (self.availableBytes() >= total and header.msg_type == .hello_ack) {
                 self.consumeBytes(total);
             }
         }
@@ -244,14 +246,15 @@ pub const SessionClient = struct {
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
             // Drain all complete messages already buffered before polling.
-            while (self.read_len >= protocol.header_size) {
-                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+            while (self.availableBytes() >= protocol.header_size) {
+                const buf = self.read_buf[self.read_off..self.read_len];
+                const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
                     self.consumeBytes(1);
                     continue;
                 };
                 const total = protocol.header_size + header.payload_len;
-                if (self.read_len < total) break;
-                const payload = self.read_buf[protocol.header_size..total];
+                if (self.availableBytes() < total) break;
+                const payload = buf[protocol.header_size..total];
                 if (header.msg_type == .session_list) {
                     self.parseSessionList(payload);
                     self.consumeBytes(total);
@@ -275,14 +278,15 @@ pub const SessionClient = struct {
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
             // Drain all complete messages already buffered before polling.
-            while (self.read_len >= protocol.header_size) {
-                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+            while (self.availableBytes() >= protocol.header_size) {
+                const buf = self.read_buf[self.read_off..self.read_len];
+                const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
                     self.consumeBytes(1);
                     continue;
                 };
                 const total = protocol.header_size + header.payload_len;
-                if (self.read_len < total) break;
-                const payload = self.read_buf[protocol.header_size..total];
+                if (self.availableBytes() < total) break;
+                const payload = buf[protocol.header_size..total];
                 if (header.msg_type == .attached) {
                     const v2 = protocol.decodeAttachedV2(payload) catch {
                         self.consumeBytes(total);
@@ -317,14 +321,15 @@ pub const SessionClient = struct {
         var elapsed: u32 = 0;
         while (elapsed < timeout_ms) {
             // Drain all complete messages already buffered before polling.
-            while (self.read_len >= protocol.header_size) {
-                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+            while (self.availableBytes() >= protocol.header_size) {
+                const buf = self.read_buf[self.read_off..self.read_len];
+                const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
                     self.consumeBytes(1);
                     continue;
                 };
                 const total = protocol.header_size + header.payload_len;
-                if (self.read_len < total) break;
-                const payload = self.read_buf[protocol.header_size..total];
+                if (self.availableBytes() < total) break;
+                const payload = buf[protocol.header_size..total];
                 if (header.msg_type == .pane_created) {
                     const pane_id = protocol.decodePaneCreated(payload) catch return error.InvalidResponse;
                     self.consumeBytes(total);
@@ -368,6 +373,10 @@ pub const SessionClient = struct {
     /// Read all available data from the daemon socket (loop until EWOULDBLOCK).
     /// Returns false on EOF or fatal error (daemon disconnected).
     pub fn recvData(self: *SessionClient) bool {
+        // Compact only when we're running low on append space
+        if (self.read_len >= self.read_buf.len - 4096) {
+            self.compactReadBuf();
+        }
         while (true) {
             const space = self.read_buf[self.read_len..];
             if (space.len == 0) {
@@ -385,15 +394,16 @@ pub const SessionClient = struct {
 
     /// V2: Read and return the next daemon message as a tagged union.
     pub fn readMessage(self: *SessionClient) ?DaemonMessage {
-        while (self.read_len >= protocol.header_size) {
-            const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
-                self.consumeBytes(1);
+        while (self.availableBytes() >= protocol.header_size) {
+            const buf = self.read_buf[self.read_off..self.read_len];
+            const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
+                self.read_off += 1;
                 continue;
             };
             const total = protocol.header_size + header.payload_len;
-            if (self.read_len < total) return null;
+            if (self.availableBytes() < total) return null;
 
-            const payload = self.read_buf[protocol.header_size..total];
+            const payload = buf[protocol.header_size..total];
 
             switch (header.msg_type) {
                 .pane_output => {
@@ -525,11 +535,21 @@ pub const SessionClient = struct {
     }
 
     fn consumeBytes(self: *SessionClient, n: usize) void {
-        const remaining = self.read_len - n;
+        self.read_off += n;
+    }
+
+    fn availableBytes(self: *const SessionClient) usize {
+        return self.read_len - self.read_off;
+    }
+
+    fn compactReadBuf(self: *SessionClient) void {
+        const remaining = self.read_len - self.read_off;
+        if (self.read_off == 0) return;
         if (remaining > 0) {
-            std.mem.copyForwards(u8, self.read_buf[0..remaining], self.read_buf[n .. n + remaining]);
+            std.mem.copyForwards(u8, self.read_buf[0..remaining], self.read_buf[self.read_off..self.read_len]);
         }
         self.read_len = remaining;
+        self.read_off = 0;
     }
 
     fn sendMessage(self: *SessionClient, msg_type: protocol.MessageType, payload: []const u8) !void {
@@ -572,14 +592,15 @@ pub const SessionClient = struct {
             // Process all complete messages already in the buffer before polling.
             // The daemon may send pane_output + .created in the same write, so
             // we must drain the buffer — not just one message per poll cycle.
-            while (self.read_len >= protocol.header_size) {
-                const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {
+            while (self.availableBytes() >= protocol.header_size) {
+                const buf = self.read_buf[self.read_off..self.read_len];
+                const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
                     self.consumeBytes(1);
                     continue;
                 };
                 const total = protocol.header_size + header.payload_len;
-                if (self.read_len < total) break;
-                const payload = self.read_buf[protocol.header_size..total];
+                if (self.availableBytes() < total) break;
+                const payload = buf[protocol.header_size..total];
                 if (header.msg_type == .created) {
                     const id = protocol.decodeCreated(payload) catch return error.InvalidResponse;
                     self.consumeBytes(total);
