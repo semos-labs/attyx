@@ -200,13 +200,16 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             if (fds[poll_idx].revents & 0x0001 != 0) {
                 if (sessions[entry.session_idx]) |*s| {
                     if (s.panes[entry.pane_idx]) |*pane| {
-                        var coalesced: usize = 0;
-                        while (coalesced < pty_buf.len) {
-                            const n = pane.readPty(pty_buf[coalesced..]) catch break;
-                            if (n == 0) break;
-                            coalesced += n;
-                        }
-                        if (coalesced > 0) {
+                        // Drain until WouldBlock, coalescing reads into
+                        // pty_buf-sized chunks to reduce message overhead.
+                        while (true) {
+                            var coalesced: usize = 0;
+                            while (coalesced < pty_buf.len) {
+                                const n = pane.readPty(pty_buf[coalesced..]) catch break;
+                                if (n == 0) break;
+                                coalesced += n;
+                            }
+                            if (coalesced == 0) break;
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
@@ -214,6 +217,8 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                     }
                                 }
                             }
+                            // Buffer wasn't full — PTY is drained.
+                            if (coalesced < pty_buf.len) break;
                         }
                     }
                 }

@@ -484,12 +484,12 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
 
     if (vp == 0) {
         for (0..rows) |row| {
+            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[row]);
             if (dirty) |d| { if (!d.isDirty(row)) continue; }
             const base = row * cols;
             for (0..cols) |col| {
                 cells[base + col] = cellToAttyxCell(eng.state.grid.cells[base + col], theme);
             }
-            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[row]);
         }
         return;
     }
@@ -498,20 +498,21 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
     // renderer side, so dirty tracking still applies here.
     const effective_vp = @min(vp, sb.count);
     for (0..rows) |row| {
-        if (dirty) |d| { if (!d.isDirty(row)) continue; }
         if (row < effective_vp) {
             const sb_line_idx = sb.count - effective_vp + row;
+            wrapped[row] = @intFromBool(sb.getLineWrapped(sb_line_idx));
+            if (dirty) |d| { if (!d.isDirty(row)) continue; }
             const sb_cells = sb.getLine(sb_line_idx);
             for (0..cols) |col| {
                 cells[row * cols + col] = cellToAttyxCell(sb_cells[col], theme);
             }
-            wrapped[row] = @intFromBool(sb.getLineWrapped(sb_line_idx));
         } else {
             const grid_row = row - effective_vp;
+            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[grid_row]);
+            if (dirty) |d| { if (!d.isDirty(row)) continue; }
             for (0..cols) |col| {
                 cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col], theme);
             }
-            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[grid_row]);
         }
     }
 }
