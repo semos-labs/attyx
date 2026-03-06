@@ -143,8 +143,16 @@ pub const DaemonClient = struct {
     /// Prepends mode-restore sequences so the engine starts in the correct
     /// state even if the ring buffer no longer contains the original switches.
     pub fn sendPaneReplay(self: *DaemonClient, pane: *DaemonPane) void {
-        const slices = pane.replay.readSlices();
+        var slices = pane.replay.readSlices();
         if (slices.first.len == 0 and slices.second.len == 0) return;
+
+        // Skip any partial escape sequence at the ring buffer start.
+        // When the buffer wraps, the boundary can split a CSI like
+        // \x1b[48;2;30;30;40m — the tail "48;2;30;30;40m" would be
+        // displayed as literal text without this fixup.
+        const skip = skipPartialEscape(slices.first);
+        slices.first = slices.first[skip..];
+
         // Build a mode-restore prefix: SGR reset + cursor visibility + alt screen.
         var prefix: [32]u8 = undefined;
         var plen: usize = 0;
@@ -165,6 +173,29 @@ pub const DaemonClient = struct {
         if (!pane.cursor_visible) {
             self.sendPaneOutput(pane.id, "\x1b[?25l");
         }
+    }
+
+    /// Skip past a partial CSI escape sequence at the start of replay data.
+    /// Returns the number of bytes to skip (0 if no partial sequence detected).
+    fn skipPartialEscape(data: []const u8) usize {
+        if (data.len == 0) return 0;
+        var i: usize = 0;
+
+        // `[` at start means ESC was the last byte before the wrap point.
+        if (data[0] == '[') i = 1;
+
+        // Expect CSI parameter bytes (0x30-0x3F: digits, ;, ?, etc.)
+        if (i >= data.len or data[i] < 0x30 or data[i] > 0x3f) return 0;
+
+        const limit = @min(data.len, 64);
+        while (i < limit) : (i += 1) {
+            const b = data[i];
+            if (b >= 0x30 and b <= 0x3f) continue; // CSI param
+            if (b >= 0x20 and b <= 0x2f) continue; // CSI intermediate
+            if (b >= 0x40 and b <= 0x7e) return i + 1; // CSI final byte
+            return 0; // Not a CSI sequence
+        }
+        return 0;
     }
 
     /// Send a V2 Attached response with layout blob and pane IDs.
@@ -282,6 +313,15 @@ pub const DaemonClient = struct {
         var payload: [4 + 1 + 64]u8 = undefined;
         const p = protocol.encodePaneProcName(&payload, pane_id, name) catch return;
         const m = protocol.encodeMessage(&buf, .pane_proc_name, p) catch return;
+        self.sendRaw(m);
+    }
+
+    /// Send a HelloAck response with daemon's version string.
+    pub fn sendHelloAck(self: *DaemonClient, version: []const u8) void {
+        var payload: [256]u8 = undefined;
+        const p = protocol.encodeHello(&payload, version) catch return;
+        var buf: [protocol.header_size + 256]u8 = undefined;
+        const m = protocol.encodeMessage(&buf, .hello_ack, p) catch return;
         self.sendRaw(m);
     }
 

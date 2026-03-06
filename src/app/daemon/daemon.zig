@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonPane = @import("pane.zig").DaemonPane;
@@ -9,6 +10,7 @@ const platform = @import("../../platform/platform.zig");
 const handler = @import("handler.zig");
 const session_connect = @import("../session_connect.zig");
 const state_persist = @import("state_persist.zig");
+const upgrade = @import("upgrade.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -33,7 +35,7 @@ fn ensureDir(path: []const u8) void {
     }
 }
 
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     // Install signal handlers for clean shutdown
     const sa = posix.Sigaction{
         .handler = .{ .handler = signalHandler },
@@ -70,6 +72,10 @@ pub fn run(allocator: std.mem.Allocator) !void {
     // Set non-blocking on listener
     setNonBlocking(listen_fd);
 
+    // Write daemon version file so clients can detect version mismatches
+    // without sending unknown message types to potentially old daemons.
+    writeVersionFile();
+
     const stderr = std.fs.File.stderr();
     const label = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): listening\n" else "attyx daemon: listening\n";
     stderr.writeAll(label) catch {};
@@ -79,8 +85,32 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var next_session_id: u32 = 1;
     var next_pane_id: u32 = 1;
 
-    // Load persisted dead sessions from previous daemon run.
-    state_persist.load(&sessions, &next_session_id, &next_pane_id);
+    // Restore from upgrade state file if provided (hot-upgrade path).
+    if (restore_path) |rpath| {
+        const restored = restoreFromFile(rpath, &sessions, &next_session_id, &next_pane_id, allocator);
+        if (restored > 0) {
+            // Count live sessions and set non-blocking on inherited PTY fds.
+            for (&sessions) |*slot| {
+                if (slot.*) |*s| {
+                    session_count += 1;
+                    for (&s.panes) |*pslot| {
+                        if (pslot.*) |*p| {
+                            if (p.alive) setNonBlocking(p.pty.master);
+                        }
+                    }
+                }
+            }
+            const stderr_f = std.fs.File.stderr();
+            var msg_buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "upgrade: restored {d} sessions\n", .{restored}) catch "upgrade: restored sessions\n";
+            stderr_f.writeAll(msg) catch {};
+        }
+        // Delete the upgrade file regardless of success.
+        std.fs.deleteFileAbsolute(rpath) catch {};
+    } else {
+        // Normal startup: load persisted dead sessions from previous daemon run.
+        state_persist.load(&sessions, &next_session_id, &next_pane_id);
+    }
 
     var clients: [max_clients]?DaemonClient = .{null} ** max_clients;
     var client_count: usize = 0;
@@ -103,10 +133,12 @@ pub fn run(allocator: std.mem.Allocator) !void {
         }
         posix.close(listen_fd);
         std.fs.deleteFileAbsolute(socket_path) catch {};
+        deleteVersionFile();
     }
 
     var pty_buf: [65536]u8 = undefined;
     var proc_name_tick: u32 = 0;
+    var g_upgrade_requested: bool = false;
 
     const max_panes_total = max_sessions * @import("session.zig").max_panes_per_session;
 
@@ -250,7 +282,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     }
                     // Process complete messages
                     while (cl.nextMessage()) |msg| {
-                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients);
+                        handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients, &g_upgrade_requested);
                     }
                     if (cl.dead) {
                         cl.deinit();
@@ -259,6 +291,13 @@ pub fn run(allocator: std.mem.Allocator) !void {
                     }
                 }
             }
+        }
+
+        // Hot-upgrade: serialize state and exec new binary
+        if (g_upgrade_requested) {
+            upgrade.performUpgrade(&sessions, &clients, listen_fd, socket_path, next_session_id, next_pane_id, allocator);
+            // If we get here, exec failed — continue running old version.
+            g_upgrade_requested = false;
         }
 
         // Check for dead sessions (child exit without POLLHUP)
@@ -316,6 +355,38 @@ fn cleanStaleSocket(path: []const u8) void {
     const msg = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): already running\n" else "attyx daemon: already running\n";
     std.fs.File.stderr().writeAll(msg) catch {};
     std.process.exit(0);
+}
+
+fn restoreFromFile(
+    path: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+    next_session_id: *u32,
+    next_pane_id: *u32,
+    allocator: std.mem.Allocator,
+) u8 {
+    const data = std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024 * 1024) catch return 0;
+    defer allocator.free(data);
+    return upgrade.deserialize(data, sessions, next_session_id, next_pane_id, allocator) catch 0;
+}
+
+fn getVersionFilePath(buf: *[256]u8) ?[]const u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    return std.fmt.bufPrint(buf, "{s}/.config/attyx/daemon{s}.version", .{ home, suffix }) catch null;
+}
+
+fn writeVersionFile() void {
+    var vbuf: [256]u8 = undefined;
+    const vpath = getVersionFilePath(&vbuf) orelse return;
+    const file = std.fs.createFileAbsolute(vpath, .{}) catch return;
+    defer file.close();
+    file.writeAll(attyx.version) catch {};
+}
+
+fn deleteVersionFile() void {
+    var vbuf: [256]u8 = undefined;
+    const vpath = getVersionFilePath(&vbuf) orelse return;
+    std.fs.deleteFileAbsolute(vpath) catch {};
 }
 
 fn setNonBlocking(fd: posix.fd_t) void {

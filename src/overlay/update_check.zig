@@ -268,6 +268,39 @@ pub fn layoutUpdateCard(
     return .{ .cells = r.cells, .width = r.result.width, .height = r.result.height, .action_bar = bar };
 }
 
+/// Build a notification card for legacy daemon (borderless, single row: text + gap + button).
+pub fn layoutLegacyDaemonCard(
+    allocator: std.mem.Allocator,
+) !UpdateCardResult {
+    const style = OverlayStyle{ .border = false };
+
+    const line = "Daemon outdated — save work, then run: attyx kill-daemon";
+    const line_len: u16 = @intCast(line.len);
+    const btn_w: u16 = 4 + 7; // "[ Dismiss ]"
+    const gap: u16 = 2;
+    const total_w = 1 + line_len + gap + btn_w + 1;
+
+    const children = [_]ui.Element{
+        .{ .text = .{ .content = " ", .wrap = false } },
+        .{ .text = .{ .content = line, .wrap = false } },
+    };
+    const theme = ui.OverlayTheme{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+    const r = try ui_render.renderAlloc(allocator, .{ .box = .{
+        .children = &children,
+        .direction = .horizontal,
+        .width = .{ .cells = total_w },
+        .style = .{ .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha },
+    } }, total_w, theme);
+
+    var bar = action_mod.ActionBar{};
+    bar.add(.dismiss, "Dismiss");
+    const btn_start = 1 + line_len + gap;
+    bar.start_col = btn_start;
+    layout_mod.fillActionBar(r.cells, total_w, 0, btn_start, total_w, bar.actions[0..bar.count], bar.focused, .{}, style);
+
+    return .{ .cells = r.cells, .width = r.result.width, .height = r.result.height, .action_bar = bar };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
