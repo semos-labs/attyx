@@ -7,7 +7,7 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const session_connect = @import("../session_connect.zig");
 
 const magic = "ATUP";
-const format_version: u8 = 1;
+const format_version: u8 = 2;
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -148,6 +148,12 @@ fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     try writeByte(w, p.proc_name_len);
     try writeBytes(w, p.proc_name[0..p.proc_name_len]);
 
+    // OSC 7 CWD and OSC 7337 shell PATH
+    try writeU16(w, p.osc7_cwd_len);
+    try writeBytes(w, p.osc7_cwd[0..p.osc7_cwd_len]);
+    try writeU16(w, p.osc7337_path_len);
+    try writeBytes(w, p.osc7337_path[0..p.osc7337_path_len]);
+
     const slices = p.replay.readSlices();
     const ring_len: u32 = @intCast(slices.totalLen());
     try writeU32(w, ring_len);
@@ -170,7 +176,7 @@ pub fn deserialize(
     if (!std.mem.eql(u8, &magic_buf, magic)) return error.InvalidMagic;
 
     const ver = try r.readByte();
-    if (ver != format_version) return error.UnsupportedVersion;
+    if (ver != 1 and ver != format_version) return error.UnsupportedVersion;
 
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
@@ -179,7 +185,7 @@ pub fn deserialize(
     var restored: u8 = 0;
 
     for (0..session_count) |_| {
-        const s = deserializeSession(&r, allocator) catch break;
+        const s = deserializeSession(&r, ver, allocator) catch break;
         for (sessions) |*slot| {
             if (slot.* == null) {
                 slot.* = s;
@@ -192,7 +198,7 @@ pub fn deserialize(
     return restored;
 }
 
-fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSession {
+fn deserializeSession(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !DaemonSession {
     var s = DaemonSession{
         .id = try r.readU32(),
         .rows = 24,
@@ -212,7 +218,7 @@ fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSess
 
     const pane_count = try r.readByte();
     for (0..pane_count) |_| {
-        const pane = try deserializePane(r, allocator);
+        const pane = try deserializePane(r, ver, allocator);
         for (&s.panes) |*pslot| {
             if (pslot.* == null) {
                 pslot.* = pane;
@@ -225,7 +231,7 @@ fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSess
     return s;
 }
 
-fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
+fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !DaemonPane {
     const id = try r.readU32();
     const pty_fd = try r.readI32();
     const pty_pid = try r.readI32();
@@ -239,10 +245,20 @@ fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
     const proc_name_len = try r.readByte();
     const proc_name_slice = try r.readSlice(proc_name_len);
 
+    // OSC 7 CWD and OSC 7337 shell PATH (v2+)
+    var osc7_cwd_slice: []const u8 = &.{};
+    var osc7337_path_slice: []const u8 = &.{};
+    if (ver >= 2) {
+        const osc7_cwd_len = try r.readU16();
+        osc7_cwd_slice = try r.readSlice(osc7_cwd_len);
+        const osc7337_path_len = try r.readU16();
+        osc7337_path_slice = try r.readSlice(osc7337_path_len);
+    }
+
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
 
-    return DaemonPane.fromRestored(
+    var pane = try DaemonPane.fromRestored(
         allocator,
         id,
         pty_fd,
@@ -257,6 +273,16 @@ fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
         ring_data,
         RingBuffer.default_capacity,
     );
+
+    // Restore tracked OSC state
+    const cwd_len: u16 = @intCast(@min(osc7_cwd_slice.len, pane.osc7_cwd.len));
+    @memcpy(pane.osc7_cwd[0..cwd_len], osc7_cwd_slice[0..cwd_len]);
+    pane.osc7_cwd_len = cwd_len;
+    const path_len: u16 = @intCast(@min(osc7337_path_slice.len, pane.osc7337_path.len));
+    @memcpy(pane.osc7337_path[0..path_len], osc7337_path_slice[0..path_len]);
+    pane.osc7337_path_len = path_len;
+
+    return pane;
 }
 
 /// Get the upgrade state file path.
