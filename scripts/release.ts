@@ -104,6 +104,18 @@ async function main() {
     process.exit(1);
   }
 
+  // 2a. Switch to main and pull latest
+  await $`git checkout main`.quiet();
+  ok("Checked out main");
+
+  const pull = await $`git pull origin main`.quiet();
+  if (pull.exitCode !== 0) {
+    fail("Could not pull latest main");
+    console.log();
+    process.exit(1);
+  }
+  ok("Pulled latest main");
+
   // 2. Resolve current version from latest tag (including RC tags)
   let latestTag: string;
   try {
@@ -151,6 +163,11 @@ async function main() {
 
   console.log(`  ${bold(latestTag)} ${dim("→")} ${bold(cyan(tag))} ${dim(`(${label})`)}`);
   console.log();
+
+  // 3b. Create release branch
+  const branch = `release-${version}`;
+  await $`git checkout -b ${branch}`.quiet();
+  ok(`Created branch ${bold(branch)}`);
 
   // 4. Update build.zig.zon version
   const zonPath = "./build.zig.zon";
@@ -203,21 +220,39 @@ async function main() {
   await $`git tag -a ${tag} -m ${"Release " + tag}`;
   ok(`Tagged ${bold(tag)}`);
 
-  // 7. Push
-  await $`git push origin main`.quiet();
+  // 7. Push release branch and tag
+  await $`git push -u origin ${branch}`.quiet();
   await $`git push origin ${tag}`.quiet();
   ok("Pushed to origin");
 
   // 8. GitHub release (draft — CI will publish once all assets are ready)
-  const ghFlags = isRC ? "--prerelease" : "";
-  const gh = await $`gh release create ${tag} --generate-notes --title ${tag} --draft ${ghFlags}`.quiet();
+  const notesPath = `./releases/${tag}.md`;
+  const notesFile = Bun.file(notesPath);
+  const hasNotes = await notesFile.exists();
+  const ghFlags: string[] = ["--draft"];
+  if (isRC) ghFlags.push("--prerelease");
+
+  if (hasNotes) {
+    ghFlags.push("--notes-file", notesPath);
+    ok(`Using release notes from ${bold(notesPath)}`);
+  } else {
+    ghFlags.push("--generate-notes");
+    warn(`No release notes found at ${notesPath} — using auto-generated notes`);
+  }
+
+  const gh = await $`gh release create ${tag} --title ${tag} ${ghFlags}`.quiet();
   if (gh.exitCode === 0) {
     ok(`Created draft GitHub release${isRC ? " (prerelease)" : ""}`);
   } else {
-    const cmd = `gh release create ${tag} --generate-notes --title ${tag} --draft ${ghFlags}`.trim();
+    const flagStr = ghFlags.join(" ");
+    const cmd = `gh release create ${tag} --title ${tag} ${flagStr}`;
     warn(`Could not create GitHub release — run manually:`);
     console.log(`      ${cyan(cmd)}`);
   }
+
+  // 9. Switch back to main
+  await $`git checkout main`.quiet();
+  ok("Checked out main");
 
   console.log();
   console.log(`  ${dim("View:")} ${cyan(`https://github.com/semos-labs/attyx/releases/tag/${tag}`)}`);
