@@ -22,6 +22,42 @@ pub const DaemonPane = struct {
     proc_name: [64]u8 = .{0} ** 64,
     proc_name_len: u8 = 0,
 
+    /// Restore a pane from deserialized state (inherited PTY fd across exec).
+    pub fn fromRestored(
+        allocator: std.mem.Allocator,
+        id: u32,
+        pty_fd: posix.fd_t,
+        pty_pid: posix.pid_t,
+        rows: u16,
+        cols: u16,
+        alive: bool,
+        exit_code: ?u8,
+        cursor_visible: bool,
+        alt_screen: bool,
+        proc_name_slice: []const u8,
+        ring_data: []const u8,
+        replay_capacity: usize,
+    ) !DaemonPane {
+        var pane = DaemonPane{
+            .id = id,
+            .pty = Pty.fromExisting(pty_fd, pty_pid),
+            .replay = try RingBuffer.init(allocator, replay_capacity),
+            .rows = rows,
+            .cols = cols,
+            .alive = alive,
+            .exit_code = exit_code,
+            .cursor_visible = cursor_visible,
+            .alt_screen = alt_screen,
+        };
+        // Restore process name
+        const nlen: u8 = @intCast(@min(proc_name_slice.len, 64));
+        @memcpy(pane.proc_name[0..nlen], proc_name_slice[0..nlen]);
+        pane.proc_name_len = nlen;
+        // Restore ring buffer contents
+        if (ring_data.len > 0) pane.replay.write(ring_data);
+        return pane;
+    }
+
     pub fn spawn(
         allocator: std.mem.Allocator,
         id: u32,

@@ -3,6 +3,7 @@
 /// V2: supports pane-multiplexed protocol (one socket per session).
 const std = @import("std");
 const posix = std.posix;
+const attyx = @import("attyx");
 const protocol = @import("daemon/protocol.zig");
 const conn = @import("session_connect.zig");
 
@@ -33,6 +34,7 @@ pub const DaemonMessage = union(enum) {
     session_list: void,
     session_created: u32,
     err: void,
+    hello_ack: []const u8, // daemon version string
 };
 
 pub const SessionClient = struct {
@@ -49,12 +51,94 @@ pub const SessionClient = struct {
     pending_list_count: u8 = 0,
     pending_list_ready: bool = false,
 
+    /// True if daemon did not respond to hello (pre-upgrade legacy daemon).
+    legacy_daemon: bool = false,
+    /// Daemon version string from hello_ack.
+    daemon_version: [64]u8 = undefined,
+    daemon_version_len: u8 = 0,
+
     /// Connect to daemon socket. Auto-starts daemon if not running.
+    /// Checks daemon version file to detect mismatches without sending
+    /// unknown message types to potentially old daemons.
     pub fn connect(allocator: std.mem.Allocator) !SessionClient {
         var client = SessionClient{ .allocator = allocator };
         client.socket_fd = try conn.connectToSocket();
         conn.setNonBlocking(client.socket_fd);
+        client.checkDaemonVersion();
         return client;
+    }
+
+    /// Check daemon version via version file. Only sends hello to daemons
+    /// that are known to support it (have a version file = new enough).
+    fn checkDaemonVersion(self: *SessionClient) void {
+        var path_buf: [256]u8 = undefined;
+        const vpath = getDaemonVersionPath(&path_buf) orelse {
+            self.legacy_daemon = true;
+            return;
+        };
+
+        // Read daemon version from file
+        var ver_buf: [64]u8 = undefined;
+        const ver_len = readVersionFile(vpath, &ver_buf);
+        if (ver_len == 0) {
+            // No version file — legacy daemon (pre-upgrade protocol)
+            self.legacy_daemon = true;
+            return;
+        }
+
+        const daemon_ver = ver_buf[0..ver_len];
+        const vlen: u8 = @intCast(@min(daemon_ver.len, 64));
+        @memcpy(self.daemon_version[0..vlen], daemon_ver[0..vlen]);
+        self.daemon_version_len = vlen;
+
+        if (std.mem.eql(u8, daemon_ver, attyx.version)) {
+            // Versions match — proceed normally, no hello needed
+            return;
+        }
+
+        // Version mismatch — daemon supports hello, send it to trigger upgrade
+        self.sendHello();
+    }
+
+    /// Send hello message to trigger daemon upgrade.
+    fn sendHello(self: *SessionClient) void {
+        var payload_buf: [256]u8 = undefined;
+        const payload = protocol.encodeHello(&payload_buf, attyx.version) catch return;
+        var msg_buf: [protocol.header_size + 256]u8 = undefined;
+        const msg = protocol.encodeMessage(&msg_buf, .hello, payload) catch return;
+        _ = posix.write(self.socket_fd, msg) catch return;
+
+        // Wait up to 200ms for hello_ack
+        var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
+        _ = posix.poll(&fds, 200) catch return;
+        if (fds[0].revents & 0x0001 == 0) return;
+
+        // Read and consume hello_ack
+        const space = self.read_buf[self.read_len..];
+        const n = posix.read(self.socket_fd, space) catch return;
+        if (n == 0) return;
+        self.read_len += n;
+
+        if (self.read_len >= protocol.header_size) {
+            const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch return;
+            const total = protocol.header_size + header.payload_len;
+            if (self.read_len >= total and header.msg_type == .hello_ack) {
+                self.consumeBytes(total);
+            }
+        }
+    }
+
+    fn getDaemonVersionPath(buf: *[256]u8) ?[]const u8 {
+        const home = std.posix.getenv("HOME") orelse return null;
+        const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+        return std.fmt.bufPrint(buf, "{s}/.config/attyx/daemon{s}.version", .{ home, suffix }) catch null;
+    }
+
+    fn readVersionFile(path: []const u8, buf: *[64]u8) usize {
+        const file = std.fs.openFileAbsolute(path, .{}) catch return 0;
+        defer file.close();
+        const n = file.read(buf) catch return 0;
+        return n;
     }
 
     /// Create a new session on the daemon. Returns session ID.
@@ -395,6 +479,16 @@ pub const SessionClient = struct {
                             .pane_ids = v2.pane_ids,
                             .pane_count = v2.pane_count,
                         } };
+                    } else |_| {}
+                    self.consumeBytes(total);
+                    continue;
+                },
+                .hello_ack => {
+                    if (protocol.decodeHello(payload)) |ver| {
+                        const vlen = @min(ver.len, self.output_buf.len);
+                        @memcpy(self.output_buf[0..vlen], ver[0..vlen]);
+                        self.consumeBytes(total);
+                        return .{ .hello_ack = self.output_buf[0..vlen] };
                     } else |_| {}
                     self.consumeBytes(total);
                     continue;

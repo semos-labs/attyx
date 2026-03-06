@@ -1,4 +1,5 @@
 const std = @import("std");
+const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
@@ -20,6 +21,7 @@ pub fn handleMessage(
     next_pane_id: *u32,
     allocator: std.mem.Allocator,
     clients: *[max_clients]?DaemonClient,
+    upgrade_requested: *bool,
 ) void {
     switch (msg.msg_type) {
         .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
@@ -31,6 +33,7 @@ pub fn handleMessage(
         },
         .kill => handleKill(msg.payload, sessions, session_count, next_id.*, next_pane_id.*),
         .rename => handleRename(msg.payload, sessions),
+        .hello => handleHello(cl, msg.payload, upgrade_requested),
 
         // V2 pane-multiplexed messages
         .create_pane => handleCreatePane(cl, msg.payload, sessions, next_pane_id, allocator),
@@ -190,6 +193,18 @@ fn handleRename(
     const nlen: u8 = @intCast(@min(msg.name.len, 64));
     @memcpy(s.name[0..nlen], msg.name[0..nlen]);
     s.name_len = nlen;
+}
+
+fn handleHello(cl: *DaemonClient, payload: []const u8, upgrade_requested: *bool) void {
+    const daemon_version = attyx.version;
+    const client_version = protocol.decodeHello(payload) catch {
+        cl.sendHelloAck(daemon_version);
+        return;
+    };
+    cl.sendHelloAck(daemon_version);
+    if (!std.mem.eql(u8, client_version, daemon_version)) {
+        upgrade_requested.* = true;
+    }
 }
 
 // ── V2 pane-multiplexed handlers ──
