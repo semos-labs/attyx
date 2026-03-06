@@ -191,20 +191,26 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             acceptClient(listen_fd, &clients, &client_count);
         }
 
-        // Read PTY data from all panes and forward to attached clients
+        // Read PTY data from all panes and forward to attached clients.
+        // Coalesce multiple reads into a single message per pane to reduce
+        // syscall overhead with high-frequency output (e.g. btop).
         for (0..pty_fd_count) |pi| {
             const poll_idx = 1 + pi;
             const entry = pty_fd_map[pi];
             if (fds[poll_idx].revents & 0x0001 != 0) {
                 if (sessions[entry.session_idx]) |*s| {
                     if (s.panes[entry.pane_idx]) |*pane| {
-                        while (true) {
-                            const n = pane.readPty(&pty_buf) catch break;
+                        var coalesced: usize = 0;
+                        while (coalesced < pty_buf.len) {
+                            const n = pane.readPty(pty_buf[coalesced..]) catch break;
                             if (n == 0) break;
+                            coalesced += n;
+                        }
+                        if (coalesced > 0) {
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
-                                        cl.sendPaneOutput(pane.id, pty_buf[0..n]);
+                                        cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
                                     }
                                 }
                             }

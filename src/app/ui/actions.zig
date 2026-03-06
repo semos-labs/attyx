@@ -379,7 +379,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
         }
         const eng = &pane.engine;
         const total = eng.state.grid.rows * eng.state.grid.cols;
-        publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme);
+        publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
         const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
         c.attyx_set_cursor(
             @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),

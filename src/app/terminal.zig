@@ -532,7 +532,7 @@ pub fn run(
 
     const active_eng = &tab_mgr.activePane().engine;
     const total: usize = @as(usize, initial_pty_rows) * @as(usize, config.cols);
-    publish.fillCells(render_cells[0..total], active_eng, total, &initial_theme);
+    publish.fillCells(render_cells[0..total], active_eng, total, &initial_theme, null);
     c.attyx_set_cursor(@intCast(active_eng.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))), @intCast(active_eng.state.cursor.col));
 
     var session = try SessionLog.init(allocator);

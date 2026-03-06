@@ -473,7 +473,9 @@ pub fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
     };
 }
 
-pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme) void {
+const DirtyRows = attyx.DirtyRows;
+
+pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme, dirty: ?*const DirtyRows) void {
     const vp = eng.state.viewport_offset;
     const cols = eng.state.grid.cols;
     const rows = eng.state.grid.rows;
@@ -481,18 +483,22 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
     const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
 
     if (vp == 0) {
-        const total = rows * cols;
-        for (0..total) |i| {
-            cells[i] = cellToAttyxCell(eng.state.grid.cells[i], theme);
-        }
         for (0..rows) |row| {
+            if (dirty) |d| { if (!d.isDirty(row)) continue; }
+            const base = row * cols;
+            for (0..cols) |col| {
+                cells[base + col] = cellToAttyxCell(eng.state.grid.cells[base + col], theme);
+            }
             wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[row]);
         }
         return;
     }
 
+    // Scrollback view: viewport changes already trigger markAll on the
+    // renderer side, so dirty tracking still applies here.
     const effective_vp = @min(vp, sb.count);
     for (0..rows) |row| {
+        if (dirty) |d| { if (!d.isDirty(row)) continue; }
         if (row < effective_vp) {
             const sb_line_idx = sb.count - effective_vp + row;
             const sb_cells = sb.getLine(sb_line_idx);
