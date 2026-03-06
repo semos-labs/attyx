@@ -625,8 +625,16 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     const SessionClient = @import("../session_client.zig").SessionClient;
     const sess_connect = @import("../session_connect.zig");
 
-    // Save session ID for re-attach after hot-upgrade
+    // Save session ID and CWD for re-attach/fresh session after reconnect
     var saved_session_id: ?u32 = null;
+    var saved_cwd: [std.fs.max_path_bytes]u8 = undefined;
+    var saved_cwd_len: usize = 0;
+    if (ctx.tab_mgr.count > 0) {
+        if (publish.ctxEngine(ctx).state.working_directory) |wd| {
+            saved_cwd_len = @min(wd.len, saved_cwd.len);
+            @memcpy(saved_cwd[0..saved_cwd_len], wd[0..saved_cwd_len]);
+        }
+    }
     if (ctx.session_client) |sc| {
         saved_session_id = sc.attached_session_id;
         sc.deinit();
@@ -655,10 +663,10 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
         _ = heap_sc.recvData();
         while (heap_sc.readMessage()) |_| {}
 
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+
         // Try to re-attach to old session (works after hot-upgrade).
-        // On daemon kill, the session won't exist — fall through to local PTY.
         if (saved_session_id) |sid| {
-            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             heap_sc.attach(sid, pty_rows, ctx.grid_cols) catch {
                 heap_sc.deinit();
                 ctx.allocator.destroy(heap_sc);
@@ -671,27 +679,80 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
                 ctx.session_client = heap_sc;
                 terminal.g_session_client = heap_sc;
                 sess_connect.setNonBlocking(heap_sc.socket_fd);
+                session_actions.sendActiveFocusPanes(ctx);
+                actions.g_force_full_redraw = true;
                 logging.info("daemon", "soft reconnect successful", .{});
                 return;
             } else |_| {
-                // Session gone (daemon was killed, not upgraded)
+                // Session gone (daemon was killed, not upgraded).
+                // Create a fresh session on the new daemon instead of
+                // falling back to a daemon-less local PTY.
+                const cwd = if (saved_cwd_len > 0) saved_cwd[0..saved_cwd_len] else null;
+                if (createFreshSession(ctx, heap_sc, pty_rows, cwd)) {
+                    sess_connect.setNonBlocking(heap_sc.socket_fd);
+                    session_actions.sendActiveFocusPanes(ctx);
+                    actions.g_force_full_redraw = true;
+                    logging.info("daemon", "reconnect: created new session on new daemon", .{});
+                    return;
+                }
                 heap_sc.deinit();
                 ctx.allocator.destroy(heap_sc);
                 break;
             }
         }
 
-        // No saved session — just set up the client
-        ctx.session_client = heap_sc;
-        terminal.g_session_client = heap_sc;
-        sess_connect.setNonBlocking(heap_sc.socket_fd);
-        logging.info("daemon", "soft reconnect (no session) successful", .{});
-        return;
+        // No saved session — create a fresh one on the new daemon
+        const cwd = if (saved_cwd_len > 0) saved_cwd[0..saved_cwd_len] else null;
+        if (createFreshSession(ctx, heap_sc, pty_rows, cwd)) {
+            sess_connect.setNonBlocking(heap_sc.socket_fd);
+            session_actions.sendActiveFocusPanes(ctx);
+            actions.g_force_full_redraw = true;
+            logging.info("daemon", "reconnect (no prior session) successful", .{});
+            return;
+        }
+
+        // Session creation failed — clean up and retry
+        heap_sc.deinit();
+        ctx.allocator.destroy(heap_sc);
+        delay_ns *= 2;
+        continue;
     }
 
-    // Reconnect failed or old session gone — fall back to local PTY
+    // Reconnect failed — fall back to local PTY
     logging.warn("daemon", "soft reconnect failed, falling back to local PTY", .{});
     hardResetToLocalPty(ctx);
+}
+
+/// Create a new session on the daemon after reconnect, set up tab/pane, and
+/// install the session client into ctx. Returns true on success.
+fn createFreshSession(ctx: *PtyThreadCtx, sc: *@import("../session_client.zig").SessionClient, pty_rows: u16, saved_cwd: ?[]const u8) bool {
+    const Pane = @import("../pane.zig").Pane;
+    const SplitLayout = split_layout_mod.SplitLayout;
+
+    const cwd = saved_cwd orelse (std.posix.getenv("HOME") orelse "/tmp");
+    const new_id = sc.createSession("default", pty_rows, ctx.grid_cols, cwd, "") catch return false;
+    sc.attach(new_id, pty_rows, ctx.grid_cols) catch return false;
+    const attach_result = sc.waitForAttach(3000) catch return false;
+
+    if (attach_result.pane_count == 0) return false;
+
+    ctx.tab_mgr.reset();
+    const pane = ctx.tab_mgr.allocator.create(Pane) catch return false;
+    pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
+        ctx.tab_mgr.allocator.destroy(pane);
+        return false;
+    };
+    pane.daemon_pane_id = attach_result.pane_ids[0];
+    ctx.tab_mgr.tabs[0] = SplitLayout.init(pane);
+    ctx.tab_mgr.count = 1;
+    ctx.tab_mgr.active = 0;
+
+    terminal.g_engine = &pane.engine;
+    terminal.g_pty_master = pane.pty.master;
+    terminal.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
+    ctx.session_client = sc;
+    terminal.g_session_client = sc;
+    return true;
 }
 
 fn hardResetToLocalPty(ctx: *PtyThreadCtx) void {
