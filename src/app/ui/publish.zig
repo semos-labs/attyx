@@ -409,6 +409,58 @@ pub fn publishTheme(theme: *const Theme) void {
     c.g_theme_bg_b = @intCast(theme.background.b);
 }
 
+/// Convert a Theme to ThemeColors for OSC 10/11/12/4 query responses.
+pub fn themeToEngineColors(theme: *const Theme) attyx.ThemeColors {
+    var tc: attyx.ThemeColors = .{
+        .fg = .{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b },
+        .bg = .{ .r = theme.background.r, .g = theme.background.g, .b = theme.background.b },
+    };
+    if (theme.cursor) |cur| {
+        tc.cursor = .{ .r = cur.r, .g = cur.g, .b = cur.b };
+    }
+    for (theme.palette, 0..) |opt, i| {
+        if (opt) |p| {
+            tc.palette[i] = .{ .r = p.r, .g = p.g, .b = p.b };
+        }
+    }
+    return tc;
+}
+
+/// Push theme colors to the daemon so it can respond to OSC 10/11/12 queries directly.
+pub fn publishThemeToDaemon(ctx: *PtyThreadCtx) void {
+    const sc = ctx.session_client orelse return;
+    if (sc.legacy_daemon) return;
+    const theme = &ctx.active_theme;
+    const cursor_set = theme.cursor != null;
+    const cursor_rgb = if (theme.cursor) |cur| [3]u8{ cur.r, cur.g, cur.b } else [3]u8{ 0, 0, 0 };
+    sc.sendThemeColors(
+        .{ theme.foreground.r, theme.foreground.g, theme.foreground.b },
+        .{ theme.background.r, theme.background.g, theme.background.b },
+        cursor_set,
+        cursor_rgb,
+    ) catch {};
+}
+
+/// Push theme colors to all pane engines across all tabs (+ popup).
+pub fn publishThemeToEngines(ctx: *PtyThreadCtx) void {
+    const tc = themeToEngineColors(&ctx.active_theme);
+    const tab_mgr = ctx.tab_mgr;
+    for (&tab_mgr.tabs) |*slot| {
+        if (slot.*) |*layout| {
+            for (&layout.pool) |*node| {
+                if (node.tag == .leaf) {
+                    if (node.pane) |pane| {
+                        pane.engine.state.theme_colors = tc;
+                    }
+                }
+            }
+        }
+    }
+    if (ctx.popup_state) |ps| {
+        ps.pane.engine.state.theme_colors = tc;
+    }
+}
+
 /// Resolve a cell color using the active theme for default fg/bg and ANSI palette.
 fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.Rgb {
     switch (color) {
@@ -418,6 +470,15 @@ fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.
         },
         .ansi => |n| {
             if (theme.palette[n]) |p| return .{ .r = p.r, .g = p.g, .b = p.b };
+            return color_mod.resolve(color, is_bg);
+        },
+        .palette => |n| {
+            // SGR 38;5;N for indices 0-15 should also use theme palette.
+            // Many TUI frameworks (crossterm/ratatui) emit 38;5;N even for
+            // basic ANSI colors, producing .palette instead of .ansi.
+            if (n < 16) {
+                if (theme.palette[n]) |p| return .{ .r = p.r, .g = p.g, .b = p.b };
+            }
             return color_mod.resolve(color, is_bg);
         },
         else => return color_mod.resolve(color, is_bg),

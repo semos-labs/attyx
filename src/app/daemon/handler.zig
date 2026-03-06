@@ -42,6 +42,7 @@ pub fn handleMessage(
         .pane_input => handlePaneInput(cl, msg.payload, sessions),
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
         .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
+        .set_theme_colors => handleSetThemeColors(cl, msg.payload, sessions),
 
         // Ignore server→client messages
         else => {},
@@ -297,6 +298,24 @@ fn handleFocusPanes(
                 cl.sendPaneReplay(pane);
                 cl.sendReplayEnd(new_id);
             }
+        }
+    }
+}
+
+fn handleSetThemeColors(
+    cl: *DaemonClient,
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+) void {
+    const msg = protocol.decodeThemeColors(payload) catch return;
+    const session = getAttachedSession(cl, sessions) orelse return;
+    // Apply to all panes in the session
+    for (&session.panes) |*slot| {
+        if (slot.*) |*pane| {
+            pane.theme_fg = msg.fg;
+            pane.theme_bg = msg.bg;
+            pane.theme_cursor = msg.cursor;
+            pane.theme_cursor_set = msg.cursor_set;
         }
     }
 }

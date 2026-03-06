@@ -189,6 +189,13 @@ pub const SessionClient = struct {
     /// Send input to a specific pane.
     /// Large payloads are chunked to avoid blocking the main thread or
     /// truncating data on non-blocking sockets.
+    /// Push theme colors to the daemon so it can respond to OSC 10/11/12/4 queries.
+    pub fn sendThemeColors(self: *SessionClient, fg: [3]u8, bg: [3]u8, cursor_set: bool, cursor: [3]u8) !void {
+        var payload_buf: [16]u8 = undefined;
+        const payload = try protocol.encodeThemeColors(&payload_buf, fg, bg, cursor_set, cursor);
+        try self.sendMessage(.set_theme_colors, payload);
+    }
+
     pub fn sendPaneInput(self: *SessionClient, pane_id: u32, bytes: []const u8) !void {
         // Small input: encode and send in one message (fits in 512-byte buffer).
         if (bytes.len <= 508) {

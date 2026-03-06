@@ -296,6 +296,12 @@ fn resolveWithTheme(color: anytype, is_bg: bool, theme: *const Theme) color_mod.
             if (theme.palette[n]) |p| return .{ .r = p.r, .g = p.g, .b = p.b };
             return color_mod.resolve(color, is_bg);
         },
+        .palette => |n| {
+            if (n < 16) {
+                if (theme.palette[n]) |p| return .{ .r = p.r, .g = p.g, .b = p.b };
+            }
+            return color_mod.resolve(color, is_bg);
+        },
         else => return color_mod.resolve(color, is_bg),
     }
 }

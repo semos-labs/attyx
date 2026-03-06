@@ -72,6 +72,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 };
             }
             publish.updateGridTopOffset(ctx);
+            ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
             switchActiveTab(ctx);
             saveSessionLayout(ctx);
             logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
@@ -467,6 +468,7 @@ pub fn processPopupToggle(ctx: *PtyThreadCtx) void {
                 ctx.allocator.destroy(ps);
                 return;
             };
+            ps.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
             ps.config_index = @intCast(i);
             ctx.popup_state = ps;
             terminal.g_popup_pty_master = ps.pane.pty.master;
@@ -619,6 +621,8 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     ctx.active_theme = ctx.theme_registry.resolve(new_cfg.theme_name);
     if (new_cfg.theme_background) |bg| ctx.active_theme.background = bg;
     publish.publishTheme(&ctx.active_theme);
+    publish.publishThemeToEngines(ctx);
+    publish.publishThemeToDaemon(ctx);
 
     // Window properties
     {

@@ -76,6 +76,7 @@ pub const Style = grid.Style;
 pub const Parser = parser.Parser;
 pub const TerminalState = state.TerminalState;
 pub const Cursor = state.Cursor;
+pub const ThemeColors = state.ThemeColors;
 pub const Engine = engine.Engine;
 pub const MouseEvent = input.MouseEvent;
 pub const MouseButton = input.MouseButton;

@@ -495,6 +495,15 @@ pub const Parser = struct {
         return .nop;
     }
 
+    /// Parse OSC 4;N;? — palette color query.
+    fn parseOscPaletteQuery(rest: []const u8) Action {
+        // Format: "N;?" where N is palette index 0–255
+        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return .nop;
+        if (!std.mem.eql(u8, rest[semi + 1 ..], "?")) return .nop;
+        const idx = std.fmt.parseInt(u8, rest[0..semi], 10) catch return .nop;
+        return .{ .query_palette_color = idx };
+    }
+
     fn dispatchOsc(self: *Parser) Action {
         if (self.osc_overflow) return .nop;
         const payload = self.osc_buf[0..self.osc_len];
@@ -515,8 +524,12 @@ pub const Parser = struct {
 
         return switch (num) {
             0, 1, 2 => .{ .set_title = rest },
+            4 => parseOscPaletteQuery(rest),
             7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
+            10 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .foreground } else .nop,
+            11 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .background } else .nop,
+            12 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .cursor } else .nop,
             7337 => dispatchOsc7337(rest),
             else => .nop,
         };

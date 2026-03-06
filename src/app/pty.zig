@@ -111,6 +111,7 @@ pub const Pty = struct {
                 _ = chdir(home);
 
             _ = setenv("TERM", "xterm-256color", 1);
+            _ = setenv("COLORTERM", "truecolor", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
 

@@ -186,4 +186,16 @@ pub const Action = union(enum) {
     set_keypad_app_mode,
     /// ESC > — DECKPNM: switch keypad to normal (numeric) mode.
     reset_keypad_app_mode,
+
+    /// OSC 10/11/12 — query default foreground, background, or cursor color.
+    query_color: ColorQueryType,
+    /// OSC 4;N;? — query palette color at index N.
+    query_palette_color: u8,
+};
+
+/// Which color is being queried by an OSC 10/11/12 sequence.
+pub const ColorQueryType = enum {
+    foreground, // OSC 10
+    background, // OSC 11
+    cursor, // OSC 12
 };
