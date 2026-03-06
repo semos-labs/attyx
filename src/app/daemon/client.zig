@@ -173,6 +173,20 @@ pub const DaemonClient = struct {
         if (!pane.cursor_visible) {
             self.sendPaneOutput(pane.id, "\x1b[?25l");
         }
+        // Restore OSC 7 (working directory) if tracked — the replay ring
+        // buffer may no longer contain the original sequence (e.g. TUI tabs
+        // where the shell prompt hasn't re-emitted it).
+        if (pane.osc7_cwd_len > 0) {
+            var osc7_buf: [512 + 8]u8 = undefined;
+            const osc7 = std.fmt.bufPrint(&osc7_buf, "\x1b]7;{s}\x07", .{pane.osc7_cwd[0..pane.osc7_cwd_len]}) catch null;
+            if (osc7) |seq| self.sendPaneOutput(pane.id, seq);
+        }
+        // Restore OSC 7337;set-path (shell PATH) similarly.
+        if (pane.osc7337_path_len > 0) {
+            var path_buf: [2048 + 20]u8 = undefined;
+            const osc = std.fmt.bufPrint(&path_buf, "\x1b]7337;set-path;{s}\x07", .{pane.osc7337_path[0..pane.osc7337_path_len]}) catch null;
+            if (osc) |seq| self.sendPaneOutput(pane.id, seq);
+        }
     }
 
     /// Skip past a partial CSI escape sequence at the start of replay data.

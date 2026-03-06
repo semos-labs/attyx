@@ -21,6 +21,12 @@ pub const DaemonPane = struct {
     /// Cached foreground process name for change detection.
     proc_name: [64]u8 = .{0} ** 64,
     proc_name_len: u8 = 0,
+    /// Tracked OSC 7 working directory (file:// URI) for replay restoration.
+    osc7_cwd: [512]u8 = .{0} ** 512,
+    osc7_cwd_len: u16 = 0,
+    /// Tracked OSC 7337;set-path shell PATH for replay restoration.
+    osc7337_path: [2048]u8 = .{0} ** 2048,
+    osc7337_path_len: u16 = 0,
 
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
     pub fn fromRestored(
@@ -97,6 +103,7 @@ pub const DaemonPane = struct {
                 self.replay.write(data);
             }
             self.trackModes(data);
+            self.trackOsc(data);
             self.interceptQueries(data);
         }
         return n;
@@ -139,6 +146,54 @@ pub const DaemonPane = struct {
                     1049, 47 => self.alt_screen = set,
                     else => {},
                 }
+            }
+            i = j;
+        }
+    }
+
+    /// Scan output for OSC sequences we need to restore on replay.
+    /// Tracks OSC 7 (working directory) and OSC 7337;set-path (shell PATH).
+    fn trackOsc(self: *DaemonPane, data: []const u8) void {
+        const esc = '\x1b';
+        var i: usize = 0;
+        while (i + 1 < data.len) : (i += 1) {
+            if (data[i] != esc or data[i + 1] != ']') continue;
+            // Found ESC ] — parse OSC number
+            var j = i + 2;
+            var num: u16 = 0;
+            var has_digits = false;
+            while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {
+                num = num *% 10 +% @as(u16, data[j] - '0');
+                has_digits = true;
+            }
+            if (!has_digits) continue;
+            if (j >= data.len or data[j] != ';') continue;
+            j += 1; // skip ';'
+            // Find the OSC terminator: BEL (0x07) or ST (ESC \)
+            const payload_start = j;
+            while (j < data.len) : (j += 1) {
+                if (data[j] == 0x07) break;
+                if (data[j] == esc and j + 1 < data.len and data[j + 1] == '\\') break;
+            }
+            if (j >= data.len) continue;
+            const payload = data[payload_start..j];
+
+            switch (num) {
+                7 => {
+                    const len: u16 = @intCast(@min(payload.len, self.osc7_cwd.len));
+                    @memcpy(self.osc7_cwd[0..len], payload[0..len]);
+                    self.osc7_cwd_len = len;
+                },
+                7337 => {
+                    const prefix = "set-path;";
+                    if (payload.len >= prefix.len and std.mem.eql(u8, payload[0..prefix.len], prefix)) {
+                        const path = payload[prefix.len..];
+                        const len: u16 = @intCast(@min(path.len, self.osc7337_path.len));
+                        @memcpy(self.osc7337_path[0..len], path[0..len]);
+                        self.osc7337_path_len = len;
+                    }
+                },
+                else => {},
             }
             i = j;
         }
