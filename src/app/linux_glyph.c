@@ -235,11 +235,12 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         }
     }
 
-    // Block elements are drawn as geometry — no glyph needed.
+    // Block elements and braille patterns are drawn as geometry — no glyph needed.
     bool isBlock = (baseCp >= 0x2580 && baseCp <= 0x259F);
+    bool isBraille = (baseCp >= 0x2800 && baseCp <= 0x28FF);
 
-    // 2. If no glyph found and not a geometry-drawn block char, return blank slot.
-    if (gi == 0 && !isBlock) {
+    // 2. If no glyph found and not a geometry-drawn char, return blank slot.
+    if (gi == 0 && !isBlock && !isBraille) {
         if (face != gc->ft_face && face != gc->ft_bold && face != gc->ft_italic
             && face != gc->ft_bold_italic) FT_Done_Face(face);
         if (gc->next_slot >= gc->max_slots) glyphCacheGrow(gc);
@@ -266,7 +267,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                     || (baseCp >= 0x2500 && baseCp <= 0x257F);
     // isBlock declared above (needed before the early-return check)
     bool wide = false;
-    if (!isPowerline && !isBlock && canBeWide(baseCp)) {
+    if (!isPowerline && !isBlock && !isBraille && canBeWide(baseCp)) {
         int adv_px   = (int)(face->glyph->advance.x >> 6);
         int ink_right = face->glyph->bitmap_left + (int)bmp->width;
         int src_w    = adv_px > ink_right ? adv_px : ink_right;
@@ -436,6 +437,63 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                     int srcCol = (int)((float)dx / sx);
                     if (srcCol >= (int)bmp->width) srcCol = (int)bmp->width - 1;
                     pixels[dy * gw + dx] = bmp->buffer[srcRow * bmp->pitch + srcCol];
+                }
+            }
+        }
+    } else if (isBraille) {
+        // Braille patterns U+2800–U+28FF: draw dots as geometry.
+        // Dot layout in a 2-column × 4-row grid:
+        //   [d1] [d4]    bits: 0, 3
+        //   [d2] [d5]    bits: 1, 4
+        //   [d3] [d6]    bits: 2, 5
+        //   [d7] [d8]    bits: 6, 7
+        int bits = (int)(baseCp - 0x2800);
+        if (bits > 0) {
+            // Dot positions: 2 columns, 4 rows within the cell.
+            // Use small padding so dots don't touch cell edges.
+            float padX = gw * 0.15f;
+            float padY = gh * 0.05f;
+            float dotAreaW = gw - 2 * padX;
+            float dotAreaH = gh - 2 * padY;
+            float colX[2] = { padX + dotAreaW * 0.25f, padX + dotAreaW * 0.75f };
+            float rowY[4] = {
+                padY + dotAreaH * 0.125f,
+                padY + dotAreaH * 0.375f,
+                padY + dotAreaH * 0.625f,
+                padY + dotAreaH * 0.875f
+            };
+            float dotR = fminf(dotAreaW * 0.22f, dotAreaH * 0.10f);
+            if (dotR < 1.0f) dotR = 1.0f;
+
+            // Dot-to-bit mapping: [row][col] → bit index
+            static const int dotBit[4][2] = {
+                {0, 3}, {1, 4}, {2, 5}, {6, 7}
+            };
+            for (int dr = 0; dr < 4; dr++) {
+                for (int dc = 0; dc < 2; dc++) {
+                    if (!(bits & (1 << dotBit[dr][dc]))) continue;
+                    float cx = colX[dc];
+                    float cy = rowY[dr];
+                    // Rasterize filled circle
+                    int iy0 = (int)(cy - dotR);
+                    int iy1 = (int)(cy + dotR + 1);
+                    int ix0 = (int)(cx - dotR);
+                    int ix1 = (int)(cx + dotR + 1);
+                    if (iy0 < 0) iy0 = 0;
+                    if (iy1 > gh) iy1 = gh;
+                    if (ix0 < 0) ix0 = 0;
+                    if (ix1 > gw) ix1 = gw;
+                    for (int dy = iy0; dy < iy1; dy++) {
+                        for (int dx = ix0; dx < ix1; dx++) {
+                            float dist = sqrtf((dx - cx) * (dx - cx) + (dy - cy) * (dy - cy));
+                            if (dist <= dotR + 0.5f) {
+                                uint8_t val = (dist <= dotR - 0.5f) ? 255
+                                    : (uint8_t)(255.0f * (dotR + 0.5f - dist));
+                                if (val > pixels[dy * gw + dx])
+                                    pixels[dy * gw + dx] = val;
+                            }
+                        }
+                    }
                 }
             }
         }
