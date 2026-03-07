@@ -739,8 +739,9 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     resolveTabTitles(ctx, &titles, &name_bufs);
 
     var sb_cells: [512]overlay_mod.StyledCell = undefined;
+    const theme_sb_bg = ctx.active_theme.statusbar_background;
     const sb_style = statusbar_mod.Style{
-        .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
+        .bg = if (theme_sb_bg) |bg| .{ .r = bg.r, .g = bg.g, .b = bg.b } else .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
         .bg_alpha = sb.config.background_opacity,
     };
     // When native tabs are active, hide the tab section in the statusbar.

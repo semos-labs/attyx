@@ -33,6 +33,8 @@ pub const Theme = struct {
     selection_background: ?Rgb = null,
     /// Selection highlight foreground. null = cell foreground.
     selection_foreground: ?Rgb = null,
+    /// Statusbar background color. null = use statusbar config default.
+    statusbar_background: ?Rgb = null,
     /// 16-color ANSI palette, indices 0–15. null entries = renderer built-in.
     palette: [16]?Rgb = [_]?Rgb{null} ** 16,
 
@@ -78,6 +80,7 @@ pub fn parseTheme(allocator: std.mem.Allocator, content: []const u8, source: []c
             "cursor_text",
             "selection_background",
             "selection_foreground",
+            "statusbar_background",
         }) |key| {
             if (ct.get(key)) |v| {
                 if (v != .string) {
