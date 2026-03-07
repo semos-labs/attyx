@@ -14,6 +14,7 @@
 AttyxCell* g_cells = NULL;
 int g_cols = 0;
 int g_rows = 0;
+static volatile int g_glfw_ready = 0;
 volatile uint64_t g_cell_gen = 0;
 volatile int g_cursor_row = 0;
 volatile int g_cursor_col = 0;
@@ -139,7 +140,7 @@ void attyx_set_mouse_mode(int tracking, int sgr) {
 void attyx_mark_all_dirty(void) {
     for (int i = 0; i < 4; i++)
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], ~(uint64_t)0);
-    if (g_window) glfwPostEmptyEvent();
+    if (g_glfw_ready) glfwPostEmptyEvent();
 }
 
 void attyx_scroll_viewport(int delta) {
@@ -157,7 +158,7 @@ void attyx_scroll_viewport(int delta) {
 void attyx_set_dirty(const uint64_t dirty[4]) {
     for (int i = 0; i < 4; i++)
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], dirty[i]);
-    if (g_window) glfwPostEmptyEvent();
+    if (g_glfw_ready) glfwPostEmptyEvent();
 }
 
 void attyx_set_grid_size(int cols, int rows) {
@@ -171,7 +172,7 @@ void attyx_begin_cell_update(void) {
 
 void attyx_end_cell_update(void) {
     __sync_fetch_and_add(&g_cell_gen, 1);
-    if (g_window) glfwPostEmptyEvent();
+    if (g_glfw_ready) glfwPostEmptyEvent();
 }
 
 int attyx_check_resize(int* out_rows, int* out_cols) {
@@ -323,6 +324,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         ATTYX_LOG_ERR("platform", "failed to initialize GLFW");
         return;
     }
+    g_glfw_ready = 1;
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
