@@ -212,6 +212,10 @@ void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=hom
 extern volatile int g_command_palette_active;  // 1 = command palette overlay has focus
 void attyx_toggle_command_palette(void);
 
+// Theme picker: input thread -> PTY thread (Zig-side)
+extern volatile int g_theme_picker_active;  // 1 = theme picker overlay has focus
+void attyx_toggle_theme_picker(void);
+
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
 void attyx_picker_insert_char(uint32_t codepoint);

@@ -86,7 +86,8 @@ pub const WidgetState = struct {
 pub const Style = struct {
     bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
     fg: Rgb = .{ .r = 180, .g = 180, .b = 200 },
-    active_tab_bg: Rgb = .{ .r = 60, .g = 60, .b = 90 },
+    tab_bg: Rgb = .{ .r = 50, .g = 50, .b = 58 },
+    active_tab_bg: Rgb = .{ .r = 90, .g = 90, .b = 100 },
     active_tab_fg: Rgb = .{ .r = 230, .g = 230, .b = 240 },
     bg_alpha: u8 = 0,
 };
@@ -359,7 +360,14 @@ pub fn generate(
     {
         const remaining = grid_cols - col;
         var tab_buf: [512]StyledCell = undefined;
-        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, .{}, titles, zoomed_tabs)) |tb_result| {
+        const tab_style = tab_bar_mod.Style{
+            .tab_bg = style.tab_bg,
+            .fg = style.fg,
+            .num_highlight_bg = style.active_tab_bg,
+            .num_highlight_fg = style.active_tab_fg,
+            .bg_alpha = 255, // Always opaque within statusbar; row opacity is controlled by statusbar bg_alpha
+        };
+        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, tab_style, titles, zoomed_tabs)) |tb_result| {
             for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
                 if (tc.bg_alpha > 0) {
@@ -567,10 +575,9 @@ test "generate: left widget text appears at start" {
     var buf: [100]StyledCell = undefined;
     const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
         return error.TestUnexpectedResult;
-    // First cell is space padding, then "~/Projects"
-    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
-    try std.testing.expectEqual(@as(u21, '~'), result.cells[1].char);
-    try std.testing.expectEqual(@as(u21, '/'), result.cells[2].char);
+    // First left widget has no leading space — text starts at col 0.
+    try std.testing.expectEqual(@as(u21, '~'), result.cells[0].char);
+    try std.testing.expectEqual(@as(u21, '/'), result.cells[1].char);
 }
 
 test "generate: right widget is right-aligned" {
@@ -588,14 +595,13 @@ test "generate: right widget is right-aligned" {
     var buf: [100]StyledCell = undefined;
     const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
         return error.TestUnexpectedResult;
-    // Right widget: " 12:34 " = 7 chars, starts at col 33
-    try std.testing.expectEqual(@as(u21, ' '), result.cells[33].char);
-    try std.testing.expectEqual(@as(u21, '1'), result.cells[34].char);
-    try std.testing.expectEqual(@as(u21, '2'), result.cells[35].char);
-    try std.testing.expectEqual(@as(u21, ':'), result.cells[36].char);
-    try std.testing.expectEqual(@as(u21, '3'), result.cells[37].char);
-    try std.testing.expectEqual(@as(u21, '4'), result.cells[38].char);
-    try std.testing.expectEqual(@as(u21, ' '), result.cells[39].char);
+    // Right widget: " 12:34" = 6 chars (no trailing space), starts at col 34
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[34].char);
+    try std.testing.expectEqual(@as(u21, '1'), result.cells[35].char);
+    try std.testing.expectEqual(@as(u21, '2'), result.cells[36].char);
+    try std.testing.expectEqual(@as(u21, ':'), result.cells[37].char);
+    try std.testing.expectEqual(@as(u21, '3'), result.cells[38].char);
+    try std.testing.expectEqual(@as(u21, '4'), result.cells[39].char);
 }
 
 test "generate: tabs with titles appear when count > 1" {
@@ -634,11 +640,10 @@ test "generate: active tab uses tab_bar highlight colors" {
     var buf: [512]StyledCell = undefined;
     const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles, 0) orelse
         return error.TestUnexpectedResult;
-    const tb_style = tab_bar_mod.Style{};
     // Tab 0 (" a " + " 1 " = 3+3 = 6), gap at 6, Tab 1 starts at 7
-    // Tab 1 is active — its number area should use num_highlight_bg
+    // Tab 1 is active — its number area should use active_tab_bg from statusbar style
     // Tab 1: " b " starts at col 7, number area " 2 " at col 10
-    try std.testing.expectEqual(tb_style.num_highlight_bg, result.cells[10].bg);
+    try std.testing.expectEqual(sb_style.active_tab_bg, result.cells[10].bg);
 }
 
 test "refreshTime: formats hours and minutes in 24h" {

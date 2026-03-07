@@ -140,6 +140,7 @@ pub fn relayout(ctx: *PtyThreadCtx) void {
         state,
         ctx.grid_cols,
         ctx.grid_rows,
+        publish.overlayThemeFromTheme(&ctx.active_theme),
     ) catch return;
 
     if (result.width == 0 or result.height == 0) return;
@@ -165,6 +166,7 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
         state,
         ctx.grid_cols,
         ctx.grid_rows,
+        publish.overlayThemeFromTheme(&ctx.active_theme),
     ) catch return;
 
     if (result.width == 0 or result.height == 0) return;

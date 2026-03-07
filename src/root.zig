@@ -52,6 +52,8 @@ pub const overlay_session_picker = @import("overlay/session_picker.zig");
 pub const overlay_session_picker_panel = @import("overlay/session_picker_panel.zig");
 pub const overlay_command_palette = @import("overlay/command_palette.zig");
 pub const overlay_command_palette_panel = @import("overlay/command_palette_panel.zig");
+pub const overlay_theme_picker = @import("overlay/theme_picker.zig");
+pub const overlay_theme_picker_panel = @import("overlay/theme_picker_panel.zig");
 
 pub const finder = @import("finder/finder.zig");
 pub const finder_match = @import("finder/fuzzy_match.zig");

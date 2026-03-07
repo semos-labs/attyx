@@ -1,23 +1,22 @@
-/// Command palette panel — builds Element tree from CommandPaletteState and
+/// Theme picker panel — builds Element tree from ThemePickerState and
 /// renders via panel.renderPanel().
 const std = @import("std");
-const builtin = @import("builtin");
 const ui = @import("ui.zig");
 const panel_mod = @import("panel.zig");
-const palette_state = @import("command_palette.zig");
+const picker_state = @import("theme_picker.zig");
 
 const ui_cell = @import("ui_cell.zig");
 const Element = ui.Element;
 const Rgb = ui.Rgb;
 const PanelConfig = panel_mod.PanelConfig;
 const PanelResult = panel_mod.PanelResult;
-const CommandPaletteState = palette_state.CommandPaletteState;
+const ThemePickerState = picker_state.ThemePickerState;
 
 const OverlayTheme = ui.OverlayTheme;
 
-pub fn renderCommandPalette(
+pub fn renderThemePicker(
     allocator: std.mem.Allocator,
-    state: *const CommandPaletteState,
+    state: *const ThemePickerState,
     grid_cols: u16,
     grid_rows: u16,
     theme: OverlayTheme,
@@ -26,8 +25,8 @@ pub fn renderCommandPalette(
     defer arena.deinit();
     const tmp = arena.allocator();
 
-    // Build menu items from visible range of filtered commands
-    var menu_items: [palette_state.max_commands]Element.MenuItem = undefined;
+    // Build menu items from visible range of filtered themes
+    var menu_items: [picker_state.max_themes]Element.MenuItem = undefined;
     var menu_count: u16 = 0;
 
     const vis_start = state.scroll_offset;
@@ -35,13 +34,10 @@ pub fn renderCommandPalette(
 
     for (vis_start..vis_end) |i| {
         const entry = &state.entries[state.filtered_indices[i]];
-        const is_macos = comptime builtin.os.tag == .macos;
-        const hotkey = if (is_macos) entry.getMacHotkey() else entry.getLinuxHotkey();
-
         menu_items[menu_count] = .{
-            .label = entry.getDesc(),
+            .label = entry.getName(),
             .enabled = true,
-            .hint_text = hotkey,
+            .hint_text = "",
         };
         menu_count += 1;
     }
@@ -89,8 +85,8 @@ pub fn renderCommandPalette(
     } };
 
     // Hint row
-    const count_str = try std.fmt.allocPrint(tmp, "{d}/{d} commands", .{ state.filtered_count, state.entry_count });
-    const hint_parts = [_][]const u8{ "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter execute \xe2\x80\xa2 esc close \xe2\x80\xa2 ", count_str };
+    const count_str = try std.fmt.allocPrint(tmp, "{d}/{d} themes", .{ state.filtered_count, state.entry_count });
+    const hint_parts = [_][]const u8{ "\xe2\x86\x91\xe2\x86\x93 preview \xe2\x80\xa2 enter apply \xe2\x80\xa2 esc cancel \xe2\x80\xa2 ", count_str };
     const hint_text = try std.mem.concat(tmp, u8, &hint_parts);
     const hint_row = Element{ .hint = .{
         .content = hint_text,
@@ -104,8 +100,8 @@ pub fn renderCommandPalette(
     } };
 
     const config = PanelConfig{
-        .title = "Command Palette",
-        .width = .{ .percent = 50 },
+        .title = "Theme",
+        .width = .{ .percent = 40 },
         .height = .{ .percent = 50 },
         .border = .rounded,
         .theme = theme,
@@ -118,21 +114,17 @@ pub fn renderCommandPalette(
 // Tests
 // ---------------------------------------------------------------------------
 
-test "renderCommandPalette: produces valid result" {
+test "renderThemePicker: produces valid result" {
     const allocator = std.testing.allocator;
-    var state = CommandPaletteState{};
-    state.entries[0] = .{ .action_id = 1 };
-    const name = "copy";
+    var state = ThemePickerState{};
+    const name = "dracula";
     @memcpy(state.entries[0].name[0..name.len], name);
     state.entries[0].name_len = name.len;
-    const desc = "Copy selection";
-    @memcpy(state.entries[0].desc[0..desc.len], desc);
-    state.entries[0].desc_len = desc.len;
     state.entry_count = 1;
     state.applyFilter();
     state.visible_rows = 10;
 
-    const result = try renderCommandPalette(allocator, &state, 80, 24, .{});
+    const result = try renderThemePicker(allocator, &state, 80, 24, .{});
     defer allocator.free(result.cells);
 
     try std.testing.expect(result.width > 0);

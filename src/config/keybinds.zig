@@ -117,6 +117,7 @@ pub const Action = enum(u8) {
     font_size_increase = 85,
     font_size_decrease = 86,
     font_size_reset = 87,
+    theme_picker_toggle = 88,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
