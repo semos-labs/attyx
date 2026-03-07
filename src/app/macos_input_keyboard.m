@@ -191,6 +191,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (ctrl && kc == kVK_ANSI_R)      { attyx_picker_cmd(11); return YES; }
         if (ctrl && kc == kVK_ANSI_X)      { attyx_picker_cmd(12); return YES; }
         if (ctrl && kc == kVK_ANSI_U)      { attyx_picker_cmd(13); return YES; }
+        if (ctrl && kc == kVK_ANSI_D)      { attyx_picker_cmd(14); return YES; }
+        if (ctrl && kc == kVK_ANSI_W)      { attyx_picker_cmd(15); return YES; }
         if (ctrl && kc == kVK_ANSI_C)      { attyx_picker_cmd(7); return YES; }
         // Printable chars fall through to IME handler
         return NO;

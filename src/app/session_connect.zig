@@ -101,6 +101,33 @@ pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
     return null;
 }
 
+pub fn getLastSessionPath(buf: *[256]u8) ?[]const u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    return std.fmt.bufPrint(buf, "{s}/.config/attyx/last-session{s}", .{ home, suffix }) catch null;
+}
+
+pub fn saveLastSession(session_id: u32) void {
+    var path_buf: [256]u8 = undefined;
+    const path = getLastSessionPath(&path_buf) orelse return;
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{session_id}) catch return;
+    const file = std.fs.createFileAbsolute(path, .{}) catch return;
+    defer file.close();
+    file.writeAll(id_str) catch {};
+}
+
+pub fn loadLastSession() ?u32 {
+    var path_buf: [256]u8 = undefined;
+    const path = getLastSessionPath(&path_buf) orelse return null;
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    var buf: [16]u8 = undefined;
+    const n = file.read(&buf) catch return null;
+    if (n == 0) return null;
+    return std.fmt.parseInt(u32, buf[0..n], 10) catch null;
+}
+
 pub fn setNonBlocking(fd: posix.fd_t) void {
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;

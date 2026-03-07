@@ -15,8 +15,11 @@ pub const Score = struct {
 const bonus_sequential: i32 = 16;
 const bonus_separator: i32 = 24;
 const bonus_first_char: i32 = 16;
+const bonus_exact_basename: i32 = 100;
+const bonus_basename_prefix: i32 = 50;
 const penalty_gap: i32 = -3;
 const penalty_leading: i32 = -1;
+const penalty_trailing: i32 = -1;
 
 fn toLower(ch: u8) u8 {
     return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
@@ -93,6 +96,38 @@ pub fn score(candidate: []const u8, query: []const u8) Score {
         }
     }
 
+    // Trailing gap penalty — prefer candidates where the match covers more
+    // of the total length (e.g., "semos" matching "semos" vs "semos-ai").
+    const last_pos: i32 = @intCast(positions[query.len - 1]);
+    const trailing: i32 = @as(i32, @intCast(candidate.len)) - last_pos - 1;
+    s += trailing * penalty_trailing;
+
+    // Basename-aware bonuses: extract the last path component.
+    const basename_start = if (std.mem.lastIndexOfScalar(u8, candidate, '/')) |sep| sep + 1 else 0;
+    const basename_len = candidate.len - basename_start;
+
+    // Check if the query matches the basename exactly (case-insensitive).
+    if (basename_len == query.len) {
+        var exact = true;
+        for (0..query.len) |ei| {
+            if (toLower(candidate[basename_start + ei]) != toLower(query[ei])) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) s += bonus_exact_basename;
+    } else if (basename_len > query.len) {
+        // Check if query is a prefix of the basename.
+        var prefix = true;
+        for (0..query.len) |ei| {
+            if (toLower(candidate[basename_start + ei]) != toLower(query[ei])) {
+                prefix = false;
+                break;
+            }
+        }
+        if (prefix) s += bonus_basename_prefix;
+    }
+
     result.value = s;
     return result;
 }
@@ -164,6 +199,31 @@ test "query longer than candidate" {
 test "matchScore convenience" {
     try std.testing.expect(matchScore("hello", "hel") != null);
     try std.testing.expect(matchScore("hello", "xyz") == null);
+}
+
+test "exact basename match ranks higher than prefix match" {
+    const exact = score("semos", "semos");
+    const longer = score("semos-ai", "semos");
+    try std.testing.expect(exact.matched);
+    try std.testing.expect(longer.matched);
+    try std.testing.expect(exact.value > longer.value);
+}
+
+test "exact basename in path ranks higher" {
+    const exact = score("projects/semos", "semos");
+    const longer = score("projects/semos-ai", "semos");
+    try std.testing.expect(exact.matched);
+    try std.testing.expect(longer.matched);
+    try std.testing.expect(exact.value > longer.value);
+}
+
+test "shorter match preferred with partial query" {
+    const short = score("semos", "sem");
+    const long = score("semos-ai", "sem");
+    try std.testing.expect(short.matched);
+    try std.testing.expect(long.matched);
+    // Both are prefix matches, but shorter candidate should rank higher
+    try std.testing.expect(short.value > long.value);
 }
 
 test "separator chars all work" {

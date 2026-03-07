@@ -211,6 +211,11 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
             session_actions.doSessionSwitch(ctx, id);
             return true;
         },
+        .switch_to_default => {
+            closeSessionPicker(ctx);
+            switchToDefaultSession(ctx);
+            return true;
+        },
         .create_session => {
             closeSessionPicker(ctx);
             var osc7_buf: [statusbar.max_output_len]u8 = undefined;
@@ -343,6 +348,27 @@ pub fn relayout(ctx: *PtyThreadCtx) void {
     ) catch {};
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.session_picker)].backdrop_alpha = 100;
     ctx.allocator.free(result.cells);
+}
+
+/// Switch to the hidden "default" session, creating it if needed.
+fn switchToDefaultSession(ctx: *PtyThreadCtx) void {
+    const sc = ctx.session_client orelse return;
+
+    // Look for an existing alive "default" session.
+    sc.requestListSync(2000) catch return;
+    for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+        if (entry.alive and std.mem.eql(u8, entry.getName(), "default")) {
+            session_actions.doSessionSwitch(ctx, entry.id);
+            return;
+        }
+    }
+
+    // No alive "default" session — create one.
+    session_actions.doSessionCreate(ctx, std.posix.getenv("HOME") orelse "/tmp");
+    // Rename the newly created session to "default".
+    if (sc.attached_session_id) |sid| {
+        sc.renameSession(sid, "default") catch {};
+    }
 }
 
 fn renderAndPublish(ctx: *PtyThreadCtx) void {

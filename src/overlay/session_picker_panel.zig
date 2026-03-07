@@ -121,9 +121,23 @@ pub fn renderSessionPicker(
         menu_count += 1;
     }
 
-    // Determine hint text based on mode
+    // Determine hint text based on mode.
+    // Show ^D hint only when NOT already in the default session.
+    const in_default = blk: {
+        if (state.current_session_id) |cid| {
+            for (0..state.entry_count) |ei| {
+                if (state.entries[ei].id == cid) {
+                    break :blk std.mem.eql(u8, state.entries[ei].getName(), "default");
+                }
+            }
+        }
+        break :blk false;
+    };
     const hint_text: []const u8 = switch (state.mode) {
-        .browsing => "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter select \xe2\x80\xa2 ^R rename \xe2\x80\xa2 ^X delete \xe2\x80\xa2 esc close",
+        .browsing => if (in_default)
+            "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter select \xe2\x80\xa2 ^R rename \xe2\x80\xa2 ^X delete \xe2\x80\xa2 esc close"
+        else
+            "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter select \xe2\x80\xa2 ^D detach \xe2\x80\xa2 ^R rename \xe2\x80\xa2 ^X delete \xe2\x80\xa2 esc close",
         .renaming => "enter commit \xe2\x80\xa2 esc cancel",
         .confirm_kill => "y to confirm kill \xe2\x80\xa2 any key to cancel",
     };

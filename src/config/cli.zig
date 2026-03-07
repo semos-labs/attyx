@@ -22,7 +22,6 @@ pub const Action = enum {
     daemon,
     daemon_restore,
     kill_daemon,
-    _session_picker,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -66,9 +65,6 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;
-            return result;
-        } else if (std.mem.eql(u8, first, "_session-picker")) {
-            result.action = ._session_picker;
             return result;
         }
     }
