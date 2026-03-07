@@ -430,7 +430,24 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Shorten poll timeout when there's still pending paste data so we
         // drain it promptly instead of waiting the full 16ms.
         const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
-        _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
+        const poll_ret = posix.poll(fds[0..nfds], poll_timeout) catch break;
+
+        {
+            const dbg_counter = struct {
+                var n: u32 = 0;
+            };
+            if (dbg_counter.n < 10) {
+                var revs: i16 = 0;
+                if (nfds > 0) revs = @bitCast(fds[0].revents);
+                logging.info("poll", "nfds={d} ret={d} revents=0x{x} fd={d}", .{
+                    nfds,
+                    poll_ret,
+                    @as(u16, @bitCast(revs)),
+                    if (nfds > 0) fds[0].fd else @as(i32, -1),
+                });
+                dbg_counter.n += 1;
+            }
+        }
 
         var got_data = false;
         const active_focused_pane = ctx.tab_mgr.activePane();
