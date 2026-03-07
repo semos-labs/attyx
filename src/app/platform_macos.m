@@ -13,7 +13,7 @@
 #include "bridge.h"
 #include "macos_internal.h"
 
-// Sparkle updater (macos_updater.m)
+// Auto-updater (macos_updater.m)
 extern void attyx_updater_init(void);
 extern void attyx_updater_check(void);
 extern BOOL attyx_updater_available(void);

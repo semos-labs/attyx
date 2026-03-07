@@ -139,10 +139,6 @@ pub fn build(b: *std.Build) void {
             exe.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = &.{ "-fobjc-arc", "-DATTYX_DISABLE_UPDATER" } });
         }
         exe.root_module.addIncludePath(b.path("src/app"));
-        exe.root_module.addFrameworkPath(b.path("vendor"));
-        if (!std.mem.eql(u8, env, "production")) {
-            exe.root_module.addRPath(b.path("vendor")); // development only
-        }
         exe.headerpad_max_install_names = true;
         exe.root_module.linkFramework("Cocoa", .{});
         exe.root_module.linkFramework("Metal", .{});
@@ -151,7 +147,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkFramework("CoreText", .{});
         exe.root_module.linkFramework("CoreGraphics", .{});
         exe.root_module.linkFramework("CoreFoundation", .{});
-        exe.root_module.linkFramework("Sparkle", .{});
+        exe.root_module.linkFramework("WebKit", .{});
     }
 
     // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
@@ -244,8 +240,6 @@ pub fn build(b: *std.Build) void {
             app.addCSourceFile(.{ .file = b.path("src/app/macos_updater.m"), .flags = &.{ "-fobjc-arc", "-DATTYX_DISABLE_UPDATER" } });
         }
         app.root_module.addIncludePath(b.path("src/app"));
-        app.root_module.addFrameworkPath(b.path("vendor"));
-        app.root_module.addRPath(b.path("vendor"));
         app.headerpad_max_install_names = true;
         app.root_module.linkFramework("Cocoa", .{});
         app.root_module.linkFramework("Metal", .{});
@@ -254,7 +248,7 @@ pub fn build(b: *std.Build) void {
         app.root_module.linkFramework("CoreText", .{});
         app.root_module.linkFramework("CoreGraphics", .{});
         app.root_module.linkFramework("CoreFoundation", .{});
-        app.root_module.linkFramework("Sparkle", .{});
+        app.root_module.linkFramework("WebKit", .{});
 
         b.installArtifact(app);
 
