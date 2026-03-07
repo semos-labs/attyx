@@ -164,6 +164,7 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     gc.ft_bold_italic  = loadStyledFace(ft_lib, family, fontSize, 1, 1);
     gc.glyph_w    = gw;
     gc.glyph_h    = gh;
+    gc.font_size  = fontSize;
     gc.scale      = contentScale;
     gc.ascender   = ascender;
     gc.baseline_y_offset = baseline_y_offset;

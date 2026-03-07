@@ -197,7 +197,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             if (!fbPath) continue;
             FT_Face candidate;
             if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
-                FT_Set_Pixel_Sizes(candidate, 0, (int)gc->glyph_h);
+                FT_Set_Pixel_Sizes(candidate, 0, gc->font_size);
                 FT_UInt cgi = FT_Get_Char_Index(candidate, baseCp);
                 if (cgi != 0) {
                     gi = cgi;
@@ -224,7 +224,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 FcPatternGetString(match, FC_FILE, 0, &file);
                 FcPatternGetInteger(match, FC_INDEX, 0, &index);
                 if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallback) == 0) {
-                    FT_Set_Pixel_Sizes(fallback, 0, (int)gc->glyph_h);
+                    FT_Set_Pixel_Sizes(fallback, 0, gc->font_size);
                     gi = FT_Get_Char_Index(fallback, baseCp);
                     if (gi != 0) face = fallback;
                 }
@@ -499,7 +499,7 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
             if (!fbPath) continue;
             FT_Face candidate;
             if (FT_New_Face(gc->ft_lib, fbPath, 0, &candidate) == 0) {
-                FT_Set_Pixel_Sizes(candidate, 0, (int)gc->glyph_h);
+                FT_Set_Pixel_Sizes(candidate, 0, gc->font_size);
                 FT_UInt cgi = FT_Get_Char_Index(candidate, base);
                 if (cgi != 0) {
                     baseIdx = cgi;
@@ -526,7 +526,7 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
                 FcPatternGetString(match, FC_FILE, 0, &file);
                 FcPatternGetInteger(match, FC_INDEX, 0, &index);
                 if (FT_New_Face(gc->ft_lib, (char*)file, index, &fallbackFace) == 0) {
-                    FT_Set_Pixel_Sizes(fallbackFace, 0, (int)gc->glyph_h);
+                    FT_Set_Pixel_Sizes(fallbackFace, 0, gc->font_size);
                     baseIdx = FT_Get_Char_Index(fallbackFace, base);
                     if (baseIdx != 0) face = fallbackFace;
                 }

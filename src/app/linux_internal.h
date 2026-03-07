@@ -168,6 +168,7 @@ typedef struct {
     FT_Face    ft_bold_italic;
     float      glyph_w;
     float      glyph_h;
+    int        font_size;       // primary font em-size in pixels (for fallback sizing)
     float      scale;
     float      ascender;
     float      baseline_y_offset;
