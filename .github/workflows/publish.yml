@@ -21,6 +21,7 @@ env:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   homebrew:
@@ -206,3 +207,38 @@ jobs:
           git add public/appcast-arm64.xml public/appcast-x64.xml "src/content/releases/attyx/${VERSION}.md"
           git diff --cached --quiet || git commit -m "chore: update appcast and release notes for ${RELEASE_TAG}"
           git push
+
+  merge-release-branch:
+    if: ${{ inputs.tag || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release-${VERSION}"
+
+          # Check if the branch exists
+          if ! gh api "repos/${GITHUB_REPO}/branches/${BRANCH}" --silent 2>/dev/null; then
+            echo "Branch ${BRANCH} does not exist, skipping"
+            exit 0
+          fi
+
+          # Create the PR
+          PR_URL=$(gh pr create \
+            --repo "$GITHUB_REPO" \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: merge release ${RELEASE_TAG} into main" \
+            --body "Automated PR to merge \`${BRANCH}\` back into \`main\` after release \`${RELEASE_TAG}\`." \
+          )
+
+          echo "Created PR: $PR_URL"
+
+          # Enable auto-merge
+          gh pr merge "$PR_URL" --auto --merge
