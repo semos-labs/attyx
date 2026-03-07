@@ -139,6 +139,7 @@ void attyx_set_mouse_mode(int tracking, int sgr) {
 void attyx_mark_all_dirty(void) {
     for (int i = 0; i < 4; i++)
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], ~(uint64_t)0);
+    if (g_window) glfwPostEmptyEvent();
 }
 
 void attyx_scroll_viewport(int delta) {
@@ -156,6 +157,7 @@ void attyx_scroll_viewport(int delta) {
 void attyx_set_dirty(const uint64_t dirty[4]) {
     for (int i = 0; i < 4; i++)
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], dirty[i]);
+    if (g_window) glfwPostEmptyEvent();
 }
 
 void attyx_set_grid_size(int cols, int rows) {
@@ -169,6 +171,7 @@ void attyx_begin_cell_update(void) {
 
 void attyx_end_cell_update(void) {
     __sync_fetch_and_add(&g_cell_gen, 1);
+    if (g_window) glfwPostEmptyEvent();
 }
 
 int attyx_check_resize(int* out_rows, int* out_cols) {
@@ -408,9 +411,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Register GLFW window callbacks
     linux_register_callbacks(g_window);
 
-    // Main loop
+    // Main loop — use glfwWaitEventsTimeout to sleep when idle instead of
+    // busy-spinning with glfwPollEvents.  The PTY thread wakes us via
+    // glfwPostEmptyEvent (called from attyx_end_cell_update / attyx_mark_all_dirty).
+    // Timeout of 0.5s ensures cursor blink updates even when fully idle.
     while (!glfwWindowShouldClose(g_window) && !g_should_quit) {
-        glfwPollEvents();
+        glfwWaitEventsTimeout(0.5);
         if (g_needs_font_rebuild) {
             g_needs_font_rebuild = 0;
             linux_rebuild_font();
