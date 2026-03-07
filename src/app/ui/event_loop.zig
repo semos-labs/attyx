@@ -145,6 +145,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
+    var got_data = false;
     outer: while (c.attyx_should_quit() == 0) {
         // Safety: if tab_mgr has no tabs (e.g. failed session attach after
         // reset), quit gracefully rather than crashing on activePane().
@@ -449,7 +450,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        var got_data = false;
         const active_focused_pane = ctx.tab_mgr.activePane();
 
         // Drain session socket — route pane_output by daemon_pane_id
@@ -697,6 +697,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const h = state_hash.hash(&publish.ctxEngine(ctx).state);
                 ctx.session.appendFrame(h, publish.ctxEngine(ctx).state.alt_active);
             }
+            got_data = false;
         }
 
         // Statusbar widgets may have refreshed outside the cell-update path
