@@ -445,9 +445,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             if (fds[si].revents & (POLLIN | POLLHUP) != 0) {
                 if (ctx.session_client) |sc| {
                     if (!sc.recvData()) {
-                        // Daemon disconnected — reset to fresh local PTY
+                        // Daemon disconnected — reconnect or fall back.
+                        // Must restart the loop: tab_mgr, fds, and
+                        // active_focused_pane are all potentially stale.
                         handleDaemonDeath(ctx);
-                        got_data = true;
+                        continue :outer;
                     } else {
                         while (sc.readMessage()) |msg| {
                             switch (msg) {
@@ -823,10 +825,21 @@ fn reconstructTabsFromDaemon(
     };
     if (info.tab_count == 0) return;
 
+    // Reset AFTER validating the layout to avoid leaving tab_mgr empty on error.
     ctx.tab_mgr.reset();
     ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
-        logging.err("daemon", "reconnect: layout reconstruction failed", .{});
-        return;
+        logging.err("daemon", "reconnect: layout reconstruction failed, creating fallback pane", .{});
+        // Reconstruction failed — tab_mgr is empty after reset(). Create a
+        // single fallback pane so activePane() doesn't crash.
+        const Pane = @import("../pane.zig").Pane;
+        const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
+        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
+            ctx.tab_mgr.allocator.destroy(pane);
+            return;
+        };
+        ctx.tab_mgr.tabs[0] = split_layout_mod.SplitLayout.init(pane);
+        ctx.tab_mgr.count = 1;
+        ctx.tab_mgr.active = 0;
     };
     if (ctx.tab_mgr.count == 0) return;
 
