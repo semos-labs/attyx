@@ -1,0 +1,57 @@
+name: Release Notes
+
+on:
+  push:
+    branches: ["release-*"]
+    paths: ["releases/*.md"]
+
+permissions:
+  contents: write
+
+jobs:
+  update-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from branch
+        id: version
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          VERSION="${BRANCH#release-}"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Check release notes file exists
+        id: notes
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES_FILE="releases/${TAG}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            echo "file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update GitHub release body
+        if: steps.notes.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES_FILE="${{ steps.notes.outputs.file }}"
+
+          # Check if the release exists
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release ${TAG} does not exist yet, skipping"
+            exit 0
+          fi
+
+          gh release edit "$TAG" \
+            --repo "${{ github.repository }}" \
+            --notes-file "$NOTES_FILE"
+
+          echo "Updated release ${TAG} with notes from ${NOTES_FILE}"

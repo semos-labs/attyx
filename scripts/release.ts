@@ -254,19 +254,8 @@ async function main() {
   ok("Pushed to origin");
 
   // 8. GitHub release (draft — CI will publish once all assets are ready)
-  const notesPath = `./releases/${tag}.md`;
-  const notesFile = Bun.file(notesPath);
-  const hasNotes = await notesFile.exists();
-  const ghFlags: string[] = ["--draft"];
+  const ghFlags: string[] = ["--draft", "--generate-notes"];
   if (isRC) ghFlags.push("--prerelease");
-
-  if (hasNotes) {
-    ghFlags.push("--notes-file", notesPath);
-    ok(`Using release notes from ${bold(notesPath)}`);
-  } else {
-    ghFlags.push("--generate-notes");
-    warn(`No release notes found at ${notesPath} — using auto-generated notes`);
-  }
 
   const gh = await $`gh release create ${tag} --title ${tag} ${ghFlags}`.quiet();
   if (gh.exitCode === 0) {
