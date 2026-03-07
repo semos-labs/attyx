@@ -50,6 +50,9 @@ jobs:
         timeout-minutes: 30
         run: zig build -Doptimize=ReleaseFast -Denv=production
 
+      - name: Strip binary
+        run: strip zig-out/bin/attyx
+
       - name: Set minimum macOS version to 13.0
         run: vtool -set-build-version macos 13.0 15.0 -replace -output zig-out/bin/attyx zig-out/bin/attyx
 
