@@ -89,6 +89,53 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (sc.legacy_daemon) showLegacyDaemonOverlay(ctx);
     }
 
+    // Startup drain: process initial shell output (prompt, DA1 responses, etc.)
+    // before entering the main loop.  The main-thread GL setup may complete
+    // before the shell sends its prompt, leaving g_cells empty.  On macOS the
+    // Metal display-link continuously calls drawFrame so the first update is
+    // picked up within 16ms.  On Linux the GLFW event loop only renders on
+    // events — if glfwPostEmptyEvent was dropped (g_window not yet set), the
+    // cells stay blank until an input event arrives.  Draining here ensures the
+    // cell buffer has content before the first drawFrame.
+    if (ctx.session_client == null) {
+        const startup_pane = ctx.tab_mgr.activePane();
+        var startup_fds = [1]posix.pollfd{.{
+            .fd = startup_pane.pty.master,
+            .events = POLLIN,
+            .revents = 0,
+        }};
+        // Poll in short bursts: the shell may need a DA1 response (written
+        // back from pane.feed → drainResponse → writeToPty) before it sends
+        // the prompt, so we iterate to allow that round-trip.
+        for (0..20) |_| {
+            startup_fds[0].revents = 0;
+            _ = posix.poll(&startup_fds, 50) catch break;
+            if (startup_fds[0].revents & POLLIN == 0) break;
+            while (true) {
+                const sn = startup_pane.pty.read(&buf) catch break;
+                if (sn == 0) break;
+                ctx.session.appendOutput(buf[0..sn]);
+                ctx.throughput.add(sn);
+                startup_pane.feed(buf[0..sn]);
+            }
+        }
+        // Publish whatever the engine has to the cell buffer.
+        {
+            const eng = &startup_pane.engine;
+            const total = eng.state.grid.rows * eng.state.grid.cols;
+            c.attyx_begin_cell_update();
+            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+            c.attyx_set_cursor(
+                @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
+                @intCast(eng.state.cursor.col),
+            );
+            c.attyx_mark_all_dirty();
+            eng.state.dirty.clear();
+            c.attyx_end_cell_update();
+        }
+    }
+
+    var got_data = false;
     outer: while (c.attyx_should_quit() == 0) {
         // Safety: if tab_mgr has no tabs (e.g. failed session attach after
         // reset), quit gracefully rather than crashing on activePane().
@@ -376,7 +423,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
         _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
 
-        var got_data = false;
         const active_focused_pane = ctx.tab_mgr.activePane();
 
         // Drain session socket — route pane_output by daemon_pane_id
@@ -624,6 +670,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const h = state_hash.hash(&publish.ctxEngine(ctx).state);
                 ctx.session.appendFrame(h, publish.ctxEngine(ctx).state.alt_active);
             }
+            got_data = false;
         }
 
         // Statusbar widgets may have refreshed outside the cell-update path
