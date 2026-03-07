@@ -435,7 +435,7 @@ didCompleteWithError:(NSError *)err {
 
 - (instancetype)init {
     NSWindow *win = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 360, 160)
+        initWithContentRect:NSMakeRect(0, 0, 440, 160)
         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
         backing:NSBackingStoreBuffered defer:NO];
     win.title = @"Software Update";
