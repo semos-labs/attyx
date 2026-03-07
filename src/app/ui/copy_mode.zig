@@ -1,5 +1,6 @@
 // Copy/Visual mode (tmux-like keyboard selection)
 const std = @import("std");
+const attyx = @import("attyx");
 const terminal = @import("../terminal.zig");
 const c = terminal.c;
 const keybinds = @import("../../config/keybinds.zig");
@@ -394,42 +395,69 @@ fn updateSelection() void {
 }
 
 fn yankSelection() void {
-    const cols = getCols();
-    const rows = getRows();
-    if (cols <= 0 or rows <= 0) return;
-    const cells = getCells() orelse return;
-    var sr = c.g_sel_start_row;
-    var sc = c.g_sel_start_col;
-    var er = c.g_sel_end_row;
-    var ec = c.g_sel_end_col;
+    const eng = terminal.g_engine orelse return;
+    const sb = &eng.state.scrollback;
+    const grid = &eng.state.grid;
+    const eng_cols: i32 = @intCast(grid.cols);
+    if (eng_cols <= 0) return;
+    const ucols: usize = @intCast(eng_cols);
+    const vp = c.g_viewport_offset;
+    const sb_count: i32 = @intCast(sb.count);
+    const grid_rows: i32 = @intCast(grid.rows);
+    const total_lines = sb_count + grid_rows;
+    if (total_lines <= 0) return;
+
+    // Selection in pane-relative coordinates (no pane_row/pane_col offsets needed
+    // since we read from the pane's own engine)
+    var sr = state.anchor_row;
+    var sc = state.anchor_col;
+    var er = state.cursor_row;
+    var ec = state.cursor_col;
     if (sr > er or (sr == er and sc > ec)) {
         const tr = sr; const tc = sc; sr = er; sc = ec; er = tr; ec = tc;
     }
-    if (sr < 0) { sr = 0; sc = 0; }
-    if (er >= rows) { er = rows - 1; ec = cols - 1; }
+
+    // Convert pane-relative rows to absolute line indices in scrollback+grid space:
+    // absolute = sb_count - viewport_offset + pane_row
+    const abs_sr = @max(0, @min(sb_count - vp + sr, total_lines - 1));
+    const abs_er = @max(0, @min(sb_count - vp + er, total_lines - 1));
+
     var buf: [32768]u8 = undefined;
     var pos: usize = 0;
     const is_block = (g_sel_block != 0);
-    var row = sr;
-    while (row <= er and row < rows) : (row += 1) {
-        const cs = if (is_block) @min(sc, cols - 1) else if (row == sr) sc else 0;
-        const ce = if (is_block) @min(ec, cols - 1) else if (row == er) ec else cols - 1;
+    const Cell = attyx.grid.Cell;
+    var abs_row = abs_sr;
+    while (abs_row <= abs_er) : (abs_row += 1) {
+        const line_cells: []const Cell = if (abs_row < sb_count)
+            sb.getLine(@intCast(abs_row))
+        else if (abs_row - sb_count < grid_rows)
+            grid.cells[@as(usize, @intCast(abs_row - sb_count)) * ucols ..][0..ucols]
+        else
+            continue;
+        const is_first = (abs_row == abs_sr);
+        const is_last = (abs_row == abs_er);
+        const cs = if (is_block) @min(sc, eng_cols - 1) else if (is_first) sc else 0;
+        const ce = if (is_block) @min(ec, eng_cols - 1) else if (is_last) ec else eng_cols - 1;
         var last_ns = cs - 1;
         { var ci = ce; while (ci >= cs) : (ci -= 1) {
-            if (cells[@intCast(row * cols + ci)].character > 32) { last_ns = ci; break; }
+            if (line_cells[@intCast(ci)].char > 32) { last_ns = ci; break; }
             if (ci == 0) break;
         }}
         var ci = cs;
         while (ci <= @min(last_ns, ce)) : (ci += 1) {
-            const idx: usize = @intCast(row * cols + ci);
-            const ch = cells[idx].character;
+            const cell = line_cells[@intCast(ci)];
+            const ch = cell.char;
             if (ch == 0 or ch == ' ') { if (pos < buf.len) { buf[pos] = ' '; pos += 1; } } else {
                 pos += utf8Encode(ch, buf[pos..]);
-                for (0..2) |k| { const cm = cells[idx].combining[k]; if (cm == 0) break; pos += utf8Encode(cm, buf[pos..]); }
+                for (0..2) |k| { const cm = cell.combining[k]; if (cm == 0) break; pos += utf8Encode(cm, buf[pos..]); }
             }
         }
-        if (row < er) {
-            if (is_block or c.g_row_wrapped[@intCast(row)] == 0) {
+        if (abs_row < abs_er) {
+            const wrapped = if (abs_row < sb_count)
+                sb.getLineWrapped(@intCast(abs_row))
+            else
+                grid.row_wrapped[@intCast(abs_row - sb_count)];
+            if (is_block or !wrapped) {
                 if (pos < buf.len) { buf[pos] = '\n'; pos += 1; }
             }
         }
