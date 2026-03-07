@@ -228,4 +228,4 @@ jobs:
           echo "Created PR: $PR_URL"
 
           # Enable auto-merge
-          gh pr merge "$PR_URL" --auto --merge
+          gh pr merge "$PR_URL" --auto --squash
