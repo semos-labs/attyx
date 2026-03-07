@@ -114,6 +114,9 @@ pub const Action = enum(u8) {
     tab_move_right = 82,
     pane_resize_grow = 83,
     pane_resize_shrink = 84,
+    font_size_increase = 85,
+    font_size_decrease = 86,
+    font_size_reset = 87,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -226,7 +229,13 @@ fn resolveKeyName(name: []const u8) ?ResolvedKey {
         if (ch >= 'a' and ch <= 'z') return .{ .key = KC_CODEPOINT, .codepoint = ch };
         if (ch >= 'A' and ch <= 'Z') return .{ .key = KC_CODEPOINT, .codepoint = ch | 0x20 };
         if (ch >= '0' and ch <= '9') return .{ .key = KC_CODEPOINT, .codepoint = ch };
+        // Punctuation / symbols (=, -, +, [, ], etc.)
+        if (ch >= 0x21 and ch <= 0x7E) return .{ .key = KC_CODEPOINT, .codepoint = ch };
     }
+    // Named symbols
+    if (eql(name, "equal") or eql(name, "equals")) return .{ .key = KC_CODEPOINT, .codepoint = '=' };
+    if (eql(name, "minus")) return .{ .key = KC_CODEPOINT, .codepoint = '-' };
+    if (eql(name, "plus")) return .{ .key = KC_CODEPOINT, .codepoint = '+' };
     // Named special keys
     if (eql(name, "enter") or eql(name, "return")) return .{ .key = KC_ENTER, .codepoint = 0 };
     if (eql(name, "tab")) return .{ .key = KC_TAB, .codepoint = 0 };

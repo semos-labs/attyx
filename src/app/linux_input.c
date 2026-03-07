@@ -253,8 +253,32 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         }
     }
 
-    // Alt+Arrow: send word movement sequences (ESC b / ESC f)
-    if (alt && !ctrl && !(mods & GLFW_MOD_SUPER)) {
+    // Shift+Enter / Alt+Enter: legacy fallback only.
+    // When Kitty keyboard protocol is active, the encoder reports modifiers
+    // properly, so apps like Claude Code can distinguish them natively.
+    if (!g_kitty_kbd_flags && key == GLFW_KEY_ENTER) {
+        if (shift && !alt && !ctrl && !(mods & GLFW_MOD_SUPER)) {
+            const uint8_t nl = '\n';
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(&nl, 1);
+            g_suppress_char = 1;
+            return;
+        }
+        if (alt && !ctrl && !shift && !(mods & GLFW_MOD_SUPER)) {
+            const uint8_t seq[2] = { 0x1b, '\r' };
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(seq, 2);
+            g_suppress_char = 1;
+            return;
+        }
+    }
+
+    // Alt+Arrow: send word movement sequences (ESC b / ESC f) in legacy mode.
+    // When Kitty protocol is active, let the encoder send proper CSI with
+    // modifier bits so apps get the real Alt+Arrow info.
+    if (!g_kitty_kbd_flags && alt && !ctrl && !(mods & GLFW_MOD_SUPER)) {
         if (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) {
             const uint8_t *seq = (key == GLFW_KEY_LEFT)
                 ? (const uint8_t *)"\x1b" "b" : (const uint8_t *)"\x1b" "f";

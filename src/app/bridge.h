@@ -163,6 +163,7 @@ extern volatile int  g_ime_preedit_len;    // byte length of preedit text
 extern char          g_font_family[ATTYX_FONT_FAMILY_MAX];
 extern volatile int  g_font_family_len;
 extern volatile int  g_font_size;       // points
+extern volatile int  g_default_font_size; // config default (for Cmd+0 reset)
 extern volatile int  g_cell_width;      // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
 extern volatile int  g_cell_height;     // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
 

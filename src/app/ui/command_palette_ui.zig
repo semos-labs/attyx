@@ -32,9 +32,11 @@ pub fn openCommandPalette(ctx: *PtyThreadCtx) void {
     var state = CommandPaletteState{};
     state.visible_rows = visible;
 
-    // Populate entries from command registry
-    for (commands.registry, 0..) |cmd, i| {
-        if (i >= palette_state_mod.max_commands) break;
+    // Populate entries from command registry (skip hidden alias entries)
+    var entry_idx: usize = 0;
+    for (commands.registry) |cmd| {
+        if (cmd.hidden) continue;
+        if (entry_idx >= palette_state_mod.max_commands) break;
         var entry = CommandEntry{};
         entry.action_id = @intFromEnum(cmd.action);
         const nlen: u8 = @intCast(@min(cmd.name.len, 64));
@@ -53,9 +55,10 @@ pub fn openCommandPalette(ctx: *PtyThreadCtx) void {
             @memcpy(entry.linux_hotkey[0..hlen], hk[0..hlen]);
             entry.linux_hotkey_len = hlen;
         }
-        state.entries[i] = entry;
+        state.entries[entry_idx] = entry;
+        entry_idx += 1;
     }
-    state.entry_count = @intCast(@min(commands.registry.len, palette_state_mod.max_commands));
+    state.entry_count = @intCast(entry_idx);
     state.applyFilter();
 
     g_palette_state = state;

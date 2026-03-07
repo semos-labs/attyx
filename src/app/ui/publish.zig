@@ -47,6 +47,7 @@ pub fn publishFontConfig(config: *const AppConfig) void {
     c.g_font_family[len] = 0;
     c.g_font_family_len = @intCast(len);
     c.g_font_size = @intCast(config.font_size);
+    c.g_default_font_size = @intCast(config.font_size);
     c.g_cell_width = config.cell_width.encode();
     c.g_cell_height = config.cell_height.encode();
 

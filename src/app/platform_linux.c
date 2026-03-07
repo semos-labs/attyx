@@ -56,6 +56,7 @@ volatile int  g_ime_preedit_len  = 0;
 char         g_font_family[ATTYX_FONT_FAMILY_MAX];
 volatile int g_font_family_len = 0;
 volatile int g_font_size       = 14;
+volatile int g_default_font_size = 14;
 volatile int g_cell_width      = 0;
 volatile int g_cell_height     = 0;
 char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
