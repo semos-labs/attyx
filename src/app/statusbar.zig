@@ -332,15 +332,20 @@ pub fn generate(
         if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.bg, .bg = prompt_fg, .bg_alpha = 255 }; col += 1; }
         if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
     } else {
+        var first_left = true;
         for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
             if (wc.side != .left) continue;
             const ws = &bar.widgets[i];
             if (ws.output_len == 0) continue;
             const text = ws.output[0..ws.output_len];
-            if (col < grid_cols) {
-                buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-                col += 1;
+            // Skip leading space on first widget to reduce outer padding
+            if (!first_left) {
+                if (col < grid_cols) {
+                    buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                    col += 1;
+                }
             }
+            first_left = false;
             col = writeUtf8Colored(buf, col, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
             if (col < grid_cols) {
                 buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
@@ -371,28 +376,37 @@ pub fn generate(
 
     // 4. Right widgets — compute total width (in codepoints), then render from right edge
     var right_total: u16 = 0;
+    var right_widget_count: u16 = 0;
     for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
         if (wc.side != .right) continue;
         const ws = &bar.widgets[i];
         if (ws.output_len == 0) continue;
         right_total += utf8CodepointCount(ws.output[0..ws.output_len]) + 2; // " text "
+        right_widget_count += 1;
     }
+    // Remove trailing space from last widget (reduce outer padding by 1 cell)
+    if (right_widget_count > 0) right_total -= 1;
 
     if (right_total > 0 and right_total < grid_cols) {
         var rcol: u16 = grid_cols - right_total;
+        var right_idx: u16 = 0;
         for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
             if (wc.side != .right) continue;
             const ws = &bar.widgets[i];
             if (ws.output_len == 0) continue;
+            right_idx += 1;
             const text = ws.output[0..ws.output_len];
             if (rcol < grid_cols) {
                 buf[rcol] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
                 rcol += 1;
             }
             rcol = writeUtf8Colored(buf, rcol, grid_cols, text, ws.color_spans[0..ws.span_count], style.fg, style.bg, style.bg_alpha);
-            if (rcol < grid_cols) {
-                buf[rcol] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
-                rcol += 1;
+            // Skip trailing space on last right widget
+            if (right_idx < right_widget_count) {
+                if (rcol < grid_cols) {
+                    buf[rcol] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+                    rcol += 1;
+                }
             }
         }
     }

@@ -148,6 +148,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkFramework("CoreGraphics", .{});
         exe.root_module.linkFramework("CoreFoundation", .{});
         exe.root_module.linkFramework("WebKit", .{});
+        exe.root_module.linkFramework("UserNotifications", .{});
     }
 
     // UI-2 (OpenGL renderer) — link GLFW/GL/FreeType/Fontconfig on Linux
@@ -249,6 +250,7 @@ pub fn build(b: *std.Build) void {
         app.root_module.linkFramework("CoreGraphics", .{});
         app.root_module.linkFramework("CoreFoundation", .{});
         app.root_module.linkFramework("WebKit", .{});
+        app.root_module.linkFramework("UserNotifications", .{});
 
         b.installArtifact(app);
 

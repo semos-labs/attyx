@@ -253,6 +253,11 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         }
     }
 
+    // Any input past this point goes to the PTY — snap viewport to bottom
+    // so the user sees what they're typing. (Keybinds like scroll_page_up
+    // already returned above, so they won't trigger this.)
+    snapViewport();
+
     // Shift+Enter / Alt+Enter: legacy fallback only.
     // When Kitty keyboard protocol is active, the encoder reports modifiers
     // properly, so apps like Claude Code can distinguish them natively.

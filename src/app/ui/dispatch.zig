@@ -201,7 +201,7 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         .font_size_increase => {
             const size = c.g_font_size;
             if (size < 72) {
-                c.g_font_size = size + 1;
+                c.g_font_size = size + 2;
                 c.g_needs_font_rebuild = 1;
             }
             return 1;
@@ -209,7 +209,7 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         .font_size_decrease => {
             const size = c.g_font_size;
             if (size > 6) {
-                c.g_font_size = size - 1;
+                c.g_font_size = size - 2;
                 c.g_needs_font_rebuild = 1;
             }
             return 1;

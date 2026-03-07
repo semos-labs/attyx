@@ -79,11 +79,8 @@ CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize) {
 // Glyph cache creation
 // ---------------------------------------------------------------------------
 
-// Fixed reference cell dimensions (in logical points) captured on the first
-// createGlyphCache call. Percent-mode cell sizes are anchored to these values
-// so that changing the font size does not affect the configured cell height/width.
-static float s_ref_h_pt = 0.0f;
-static float s_ref_w_pt = 0.0f;
+// (removed: static s_ref_h_pt / s_ref_w_pt — percent mode is now
+// relative to the current font's natural dimensions, not the initial ones)
 
 GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     CGFloat basePt = (g_font_size > 0) ? (CGFloat)g_font_size : 14.0;
@@ -132,18 +129,17 @@ GlyphCache createGlyphCache(id<MTLDevice> device, CGFloat scale) {
     float gw = naturalW;
     float gh = naturalH;
 
-    // Capture fixed reference dimensions (in logical points) on first call.
-    if (s_ref_h_pt <= 0.0f) s_ref_h_pt = naturalH / (float)scale;
-    if (s_ref_w_pt <= 0.0f) s_ref_w_pt = naturalW / (float)scale;
-
+    // Apply cell size overrides.
+    // Percent mode: relative to the current font's natural dimensions,
+    // so cell proportions scale correctly when font size changes.
     if (g_cell_width > 0)
         gw = roundf((float)g_cell_width * (float)scale);
     else if (g_cell_width < 0)
-        gw = roundf(s_ref_w_pt * (float)scale * (float)(-g_cell_width) / 100.0f);
+        gw = roundf(naturalW * (float)(-g_cell_width) / 100.0f);
     if (g_cell_height > 0)
         gh = roundf((float)g_cell_height * (float)scale);
     else if (g_cell_height < 0)
-        gh = roundf(s_ref_h_pt * (float)scale * (float)(-g_cell_height) / 100.0f);
+        gh = roundf(naturalH * (float)(-g_cell_height) / 100.0f);
 
     float baseline_y = (float)descent + (gh - naturalH) / 2.0f;
     float x_offset = (gw - naturalW) / 2.0f;

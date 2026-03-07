@@ -238,6 +238,11 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             return YES;
     }
 
+    // Any input past this point goes to the PTY — snap viewport to bottom
+    // so the user sees what they're typing. (Keybinds like scroll_page_up
+    // already returned YES above, so they won't trigger this.)
+    [self snapViewportAndClearSelection];
+
     // Shift+Enter / Alt+Enter: legacy fallback only.
     // When Kitty keyboard protocol is active, the encoder reports modifiers
     // properly (e.g. CSI 13;2u for Shift+Enter), so apps like Claude Code

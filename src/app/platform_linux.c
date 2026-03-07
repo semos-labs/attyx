@@ -252,6 +252,17 @@ void attyx_platform_close_window(void) {
     glfwSetWindowShouldClose(g_window, 1);
 }
 
+void attyx_platform_notify(const char* title, const char* body) {
+    // Linux: use notify-send if available
+    if (!body || body[0] == '\0') return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        const char* t = (title && title[0]) ? title : "Attyx";
+        execlp("notify-send", "notify-send", t, body, (char*)NULL);
+        _exit(1); // execlp failed
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spawn new window (new process)
 // ---------------------------------------------------------------------------

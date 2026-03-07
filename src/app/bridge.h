@@ -492,6 +492,12 @@ void attyx_popup_handle_key(uint16_t key, uint8_t mods, uint8_t event_type, uint
 void attyx_popup_toggle(int index);
 
 // ---------------------------------------------------------------------------
+// Desktop notifications (OSC 9 / OSC 777)
+// ---------------------------------------------------------------------------
+
+void attyx_platform_notify(const char* title, const char* body);
+
+// ---------------------------------------------------------------------------
 // Logging bridge (implemented in terminal.zig / main.zig stub)
 // ---------------------------------------------------------------------------
 
