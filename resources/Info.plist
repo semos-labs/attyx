@@ -26,9 +26,5 @@
     <true/>
     <key>SUFeedURL</key>
     <string>https://semos.sh/appcast-arm64.xml</string>
-    <key>SUPublicEDKey</key>
-    <string>l4t6YOYIF6bk3FlNXBOXqDI8wcLbrYTiO5/oBzloEsk=</string>
-    <key>SUEnableAutomaticChecks</key>
-    <true/>
 </dict>
 </plist>
