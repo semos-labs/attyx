@@ -141,7 +141,8 @@ pub const SessionPickerState = struct {
     /// Handle a command. Returns action if one should be executed.
     /// Command codes: 1=backspace, 7=escape/close, 8=enter/select,
     /// 9=up, 10=down, 11=ctrl_r(rename), 12=ctrl_x(kill),
-    /// 13=ctrl_u(clear filter)
+    /// 13=ctrl_u(clear filter), 14=ctrl_d(detach), 15=ctrl_w(delete word),
+    /// 16=ctrl_a(jump to start), 17=ctrl_e(jump to end), 18=ctrl_k(kill to end)
     pub fn handleCmd(self: *SessionPickerState, cmd: i32) PickerAction {
         switch (self.mode) {
             .renaming => return self.handleRenameCmd(cmd),
@@ -173,6 +174,14 @@ pub const SessionPickerState = struct {
                     } };
                 }
                 self.mode = .browsing;
+            },
+            13 => { // Ctrl-U — clear all
+                self.rename_len = 0;
+            },
+            15 => { // Ctrl-W — delete word backward
+                if (self.rename_len > 0) {
+                    self.rename_len = deleteWordBackward(&self.rename_buf, self.rename_len);
+                }
             },
             else => {},
         }
@@ -227,6 +236,14 @@ pub const SessionPickerState = struct {
                 self.adjustScroll();
             },
             14 => return .switch_to_default, // Ctrl-D — switch to hidden "default" session
+            15 => { // Ctrl-W — delete word backward
+                if (self.filter_len > 0) {
+                    self.filter_len = deleteWordBackward(&self.filter_buf, self.filter_len);
+                    self.applyFilter();
+                    self.selected = 0;
+                    self.adjustScroll();
+                }
+            },
             else => {},
         }
         return .none;
@@ -338,6 +355,22 @@ fn fuzzyMatch(name: []const u8, query: []const u8) bool {
 
 fn toLower(ch: u8) u8 {
     return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
+}
+
+/// Delete backward to the start of the previous word (^W behavior).
+/// Skips trailing whitespace/separators, then deletes until the next one.
+fn deleteWordBackward(buf: []const u8, len: u8) u8 {
+    if (len == 0) return 0;
+    var i: u8 = len;
+    // Skip trailing separators/whitespace
+    while (i > 0 and isSeparator(buf[i - 1])) : (i -= 1) {}
+    // Delete word chars
+    while (i > 0 and !isSeparator(buf[i - 1])) : (i -= 1) {}
+    return i;
+}
+
+fn isSeparator(ch: u8) bool {
+    return ch == ' ' or ch == '/' or ch == '-' or ch == '_' or ch == '.';
 }
 
 /// The "default" session is hidden from the picker list.
@@ -511,6 +544,43 @@ test "adjustScroll: viewport clamping" {
     state.selected = 0;
     state.adjustScroll();
     try std.testing.expectEqual(@as(u8, 0), state.scroll_offset);
+}
+
+test "deleteWordBackward: basic" {
+    const buf = "hello world";
+    try std.testing.expectEqual(@as(u8, 6), deleteWordBackward(buf, 11));
+    try std.testing.expectEqual(@as(u8, 0), deleteWordBackward(buf, 6)); // "hello " -> delete "hello "
+}
+
+test "deleteWordBackward: separators" {
+    const buf = "my-project";
+    try std.testing.expectEqual(@as(u8, 3), deleteWordBackward(buf, 10));
+    try std.testing.expectEqual(@as(u8, 0), deleteWordBackward(buf, 3));
+}
+
+test "deleteWordBackward: trailing separators" {
+    const buf = "path/to/";
+    try std.testing.expectEqual(@as(u8, 5), deleteWordBackward(buf, 8)); // skip /, delete "to"
+}
+
+test "handleCmd: ctrl_w deletes word in filter" {
+    var state = SessionPickerState{};
+    state.entries[0] = .{ .id = 1, .name_len = 5, .alive = true };
+    @memcpy(state.entries[0].name[0..5], "alpha");
+    state.entry_count = 1;
+    state.applyFilter();
+
+    // Type "hello world"
+    for ("hello world") |ch| _ = state.handleChar(ch);
+    try std.testing.expectEqual(@as(u8, 11), state.filter_len);
+
+    // Ctrl-W deletes "world"
+    _ = state.handleCmd(15);
+    try std.testing.expectEqual(@as(u8, 6), state.filter_len);
+
+    // Ctrl-W deletes "hello "
+    _ = state.handleCmd(15);
+    try std.testing.expectEqual(@as(u8, 0), state.filter_len);
 }
 
 test "fuzzyMatch: case-insensitive" {

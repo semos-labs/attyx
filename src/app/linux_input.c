@@ -309,6 +309,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
         if (ctrl && key == GLFW_KEY_X)    { attyx_picker_cmd(12); g_suppress_char = 1; return; }
         if (ctrl && key == GLFW_KEY_U)    { attyx_picker_cmd(13); g_suppress_char = 1; return; }
         if (ctrl && key == GLFW_KEY_D)    { attyx_picker_cmd(14); g_suppress_char = 1; return; }
+        if (ctrl && key == GLFW_KEY_W)    { attyx_picker_cmd(15); g_suppress_char = 1; return; }
         if (ctrl && key == GLFW_KEY_C)    { attyx_picker_cmd(7); g_suppress_char = 1; return; }
         g_suppress_char = 0;
         return;
