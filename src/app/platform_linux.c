@@ -390,7 +390,11 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     }
 
     glfwMakeContextCurrent(g_window);
-    glfwSwapInterval(1);
+    // Disable vsync — we manage frame pacing manually.  With vsync on,
+    // glfwSwapBuffers blocks until the next display refresh (~16ms).
+    // During that block, GLFW cannot deliver input events, so keystrokes
+    // queue up behind the swap and typing feels laggy.
+    glfwSwapInterval(0);
 
     // Set window icon from embedded PNG.
     linux_set_window_icon(g_window);
@@ -429,8 +433,23 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // busy-spinning with glfwPollEvents.  The PTY thread wakes us via
     // glfwPostEmptyEvent (called from attyx_end_cell_update / attyx_mark_all_dirty).
     // Timeout of 0.5s ensures cursor blink updates even when fully idle.
+    //
+    // Frame pacing: vsync is disabled to avoid blocking input delivery during
+    // glfwSwapBuffers.  Instead we cap to ~60fps manually — if we drew a frame
+    // less than 16ms ago, we use a short wait to avoid busy-spinning.
+    double last_swap_time = 0;
+    const double frame_interval = 1.0 / 60.0; // ~16.67ms
+
     while (!glfwWindowShouldClose(g_window) && !g_should_quit) {
-        glfwWaitEventsTimeout(0.5);
+        double now = glfwGetTime();
+        double since_last = now - last_swap_time;
+        double wait = (since_last < frame_interval)
+            ? (frame_interval - since_last) : 0.5;
+        // Clamp: never wait longer than 0.5s (cursor blink), never negative
+        if (wait > 0.5) wait = 0.5;
+
+        glfwWaitEventsTimeout(wait);
+
         if (g_needs_font_rebuild) {
             g_needs_font_rebuild = 0;
             linux_rebuild_font();
@@ -439,8 +458,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
             g_needs_window_update = 0;
             attyx_apply_window_update();
         }
-        if (drawFrame())
+        if (drawFrame()) {
             glfwSwapBuffers(g_window);
+            last_swap_time = glfwGetTime();
+        }
     }
 
     g_should_quit = 1;
