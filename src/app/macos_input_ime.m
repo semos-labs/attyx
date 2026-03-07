@@ -175,12 +175,14 @@
     if (!utf8) return;
     int len = (int)strlen(utf8);
 
+    void (*send_fn)(const uint8_t*, int) =
+        g_popup_active ? attyx_popup_send_input : attyx_send_input;
     if (g_bracketed_paste) {
-        attyx_send_input((const uint8_t*)"\x1b[200~", 6);
-        attyx_send_input((const uint8_t*)utf8, len);
-        attyx_send_input((const uint8_t*)"\x1b[201~", 6);
+        send_fn((const uint8_t*)"\x1b[200~", 6);
+        send_fn((const uint8_t*)utf8, len);
+        send_fn((const uint8_t*)"\x1b[201~", 6);
     } else {
-        attyx_send_input((const uint8_t*)utf8, len);
+        send_fn((const uint8_t*)utf8, len);
     }
 }
 
