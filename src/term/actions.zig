@@ -191,6 +191,15 @@ pub const Action = union(enum) {
     query_color: ColorQueryType,
     /// OSC 4;N;? — query palette color at index N.
     query_palette_color: u8,
+
+    /// OSC 9 / OSC 777 — desktop notification. Payload borrowed from parser osc_buf.
+    notify: Notification,
+};
+
+/// Desktop notification payload (OSC 9 / OSC 777).
+pub const Notification = struct {
+    title: []const u8,
+    body: []const u8,
 };
 
 /// Which color is being queried by an OSC 10/11/12 sequence.

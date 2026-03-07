@@ -9,6 +9,7 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CABase.h>
+#import <UserNotifications/UserNotifications.h>
 
 #include "bridge.h"
 #include "macos_internal.h"
@@ -65,6 +66,7 @@ volatile int  g_ime_preedit_len  = 0;
 char         g_font_family[ATTYX_FONT_FAMILY_MAX];
 volatile int g_font_family_len = 0;
 volatile int g_font_size       = 14;
+volatile int g_default_font_size = 14;
 volatile int g_cell_width      = 0;
 volatile int g_cell_height     = 0;
 char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
@@ -270,6 +272,51 @@ NSString* const kShaderSource =
 
 void attyx_platform_close_window(void) {
     [NSApp.keyWindow close];
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (OSC 9 / OSC 777)
+// ---------------------------------------------------------------------------
+
+void attyx_platform_notify(const char* title, const char* body) {
+    if (!body || body[0] == '\0') return;
+
+    NSString* nsTitle = title && title[0]
+        ? [NSString stringWithUTF8String:title]
+        : @"Attyx";
+    NSString* nsBody = [NSString stringWithUTF8String:body];
+
+    // Only notify when the app is not focused (avoid spamming the user)
+    if ([NSApp isActive]) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+
+        // Request permission on first use (no-op if already granted/denied)
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                              completionHandler:^(BOOL granted, NSError* _Nullable error) {
+            (void)error;
+            if (!granted) return;
+
+            UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+            content.title = nsTitle;
+            content.body = nsBody;
+            content.sound = [UNNotificationSound defaultSound];
+
+            NSString* identifier = [[NSUUID UUID] UUIDString];
+            UNNotificationRequest* request =
+                [UNNotificationRequest requestWithIdentifier:identifier
+                                                     content:content
+                                                     trigger:nil]; // deliver immediately
+
+            [center addNotificationRequest:request withCompletionHandler:^(NSError* _Nullable err) {
+                if (err) {
+                    ATTYX_LOG_WARN("notify", "notification failed: %s",
+                                   err.localizedDescription.UTF8String);
+                }
+            }];
+        }];
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +547,11 @@ void attyx_spawn_new_window(void) {
     attyx_dispatch_action(50);
 }
 
+// Generic action dispatch from menu items (action ID stored in tag)
+- (void)dispatchMenuAction:(NSMenuItem*)sender {
+    attyx_dispatch_action((uint8_t)sender.tag);
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if ([item action] == @selector(checkForUpdates:)) {
         return attyx_updater_available();
@@ -680,26 +732,69 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                     keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
 
+        // Helper to create a menu item that dispatches a keybind action by tag
+        NSMenuItem* (^actionItem)(NSString*, uint8_t, NSString*, NSEventModifierFlags) =
+            ^NSMenuItem*(NSString* title, uint8_t actionId, NSString* key, NSEventModifierFlags mods) {
+                NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
+                                                              action:@selector(dispatchMenuAction:)
+                                                       keyEquivalent:key];
+                item.tag = actionId;
+                item.target = delegate;
+                item.keyEquivalentModifierMask = mods;
+                return item;
+            };
+
+        // -- Edit menu --
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:editMenuItem];
         NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
-        [editMenu addItemWithTitle:@"Copy"
-                            action:@selector(copy:)
-                     keyEquivalent:@"c"];
-        [editMenu addItemWithTitle:@"Paste"
-                            action:@selector(paste:)
-                     keyEquivalent:@"v"];
+        [editMenu addItemWithTitle:@"Copy"   action:@selector(copy:)  keyEquivalent:@"c"];
+        [editMenu addItemWithTitle:@"Paste"  action:@selector(paste:) keyEquivalent:@"v"];
+        [editMenu addItem:[NSMenuItem separatorItem]];
+        [editMenu addItem:actionItem(@"Find…", 3, @"f", NSEventModifierFlagCommand)];
+        [editMenu addItem:actionItem(@"Find Next", 4, @"g", NSEventModifierFlagCommand)];
+        [editMenu addItem:actionItem(@"Find Previous", 5, @"g",
+            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [editMenu addItem:[NSMenuItem separatorItem]];
+        [editMenu addItem:actionItem(@"Clear Screen", 73, @"k", NSEventModifierFlagCommand)];
         [editMenuItem setSubmenu:editMenu];
 
+        // -- View menu --
+        NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:viewMenuItem];
+        NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+        [viewMenu addItem:actionItem(@"Bigger", 85, @"=", NSEventModifierFlagCommand)];
+        [viewMenu addItem:actionItem(@"Smaller", 86, @"-", NSEventModifierFlagCommand)];
+        [viewMenu addItem:actionItem(@"Reset Font Size", 87, @"0", NSEventModifierFlagCommand)];
+        [viewMenu addItem:[NSMenuItem separatorItem]];
+        [viewMenu addItem:actionItem(@"Command Palette", 77, @"p",
+            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [viewMenuItem setSubmenu:viewMenu];
+
+        // -- Shell menu --
+        NSMenuItem* shellMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:shellMenuItem];
+        NSMenu* shellMenu = [[NSMenu alloc] initWithTitle:@"Shell"];
+        [shellMenu addItem:actionItem(@"New Tab", 49, @"t", NSEventModifierFlagCommand)];
+        [shellMenu addItem:actionItem(@"Close Tab", 50, @"w", NSEventModifierFlagCommand)];
+        [shellMenu addItem:[NSMenuItem separatorItem]];
+        [shellMenu addItem:actionItem(@"Next Tab", 51, @"\t",
+            NSEventModifierFlagControl)];
+        [shellMenu addItem:actionItem(@"Previous Tab", 52, @"\t",
+            NSEventModifierFlagControl | NSEventModifierFlagShift)];
+        [shellMenu addItem:[NSMenuItem separatorItem]];
+        [shellMenu addItem:actionItem(@"Split Vertically", 53, @"d", NSEventModifierFlagCommand)];
+        [shellMenu addItem:actionItem(@"Split Horizontally", 54, @"d",
+            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [shellMenuItem setSubmenu:shellMenu];
+
+        // -- Window menu --
         NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:windowMenuItem];
         NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
         [windowMenu addItemWithTitle:@"New Window"
                               action:@selector(spawnNewWindow:)
                        keyEquivalent:@"n"];
-        [windowMenu addItemWithTitle:@"Close Tab"
-                              action:@selector(closeTabOrWindow:)
-                       keyEquivalent:@"w"];
         [windowMenu addItem:[NSMenuItem separatorItem]];
         [windowMenu addItemWithTitle:@"Minimize Window"
                               action:@selector(performMiniaturize:)

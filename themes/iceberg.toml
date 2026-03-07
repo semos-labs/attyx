@@ -1,0 +1,28 @@
+# Iceberg
+# https://cocopon.github.io/iceberg.vim
+
+[colors]
+foreground           = "#c6c8d1"
+background           = "#161821"
+cursor               = "#c6c8d1"
+cursor_text          = "#161821"
+selection_background = "#1e2132"
+selection_foreground = "#c6c8d1"
+
+[palette]
+0  = "#1e2132"
+1  = "#e27878"
+2  = "#b4be82"
+3  = "#e2a478"
+4  = "#84a0c6"
+5  = "#a093c7"
+6  = "#89b8c2"
+7  = "#c6c8d1"
+8  = "#6b7089"
+9  = "#e98989"
+10 = "#c0ca8e"
+11 = "#e9b189"
+12 = "#91acd1"
+13 = "#ada0d3"
+14 = "#95c4ce"
+15 = "#d2d4de"

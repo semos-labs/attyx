@@ -74,6 +74,7 @@ extern volatile int  g_ime_preedit_len;
 extern char         g_font_family[ATTYX_FONT_FAMILY_MAX];
 extern volatile int g_font_family_len;
 extern volatile int g_font_size;
+extern volatile int g_default_font_size;
 extern volatile int g_cell_width;
 extern volatile int g_cell_height;
 extern char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];

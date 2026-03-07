@@ -1,0 +1,28 @@
+# One Dark
+# https://github.com/atom/atom/tree/master/packages/one-dark-syntax
+
+[colors]
+foreground           = "#abb2bf"
+background           = "#282c34"
+cursor               = "#528bff"
+cursor_text          = "#282c34"
+selection_background = "#3e4451"
+selection_foreground = "#abb2bf"
+
+[palette]
+0  = "#282c34"
+1  = "#e06c75"
+2  = "#98c379"
+3  = "#e5c07b"
+4  = "#61afef"
+5  = "#c678dd"
+6  = "#56b6c2"
+7  = "#abb2bf"
+8  = "#545862"
+9  = "#e06c75"
+10 = "#98c379"
+11 = "#e5c07b"
+12 = "#61afef"
+13 = "#c678dd"
+14 = "#56b6c2"
+15 = "#c8ccd4"

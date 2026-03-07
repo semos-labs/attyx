@@ -179,8 +179,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         if (kc == kVK_End)                      { attyx_ai_prompt_cmd(6); return YES; }
     }
 
-    // Session picker / command palette key routing
-    if (g_session_picker_active || g_command_palette_active) {
+    // Session picker / command palette / theme picker key routing
+    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
         unsigned short kc = event.keyCode;
         if (kc == kVK_Escape)              { attyx_picker_cmd(7); return YES; }
         if (kc == kVK_Return)              { attyx_picker_cmd(8); return YES; }
@@ -238,8 +238,36 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             return YES;
     }
 
-    // Alt+Arrow: send word movement sequences (ESC b / ESC f)
-    if ((flags & NSEventModifierFlagOption) && !cmd && !ctrl) {
+    // Any input past this point goes to the PTY — snap viewport to bottom
+    // so the user sees what they're typing. (Keybinds like scroll_page_up
+    // already returned YES above, so they won't trigger this.)
+    [self snapViewportAndClearSelection];
+
+    // Shift+Enter / Alt+Enter: legacy fallback only.
+    // When Kitty keyboard protocol is active, the encoder reports modifiers
+    // properly (e.g. CSI 13;2u for Shift+Enter), so apps like Claude Code
+    // can distinguish them natively. Only send raw sequences in legacy mode.
+    if (!g_kitty_kbd_flags && mapKeyCode(event.keyCode) == KC_ENTER) {
+        if (shift && !cmd && !ctrl && !(flags & NSEventModifierFlagOption)) {
+            const uint8_t nl = '\n';
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(&nl, 1);
+            return YES;
+        }
+        if ((flags & NSEventModifierFlagOption) && !cmd && !ctrl && !shift) {
+            const uint8_t seq[2] = { 0x1b, '\r' };
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            send_fn(seq, 2);
+            return YES;
+        }
+    }
+
+    // Alt+Arrow: send word movement sequences (ESC b / ESC f) in legacy mode.
+    // When Kitty protocol is active, let the encoder send proper CSI with
+    // modifier bits so apps get the real Alt+Arrow info.
+    if (!g_kitty_kbd_flags && (flags & NSEventModifierFlagOption) && !cmd && !ctrl) {
         uint16_t mapped = mapKeyCode(event.keyCode);
         if (mapped == KC_LEFT || mapped == KC_RIGHT) {
             const uint8_t *seq = (mapped == KC_LEFT)

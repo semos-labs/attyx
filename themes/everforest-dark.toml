@@ -1,0 +1,28 @@
+# Everforest Dark
+# https://github.com/sainnhe/everforest
+
+[colors]
+foreground           = "#d3c6aa"
+background           = "#2d353b"
+cursor               = "#d3c6aa"
+cursor_text          = "#2d353b"
+selection_background = "#543a48"
+selection_foreground = "#d3c6aa"
+
+[palette]
+0  = "#475258"
+1  = "#e67e80"
+2  = "#a7c080"
+3  = "#dbbc7f"
+4  = "#7fbbb3"
+5  = "#d699b6"
+6  = "#83c092"
+7  = "#d3c6aa"
+8  = "#475258"
+9  = "#e67e80"
+10 = "#a7c080"
+11 = "#dbbc7f"
+12 = "#7fbbb3"
+13 = "#d699b6"
+14 = "#83c092"
+15 = "#d3c6aa"

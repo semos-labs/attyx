@@ -163,6 +163,7 @@ extern volatile int  g_ime_preedit_len;    // byte length of preedit text
 extern char          g_font_family[ATTYX_FONT_FAMILY_MAX];
 extern volatile int  g_font_family_len;
 extern volatile int  g_font_size;       // points
+extern volatile int  g_default_font_size; // config default (for Cmd+0 reset)
 extern volatile int  g_cell_width;      // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
 extern volatile int  g_cell_height;     // 0=auto, >0=fixed pts, <0=(-N)% of font-derived
 
@@ -210,6 +211,10 @@ void attyx_ai_prompt_cmd(int cmd);  // 1=backspace 2=delete 3=left 4=right 5=hom
 // Command palette: input thread -> PTY thread (Zig-side)
 extern volatile int g_command_palette_active;  // 1 = command palette overlay has focus
 void attyx_toggle_command_palette(void);
+
+// Theme picker: input thread -> PTY thread (Zig-side)
+extern volatile int g_theme_picker_active;  // 1 = theme picker overlay has focus
+void attyx_toggle_theme_picker(void);
 
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
@@ -489,6 +494,12 @@ extern volatile int g_split_drag_direction; // 0=vertical, 1=horizontal
 void attyx_popup_send_input(const uint8_t* bytes, int len);
 void attyx_popup_handle_key(uint16_t key, uint8_t mods, uint8_t event_type, uint32_t codepoint);
 void attyx_popup_toggle(int index);
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (OSC 9 / OSC 777)
+// ---------------------------------------------------------------------------
+
+void attyx_platform_notify(const char* title, const char* body);
 
 // ---------------------------------------------------------------------------
 // Logging bridge (implemented in terminal.zig / main.zig stub)

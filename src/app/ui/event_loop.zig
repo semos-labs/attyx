@@ -24,6 +24,7 @@ const hup_mod = @import("hup.zig");
 const overlay_input = @import("overlay_input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
+const theme_picker_ui = @import("theme_picker_ui.zig");
 const copy_mode = @import("copy_mode.zig");
 
 /// Re-export from actions module for external access.
@@ -219,6 +220,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Theme picker toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_theme_picker, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_theme_picker_active != 0) {
+                theme_picker_ui.closeThemePicker(ctx);
+            } else {
+                theme_picker_ui.openThemePicker(ctx);
+            }
+        }
+
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);
@@ -249,6 +259,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Command palette input polling
         if (terminal.g_command_palette_active != 0) {
             _ = command_palette_ui.consumePaletteInput(ctx);
+        }
+
+        // Theme picker input polling
+        if (terminal.g_theme_picker_active != 0) {
+            _ = theme_picker_ui.consumePickerInput(ctx);
         }
 
         // Tick update check notification

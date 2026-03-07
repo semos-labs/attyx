@@ -1,0 +1,28 @@
+# Palenight
+# https://github.com/equinusocio/vsc-material-theme
+
+[colors]
+foreground           = "#a6accd"
+background           = "#292d3e"
+cursor               = "#ffcc00"
+cursor_text          = "#292d3e"
+selection_background = "#3c435e"
+selection_foreground = "#a6accd"
+
+[palette]
+0  = "#292d3e"
+1  = "#f07178"
+2  = "#c3e88d"
+3  = "#ffcb6b"
+4  = "#82aaff"
+5  = "#c792ea"
+6  = "#89ddff"
+7  = "#a6accd"
+8  = "#676e95"
+9  = "#f07178"
+10 = "#c3e88d"
+11 = "#ffcb6b"
+12 = "#82aaff"
+13 = "#c792ea"
+14 = "#89ddff"
+15 = "#ffffff"

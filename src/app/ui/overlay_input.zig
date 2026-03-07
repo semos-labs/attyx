@@ -9,6 +9,7 @@ const input = @import("input.zig");
 const ai = @import("ai.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
+const theme_picker_ui = @import("theme_picker_ui.zig");
 
 /// Process all overlay interactions (dismiss, focus cycling, activate, clicks, scroll).
 pub fn processOverlayInteractions(ctx: *PtyThreadCtx) void {
@@ -21,6 +22,21 @@ pub fn processOverlayInteractions(ctx: *PtyThreadCtx) void {
 
 fn processDismiss(ctx: *PtyThreadCtx) void {
     if (@atomicRmw(i32, &input.g_overlay_dismiss, .Xchg, 0, .seq_cst) == 0) return;
+
+    // Theme picker dismiss
+    if (terminal.g_theme_picker_active != 0) {
+        // Revert to original theme on Esc
+        if (theme_picker_ui.g_original_theme) |orig| {
+            ctx.active_theme = orig;
+            publish.publishTheme(&ctx.active_theme);
+            publish.publishThemeToEngines(ctx);
+            @import("actions.zig").g_force_full_redraw = true;
+            publish.generateStatusbar(ctx);
+            publish.generateTabBar(ctx);
+        }
+        theme_picker_ui.closeThemePicker(ctx);
+        return;
+    }
 
     // Command palette dismiss
     if (terminal.g_command_palette_active != 0) {

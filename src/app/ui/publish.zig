@@ -19,8 +19,39 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 pub const Theme = @import("../../theme/registry.zig").Theme;
 const c = terminal.c;
 
+const overlay_ui = attyx.overlay_ui;
+
 // Shared anchor demo mode counter (persists across calls).
 pub var g_anchor_mode_counter: u8 = 0;
+
+/// Derive overlay panel theme from the active terminal theme.
+pub fn overlayThemeFromTheme(theme: *const Theme) overlay_ui.OverlayTheme {
+    const bg = theme.background;
+    const fg = theme.foreground;
+    // Border: blend fg toward bg
+    const bdr = @as(u8, @intCast((@as(u16, bg.r) * 2 + @as(u16, fg.r)) / 3));
+    const bdg = @as(u8, @intCast((@as(u16, bg.g) * 2 + @as(u16, fg.g)) / 3));
+    const bdb = @as(u8, @intCast((@as(u16, bg.b) * 2 + @as(u16, fg.b)) / 3));
+    // Selection: blend fg toward bg more
+    const sr = @as(u8, @intCast((@as(u16, bg.r) + @as(u16, fg.r)) / 2));
+    const sg = @as(u8, @intCast((@as(u16, bg.g) + @as(u16, fg.g)) / 2));
+    const sb_c = @as(u8, @intCast((@as(u16, bg.b) + @as(u16, fg.b)) / 2));
+    // Hint: dimmed fg
+    const hr = @as(u8, @intCast((@as(u16, bg.r) + @as(u16, fg.r)) / 2));
+    const hg = @as(u8, @intCast((@as(u16, bg.g) + @as(u16, fg.g)) / 2));
+    const hb = @as(u8, @intCast((@as(u16, bg.b) + @as(u16, fg.b)) / 2));
+    return .{
+        .fg = .{ .r = fg.r, .g = fg.g, .b = fg.b },
+        .bg = .{ .r = bg.r, .g = bg.g, .b = bg.b },
+        .bg_alpha = 230,
+        .border_color = .{ .r = bdr, .g = bdg, .b = bdb },
+        .cursor_fg = .{ .r = bg.r, .g = bg.g, .b = bg.b },
+        .cursor_bg = .{ .r = fg.r, .g = fg.g, .b = fg.b },
+        .selected_bg = .{ .r = sr, .g = sg, .b = sb_c },
+        .selected_fg = .{ .r = fg.r, .g = fg.g, .b = fg.b },
+        .hint_fg = .{ .r = hr, .g = hg, .b = hb },
+    };
+}
 
 /// Convenience: return the active tab's Engine from a PtyThreadCtx.
 pub fn ctxEngine(ctx: *PtyThreadCtx) *Engine {
@@ -47,6 +78,7 @@ pub fn publishFontConfig(config: *const AppConfig) void {
     c.g_font_family[len] = 0;
     c.g_font_family_len = @intCast(len);
     c.g_font_size = @intCast(config.font_size);
+    c.g_default_font_size = @intCast(config.font_size);
     c.g_cell_width = config.cell_width.encode();
     c.g_cell_height = config.cell_height.encode();
 
@@ -686,12 +718,20 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
 
     var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const zoomed_tabs = computeZoomedTabs(ctx);
+    const tbg = ctx.active_theme.background;
+    const tfg = ctx.active_theme.foreground;
+    const tab_style = tab_bar_mod.Style{
+        .tab_bg = .{ .r = tbg.r, .g = tbg.g, .b = tbg.b },
+        .fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
+        .num_highlight_bg = .{ .r = tfg.r / 2, .g = tfg.g / 2, .b = tfg.b / 2 },
+        .num_highlight_fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
+    };
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
         ctx.tab_mgr.active,
         ctx.grid_cols,
-        .{},
+        tab_style,
         &titles,
         zoomed_tabs,
     ) orelse return;
@@ -738,8 +778,30 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     resolveTabTitles(ctx, &titles, &name_bufs);
 
     var sb_cells: [512]overlay_mod.StyledCell = undefined;
+    const theme_bg = ctx.active_theme.background;
+    const theme_fg = ctx.active_theme.foreground;
+    const sb_bg = if (ctx.active_theme.statusbar_background) |bg|
+        overlay_mod.Rgb{ .r = bg.r, .g = bg.g, .b = bg.b }
+    else
+        overlay_mod.Rgb{ .r = theme_bg.r, .g = theme_bg.g, .b = theme_bg.b };
+    // Tab bg: 20% toward foreground from statusbar bg (slightly lighter)
+    // Active tab number: 35% toward foreground (noticeably lighter)
+    const mix20 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 4 + @as(u16, fg_c)) / 5);
+        }
+    }.m;
+    const mix35 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 13 + @as(u16, fg_c) * 7) / 20);
+        }
+    }.m;
     const sb_style = statusbar_mod.Style{
-        .bg = .{ .r = sb.config.background_r, .g = sb.config.background_g, .b = sb.config.background_b },
+        .bg = sb_bg,
+        .fg = .{ .r = theme_fg.r, .g = theme_fg.g, .b = theme_fg.b },
+        .tab_bg = .{ .r = mix20(sb_bg.r, theme_fg.r), .g = mix20(sb_bg.g, theme_fg.g), .b = mix20(sb_bg.b, theme_fg.b) },
+        .active_tab_bg = .{ .r = mix35(sb_bg.r, theme_fg.r), .g = mix35(sb_bg.g, theme_fg.g), .b = mix35(sb_bg.b, theme_fg.b) },
+        .active_tab_fg = .{ .r = theme_fg.r, .g = theme_fg.g, .b = theme_fg.b },
         .bg_alpha = sb.config.background_opacity,
     };
     // When native tabs are active, hide the tab section in the statusbar.

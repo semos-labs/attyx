@@ -34,6 +34,7 @@ pub const CommandDef = struct {
     scope: Scope,
     mac_hotkey: ?[]const u8,
     linux_hotkey: ?[]const u8,
+    hidden: bool = false, // hide from command palette (for alias keybinds)
 };
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .pane_rotate, .name = "pane_rotate", .description = "Rotate pane contents", .scope = .global, .mac_hotkey = "ctrl+shift+o", .linux_hotkey = "ctrl+shift+o" },
     .{ .action = .pane_zoom_toggle, .name = "pane_zoom_toggle", .description = "Toggle zoom on focused pane", .scope = .global, .mac_hotkey = "cmd+shift+z", .linux_hotkey = "ctrl+shift+z" },
     .{ .action = .copy_mode_enter, .name = "copy_mode", .description = "Enter copy/visual mode", .scope = .global, .mac_hotkey = "ctrl+shift+space", .linux_hotkey = "ctrl+shift+space" },
+    .{ .action = .theme_picker_toggle, .name = "theme_picker", .description = "Pick theme", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     // Tab select by number
     .{ .action = .tab_select_1, .name = "tab_select_1", .description = "Switch to tab 1", .scope = .global, .mac_hotkey = "cmd+1", .linux_hotkey = "alt+1" },
     .{ .action = .tab_select_2, .name = "tab_select_2", .description = "Switch to tab 2", .scope = .global, .mac_hotkey = "cmd+2", .linux_hotkey = "alt+2" },
@@ -98,6 +100,11 @@ pub const registry = [_]CommandDef{
     // Tab reordering
     .{ .action = .tab_move_left, .name = "tab_move_left", .description = "Move tab left", .scope = .global, .mac_hotkey = "cmd+ctrl+shift+left", .linux_hotkey = "ctrl+alt+shift+left" },
     .{ .action = .tab_move_right, .name = "tab_move_right", .description = "Move tab right", .scope = .global, .mac_hotkey = "cmd+ctrl+shift+right", .linux_hotkey = "ctrl+alt+shift+right" },
+    // Font size
+    .{ .action = .font_size_increase, .name = "font_size_increase", .description = "Increase font size", .scope = .global, .mac_hotkey = "cmd+=", .linux_hotkey = "ctrl+=" },
+    .{ .action = .font_size_increase, .name = "font_size_increase_shift", .description = "Increase font size", .scope = .global, .mac_hotkey = "cmd+shift+=", .linux_hotkey = "ctrl+shift+=", .hidden = true },
+    .{ .action = .font_size_decrease, .name = "font_size_decrease", .description = "Decrease font size", .scope = .global, .mac_hotkey = "cmd+-", .linux_hotkey = "ctrl+-" },
+    .{ .action = .font_size_reset, .name = "font_size_reset", .description = "Reset font size", .scope = .global, .mac_hotkey = "cmd+0", .linux_hotkey = "ctrl+0" },
 };
 
 // ---------------------------------------------------------------------------

@@ -80,6 +80,13 @@ pub const TerminalState = struct {
     inject_buf: [512]u8 = undefined,
     inject_len: usize = 0,
 
+    // -- Notification buffer (OSC 9 / OSC 777, consumed by app layer) -------
+    notify_title_buf: [256]u8 = undefined,
+    notify_title_len: usize = 0,
+    notify_body_buf: [512]u8 = undefined,
+    notify_body_len: usize = 0,
+    notify_pending: bool = false,
+
     // -- Scrollback (main screen only, not alt) ------------------------------
     scrollback: scrollback_mod.Scrollback,
     viewport_offset: usize = 0,
@@ -172,7 +179,7 @@ pub const TerminalState = struct {
 
         // Clear wrap_next for cursor-moving actions.
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify => {},
             else => {
                 self.wrap_next = false;
             },
@@ -284,6 +291,7 @@ pub const TerminalState = struct {
             .reset_keypad_app_mode => self.keypad_app_mode = false,
             .query_color => |target| self.respondColorQuery(target),
             .query_palette_color => |idx| self.respondPaletteColorQuery(idx),
+            .notify => |n| self.queueNotification(n.title, n.body),
         }
 
         // Mark old + new cursor rows dirty for cursor overlay movement.
@@ -586,6 +594,27 @@ pub const TerminalState = struct {
         const len = self.inject_len;
         self.inject_len = 0;
         return self.inject_buf[0..len];
+    }
+
+    /// Queue a desktop notification (OSC 9 / OSC 777).
+    fn queueNotification(self: *TerminalState, title: []const u8, body: []const u8) void {
+        const tlen = @min(title.len, self.notify_title_buf.len);
+        const blen = @min(body.len, self.notify_body_buf.len);
+        @memcpy(self.notify_title_buf[0..tlen], title[0..tlen]);
+        self.notify_title_len = tlen;
+        @memcpy(self.notify_body_buf[0..blen], body[0..blen]);
+        self.notify_body_len = blen;
+        self.notify_pending = true;
+    }
+
+    /// Drain a pending notification. Returns title and body slices, resets flag.
+    pub fn drainNotification(self: *TerminalState) ?struct { title: []const u8, body: []const u8 } {
+        if (!self.notify_pending) return null;
+        self.notify_pending = false;
+        return .{
+            .title = self.notify_title_buf[0..self.notify_title_len],
+            .body = self.notify_body_buf[0..self.notify_body_len],
+        };
     }
 
     // -- Graphics (state_graphics.zig) ------------------------------------

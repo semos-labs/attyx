@@ -23,12 +23,15 @@ pub const Icons = struct {
     folder: []const u8 = "\xe2\x96\xb8",
 };
 
+const OverlayTheme = ui.OverlayTheme;
+
 pub fn renderSessionPicker(
     allocator: std.mem.Allocator,
     state: *const SessionPickerState,
     grid_cols: u16,
     grid_rows: u16,
     icons: Icons,
+    theme: OverlayTheme,
 ) !PanelResult {
     // Use arena for transient label allocations (freed after renderPanel)
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -201,8 +204,8 @@ pub fn renderSessionPicker(
         .scroll_offset = 0, // we pre-sliced the items
         .visible_count = state.visible_rows,
         .selected_style = .{
-            .bg = .{ .r = 60, .g = 60, .b = 100 },
-            .fg = .{ .r = 255, .g = 255, .b = 255 },
+            .bg = theme.selected_bg,
+            .fg = theme.selected_fg,
         },
     } };
     const menu_children = [_]Element{menu_inner};
@@ -229,6 +232,7 @@ pub fn renderSessionPicker(
         .width = .{ .percent = 50 },
         .height = .{ .percent = 50 },
         .border = .rounded,
+        .theme = theme,
     };
 
     // renderPanel allocates cells with the provided allocator (not tmp arena)
@@ -250,7 +254,7 @@ test "renderSessionPicker: produces valid result" {
     state.applyFilter();
     state.visible_rows = 10;
 
-    const result = try renderSessionPicker(allocator, &state, 80, 24, .{});
+    const result = try renderSessionPicker(allocator, &state, 80, 24, .{}, .{});
     defer allocator.free(result.cells);
 
     try std.testing.expect(result.width > 0);
@@ -265,7 +269,7 @@ test "renderSessionPicker: empty state still renders" {
     state.applyFilter();
     state.visible_rows = 10;
 
-    const result = try renderSessionPicker(allocator, &state, 80, 24, .{});
+    const result = try renderSessionPicker(allocator, &state, 80, 24, .{}, .{});
     defer allocator.free(result.cells);
 
     try std.testing.expect(result.width > 0);

@@ -153,6 +153,10 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
             c.attyx_toggle_command_palette();
             return 1;
         },
+        .theme_picker_toggle => {
+            c.attyx_toggle_theme_picker();
+            return 1;
+        },
         .session_create => {
             if (c.g_popup_active != 0) {
                 const b = [_]u8{0x0e}; // Ctrl-N byte
@@ -196,6 +200,27 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         .copy_mode_enter => {
             copy_mode.attyx_copy_mode_enter();
+            return 1;
+        },
+        .font_size_increase => {
+            const size = c.g_font_size;
+            if (size < 72) {
+                c.g_font_size = size + 2;
+                c.g_needs_font_rebuild = 1;
+            }
+            return 1;
+        },
+        .font_size_decrease => {
+            const size = c.g_font_size;
+            if (size > 6) {
+                c.g_font_size = size - 2;
+                c.g_needs_font_rebuild = 1;
+            }
+            return 1;
+        },
+        .font_size_reset => {
+            c.g_font_size = c.g_default_font_size;
+            c.g_needs_font_rebuild = 1;
             return 1;
         },
         .send_sequence => {

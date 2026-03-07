@@ -481,6 +481,20 @@ pub const Parser = struct {
         return self.onEscape(byte);
     }
 
+    /// Parse OSC 777 — rxvt/Kitty desktop notification.
+    /// Format: "notify;title;body" or just "notify;body"
+    fn dispatchOsc777(rest: []const u8) Action {
+        const prefix = "notify;";
+        if (rest.len < prefix.len or !std.mem.eql(u8, rest[0..prefix.len], prefix)) return .nop;
+        const after = rest[prefix.len..];
+        // Look for second semicolon separating title from body
+        if (std.mem.indexOfScalar(u8, after, ';')) |sep| {
+            return .{ .notify = .{ .title = after[0..sep], .body = after[sep + 1 ..] } };
+        }
+        // No second semicolon — entire rest is the body
+        return .{ .notify = .{ .title = "", .body = after } };
+    }
+
     fn dispatchOsc7337(rest: []const u8) Action {
         // Format: "write-main;<payload>"
         const write_prefix = "write-main;";
@@ -527,9 +541,13 @@ pub const Parser = struct {
             4 => parseOscPaletteQuery(rest),
             7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
+            // OSC 9 — iTerm2-style notification: ESC]9;body BEL
+            9 => .{ .notify = .{ .title = "", .body = rest } },
             10 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .foreground } else .nop,
             11 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .background } else .nop,
             12 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .cursor } else .nop,
+            // OSC 777 — rxvt/Kitty-style: ESC]777;notify;title;body BEL
+            777 => dispatchOsc777(rest),
             7337 => dispatchOsc7337(rest),
             else => .nop,
         };

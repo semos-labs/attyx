@@ -10,6 +10,8 @@ const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
 const logging = @import("../logging/log.zig");
+const terminal = @import("terminal.zig");
+const c = terminal.c;
 
 pub const Pane = struct {
     engine: Engine,
@@ -100,6 +102,16 @@ pub const Pane = struct {
         self.engine.feed(data);
         if (self.engine.state.drainResponse()) |resp| {
             _ = self.pty.writeToPty(resp) catch {};
+        }
+        if (self.engine.state.drainNotification()) |notif| {
+            // Build null-terminated strings for C
+            var title_buf: [257]u8 = undefined;
+            var body_buf: [513]u8 = undefined;
+            @memcpy(title_buf[0..notif.title.len], notif.title);
+            title_buf[notif.title.len] = 0;
+            @memcpy(body_buf[0..notif.body.len], notif.body);
+            body_buf[notif.body.len] = 0;
+            c.attyx_platform_notify(&title_buf, &body_buf);
         }
     }
 

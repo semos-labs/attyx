@@ -1,0 +1,28 @@
+# Monokai
+# https://monokai.pro
+
+[colors]
+foreground           = "#f8f8f2"
+background           = "#272822"
+cursor               = "#f8f8f0"
+cursor_text          = "#272822"
+selection_background = "#49483e"
+selection_foreground = "#f8f8f2"
+
+[palette]
+0  = "#272822"
+1  = "#f92672"
+2  = "#a6e22e"
+3  = "#f4bf75"
+4  = "#66d9ef"
+5  = "#ae81ff"
+6  = "#a1efe4"
+7  = "#f8f8f2"
+8  = "#75715e"
+9  = "#f92672"
+10 = "#a6e22e"
+11 = "#f4bf75"
+12 = "#66d9ef"
+13 = "#ae81ff"
+14 = "#a1efe4"
+15 = "#f9f8f5"
