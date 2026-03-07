@@ -489,7 +489,7 @@ void attyx_spawn_new_window(void) {
         }
     }
 
-    // Sparkle auto-updater (skipped for Homebrew installs)
+    // Auto-updater (skipped for Homebrew installs)
     attyx_updater_init();
 }
 
