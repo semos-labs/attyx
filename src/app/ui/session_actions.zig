@@ -301,6 +301,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     publish.generateStatusbar(ctx);
     publish.publishOverlays(ctx);
 
+    session_connect.saveLastSession(session_id);
     logging.info("session-picker", "switched to session {d}", .{session_id});
 }
 

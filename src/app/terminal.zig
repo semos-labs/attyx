@@ -20,6 +20,7 @@ const Pty = @import("pty.zig").Pty;
 const layout_codec = @import("layout_codec.zig");
 const SessionLog = @import("session_log.zig").SessionLog;
 const SessionClient = @import("session_client.zig").SessionClient;
+const conn = @import("session_connect.zig");
 const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
 const platform = @import("../platform/platform.zig");
@@ -390,16 +391,27 @@ pub fn run(
                 break :attach_or_create;
             };
             _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
             break :attach_or_create;
         };
 
-        // Look for an alive session to reattach to
+        // Look for an alive session to reattach to — prefer the last-used one.
         var found_alive: ?u32 = null;
-        for (sc.pending_list[0..sc.pending_list_count]) |entry| {
-            if (entry.alive) {
-                found_alive = entry.id;
-                break;
+        if (conn.loadLastSession()) |last_id| {
+            for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+                if (entry.alive and entry.id == last_id) {
+                    found_alive = last_id;
+                    break;
+                }
+            }
+        }
+        if (found_alive == null) {
+            for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+                if (entry.alive) {
+                    found_alive = entry.id;
+                    break;
+                }
             }
         }
 
@@ -414,6 +426,7 @@ pub fn run(
                 };
                 _ = doAttach(sc, new_sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
             }
+            conn.saveLastSession(found_alive.?);
             logging.info("session", "reattached to session {d}", .{found_alive.?});
         } else {
             const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
@@ -423,6 +436,7 @@ pub fn run(
                 break :attach_or_create;
             };
             _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
         }
     }
