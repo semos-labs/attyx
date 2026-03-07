@@ -420,18 +420,117 @@ didCompleteWithError:(NSError *)err {
 @end
 
 // ---------------------------------------------------------------------------
+// Checking window (shown immediately on manual "Check for Updates")
+// ---------------------------------------------------------------------------
+
+@interface AttyxCheckingWindow : NSWindowController
+@property (nonatomic, strong) NSProgressIndicator *spinner;
+@property (nonatomic, strong) NSTextField *titleLabel;
+@property (nonatomic, strong) NSTextField *messageLabel;
+@property (nonatomic, strong) NSImageView *iconView;
+@property (nonatomic, strong) NSButton *actionBtn;
+@end
+
+@implementation AttyxCheckingWindow
+
+- (instancetype)init {
+    NSWindow *win = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 360, 160)
+        styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+        backing:NSBackingStoreBuffered defer:NO];
+    win.title = @"Software Update";
+    win.titlebarAppearsTransparent = YES;
+    win.movableByWindowBackground = YES;
+    [win center];
+    self = [super initWithWindow:win];
+    if (self) [self buildUI];
+    return self;
+}
+
+- (void)buildUI {
+    NSView *v = self.window.contentView;
+    CGFloat w = v.bounds.size.width;
+    CGFloat h = v.bounds.size.height;
+    CGFloat pad = 24;
+    CGFloat iconSize = 64;
+
+    _iconView = [[NSImageView alloc]
+        initWithFrame:NSMakeRect(pad, h - pad - iconSize, iconSize, iconSize)];
+    _iconView.image = [NSApp applicationIconImage];
+    _iconView.imageScaling = NSImageScaleProportionallyUpOrDown;
+    [v addSubview:_iconView];
+
+    CGFloat textX = pad + iconSize + 16;
+    CGFloat textW = w - textX - pad;
+
+    _titleLabel = [NSTextField labelWithString:@"Checking for updates…"];
+    _titleLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    _titleLabel.frame = NSMakeRect(textX, h - pad - 20, textW, 20);
+    [v addSubview:_titleLabel];
+
+    _messageLabel = [NSTextField labelWithString:@""];
+    _messageLabel.font = [NSFont systemFontOfSize:12];
+    _messageLabel.textColor = [NSColor secondaryLabelColor];
+    _messageLabel.frame = NSMakeRect(textX, h - pad - 42, textW, 16);
+    [v addSubview:_messageLabel];
+
+    _spinner = [[NSProgressIndicator alloc]
+        initWithFrame:NSMakeRect(textX, h - pad - 66, 20, 20)];
+    _spinner.style = NSProgressIndicatorStyleSpinning;
+    _spinner.controlSize = NSControlSizeSmall;
+    [_spinner startAnimation:nil];
+    [v addSubview:_spinner];
+
+    _actionBtn = [[NSButton alloc]
+        initWithFrame:NSMakeRect(w - pad - 80, 16, 80, 32)];
+    _actionBtn.title = @"OK";
+    _actionBtn.bezelStyle = NSBezelStyleRounded;
+    _actionBtn.keyEquivalent = @"\r";
+    _actionBtn.target = self;
+    _actionBtn.action = @selector(onOK:);
+    _actionBtn.hidden = YES;
+    [v addSubview:_actionBtn];
+}
+
+- (void)showUpToDate:(NSString *)version {
+    _spinner.hidden = YES;
+    [_spinner stopAnimation:nil];
+    _titleLabel.stringValue = @"You\u2019re up to date!";
+    _messageLabel.stringValue = [NSString stringWithFormat:
+        @"Attyx %@ is currently the newest version available.", version];
+    _actionBtn.hidden = NO;
+}
+
+- (void)showError:(NSString *)msg {
+    _spinner.hidden = YES;
+    [_spinner stopAnimation:nil];
+    _titleLabel.stringValue = @"Update check failed";
+    _messageLabel.stringValue = msg;
+    _messageLabel.textColor = [NSColor secondaryLabelColor];
+    _actionBtn.hidden = NO;
+}
+
+- (void)onOK:(id)sender {
+    [self.window close];
+}
+
+@end
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 static NSString *g_feedURL = nil;
 static AttyxUpdateWindow *g_updateWin = nil;
+static AttyxCheckingWindow *g_checkingWin = nil;
 
 static BOOL isPackageManaged(void) {
     NSString *p = [[NSBundle mainBundle] bundlePath];
     return [p containsString:@"/Caskroom/"] || [p containsString:@"/Cellar/"];
 }
 
-static void doCheck(void) {
+/// Silent check — only shows window if update is available (used for auto-check)
+static void doCheckSilent(void) {
     NSURL *url = [NSURL URLWithString:g_feedURL];
     if (!url) return;
     [[NSURLSession.sharedSession dataTaskWithURL:url completionHandler:
@@ -444,6 +543,50 @@ static void doCheck(void) {
         if (!cur || cmpVersions(cur, item.version) != NSOrderedAscending)
             return;
         dispatch_async(dispatch_get_main_queue(), ^{
+            g_updateWin = [[AttyxUpdateWindow alloc] initWithItem:item];
+            [g_updateWin showWindow:nil];
+            [g_updateWin.window makeKeyAndOrderFront:nil];
+        });
+    }] resume];
+}
+
+/// Interactive check — shows checking window, then result (used for menu action)
+static void doCheckInteractive(void) {
+    NSURL *url = [NSURL URLWithString:g_feedURL];
+
+    // Show checking window immediately
+    g_checkingWin = [[AttyxCheckingWindow alloc] init];
+    [g_checkingWin showWindow:nil];
+    [g_checkingWin.window makeKeyAndOrderFront:nil];
+
+    if (!url) {
+        [g_checkingWin showError:@"No update feed URL configured."];
+        return;
+    }
+
+    [[NSURLSession.sharedSession dataTaskWithURL:url completionHandler:
+      ^(NSData *data, NSURLResponse *resp, NSError *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (err || !data) {
+                NSString *msg = err ? err.localizedDescription
+                                    : @"Could not reach update server.";
+                [g_checkingWin showError:msg];
+                return;
+            }
+            AttyxAppcastItem *item = [[AttyxAppcastParser new] parseData:data];
+            if (!item.version || !item.downloadURL) {
+                [g_checkingWin showError:@"Could not parse update feed."];
+                return;
+            }
+            NSString *cur = [[NSBundle mainBundle]
+                objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+            if (!cur || cmpVersions(cur, item.version) != NSOrderedAscending) {
+                [g_checkingWin showUpToDate:cur ?: @"unknown"];
+                return;
+            }
+            // Update available — close checking window, show update window
+            [g_checkingWin.window close];
+            g_checkingWin = nil;
             g_updateWin = [[AttyxUpdateWindow alloc] initWithItem:item];
             [g_updateWin showWindow:nil];
             [g_updateWin.window makeKeyAndOrderFront:nil];
@@ -472,13 +615,13 @@ void attyx_updater_init(void) {
     }
     if (!g_feedURL) return;
 
-    // Auto-check 5 seconds after launch
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
-        dispatch_get_main_queue(), ^{ doCheck(); });
+    // Always check for updates on launch (small delay for window setup)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{ doCheckSilent(); });
 }
 
 void attyx_updater_check(void) {
-    if (g_feedURL) doCheck();
+    if (g_feedURL) doCheckInteractive();
 }
 
 BOOL attyx_updater_available(void) {
