@@ -34,6 +34,7 @@ pub const FsEntry = struct {
 pub const PickerAction = union(enum) {
     none,
     switch_session: u32,
+    switch_to_default: void,
     create_session: void,
     create_session_at: []const u8,
     kill_session: u32,
@@ -225,6 +226,7 @@ pub const SessionPickerState = struct {
                 self.selected = 0;
                 self.adjustScroll();
             },
+            14 => return .switch_to_default, // Ctrl-D — switch to hidden "default" session
             else => {},
         }
         return .none;
@@ -266,6 +268,8 @@ pub const SessionPickerState = struct {
     pub fn applyFilter(self: *SessionPickerState) void {
         var n: u8 = 0;
         for (0..self.entry_count) |i| {
+            // Hide the "default" session — only accessible via ^D.
+            if (isDefaultName(self.entries[i].getName())) continue;
             if (self.filter_len == 0 or fuzzyMatch(self.entries[i].getName(), self.filter_buf[0..self.filter_len])) {
                 self.filtered_indices[n] = @intCast(i);
                 n += 1;
@@ -334,6 +338,11 @@ fn fuzzyMatch(name: []const u8, query: []const u8) bool {
 
 fn toLower(ch: u8) u8 {
     return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
+}
+
+/// The "default" session is hidden from the picker list.
+fn isDefaultName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "default");
 }
 
 // ---------------------------------------------------------------------------

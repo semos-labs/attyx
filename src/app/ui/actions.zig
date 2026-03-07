@@ -510,20 +510,6 @@ pub fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
         code, ps.pane.pty.stdout_read_fd, publish.ctxEngine(ctx).state.alt_active,
     });
 
-    // Session picker: intercept exit and handle captured stdout
-    if (ctx.session_picker_active) {
-        if (code == 0) {
-            const captured = popup_mod.readCapturedStdout(ctx.allocator, ps.pane.pty.stdout_read_fd);
-            if (captured) |text| {
-                defer ctx.allocator.free(text);
-                session_actions.handleSessionPickerResult(ctx, text);
-            }
-        }
-        ctx.session_picker_active = false;
-        closePopup(ctx);
-        return;
-    }
-
     // Close on success (0) or user cancellation (130 = 128+SIGINT, 1 = fzf Esc).
     // Only run on_return_cmd for exit code 0 with captured output.
     if (code == 0 or code == 1 or code == 130) {

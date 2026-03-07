@@ -1,7 +1,6 @@
-/// Session picker lifecycle — popup-based session switching, creation, and killing.
+/// Session picker lifecycle — session switching, creation, and killing.
 const std = @import("std");
 const logging = @import("../../logging/log.zig");
-const popup_mod = @import("../popup.zig");
 const split_layout_mod = @import("../split_layout.zig");
 const layout_codec = @import("../layout_codec.zig");
 const SessionClient = @import("../session_client.zig").SessionClient;
@@ -13,14 +12,6 @@ const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 const statusbar = @import("../statusbar.zig");
-
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-
-fn setenvSlice(allocator: std.mem.Allocator, name: [*:0]const u8, value: []const u8) void {
-    const z = allocator.dupeZ(u8, value) catch return;
-    defer allocator.free(z);
-    _ = setenv(name, z, 1);
-}
 
 // ---------------------------------------------------------------------------
 // Layout persistence
@@ -84,131 +75,6 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
 
     if (count > 0) {
         sc.sendFocusPanes(pane_ids[0..count]) catch {};
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Session picker (popup-based)
-// ---------------------------------------------------------------------------
-
-/// Spawn the session picker popup via `attyx _session-picker`.
-pub fn spawnSessionPicker(ctx: *PtyThreadCtx) void {
-    // Close existing popup if any
-    if (ctx.popup_state != null) actions.closePopup(ctx);
-
-    // Resolve attyx executable path
-    var exe_buf: [1024]u8 = undefined;
-    const exe_path = session_connect.getExePath(&exe_buf) orelse "attyx";
-
-    // Build command: "<exe> _session-picker"
-    var cmd_buf: [1100]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "{s} _session-picker", .{exe_path}) catch return;
-
-    const cfg = popup_mod.PopupConfig{
-        .command = cmd,
-        .width_pct = 50,
-        .height_pct = 50,
-        .border_style = .rounded,
-        .border_fg = .{ 80, 80, 120 },
-        .capture_stdout = true,
-        .direct_exec = true,
-        .pad = .{ .top = 0, .bottom = 0, .left = 1, .right = 1 },
-        .bg_color = .{ 20, 20, 30 },
-        .bg_opacity = 230,
-    };
-
-    const grid_cols: u16 = ctx.grid_cols;
-    const grid_rows: u16 = ctx.grid_rows;
-    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
-    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
-    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
-
-    var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
-
-    // Set env vars for the picker before spawn
-    // ATTYX_SESSION_ID tells the picker which session is current
-    if (ctx.session_client) |sc| {
-        if (sc.attached_session_id) |sid| {
-            var sid_buf: [16]u8 = undefined;
-            const sid_str = std.fmt.bufPrint(&sid_buf, "{d}", .{sid}) catch "";
-            if (sid_str.len > 0) {
-                const sid_z = ctx.allocator.dupeZ(u8, sid_str) catch null;
-                if (sid_z) |z| {
-                    defer ctx.allocator.free(z);
-                    _ = setenv("ATTYX_SESSION_ID", z, 1);
-                }
-            }
-        }
-    }
-    // ATTYX_PICKER_CWD tells the picker what CWD to use for "create"
-    if (resolved.cwd) |cwd| {
-        const cwd_z = ctx.allocator.dupeZ(u8, cwd) catch null;
-        if (cwd_z) |z| {
-            defer ctx.allocator.free(z);
-            _ = setenv("ATTYX_PICKER_CWD", z, 1);
-        }
-    }
-
-    // Pass icon config to the picker subprocess
-    setenvSlice(ctx.allocator, "ATTYX_ICON_FILTER", ctx.session_icon_filter);
-    setenvSlice(ctx.allocator, "ATTYX_ICON_SESSION", ctx.session_icon_session);
-    setenvSlice(ctx.allocator, "ATTYX_ICON_NEW", ctx.session_icon_new);
-    setenvSlice(ctx.allocator, "ATTYX_ICON_ACTIVE", ctx.session_icon_active);
-    setenvSlice(ctx.allocator, "ATTYX_ICON_RECENT", ctx.session_icon_recent);
-
-    // Pass cursor config — DECSCUSR value: block=1/2, underline=3/4, bar=5/6 (odd=blink)
-    {
-        const base: u8 = switch (ctx.applied_cursor_shape) {
-            .block => 1,
-            .underline => 3,
-            .beam => 5,
-        };
-        const decscusr = if (ctx.applied_cursor_blink) base else base + 1;
-        var cbuf: [4]u8 = undefined;
-        const cstr = std.fmt.bufPrint(&cbuf, "{d}", .{decscusr}) catch "1";
-        setenvSlice(ctx.allocator, "ATTYX_CURSOR_STYLE", cstr);
-    }
-
-    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, grid_cols, grid_rows, resolved.cwd, null) catch |err| {
-        logging.err("session-picker", "spawn failed: {}", .{err});
-        ctx.allocator.destroy(ps);
-        return;
-    };
-    ps.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-    ps.config_index = 0;
-    ctx.popup_state = ps;
-    ctx.session_picker_active = true;
-    terminal.g_popup_pty_master = ps.pane.pty.master;
-    terminal.g_popup_engine = &ps.pane.engine;
-    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
-    ps.publishCells(&ctx.active_theme, cfg);
-    ps.publishImagePlacements(cfg);
-    logging.info("session-picker", "spawned", .{});
-}
-
-/// Handle the result from the session picker popup.
-/// The picker prefixes output with 0x1F (Unit Separator) so we can locate it
-/// even when `$SHELL -i -c '...'` shell init scripts prepend noise to stdout.
-pub fn handleSessionPickerResult(ctx: *PtyThreadCtx, text: []const u8) void {
-    logging.info("session-picker", "result: \"{s}\"", .{text});
-
-    // Find the marker — everything after it is the picker's actual output.
-    const cmd = if (std.mem.lastIndexOfScalar(u8, text, 0x1F)) |idx|
-        text[idx + 1 ..]
-    else
-        text; // fallback: no marker (shouldn't happen but be safe)
-
-    if (std.mem.startsWith(u8, cmd, "switch ")) {
-        const id_str = std.mem.trimRight(u8, cmd["switch ".len..], "\r\n ");
-        const id = std.fmt.parseInt(u32, id_str, 10) catch return;
-        doSessionSwitch(ctx, id);
-    } else if (std.mem.startsWith(u8, cmd, "create ")) {
-        const cwd = std.mem.trimRight(u8, cmd["create ".len..], "\r\n ");
-        doSessionCreate(ctx, cwd);
-    } else if (std.mem.startsWith(u8, cmd, "kill ")) {
-        const id_str = std.mem.trimRight(u8, cmd["kill ".len..], "\r\n ");
-        const id = std.fmt.parseInt(u32, id_str, 10) catch return;
-        doSessionKill(ctx, id);
     }
 }
 
@@ -395,6 +261,27 @@ pub fn handleLayoutSync(ctx: *PtyThreadCtx, layout_data: []const u8) void {
     publish.publishOverlays(ctx);
 
     logging.info("layout-sync", "synced layout from another window", .{});
+}
+
+/// Switch to the hidden "default" session, creating it if needed.
+pub fn doSwitchToDefault(ctx: *PtyThreadCtx) void {
+    const sc = ctx.session_client orelse return;
+
+    // Look for an existing alive "default" session.
+    sc.requestListSync(2000) catch return;
+    for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+        if (entry.alive and std.mem.eql(u8, entry.getName(), "default")) {
+            doSessionSwitch(ctx, entry.id);
+            return;
+        }
+    }
+
+    // No alive "default" session — create one and rename it.
+    const home = std.posix.getenv("HOME") orelse "/tmp";
+    doSessionCreate(ctx, home);
+    if (sc.attached_session_id) |sid| {
+        sc.renameSession(sid, "default") catch {};
+    }
 }
 
 pub fn doSessionKill(ctx: *PtyThreadCtx, session_id: u32) void {

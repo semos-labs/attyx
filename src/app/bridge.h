@@ -214,7 +214,7 @@ void attyx_toggle_command_palette(void);
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
 void attyx_picker_insert_char(uint32_t codepoint);
-void attyx_picker_cmd(int cmd);  // 1=bs 7=esc 8=enter 9=up 10=down 11=ctrl_r 12=ctrl_x 13=ctrl_u
+void attyx_picker_cmd(int cmd);  // 1=bs 7=esc 8=enter 9=up 10=down 11=ctrl_r 12=ctrl_x 13=ctrl_u 14=ctrl_d
 
 // ---------------------------------------------------------------------------
 // Config reload
