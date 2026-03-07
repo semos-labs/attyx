@@ -445,9 +445,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             if (fds[si].revents & (POLLIN | POLLHUP) != 0) {
                 if (ctx.session_client) |sc| {
                     if (!sc.recvData()) {
-                        // Daemon disconnected — reset to fresh local PTY
+                        // Daemon disconnected — reconnect or fall back.
+                        // Must restart the loop: tab_mgr, fds, and
+                        // active_focused_pane are all potentially stale.
                         handleDaemonDeath(ctx);
-                        got_data = true;
+                        continue :outer;
                     } else {
                         while (sc.readMessage()) |msg| {
                             switch (msg) {
@@ -758,6 +760,9 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
                 ctx.session_client = heap_sc;
                 terminal.g_session_client = heap_sc;
                 sess_connect.setNonBlocking(heap_sc.socket_fd);
+                // Reconstruct tabs from the daemon's layout blob so pane IDs
+                // match the (potentially remapped) state after hot-upgrade.
+                reconstructTabsFromDaemon(ctx, heap_sc, pty_rows);
                 session_actions.sendActiveFocusPanes(ctx);
                 actions.g_force_full_redraw = true;
                 logging.info("daemon", "soft reconnect successful", .{});
@@ -800,6 +805,55 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     // Reconnect failed — fall back to local PTY
     logging.warn("daemon", "soft reconnect failed, falling back to local PTY", .{});
     hardResetToLocalPty(ctx);
+}
+
+/// Reconstruct the tab manager from the daemon's layout blob after reconnect.
+/// This ensures daemon_pane_ids match the (potentially remapped) daemon state
+/// and that the correct active tab is restored.
+fn reconstructTabsFromDaemon(
+    ctx: *PtyThreadCtx,
+    sc: *@import("../session_client.zig").SessionClient,
+    pty_rows: u16,
+) void {
+    const layout_codec = @import("../layout_codec.zig");
+
+    if (sc.layout_len == 0) return;
+
+    const info = layout_codec.deserialize(sc.layout_buf[0..sc.layout_len]) catch {
+        logging.warn("daemon", "reconnect: layout deserialization failed", .{});
+        return;
+    };
+    if (info.tab_count == 0) return;
+
+    // Reset AFTER validating the layout to avoid leaving tab_mgr empty on error.
+    ctx.tab_mgr.reset();
+    ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
+        logging.err("daemon", "reconnect: layout reconstruction failed, creating fallback pane", .{});
+        // Reconstruction failed — tab_mgr is empty after reset(). Create a
+        // single fallback pane so activePane() doesn't crash.
+        const Pane = @import("../pane.zig").Pane;
+        const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
+        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
+            ctx.tab_mgr.allocator.destroy(pane);
+            return;
+        };
+        ctx.tab_mgr.tabs[0] = split_layout_mod.SplitLayout.init(pane);
+        ctx.tab_mgr.count = 1;
+        ctx.tab_mgr.active = 0;
+    };
+    if (ctx.tab_mgr.count == 0) return;
+
+    // Update terminal globals for the new active pane
+    const active_pane = ctx.tab_mgr.activePane();
+    terminal.g_engine = &active_pane.engine;
+    terminal.g_pty_master = active_pane.pty.master;
+    terminal.g_active_daemon_pane_id = active_pane.daemon_pane_id orelse 0;
+
+    // Push theme colors to all reconstructed engines
+    publish.publishThemeToEngines(ctx);
+    actions.updateSplitActive(ctx);
+
+    logging.info("daemon", "reconstructed {d} tab(s) from daemon layout", .{ctx.tab_mgr.count});
 }
 
 /// Create a new session on the daemon after reconnect, set up tab/pane, and
