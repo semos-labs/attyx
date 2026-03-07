@@ -109,17 +109,10 @@ void linux_rebuild_font(void) {
 // Draw frame (main render loop body)
 // ---------------------------------------------------------------------------
 int drawFrame(void) {
-    static int dbg_count = 0;
-    if (!g_cells || g_cols <= 0 || g_rows <= 0) {
-        if (dbg_count < 20) { fprintf(stderr, "[drawFrame] early: cells=%p cols=%d rows=%d\n", (void*)g_cells, g_cols, g_rows); dbg_count++; }
-        return 0;
-    }
+    if (!g_cells || g_cols <= 0 || g_rows <= 0) return 0;
 
     uint64_t gen1 = g_cell_gen;
-    if (gen1 & 1) {
-        if (dbg_count < 20) { fprintf(stderr, "[drawFrame] odd gen=%lu\n", (unsigned long)gen1); dbg_count++; }
-        return 0;
-    }
+    if (gen1 & 1) return 0;
 
     int rows = g_rows;
     int cols = g_cols;
@@ -186,17 +179,6 @@ int drawFrame(void) {
             glfwSetWindowTitle(g_window, tbuf);
         }
         g_title_changed = 0;
-    }
-
-    if (dbg_count < 20) {
-        fprintf(stderr, "[drawFrame] gen=%lu full=%d dirty=%d cursor=%d blink=%d rows=%d cols=%d\n",
-                (unsigned long)gen1, g_full_redraw, dirtyAny(dirty), cursorChanged, isBlinking, rows, cols);
-        // Check if cells have any non-zero characters
-        int has_content = 0;
-        for (int i = 0; i < total && !has_content; i++)
-            if (g_cells[i].character > 32) has_content = 1;
-        fprintf(stderr, "[drawFrame] has_content=%d cell[0].char=%u\n", has_content, (unsigned)g_cells[0].character);
-        dbg_count++;
     }
 
     if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !g_popup_trail_active && !overlayChanged && !popupChanged) return 0;

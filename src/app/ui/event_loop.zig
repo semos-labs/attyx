@@ -107,28 +107,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Poll in short bursts: the shell may need a DA1 response (written
         // back from pane.feed → drainResponse → writeToPty) before it sends
         // the prompt, so we iterate to allow that round-trip.
-        var startup_total_bytes: usize = 0;
-        var startup_polls: usize = 0;
         for (0..20) |_| {
             startup_fds[0].revents = 0;
             _ = posix.poll(&startup_fds, 50) catch break;
-            startup_polls += 1;
             if (startup_fds[0].revents & POLLIN == 0) break;
             while (true) {
                 const sn = startup_pane.pty.read(&buf) catch break;
                 if (sn == 0) break;
-                startup_total_bytes += sn;
                 ctx.session.appendOutput(buf[0..sn]);
                 ctx.throughput.add(sn);
                 startup_pane.feed(buf[0..sn]);
             }
         }
-        logging.info("startup", "drain: {d} polls, {d} bytes, cursor=({d},{d})", .{
-            startup_polls,
-            startup_total_bytes,
-            startup_pane.engine.state.cursor.row,
-            startup_pane.engine.state.cursor.col,
-        });
         // Publish whatever the engine has to the cell buffer.
         {
             const eng = &startup_pane.engine;
@@ -431,24 +421,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Shorten poll timeout when there's still pending paste data so we
         // drain it promptly instead of waiting the full 16ms.
         const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
-        const poll_ret = posix.poll(fds[0..nfds], poll_timeout) catch break;
-
-        {
-            const dbg_counter = struct {
-                var n: u32 = 0;
-            };
-            if (dbg_counter.n < 10) {
-                var revs: i16 = 0;
-                if (nfds > 0) revs = @bitCast(fds[0].revents);
-                logging.info("poll", "nfds={d} ret={d} revents=0x{x} fd={d}", .{
-                    nfds,
-                    poll_ret,
-                    @as(u16, @bitCast(revs)),
-                    if (nfds > 0) fds[0].fd else @as(i32, -1),
-                });
-                dbg_counter.n += 1;
-            }
-        }
+        _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
 
         const active_focused_pane = ctx.tab_mgr.activePane();
 
