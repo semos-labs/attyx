@@ -12,7 +12,6 @@ rm -rf "$APP"
 
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
-mkdir -p "$APP/Contents/Frameworks"
 
 # Binary
 cp zig-out/bin/attyx "$APP/Contents/MacOS/attyx"
@@ -37,12 +36,6 @@ if [ -f images/Attyx.png ]; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Attyx.icns"
   rm -rf "$(dirname "$ICONSET")"
   echo "Icon: OK"
-fi
-
-# Bundle Sparkle.framework
-if [ -d vendor/Sparkle.framework ]; then
-  cp -a vendor/Sparkle.framework "$APP/Contents/Frameworks/"
-  echo "Sparkle: OK"
 fi
 
 # Ad-hoc sign (no Apple Developer account needed)

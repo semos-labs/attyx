@@ -1,7 +1,6 @@
-// Attyx — Custom auto-update (macOS)
-// Lightweight updater that replaces Sparkle. Uses codesign verification
-// and in-place replacement to avoid the App Management permission prompt.
-// Reads the Sparkle-format appcast feed for version/download info.
+// Attyx — Auto-update (macOS)
+// Uses codesign verification and in-place replacement to avoid the
+// App Management permission prompt. Reads the appcast feed for version info.
 // Skipped entirely when the app is installed via Homebrew Cask.
 // Set ATTYX_FEED_URL env var to override the feed URL (useful for testing).
 
@@ -421,7 +420,7 @@ didCompleteWithError:(NSError *)err {
 @end
 
 // ---------------------------------------------------------------------------
-// Public API (same interface as old Sparkle-based updater)
+// Public API
 // ---------------------------------------------------------------------------
 
 static NSString *g_feedURL = nil;

@@ -93,15 +93,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "bundle_version=$BUNDLE_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download Sparkle signatures from release
-        run: |
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPO" \
-            --pattern "sparkle-signature-*.txt" \
-            --dir signatures
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Download macOS release zips
         run: |
           gh release download "$RELEASE_TAG" \
@@ -113,8 +104,6 @@ jobs:
 
       - name: Generate appcast XML files
         run: |
-          ARM64_SIG=$(cat signatures/sparkle-signature-darwin-arm64.txt)
-          X64_SIG=$(cat signatures/sparkle-signature-darwin-x64.txt)
           ARM64_SIZE=$(stat -c%s assets/attyx-darwin-arm64.zip)
           X64_SIZE=$(stat -c%s assets/attyx-darwin-x64.zip)
           VERSION="${{ steps.version.outputs.version }}"
@@ -139,7 +128,6 @@ jobs:
                   url="${DOWNLOAD_BASE}/attyx-darwin-arm64.zip"
                   sparkle:version="${BUNDLE_VERSION}"
                   sparkle:shortVersionString="${VERSION}"
-                  sparkle:edSignature="${ARM64_SIG}"
                   length="${ARM64_SIZE}"
                   type="application/octet-stream" />
               </item>
@@ -164,7 +152,6 @@ jobs:
                   url="${DOWNLOAD_BASE}/attyx-darwin-x64.zip"
                   sparkle:version="${BUNDLE_VERSION}"
                   sparkle:shortVersionString="${VERSION}"
-                  sparkle:edSignature="${X64_SIG}"
                   length="${X64_SIZE}"
                   type="application/octet-stream" />
               </item>
