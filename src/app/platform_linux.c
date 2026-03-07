@@ -415,20 +415,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // busy-spinning with glfwPollEvents.  The PTY thread wakes us via
     // glfwPostEmptyEvent (called from attyx_end_cell_update / attyx_mark_all_dirty).
     // Timeout of 0.5s ensures cursor blink updates even when fully idle.
-    //
-    // Warmup: The PTY thread may produce the initial shell prompt before g_window
-    // is set, causing glfwPostEmptyEvent calls to be silently dropped.  Use a
-    // short timeout and force full redraws for the first ~500ms so the prompt
-    // appears as soon as the PTY thread makes it available.
-    int warmup_frames = 10;
     while (!glfwWindowShouldClose(g_window) && !g_should_quit) {
-        if (warmup_frames > 0) {
-            glfwWaitEventsTimeout(0.05);
-            g_full_redraw = 1;
-            warmup_frames--;
-        } else {
-            glfwWaitEventsTimeout(0.5);
-        }
+        glfwWaitEventsTimeout(0.5);
         if (g_needs_font_rebuild) {
             g_needs_font_rebuild = 0;
             linux_rebuild_font();

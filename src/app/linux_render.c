@@ -189,7 +189,12 @@ int drawFrame(void) {
         return 0;
 
     uint64_t gen2 = g_cell_gen;
-    if (gen1 != gen2) return 0;
+    if (gen1 != gen2) {
+        // Torn read — restore dirty bits so the next frame re-reads.
+        for (int i = 0; i < 4; i++)
+            __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], dirty[i]);
+        return 0;
+    }
 
     AttyxCell* cells = g_cell_snapshot;
     float gw = g_gc.glyph_w;
