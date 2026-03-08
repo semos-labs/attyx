@@ -401,6 +401,21 @@ pub fn run(
             break :attach_or_create;
         };
 
+        // When -d / --working-directory is explicitly set, always create a
+        // fresh session in that directory instead of reattaching to an existing one.
+        if (config.working_directory != null) {
+            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
+                logging.err("session", "create session failed: {}", .{err});
+                sc.deinit();
+                session_client = null;
+                break :attach_or_create;
+            };
+            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            conn.saveLastSession(sid);
+            logging.info("session", "created new session {d} for working directory", .{sid});
+            break :attach_or_create;
+        }
+
         // Look for an alive session to reattach to — prefer the last-used one.
         // Skip the "default" session (hidden/detached, only accessible via ^D).
         var found_alive: ?u32 = null;
