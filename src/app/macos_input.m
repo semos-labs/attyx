@@ -356,6 +356,15 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             }
         }
     }
+    // Shift-click extends existing selection
+    if ((event.modifierFlags & NSEventModifierFlagShift) && g_sel_active) {
+        g_sel_end_row = row;
+        g_sel_end_col = col;
+        _selecting = YES;
+        attyx_mark_all_dirty();
+        return;
+    }
+
     _clickCount = (int)event.clickCount;
 
     if (_clickCount >= 3) {
@@ -706,10 +715,6 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         int lines = (int)dy;
         if (lines == 0) lines = (dy > 0) ? 1 : -1;
         attyx_scroll_viewport(lines);
-    }
-    if (g_sel_active) {
-        g_sel_active = 0;
-        attyx_mark_all_dirty();
     }
 }
 

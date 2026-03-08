@@ -6,8 +6,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const posix = std.posix;
 const keybinds = @import("../../config/keybinds.zig");
 const Action = keybinds.Action;
+const platform = @import("../../platform/platform.zig");
 
 const terminal = @import("../terminal.zig");
 const c = terminal.c;
@@ -28,6 +30,17 @@ extern fn attyx_platform_paste() void;
 /// Dispatch a keybind action. Returns 1 if consumed, 0 if key should pass through.
 pub export fn attyx_dispatch_action(action_raw: u8) u8 {
     const action: Action = @enumFromInt(action_raw);
+
+    // Clear mouse selection on any action except copy and scroll
+    if (c.g_sel_active != 0 and c.g_copy_mode == 0) {
+        switch (action) {
+            .copy, .scroll_page_up, .scroll_page_down, .scroll_to_top, .scroll_to_bottom => {},
+            else => {
+                c.g_sel_active = 0;
+                c.attyx_mark_all_dirty();
+            },
+        }
+    }
 
     // Popup toggle range
     if (action.popupIndex()) |idx| {
@@ -223,6 +236,10 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
             c.g_needs_font_rebuild = 1;
             return 1;
         },
+        .open_config => {
+            openConfigInEditor();
+            return 1;
+        },
         .send_sequence => {
             if (c.g_keybind_matched_seq_len > 0) {
                 const seq = c.g_keybind_matched_seq;
@@ -237,4 +254,49 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         else => return 0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Open config file in $EDITOR
+// ---------------------------------------------------------------------------
+
+extern fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+extern fn _exit(status: c_int) noreturn;
+
+fn openConfigInEditor() void {
+    const editor = std.posix.getenv("EDITOR") orelse
+        std.posix.getenv("VISUAL") orelse "vi";
+
+    // Build config file path
+    const home = std.posix.getenv("HOME") orelse return;
+    const xdg = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
+    var path_buf: [512]u8 = undefined;
+    const config_path = if (xdg.len > 0)
+        std.fmt.bufPrintZ(&path_buf, "{s}/attyx/attyx.toml", .{xdg}) catch return
+    else
+        std.fmt.bufPrintZ(&path_buf, "{s}/.config/attyx/attyx.toml", .{home}) catch return;
+
+    // Ensure the config file exists (create empty if missing)
+    if (std.fs.accessAbsolute(config_path, .{})) {} else |_| {
+        if (std.mem.lastIndexOfScalar(u8, config_path, '/')) |i| {
+            std.fs.makeDirAbsolute(config_path[0..i]) catch {};
+        }
+        const f = std.fs.createFileAbsolute(config_path, .{ .exclusive = true }) catch null;
+        if (f) |file| file.close();
+    }
+
+    // Double-fork to avoid zombie
+    const pid = posix.fork() catch return;
+    if (pid == 0) {
+        const pid2 = posix.fork() catch posix.abort();
+        if (pid2 == 0) {
+            var editor_buf: [256]u8 = undefined;
+            const editor_z = std.fmt.bufPrintZ(&editor_buf, "{s}", .{editor}) catch posix.abort();
+            const argv = [_]?[*:0]const u8{ editor_z, config_path, null };
+            _ = execvp(editor_z, &argv);
+            posix.abort();
+        }
+        _exit(0);
+    }
+    _ = posix.waitpid(pid, 0);
 }

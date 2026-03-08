@@ -38,10 +38,21 @@ pub fn connectToSocket() !posix.fd_t {
     return error.DaemonConnectFailed;
 }
 
-pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
+/// Build a path under the attyx state directory.
+/// Uses XDG_STATE_HOME if set, otherwise ~/.local/state/attyx.
+/// `name` must contain one `{s}` placeholder for the dev-mode suffix.
+pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
+    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
+        if (sh.len > 0)
+            return std.fmt.bufPrint(buf, "{s}/attyx/" ++ name, .{ sh, suffix }) catch null;
+    }
+    const home = std.posix.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/" ++ name, .{ home, suffix }) catch null;
+}
+
+pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
+    return statePath(buf, "sessions{s}.sock");
 }
 
 fn probeAlive(fd: posix.fd_t) bool {
@@ -102,9 +113,7 @@ pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
 }
 
 pub fn getLastSessionPath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/last-session{s}", .{ home, suffix }) catch null;
+    return statePath(buf, "last-session{s}");
 }
 
 pub fn saveLastSession(session_id: u32) void {
@@ -126,6 +135,70 @@ pub fn loadLastSession() ?u32 {
     const n = file.read(&buf) catch return null;
     if (n == 0) return null;
     return std.fmt.parseInt(u32, buf[0..n], 10) catch null;
+}
+
+// ── One-time migration: move runtime files from config dir to state dir ──
+
+/// Migrate runtime files from ~/.config/attyx/ to the XDG state directory.
+/// Idempotent — silently skips files that don't exist or already moved.
+pub fn migrateToStateDir() void {
+    // Only release builds migrate — dev builds must not move files
+    // that the production app still expects in the old location.
+    if (comptime @import("builtin").mode == .Debug) return;
+
+    const home = std.posix.getenv("HOME") orelse return;
+    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+
+    // Old location: config dir
+    var old_buf: [256]u8 = undefined;
+    const old_dir = blk: {
+        const xdg = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
+        if (xdg.len > 0)
+            break :blk std.fmt.bufPrint(&old_buf, "{s}/attyx", .{xdg}) catch return;
+        break :blk std.fmt.bufPrint(&old_buf, "{s}/.config/attyx", .{home}) catch return;
+    };
+
+    // New location: state dir
+    var new_buf: [256]u8 = undefined;
+    const new_dir = blk: {
+        const xdg = std.posix.getenv("XDG_STATE_HOME") orelse "";
+        if (xdg.len > 0)
+            break :blk std.fmt.bufPrint(&new_buf, "{s}/attyx", .{xdg}) catch return;
+        break :blk std.fmt.bufPrint(&new_buf, "{s}/.local/state/attyx", .{home}) catch return;
+    };
+
+    // Ensure state dir exists (create parent + dir)
+    if (std.mem.lastIndexOfScalar(u8, new_dir, '/')) |i| {
+        std.fs.makeDirAbsolute(new_dir[0..i]) catch {};
+    }
+    std.fs.makeDirAbsolute(new_dir) catch {};
+
+    // Move each runtime file
+    const files = [_][]const u8{
+        "sessions" ++ suffix ++ ".sock",
+        "last-session" ++ suffix,
+        "daemon" ++ suffix ++ ".version",
+        "upgrade" ++ suffix ++ ".bin",
+        "auth.json",
+    };
+    for (files) |name| {
+        moveFile(old_dir, new_dir, name);
+    }
+
+    // macOS: also migrate recent.json from ~/Library/Application Support/attyx/
+    if (comptime @import("builtin").os.tag == .macos) {
+        var macos_buf: [512]u8 = undefined;
+        const macos_dir = std.fmt.bufPrint(&macos_buf, "{s}/Library/Application Support/attyx", .{home}) catch return;
+        moveFile(macos_dir, new_dir, "recent" ++ suffix ++ ".json");
+    }
+}
+
+fn moveFile(old_dir: []const u8, new_dir: []const u8, name: []const u8) void {
+    var src_buf: [512]u8 = undefined;
+    var dst_buf: [512]u8 = undefined;
+    const src = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ old_dir, name }) catch return;
+    const dst = std.fmt.bufPrint(&dst_buf, "{s}/{s}", .{ new_dir, name }) catch return;
+    std.fs.renameAbsolute(src, dst) catch {};
 }
 
 pub fn setNonBlocking(fd: posix.fd_t) void {

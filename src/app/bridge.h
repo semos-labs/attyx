@@ -52,6 +52,9 @@ void attyx_clear_screen(void);
 // Copy text to system clipboard (callable from any thread).
 void attyx_clipboard_copy(const char* text, int len);
 
+// Copy the current mouse selection to clipboard (scrollback-aware).
+void attyx_copy_selection(void);
+
 // Handle a key event from the platform layer. Encodes using xterm or Kitty
 // protocol depending on terminal state, then writes to PTY.
 // key: KeyCode enum value, mods: modifier bitmask (bit0=shift,1=alt,2=ctrl,3=super),

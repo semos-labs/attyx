@@ -689,6 +689,16 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                 }
             }
 
+            // Shift-click extends existing selection
+            if ((mods & GLFW_MOD_SHIFT) && g_sel_active) {
+                g_sel_end_row = row;
+                g_sel_end_col = col;
+                g_selecting = 1;
+                g_left_down = 1;
+                attyx_mark_all_dirty();
+                return;
+            }
+
             double now = glfwGetTime();
             if (now - g_last_click_time < 0.35 && col == g_last_click_col && row == g_last_click_row)
                 g_click_count++;
@@ -991,7 +1001,6 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
         if (attyx_overlay_scroll(col, row, lines)) return;
     }
     attyx_scroll_viewport(lines);
-    if (g_sel_active) { g_sel_active = 0; attyx_mark_all_dirty(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -999,71 +1008,7 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
 // ---------------------------------------------------------------------------
 
 void attyx_platform_copy(void) {
-    if (!g_sel_active || !g_window) return;
-
-    int sr = g_sel_start_row, sc = g_sel_start_col;
-    int er = g_sel_end_row, ec = g_sel_end_col;
-    if (sr > er || (sr == er && sc > ec)) {
-        int tr = sr, tc = sc; sr = er; sc = ec; er = tr; ec = tc;
-    }
-
-    int cols = g_cols, rows = g_rows;
-    if (cols <= 0 || rows <= 0) return;
-
-    uint64_t gen;
-    do { gen = g_cell_gen; } while (gen & 1);
-
-    if (sr < 0) { sr = 0; sc = 0; }
-    if (er >= rows) { er = rows - 1; ec = cols - 1; }
-
-    int maxlen = (er - sr + 1) * (cols * 12 + 1) + 1;
-    char* buf = (char*)malloc(maxlen);
-    if (!buf) return;
-    int pos = 0;
-
-    for (int row = sr; row <= er && row < rows; row++) {
-        int cStart = (row == sr) ? sc : 0;
-        int cEnd = (row == er) ? ec : cols - 1;
-        if (cStart >= cols) cStart = cols - 1;
-        if (cEnd >= cols) cEnd = cols - 1;
-
-        int lastNonSpace = cStart - 1;
-        for (int c = cEnd; c >= cStart; c--) {
-            uint32_t ch = g_cells[row * cols + c].character;
-            if (ch > 32) { lastNonSpace = c; break; }
-        }
-
-        for (int c = cStart; c <= lastNonSpace; c++) {
-            int idx = row * cols + c;
-            uint32_t ch = g_cells[idx].character;
-            if (ch == 0 || ch == ' ') {
-                buf[pos++] = ' ';
-            } else {
-                uint8_t utf8[4];
-                int n = utf8Encode(ch, utf8);
-                memcpy(buf + pos, utf8, n);
-                pos += n;
-                // Append combining marks
-                for (int k = 0; k < 2; k++) {
-                    uint32_t cm = g_cells[idx].combining[k];
-                    if (cm == 0) break;
-                    n = utf8Encode(cm, utf8);
-                    memcpy(buf + pos, utf8, n);
-                    pos += n;
-                }
-            }
-        }
-        if (row < er && !g_row_wrapped[row]) buf[pos++] = '\n';
-    }
-
-    buf[pos] = '\0';
-    if (pos > 0) {
-        clipboardCopy(buf);
-        ATTYX_LOG_DEBUG("clipboard", "copy: %d bytes from selection", pos);
-    } else {
-        ATTYX_LOG_DEBUG("clipboard", "copy: selection was empty");
-    }
-    free(buf);
+    attyx_copy_selection();
 }
 
 // ---------------------------------------------------------------------------

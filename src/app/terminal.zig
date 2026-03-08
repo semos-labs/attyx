@@ -39,6 +39,7 @@ const ai = @import("ui/ai.zig");
 const event_loop = @import("ui/event_loop.zig");
 const dispatch = @import("ui/dispatch.zig");
 const copy_mode = @import("ui/copy_mode.zig");
+const selection = @import("ui/selection.zig");
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
@@ -190,6 +191,7 @@ comptime {
     _ = &copy_mode.g_copy_search_buf;
     _ = &copy_mode.g_copy_search_len;
     _ = &copy_mode.g_copy_search_dirty;
+    _ = &selection.attyx_copy_selection;
 }
 
 // ---------------------------------------------------------------------------

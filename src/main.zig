@@ -6,6 +6,7 @@ const terminal = @import("app/terminal.zig");
 const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
 const daemon = @import("app/daemon/daemon.zig");
+const session_connect = @import("app/session_connect.zig");
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
     "https://app.semos.sh"
@@ -17,7 +18,11 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
+    // Migrate runtime files from config dir to state dir (one-time, idempotent).
+    session_connect.migrateToStateDir();
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

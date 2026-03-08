@@ -102,11 +102,11 @@ pub const TokenStore = struct {
 
 fn authFilePath(allocator: std.mem.Allocator) ![]u8 {
     const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
-    const config_base = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
-    if (config_base.len > 0) {
-        return std.fmt.allocPrint(allocator, "{s}/attyx/auth.json", .{config_base});
+    const state_base = std.posix.getenv("XDG_STATE_HOME") orelse "";
+    if (state_base.len > 0) {
+        return std.fmt.allocPrint(allocator, "{s}/attyx/auth.json", .{state_base});
     }
-    return std.fmt.allocPrint(allocator, "{s}/.config/attyx/auth.json", .{home});
+    return std.fmt.allocPrint(allocator, "{s}/.local/state/attyx/auth.json", .{home});
 }
 
 // ---------------------------------------------------------------------------

@@ -164,7 +164,13 @@ void attyx_scroll_viewport(int delta) {
     int nv = cur + delta;
     if (nv < 0) nv = 0;
     if (nv > sb) nv = sb;
+    int actual = nv - cur;
     g_viewport_offset = nv;
+    // Adjust selection coordinates so they track the same text
+    if (actual != 0 && g_sel_active) {
+        g_sel_start_row += actual;
+        g_sel_end_row += actual;
+    }
     // Dirty bits are set by the PTY thread after it updates the cell buffer
     // for the new viewport offset.  Setting them here would cause the renderer
     // to draw stale cells (old viewport content), producing artifacts.
