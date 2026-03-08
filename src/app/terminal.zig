@@ -458,7 +458,10 @@ pub fn run(
 
     // Always spawn a local Pane (provides Engine + TabManager integration).
     // In session mode, the Pane's PTY is idle — I/O goes through the daemon socket.
-    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, null, config.scrollback_lines);
+    const cwd_z: ?[:0]u8 = if (config.working_directory) |d| allocator.dupeZ(u8, d) catch null else null;
+    defer if (cwd_z) |z| allocator.free(z);
+    const cwd_ptr: ?[*:0]const u8 = if (cwd_z) |z| z.ptr else null;
+    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&initial_theme);
