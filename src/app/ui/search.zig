@@ -147,8 +147,8 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
         .{},
     ) catch return;
 
-    // Place search bar below tab bar (if visible)
-    const search_row: u16 = if (ctx.tab_mgr.count > 1) 1 else 0;
+    // Place search bar below tab bar or statusbar (if visible at top)
+    const search_row: u16 = if (terminal.g_grid_top_offset > 1) 1 else 0;
     mgr.setContent(.search_bar, 0, search_row, result.width, result.height, result.cells) catch {
         mgr.allocator.free(result.cells);
         return;
