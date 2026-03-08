@@ -454,4 +454,5 @@ comptime {
     _ = @import("session_chaos_test.zig");
     _ = @import("session_stress_test.zig");
     _ = @import("session_migration_test.zig");
+    _ = @import("cwd_test.zig");
 }
