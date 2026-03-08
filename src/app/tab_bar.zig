@@ -13,7 +13,9 @@ pub const max_tabs = tab_manager.max_tabs;
 
 pub const Style = struct {
     tab_bg: Rgb = .{ .r = 50, .g = 50, .b = 58 },
+    active_tab_bg: ?Rgb = null, // null = same as tab_bg
     fg: Rgb = .{ .r = 140, .g = 140, .b = 160 },
+    active_fg: ?Rgb = null, // null = same as fg
     num_highlight_bg: Rgb = .{ .r = 90, .g = 90, .b = 100 },
     num_highlight_fg: Rgb = .{ .r = 230, .g = 230, .b = 240 },
     bg_alpha: u8 = 230,
@@ -138,15 +140,19 @@ pub fn generate(
         const title = resolved[i];
         const num = num_slices[i];
 
+        // Resolve per-tab colors: active tab can have distinct bg/fg
+        const t_bg = if (is_active) (style.active_tab_bg orelse style.tab_bg) else style.tab_bg;
+        const t_fg = if (is_active) (style.active_fg orelse style.fg) else style.fg;
+
         // Number area: double-space + digits + trailing space — all use num bg for active
         const n_fg = if (is_active) style.num_highlight_fg else style.fg;
         const n_bg = if (is_active) style.num_highlight_bg else style.tab_bg;
 
         var pos: u16 = 0;
 
-        // Title area: " title " — tab_bg (with optional zoom icon)
+        // Title area: " title " (with optional zoom icon)
         if (pos < content_width) {
-            buf[col + pos] = .{ .char = ' ', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+            buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
             pos += 1;
         }
         // Zoom indicator: "⊞ " before title
@@ -154,11 +160,11 @@ pub fn generate(
             const tab_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
             if (tab_zoomed) {
                 if (pos < content_width) {
-                    buf[col + pos] = .{ .char = 0x229E, .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha }; // ⊞
+                    buf[col + pos] = .{ .char = 0x229E, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha }; // ⊞
                     pos += 1;
                 }
                 if (pos < content_width) {
-                    buf[col + pos] = .{ .char = ' ', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+                    buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
                     pos += 1;
                 }
             }
@@ -179,17 +185,17 @@ pub fn generate(
                     }
                     continue;
                 }
-                buf[col + pos] = .{ .char = cp, .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+                buf[col + pos] = .{ .char = cp, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
                 pos += 1;
                 // Wide char: emit spacer in next column
                 if (unicode.charDisplayWidth(cp) == 2 and pos < content_width) {
-                    buf[col + pos] = .{ .char = ' ', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+                    buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
                     pos += 1;
                 }
             }
         }
         if (pos < content_width) {
-            buf[col + pos] = .{ .char = ' ', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+            buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
             pos += 1;
         }
 
