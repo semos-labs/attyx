@@ -611,7 +611,7 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
 }
 
 /// Check if statusbar is active and enabled.
-fn statusbarActive(ctx: *PtyThreadCtx) bool {
+pub fn statusbarActive(ctx: *PtyThreadCtx) bool {
     const sb = ctx.statusbar orelse return false;
     return sb.config.enabled;
 }
@@ -625,27 +625,36 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
     const sb_active = statusbarActive(ctx);
     const native_tabs = (terminal.g_native_tabs_enabled != 0);
     const always_show = (terminal.g_tab_always_show != 0);
+    const search_active = (@as(i32, @bitCast(c.g_search_active)) != 0);
+
+    // Bottom row: statusbar at bottom (unaffected by search)
     if (sb_active) {
         if (ctx.statusbar.?.config.position == .top) {
-            top += 1;
             terminal.g_statusbar_position = 0;
         } else {
-            bottom += 1;
             terminal.g_statusbar_position = 1;
+            bottom += 1;
         }
         terminal.g_statusbar_visible = 1;
         terminal.g_tab_bar_visible = 0;
-    } else if (native_tabs) {
-        // Native tabs: no overlay tab bar row needed
-        terminal.g_statusbar_visible = 0;
-        terminal.g_tab_bar_visible = 0;
     } else {
         terminal.g_statusbar_visible = 0;
+    }
+
+    // Top row: search > statusbar-top > tab bar (mutually exclusive)
+    if (search_active) {
+        top += 1;
+        terminal.g_tab_bar_visible = 0;
+    } else if (sb_active and ctx.statusbar.?.config.position == .top) {
+        top += 1;
+        // tab_bar_visible already 0 from above
+    } else if (!sb_active and !native_tabs) {
         const show_builtin = (ctx.tab_mgr.count > 1) or always_show;
         if (show_builtin) top += 1;
         terminal.g_tab_bar_visible = if (show_builtin) @as(i32, 1) else @as(i32, 0);
+    } else {
+        terminal.g_tab_bar_visible = 0;
     }
-    if (@as(i32, @bitCast(c.g_search_active)) != 0) top += 1;
     terminal.g_grid_top_offset = top;
     terminal.g_grid_bottom_offset = bottom;
     @atomicStore(i32, &terminal.g_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
@@ -704,6 +713,12 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         return;
     }
 
+    // Search takes priority for the top row — yield while it's active
+    if (@as(i32, @bitCast(c.g_search_active)) != 0) {
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+        return;
+    }
+
     const always_show = (terminal.g_tab_always_show != 0);
     if (ctx.tab_mgr.count <= 1 and !always_show) {
         if (mgr.isVisible(.tab_bar)) {
@@ -720,9 +735,22 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const zoomed_tabs = computeZoomedTabs(ctx);
     const tbg = ctx.active_theme.background;
     const tfg = ctx.active_theme.foreground;
+    // Mix helpers: blend bg toward fg for subtle contrast
+    const mix20 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 4 + @as(u16, fg_c)) / 5);
+        }
+    }.m;
+    const mix35 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 13 + @as(u16, fg_c) * 7) / 20);
+        }
+    }.m;
     const tab_style = tab_bar_mod.Style{
-        .tab_bg = .{ .r = tbg.r, .g = tbg.g, .b = tbg.b },
+        .tab_bg = .{ .r = mix20(tbg.r, tfg.r), .g = mix20(tbg.g, tfg.g), .b = mix20(tbg.b, tfg.b) },
+        .active_tab_bg = .{ .r = mix35(tbg.r, tfg.r), .g = mix35(tbg.g, tfg.g), .b = mix35(tbg.b, tfg.b) },
         .fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
+        .active_fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
         .num_highlight_bg = .{ .r = tfg.r / 2, .g = tfg.g / 2, .b = tfg.b / 2 },
         .num_highlight_fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
     };
@@ -770,6 +798,11 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const sb = ctx.statusbar orelse return;
     if (!sb.config.enabled) {
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        return;
+    }
+    // Search takes priority for the top row — yield while it's active
+    if (@as(i32, @bitCast(c.g_search_active)) != 0 and sb.config.position == .top) {
         if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
         return;
     }

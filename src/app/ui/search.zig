@@ -108,6 +108,9 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
                 g_viewport_compensated = false;
                 c.attyx_mark_all_dirty();
             }
+            // Restore statusbar/tab bar that were yielding to search
+            publish.generateStatusbar(ctx);
+            publish.generateTabBar(ctx);
             publish.publishOverlays(ctx);
         }
         return;
@@ -121,10 +124,15 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
         g_saved_cursor_row = c.g_cursor_row;
         g_saved_cursor_col = c.g_cursor_col;
         c.g_cursor_shape = 0; // blinking_block
+        // Check if there's already a top-row element that search will replace
+        // (must check before updateGridTopOffset resets these flags)
+        const had_top_row = (terminal.g_grid_top_offset > 0);
+        // Hide statusbar/tab bar — search takes priority for the top row
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
         publish.updateGridTopOffset(ctx);
-        // Compensate viewport: scroll down 1 row so content stays visually stable
         g_saved_viewport_offset = publish.ctxEngine(ctx).state.viewport_offset;
-        if (publish.ctxEngine(ctx).state.viewport_offset > 0) {
+        if (!had_top_row and publish.ctxEngine(ctx).state.viewport_offset > 0) {
             publish.ctxEngine(ctx).state.viewport_offset -= 1;
             c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
             g_viewport_compensated = true;
@@ -147,8 +155,8 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
         .{},
     ) catch return;
 
-    // Place search bar below tab bar or statusbar (if visible at top)
-    const search_row: u16 = if (terminal.g_grid_top_offset > 1) 1 else 0;
+    // Search always takes the top row (row 0) — it has highest priority
+    const search_row: u16 = 0;
     mgr.setContent(.search_bar, 0, search_row, result.width, result.height, result.cells) catch {
         mgr.allocator.free(result.cells);
         return;
