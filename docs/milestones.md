@@ -25,6 +25,25 @@
 | CFG-1 | Config reload at runtime (SIGUSR1 + Ctrl+Shift+R) | ✅ Done |
 | INF-1 | Logging + diagnostics (structured log, 5 levels, file output) | ✅ Done |
 | VIS-1 | Background transparency + blur | ✅ Done |
+| THM-1 | Theme engine + 22 built-in themes + theme picker | ✅ Done |
+| GFX-1 | Kitty graphics protocol (transmit, display, delete, query) | ✅ Done |
+| OVR-1 | Overlay system (composable cell-based UI layers) | ✅ Done |
+| UNI-1 | Unicode combining marks + box drawing + bold/italic/dim | ✅ Done |
+| LIG-1 | Font ligatures (calt-based, Core Text shaping) | ✅ Done |
+| TAB-1 | Tabs (up to 16, built-in bar + macOS native tabs) | ✅ Done |
+| SPL-1 | Split panes (binary tree, max 8 panes, mouse drag resize) | ✅ Done |
+| POP-1 | Configurable popups (border styles, padding, on_return_cmd) | ✅ Done |
+| SB-1 | Statusbar with configurable widgets (git, clock, custom) | ✅ Done |
+| SES-1 | Daemon-backed sessions (persist, instant switch, replay) | ✅ Done |
+| SES-2 | Fuzzy finder session picker (fzf-inspired scoring) | ✅ Done |
+| SHL-1 | Shell integration (zsh/bash/fish/nushell/sh, PATH reporting) | ✅ Done |
+| CMD-1 | Command palette (Ctrl+Shift+P, action registry, scoped commands) | ✅ Done |
+| KEY-1 | Centralized keybind system (overrides, sequences, per-scope) | ✅ Done |
+| VIS-2 | Visual/copy mode (vim motions, char/line/block selection) | ✅ Done |
+| CLI-1 | CLI subcommands (login, device, uninstall) | ✅ Done |
+| UPD-1 | In-app updater (auto-check, daemon hot-upgrade) | ✅ Done |
+| AI-1 | AI overlay integration (SSE streaming, auth, edit workflows) | ✅ Done |
+| KBD-1 | Kitty keyboard protocol (push/pop/query flags) | ✅ Done |
 
 ---
 
@@ -1142,3 +1161,273 @@ compositor blur, controlled via config and CLI flags.
 |----------|-------------|------|
 | macOS | `CAMetalLayer.opaque = NO` + alpha in clear/vertex | `NSVisualEffectView` (system compositor) |
 | Linux | `GLFW_TRANSPARENT_FRAMEBUFFER` | Compositor-dependent (no renderer effect) |
+
+---
+
+## THM-1: Theme Engine
+
+**Goal:** Built-in theme system with live switching.
+
+**What was built:**
+
+- `Theme` struct: foreground, background, cursor color, 16-color palette.
+- `ThemeRegistry` with `loadBuiltins()` and dynamic registration.
+- 22 embedded themes: default, catppuccin-latte, catppuccin-mocha, dracula,
+  everforest-dark, github-dark, gruvbox-dark, gruvbox-light, iceberg, kanagawa,
+  material, monokai, nord, one-dark, palenight, rose-pine, rose-pine-moon,
+  snazzy, solarized-dark, solarized-light, tokyo-night, tokyo-night-storm.
+- Theme picker overlay for live switching.
+- Themes are hot-reloadable via config.
+
+---
+
+## GFX-1: Kitty Graphics Protocol
+
+**Goal:** Display inline images in the terminal via the Kitty graphics protocol.
+
+**What was built:**
+
+- Full APC-based protocol parsing (transmit, display, delete, query).
+- Image formats: RGB, RGBA, PNG. Compression: none, zlib.
+- Streaming chunk reassembly for large images.
+- Image storage with 320 MB total memory budget.
+- Base64 decoding, zlib decompression, PNG decoding via stb_image.
+- Query responses sent back to PTY.
+
+---
+
+## OVR-1: Overlay System
+
+**Goal:** Composable UI layers rendered on top of the terminal grid.
+
+**What was built:**
+
+- `OverlayManager` supporting up to 16 layers with unique IDs.
+- Cell-based rendering pipeline (pure, no platform dependencies).
+- Overlay types: search bar, command palette, session picker, theme picker,
+  AI prompt, update notification, tab bar, statusbar, context preview.
+- Reusable components: text input, scrollable lists, diff viewer.
+- Anchor-based positioning with cardinal/diagonal constraints.
+
+---
+
+## UNI-1: Unicode + Typography
+
+**Goal:** Full Unicode rendering with combining marks, box drawing, bold/italic.
+
+**What was built:**
+
+- Cell stores `u21` codepoint + `combining: [2]u21` for up to 2 combining marks.
+- Combining mark detection for Thai, Lao, Devanagari, Tamil, Telugu, Kannada,
+  Malayalam, Sinhala, Myanmar, Tibetan scripts.
+- Bold, italic, dim, strikethrough, inverse, invisible style attributes.
+- Box drawing character rendering (macOS).
+
+---
+
+## LIG-1: Font Ligatures
+
+**Goal:** Programming font ligature support (e.g., `=>`, `!=`, `->`, `===`).
+
+**What was built:**
+
+- calt (Contextual Alternates) based shaping — glyph IDs change per context,
+  glyph count stays the same.
+- macOS: CTLine shaping + CTFontDrawGlyphs into one wide bitmap, sliced per cell.
+- Linux: stub (needs HarfBuzz for GSUB).
+- Configurable: `font.ligatures = true/false`, hot-reloadable.
+- Trigger chars: operator/punctuation only.
+
+---
+
+## TAB-1: Tabs
+
+**Goal:** Multiple terminal tabs with visual tab bar.
+
+**What was built:**
+
+- Tab array (max 16 tabs), each containing a split layout.
+- Built-in overlay tab bar with title, number highlighting, width tracking.
+- macOS native window tabs (`tab_appearance = "native"`).
+- Tab reordering via drag.
+- Configurable via `[tabs]` section.
+
+---
+
+## SPL-1: Split Panes
+
+**Goal:** Split the terminal into multiple panes within a tab.
+
+**What was built:**
+
+- Binary tree split manager (max 8 panes, 15 total nodes).
+- Horizontal and vertical splits.
+- Navigation between panes (directional).
+- Pane rotation and zoom.
+- Mouse-drag resize with configurable step size.
+- Layout serialization for daemon persistence.
+
+---
+
+## POP-1: Configurable Popups
+
+**Goal:** User-definable floating terminal popups.
+
+**What was built:**
+
+- `[[popup]]` config entries with hotkey, command, dimensions, border, padding.
+- Border styles: single, double, rounded, heavy, none.
+- Per-popup opacity and background color override.
+- `on_return_cmd` — inject popup output into main terminal on exit.
+- Shell PATH inheritance from main pane via OSC 7337.
+
+---
+
+## SB-1: Statusbar
+
+**Goal:** Configurable status bar with widgets.
+
+**What was built:**
+
+- Position: top or bottom.
+- Built-in widgets: git status (branch, ahead/behind, staged/modified), clock.
+- Custom widget support with configurable intervals.
+- Color spans, padding, icon support.
+- Always shows tabs when statusbar is active.
+
+---
+
+## SES-1: Daemon-Backed Sessions
+
+**Goal:** Persistent terminal sessions that survive window close.
+
+**What was built:**
+
+- Unix socket daemon with V2 protocol.
+- Session operations: create, list, attach, detach, kill, rename.
+- Per-pane replay buffer for instant screen restore.
+- Layout persistence (binary serialization of tab+split tree).
+- State persistence across daemon restarts (JSON).
+- Hot-upgrade: binary format migration (magic "ATUP", format v2).
+- Auto-start with exponential backoff.
+- XDG state directory (`~/.local/state/attyx/`).
+
+---
+
+## SES-2: Fuzzy Finder Session Picker
+
+**Goal:** Quick session switching with fuzzy search.
+
+**What was built:**
+
+- Incremental directory traversal with depth limit.
+- fzf-inspired path-aware scoring (separator bonuses, basename matching).
+- Session picker overlay with browsing, renaming, and kill confirmation modes.
+- Configurable finder root, depth, and hidden file visibility.
+
+---
+
+## SHL-1: Shell Integration
+
+**Goal:** Rich shell interaction for PATH/CWD inheritance.
+
+**What was built:**
+
+- Multi-shell detection: zsh, bash, fish, nushell, sh.
+- Integration scripts emitting OSC 7337;set-path on every prompt.
+- CWD tracking via OSC 7.
+- Injection methods: ZDOTDIR (zsh), --rcfile+BASH_ENV (bash),
+  XDG_DATA_DIRS (fish), --env-config (nu), ENV (sh).
+- `ArgvOverride` struct for shell-specific extra argv.
+
+---
+
+## CMD-1: Command Palette
+
+**Goal:** Discoverable command execution via searchable palette.
+
+**What was built:**
+
+- Ctrl+Shift+P opens command palette overlay.
+- Centralized `CommandDef` registry with action, name, description, scope.
+- Scopes: global, search, ai_prompt, overlay.
+- Platform-specific default hotkeys displayed alongside commands.
+- Fuzzy filtering of commands.
+
+---
+
+## KEY-1: Centralized Keybind System
+
+**Goal:** Unified, configurable keyboard shortcut system.
+
+**What was built:**
+
+- Key constants (KC_UP, KC_F1, KC_CODEPOINT, etc.) + modifier flags.
+- Action enum mapping to all dispatchable commands.
+- `[keybindings]` config section for user overrides.
+- `[sequences]` config section for custom byte sequences.
+- Per-scope binding (global, search, ai_prompt, overlay).
+
+---
+
+## VIS-2: Visual / Copy Mode
+
+**Goal:** tmux-like keyboard-driven selection mode.
+
+**What was built:**
+
+- Char, line, and block selection modes.
+- Vim-style motions (h/j/k/l, w/b/e, 0/$, gg/G).
+- Text objects (word, WORD).
+- Yank to clipboard on selection confirm.
+
+---
+
+## CLI-1: CLI Subcommands
+
+**Goal:** Management commands in the main binary.
+
+**What was built:**
+
+- `attyx login` — authentication flow.
+- `attyx device` — device management.
+- `attyx uninstall` — clean uninstall.
+- Routed in `main.zig` before config/logging init.
+
+---
+
+## UPD-1: In-App Updater
+
+**Goal:** Automatic update checking and application.
+
+**What was built:**
+
+- Auto-check for updates (configurable, default on).
+- Update notification overlay.
+- Daemon hot-upgrade with binary state migration.
+
+---
+
+## AI-1: AI Overlay
+
+**Goal:** AI assistant integration within the terminal.
+
+**What was built:**
+
+- AI overlay with SSE streaming from backend.
+- DeltaRing (16 KB lock-free ring buffer) for streaming data.
+- Token-based authentication.
+- Edit workflow helpers.
+- Context extraction and preview.
+
+---
+
+## KBD-1: Kitty Keyboard Protocol
+
+**Goal:** Modern keyboard protocol for accurate key reporting.
+
+**What was built:**
+
+- Push/pop/query flag stack.
+- Key encoding for both legacy xterm and Kitty protocol modes.
+- Deterministic, allocation-free encoding.
