@@ -264,9 +264,6 @@ extern fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern fn _exit(status: c_int) noreturn;
 
 fn openConfigInEditor() void {
-    const editor = std.posix.getenv("EDITOR") orelse
-        std.posix.getenv("VISUAL") orelse "vi";
-
     // Build config file path
     const home = std.posix.getenv("HOME") orelse return;
     const xdg = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
@@ -285,15 +282,18 @@ fn openConfigInEditor() void {
         if (f) |file| file.close();
     }
 
+    // Use the platform's default file opener (open on macOS, xdg-open on Linux).
+    // This lets the OS pick the right editor and avoids issues with terminal
+    // editors needing a TTY that a GUI app doesn't have.
+    const opener = if (comptime @import("builtin").os.tag == .macos) "open" else "xdg-open";
+
     // Double-fork to avoid zombie
     const pid = posix.fork() catch return;
     if (pid == 0) {
         const pid2 = posix.fork() catch posix.abort();
         if (pid2 == 0) {
-            var editor_buf: [256]u8 = undefined;
-            const editor_z = std.fmt.bufPrintZ(&editor_buf, "{s}", .{editor}) catch posix.abort();
-            const argv = [_]?[*:0]const u8{ editor_z, config_path, null };
-            _ = execvp(editor_z, &argv);
+            const argv = [_]?[*:0]const u8{ opener, config_path, null };
+            _ = execvp(opener, &argv);
             posix.abort();
         }
         _exit(0);
