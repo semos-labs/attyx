@@ -144,6 +144,10 @@ int drawFrame(void) {
         g_blink_on = 1;
     }
 
+    static int prev_blink_on = 1;
+    int blinkChanged = (g_blink_on != prev_blink_on);
+    prev_blink_on = g_blink_on;
+
     // Reallocate persistent buffers if grid size changed
     if (rows != g_alloc_rows || cols != g_alloc_cols) {
         free(g_bg_verts);
@@ -181,7 +185,7 @@ int drawFrame(void) {
         g_title_changed = 0;
     }
 
-    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !g_ctx_menu_open && !g_trail_active && !g_popup_trail_active && !overlayChanged && !popupChanged) return 0;
+    if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !blinkChanged && !g_search_active && !g_ctx_menu_open && !g_trail_active && !g_popup_trail_active && !overlayChanged && !popupChanged) return 0;
 
     if (g_cell_snapshot && g_cell_snapshot_cap >= total)
         memcpy(g_cell_snapshot, g_cells, sizeof(AttyxCell) * total);

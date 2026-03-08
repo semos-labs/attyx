@@ -159,11 +159,20 @@ pub const DaemonSession = struct {
         try pane.resize(rows, cols);
     }
 
+    /// Check all panes for exit and return the first exit code found (if any).
+    /// Marks session dead when all panes have exited.
     pub fn checkExit(self: *DaemonSession) ?u8 {
-        const pane = self.firstPane() orelse return null;
-        const code = pane.checkExit();
-        if (code != null) {
-            // Check if ALL panes are dead
+        var first_code: ?u8 = null;
+        for (&self.panes) |*slot| {
+            if (slot.*) |*p| {
+                if (p.alive) {
+                    if (p.checkExit()) |code| {
+                        if (first_code == null) first_code = code;
+                    }
+                }
+            }
+        }
+        if (first_code != null) {
             var any_alive = false;
             for (self.panes) |slot| {
                 if (slot) |p| {
@@ -172,7 +181,7 @@ pub const DaemonSession = struct {
             }
             if (!any_alive) self.alive = false;
         }
-        return code;
+        return first_code;
     }
 
     /// Kill all panes but preserve session metadata (name, layout, CWD).
