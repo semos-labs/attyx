@@ -25,6 +25,7 @@
     int         _allocRows;
     int         _allocCols;
     BOOL        _blinkOn;
+    BOOL        _prevBlinkOn;
     CFAbsoluteTime _blinkLastToggle;
     float       _trailX, _trailY;
     BOOL        _trailActive;

@@ -85,6 +85,9 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             _blinkOn = YES;
         }
 
+        BOOL blinkChanged = (_blinkOn != _prevBlinkOn);
+        _prevBlinkOn = _blinkOn;
+
         if (rows != _allocRows || cols != _allocCols) {
             free(_bgVerts);
             free(_textVerts);
@@ -136,7 +139,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             if (ntm) [ntm sync];
         }
 
-        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !isBlinking && !g_search_active && !_trailActive && !g_popup_trail_active && !imagesChanged && !overlayChanged && !popupChanged) {
+        if (!_fullRedrawNeeded && !dirtyAny(dirty) && !cursorChanged && !blinkChanged && !g_search_active && !_trailActive && !g_popup_trail_active && !imagesChanged && !overlayChanged && !popupChanged) {
             if (_debugStats) _statsSkipped++;
             if (_debugStats) _statsFrames++;
             [self printStatsIfNeeded];

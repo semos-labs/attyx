@@ -150,6 +150,7 @@ fn cellsToRatio(cells: u16, total: u16) f32 {
 pub fn processSplitActions(ctx: *PtyThreadCtx) void {
     const action_raw = @atomicRmw(i32, &input.g_split_action_request, .Xchg, 0, .seq_cst);
     if (action_raw == 0) return;
+    if (ctx.tab_mgr.count == 0) return;
 
     const Action = keybinds_mod.Action;
     const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
@@ -256,6 +257,7 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
 }
 
 pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
+    if (ctx.tab_mgr.count == 0) return;
     const layout = ctx.tab_mgr.activeLayout();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
 

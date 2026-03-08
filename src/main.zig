@@ -141,6 +141,7 @@ fn fatal(msg: []const u8) noreturn {
 test {
     _ = terminal;
     _ = @import("config/config.zig");
+    _ = @import("app/daemon/session_test.zig");
 }
 
 test "AttyxCell struct layout matches C" {

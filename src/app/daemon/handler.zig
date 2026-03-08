@@ -26,7 +26,7 @@ pub fn handleMessage(
     switch (msg.msg_type) {
         .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
         .list => cl.sendSessionListFromSlots(sessions),
-        .attach => handleAttach(cl, msg.payload, sessions, next_pane_id, session_count, allocator),
+        .attach => handleAttach(cl, msg.payload, sessions, next_pane_id, allocator),
         .detach => {
             cl.attached_session = null;
             cl.active_pane_count = 0;
@@ -70,6 +70,7 @@ fn handleCreate(
                 if (!s.alive) {
                     s.deinit();
                     slot.* = null;
+                    session_count.* -= 1;
                     evicted = true;
                     break;
                 }
@@ -132,7 +133,6 @@ fn handleAttach(
     payload: []const u8,
     sessions: *[max_sessions]?DaemonSession,
     next_pane_id: *u32,
-    session_count: *usize,
     allocator: std.mem.Allocator,
 ) void {
     const attach = protocol.decodeAttach(payload) catch {
@@ -147,7 +147,7 @@ fn handleAttach(
 
     // Revive dead (recent) sessions by spawning fresh panes.
     if (!session.alive) {
-        reviveSession(session, attach.rows, attach.cols, next_pane_id, session_count, allocator);
+        reviveSession(session, attach.rows, attach.cols, next_pane_id, allocator);
     }
 
     session.resize(attach.rows, attach.cols) catch {};
@@ -171,13 +171,13 @@ fn handleKill(
                     // Soft-kill: preserve session metadata, kill PTYs only.
                     // Session stays in its slot as a "recent" entry.
                     s.killAllPanes();
-                    session_count.* -= 1;
                     // Persist dead sessions to disk.
                     state_persist.save(sessions, next_session_id, next_pane_id);
                 } else {
-                    // Already dead — fully destroy it.
+                    // Already dead — fully destroy it and free the slot.
                     s.deinit();
                     slot.* = null;
+                    session_count.* -= 1;
                 }
                 break;
             }
@@ -375,7 +375,6 @@ fn reviveSession(
     rows: u16,
     cols: u16,
     next_pane_id: *u32,
-    session_count: *usize,
     allocator: std.mem.Allocator,
 ) void {
     const cwd: ?[*:0]const u8 = if (session.cwd_len > 0)
@@ -411,7 +410,6 @@ fn reviveSession(
                     session.layout_len = len;
                 } else |_| {}
                 session.alive = true;
-                session_count.* += 1;
                 return;
             }
         } else |_| {}
@@ -425,7 +423,6 @@ fn reviveSession(
         setNonBlocking(pane.pty.master);
     }
     session.alive = true;
-    session_count.* += 1;
 }
 
 // ── Helpers ──
