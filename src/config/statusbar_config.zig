@@ -29,7 +29,7 @@ pub const WidgetParam = struct {
 };
 
 pub const max_widgets = 16;
-pub const max_params = 8;
+pub const max_params = 16;
 
 pub const StatusbarWidgetConfig = struct {
     name: []const u8 = "",
