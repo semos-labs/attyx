@@ -20,13 +20,14 @@ pub const DaemonClient = struct {
         return .{ .socket_fd = fd };
     }
 
-    /// Read available data from socket into read_buf. Returns false if connection closed.
+    /// Read available data from socket into read_buf. Returns false if connection closed/broken.
     pub fn recvData(self: *DaemonClient) bool {
         const space = self.read_buf[self.read_len..];
         if (space.len == 0) {
-            // Buffer full — discard old data to prevent deadlock
-            self.read_len = 0;
-            return true;
+            // Buffer full with no complete message extractable — the client
+            // sent an oversized or malformed message. Kill the connection
+            // rather than discarding data (which would desync the stream).
+            return false;
         }
         const n = posix.read(self.socket_fd, space) catch |err| switch (err) {
             error.WouldBlock => return true,
@@ -43,15 +44,28 @@ pub const DaemonClient = struct {
         payload: []const u8,
     };
 
+    /// Maximum payload size we accept. Messages larger than this are from
+    /// a buggy or hostile client — disconnect rather than spin forever.
+    const max_payload_size: u32 = 60000; // well under 65536 read_buf
+
     /// Try to extract the next complete message from the read buffer.
     /// Returns null if no complete message is available yet.
+    /// Marks client as dead if the message is malformed/oversized.
     pub fn nextMessage(self: *DaemonClient) ?Message {
         if (self.read_len < protocol.header_size) return null;
 
         // Read payload length from header (first 4 bytes) before decoding
         // the message type, so we can skip unknown messages cleanly.
         const payload_len = std.mem.readInt(u32, self.read_buf[0..4], .little);
-        const total = protocol.header_size + payload_len;
+
+        // Reject oversized payloads — they'd never fit in our buffer and
+        // would cause the daemon to spin forever waiting for more data.
+        if (payload_len > max_payload_size) {
+            self.dead = true;
+            return null;
+        }
+
+        const total = protocol.header_size + @as(usize, payload_len);
         if (self.read_len < total) return null;
 
         const header = protocol.decodeHeader(self.read_buf[0..protocol.header_size]) catch {

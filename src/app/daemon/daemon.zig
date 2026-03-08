@@ -110,6 +110,10 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     } else {
         // Normal startup: load persisted dead sessions from previous daemon run.
         state_persist.load(&sessions, &next_session_id, &next_pane_id);
+        // Count loaded dead sessions so session_count is accurate.
+        for (sessions) |slot| {
+            if (slot != null) session_count += 1;
+        }
     }
 
     var clients: [max_clients]?DaemonClient = .{null} ** max_clients;
