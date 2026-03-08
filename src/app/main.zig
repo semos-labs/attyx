@@ -146,6 +146,7 @@ export var g_copy_search_dirty: c_int = 0;
 export fn attyx_copy_mode_enter() void {}
 export fn attyx_copy_mode_key(_: u16, _: u8, _: u32) u8 { return 0; }
 export fn attyx_copy_mode_exit(_: c_int) void {}
+export fn attyx_copy_selection() void {}
 
 // Keybind and dispatch stubs (keybinds.zig / dispatch.zig provide real implementations)
 export fn attyx_keybind_match(_: u16, _: u8, _: u32) u8 { return 0; }

@@ -131,9 +131,7 @@ pub const SessionClient = struct {
     }
 
     fn getDaemonVersionPath(buf: *[256]u8) ?[]const u8 {
-        const home = std.posix.getenv("HOME") orelse return null;
-        const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-        return std.fmt.bufPrint(buf, "{s}/.config/attyx/daemon{s}.version", .{ home, suffix }) catch null;
+        return conn.statePath(buf, "daemon{s}.version");
     }
 
     fn readVersionFile(path: []const u8, buf: *[64]u8) usize {

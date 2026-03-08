@@ -287,9 +287,7 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
 
 /// Get the upgrade state file path.
 fn getUpgradePath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/upgrade{s}.bin", .{ home, suffix }) catch null;
+    return session_connect.statePath(buf, "upgrade{s}.bin");
 }
 
 /// Perform the hot upgrade: serialize state, close sockets, exec self.

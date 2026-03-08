@@ -385,9 +385,7 @@ fn restoreFromFile(
 }
 
 fn getVersionFilePath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/daemon{s}.version", .{ home, suffix }) catch null;
+    return session_connect.statePath(buf, "daemon{s}.version");
 }
 
 fn writeVersionFile() void {
