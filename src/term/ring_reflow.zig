@@ -152,17 +152,6 @@ pub fn resize(
     new_ring.count = 0;
     new_ring.head = 0;
 
-    // For vertical-only resizes (same cols), pin content to bottom by
-    // inserting blank padding rows between scrollback and screen content.
-    // This matches kitty/ghostty: vertical grow doesn't pull scrollback back.
-    // For column-change resizes, no padding — content starts at the top.
-    const screen_content_rows = if (new_total > scroll_off) new_total - scroll_off else 0;
-    const top_padding = if (new_cols == old_cols and scroll_off > 0 and new_screen_rows > screen_content_rows)
-        new_screen_rows - screen_content_rows
-    else
-        0;
-    var padding_inserted = false;
-
     var dst_row: usize = 0;
     for (ll_buf[0..ll_count]) |ll| {
         const rows_needed = if (ll.content_len == 0) 1 else (ll.content_len + new_cols - 1) / new_cols;
@@ -171,21 +160,6 @@ pub fn resize(
             const abs_row = dst_row + pr;
 
             if (abs_row < skip_rows) continue;
-
-            // Insert blank padding at scrollback/screen boundary (vertical resize only)
-            if (!padding_inserted and abs_row >= scroll_off and top_padding > 0) {
-                for (0..top_padding) |_| {
-                    if (new_ring.count < new_ring.capacity) {
-                        new_ring.count += 1;
-                    } else {
-                        new_ring.head = (new_ring.head + 1) % new_ring.capacity;
-                    }
-                    const pad_idx = new_ring.count - 1;
-                    @memset(new_ring.getRowMut(pad_idx), Cell{});
-                    new_ring.setWrapped(pad_idx, false);
-                }
-                padding_inserted = true;
-            }
 
             // Ensure we have a slot in the ring
             if (new_ring.count < new_ring.capacity) {
@@ -234,10 +208,7 @@ pub fn resize(
     }
 
     // Map cursor to new coordinates.
-    var adjusted_cr = if (mapped_cr >= skip_rows) mapped_cr - skip_rows else 0;
-    if (adjusted_cr >= scroll_off) {
-        adjusted_cr += top_padding;
-    }
+    const adjusted_cr = if (mapped_cr >= skip_rows) mapped_cr - skip_rows else 0;
     const new_sb = new_ring.scrollbackCount();
     // Convert from absolute to screen-relative
     var final_cr = if (adjusted_cr >= new_sb) adjusted_cr - new_sb else 0;
@@ -327,22 +298,16 @@ fn stripRprompts(ring: *RingBuffer, new_cols: usize) void {
             ring.getRowMut(r)[c] = Cell{};
         }
 
-        // Un-wrap rows that are now fully blank so they don't join with
-        // subsequent content on the next resize cycle.
+        // Un-wrap rows that no longer fill the full width after stripping.
+        // A wrapped row means "content continues on the next row." After
+        // stripping, partially-filled rows must be unwrapped so the next
+        // resize doesn't incorrectly join them with the following row.
         for (ll_start..ll_end) |r| {
             if (r == ll_end - 1) continue;
             const row = ring.getRow(r);
-            var has_content = false;
-            for (0..cols) |c| {
-                if (!isDefaultCell(row[c])) {
-                    has_content = true;
-                    break;
-                }
-            }
-            if (!has_content) {
-                if (r > ll_start) {
-                    ring.setWrapped(r - 1, false);
-                }
+            // Check if the last column has content (row is truly full)
+            const last_col_has_content = !isDefaultCell(row[cols - 1]);
+            if (!last_col_has_content) {
                 ring.setWrapped(r, false);
             }
         }
@@ -439,6 +404,39 @@ test "ring_reflow: cursor mapping" {
     // 'E' is position 4 → row 1, col 1
     try testing.expectEqual(@as(usize, 1), result.cursor_row);
     try testing.expectEqual(@as(usize, 1), result.cursor_col);
+}
+
+test "ring_reflow: scrollback wraps on shrink" {
+    const alloc = testing.allocator;
+    var ring = try RingBuffer.init(alloc, 2, 8, 10);
+    defer ring.deinit();
+
+    // Write "ABCDEFGH" on screen row 0 (full 8-col row)
+    const chars = "ABCDEFGH";
+    for (chars, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
+    // Push to scrollback
+    _ = ring.advanceScreen();
+    // Screen row 0 now has "ABCDEFGH" in scrollback, screen is blank
+    ring.setScreenCell(0, 0, .{ .char = 'X' });
+
+    try testing.expectEqual(@as(usize, 1), ring.scrollbackCount());
+
+    // Shrink to 4 cols — scrollback "ABCDEFGH" should wrap into 2 rows
+    const result = try resize(&ring, 2, 4, 0, 0);
+    var new_ring = result.ring;
+    defer new_ring.deinit();
+
+    // Scrollback should now have 2 rows (ABCD + EFGH)
+    try testing.expectEqual(@as(usize, 2), new_ring.scrollbackCount());
+    try testing.expectEqual(@as(u21, 'A'), new_ring.getRow(0)[0].char);
+    try testing.expectEqual(@as(u21, 'D'), new_ring.getRow(0)[3].char);
+    try testing.expectEqual(@as(u21, 'E'), new_ring.getRow(1)[0].char);
+    try testing.expectEqual(@as(u21, 'H'), new_ring.getRow(1)[3].char);
+    // First scrollback row should be wrapped (continuation)
+    try testing.expect(new_ring.getWrapped(0));
+    try testing.expect(!new_ring.getWrapped(1));
+    // Screen content should still have X
+    try testing.expectEqual(@as(u21, 'X'), new_ring.getScreenCell(0, 0).char);
 }
 
 test "ring_reflow: scrollback content preserved" {
