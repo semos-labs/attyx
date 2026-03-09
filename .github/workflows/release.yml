@@ -168,6 +168,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          generate_release_notes: false
+          body: ""
           files: |
             ${{ matrix.artifact }}
             ${{ matrix.dmg }}
@@ -215,6 +217,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          generate_release_notes: false
+          body: ""
           files: ${{ matrix.artifact }}
 
   # snap:
