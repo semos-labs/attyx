@@ -528,7 +528,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                         if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                                     }
                                 },
-                                .replay_end => {},
+                                .replay_end => |pane_id| {
+                                    // The daemon nudged the PTY size (+1 col) after
+                                    // replay to force a SIGWINCH.  Restore the correct
+                                    // size so the app gets a second resize event and
+                                    // repaints at the right dimensions.
+                                    if (findPaneByDaemonId(ctx, pane_id)) |result| {
+                                        const rows: u16 = @intCast(result.pane.engine.state.grid.rows);
+                                        const cols: u16 = @intCast(result.pane.engine.state.grid.cols);
+                                        if (ctx.session_client) |scc| {
+                                            scc.sendPaneResize(pane_id, rows, cols) catch {};
+                                        }
+                                    }
+                                },
                                 .layout_sync => |sync| {
                                     session_actions.handleLayoutSync(ctx, sync.layout);
                                     got_data = true;

@@ -274,9 +274,13 @@ pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) voi
 // ── Socket path (must match session_connect.zig) ──
 
 fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    return std.fmt.bufPrint(buf, "{s}/.config/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
+    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
+        if (sh.len > 0)
+            return std.fmt.bufPrint(buf, "{s}/attyx/sessions{s}.sock", .{ sh, suffix }) catch null;
+    }
+    const home = std.posix.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
 }
 
 /// Find the JSON object substring containing "is_current":true
