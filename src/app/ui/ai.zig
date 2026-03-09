@@ -85,8 +85,7 @@ pub fn captureAiContext(ctx: *PtyThreadCtx) void {
 
     g_context_bundle = overlay_context.captureContext(
         mgr.allocator,
-        &eng.state.grid,
-        &eng.state.scrollback,
+        &eng.state.ring,
         eng.state.cursor.row,
         title_ptr,
         title_len,
@@ -379,8 +378,8 @@ pub fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
                 };
 
                 const eng = publish.ctxEngine(ctx);
-                const cols: u16 = @intCast(eng.state.grid.cols);
-                const rows: u16 = @intCast(eng.state.grid.rows);
+                const cols: u16 = @intCast(eng.state.ring.cols);
+                const rows: u16 = @intCast(eng.state.ring.screen_rows);
                 const card_col = if (cols > result.width + 1) cols - result.width - 1 else 0;
                 const card_row = if (rows > result.height + 1) rows - result.height - 1 else 0;
 

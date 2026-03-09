@@ -114,13 +114,14 @@ fn imageIdFromFg(fg: attyx.grid.Color) ?u32 {
     };
 }
 
-/// Scan the grid for the first U+10EEEE placeholder cell whose fg color encodes the given image_id.
-fn findPlaceholderPosition(grid: anytype, image_id: u32) ?struct { row: i32, col: i32 } {
-    const rows: usize = @intCast(grid.rows);
-    const cols: usize = @intCast(grid.cols);
+/// Scan the screen for the first U+10EEEE placeholder cell whose fg color encodes the given image_id.
+fn findPlaceholderPosition(ring: anytype, image_id: u32) ?struct { row: i32, col: i32 } {
+    const rows: usize = ring.screen_rows;
+    const cols: usize = ring.cols;
     for (0..rows) |r| {
+        const row_cells = ring.getScreenRow(r);
         for (0..cols) |co| {
-            const cell = grid.cells[r * cols + co];
+            const cell = row_cells[co];
             if (cell.char == 0x10EEEE) {
                 if (imageIdFromFg(cell.style.fg)) |id| {
                     if (id == image_id) {
@@ -142,7 +143,7 @@ pub fn publishImagePlacements(ctx: *PtyThreadCtx) void {
 
     const gs = attyx.graphics_store;
     var buf: [c.ATTYX_MAX_IMAGE_PLACEMENTS]gs.Placement = undefined;
-    const visible = store.visiblePlacements(state.grid.rows, &buf);
+    const visible = store.visiblePlacements(state.ring.screen_rows, &buf);
 
     var out_count: c_int = 0;
     for (visible) |p| {
@@ -155,7 +156,7 @@ pub fn publishImagePlacements(ctx: *PtyThreadCtx) void {
         var row = p.row;
         var col = p.col;
         if (p.virtual) {
-            if (findPlaceholderPosition(&state.grid, p.image_id)) |pos| {
+            if (findPlaceholderPosition(&state.ring, p.image_id)) |pos| {
                 row = pos.row;
                 col = pos.col;
             }
@@ -240,8 +241,8 @@ pub fn generateDebugCard(ctx: *PtyThreadCtx) void {
     if (!mgr.isVisible(.debug_card)) return;
 
     const eng = ctxEngine(ctx);
-    const cols: u16 = @intCast(eng.state.grid.cols);
-    const rows: u16 = @intCast(eng.state.grid.rows);
+    const cols: u16 = @intCast(eng.state.ring.cols);
+    const rows: u16 = @intCast(eng.state.ring.screen_rows);
 
     // Format debug info lines
     var grid_buf: [32]u8 = undefined;
@@ -252,7 +253,7 @@ pub fn generateDebugCard(ctx: *PtyThreadCtx) void {
 
     const grid_line = std.fmt.bufPrint(&grid_buf, "Grid: {d}x{d}", .{ cols, rows }) catch "Grid: ?";
     const vp_line = std.fmt.bufPrint(&vp_buf, "Viewport: {d}", .{eng.state.viewport_offset}) catch "Viewport: ?";
-    const sb_line = std.fmt.bufPrint(&sb_buf, "Scrollback: {d}", .{eng.state.scrollback.count}) catch "Scrollback: ?";
+    const sb_line = std.fmt.bufPrint(&sb_buf, "Scrollback: {d}", .{eng.state.ring.scrollbackCount()}) catch "Scrollback: ?";
     const cur_line = std.fmt.bufPrint(&cur_buf, "Cursor: {d},{d}", .{ eng.state.cursor.row, eng.state.cursor.col }) catch "Cursor: ?";
     const alt_line = std.fmt.bufPrint(&alt_buf, "Alt screen: {s}", .{if (eng.state.alt_active) "yes" else "no"}) catch "Alt screen: ?";
 
@@ -304,8 +305,8 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
     const sel_end_row_raw: i32 = @bitCast(c.g_sel_end_row);
     const sel_end_col_raw: i32 = @bitCast(c.g_sel_end_col);
     return .{
-        .grid_cols = @intCast(eng.state.grid.cols),
-        .grid_rows = @intCast(eng.state.grid.rows),
+        .grid_cols = @intCast(eng.state.ring.cols),
+        .grid_rows = @intCast(eng.state.ring.screen_rows),
         .cursor_row = @intCast(eng.state.cursor.row),
         .cursor_col = @intCast(eng.state.cursor.col),
         .sel_active = sel_active_raw != 0,
@@ -380,7 +381,7 @@ pub fn publishState(ctx: *PtyThreadCtx) void {
         @intFromEnum(ctxEngine(ctx).state.mouse_tracking),
         @intFromBool(ctxEngine(ctx).state.mouse_sgr),
     );
-    c.g_scrollback_count = @intCast(ctxEngine(ctx).state.scrollback.count);
+    c.g_scrollback_count = @intCast(ctxEngine(ctx).state.ring.scrollbackCount());
     c.g_alt_screen = @intFromBool(ctxEngine(ctx).state.alt_active);
     c.g_viewport_offset = @intCast(ctxEngine(ctx).state.viewport_offset);
 
@@ -570,42 +571,16 @@ const DirtyRows = attyx.DirtyRows;
 
 pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme, dirty: ?*const DirtyRows) void {
     const vp = eng.state.viewport_offset;
-    const cols = eng.state.grid.cols;
-    const rows = eng.state.grid.rows;
-    const sb = &eng.state.scrollback;
+    const cols = eng.state.ring.cols;
+    const rows = eng.state.ring.screen_rows;
     const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
 
-    if (vp == 0) {
-        for (0..rows) |row| {
-            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[row]);
-            if (dirty) |d| { if (!d.isDirty(row)) continue; }
-            const base = row * cols;
-            for (0..cols) |col| {
-                cells[base + col] = cellToAttyxCell(eng.state.grid.cells[base + col], theme);
-            }
-        }
-        return;
-    }
-
-    // Scrollback view: viewport changes already trigger markAll on the
-    // renderer side, so dirty tracking still applies here.
-    const effective_vp = @min(vp, sb.count);
     for (0..rows) |row| {
-        if (row < effective_vp) {
-            const sb_line_idx = sb.count - effective_vp + row;
-            wrapped[row] = @intFromBool(sb.getLineWrapped(sb_line_idx));
-            if (dirty) |d| { if (!d.isDirty(row)) continue; }
-            const sb_cells = sb.getLine(sb_line_idx);
-            for (0..cols) |col| {
-                cells[row * cols + col] = cellToAttyxCell(sb_cells[col], theme);
-            }
-        } else {
-            const grid_row = row - effective_vp;
-            wrapped[row] = @intFromBool(eng.state.grid.row_wrapped[grid_row]);
-            if (dirty) |d| { if (!d.isDirty(row)) continue; }
-            for (0..cols) |col| {
-                cells[row * cols + col] = cellToAttyxCell(eng.state.grid.cells[grid_row * cols + col], theme);
-            }
+        const row_cells = eng.state.ring.viewportRow(vp, row);
+        wrapped[row] = @intFromBool(eng.state.ring.viewportRowWrapped(vp, row));
+        if (dirty) |d| { if (!d.isDirty(row)) continue; }
+        for (0..cols) |col| {
+            cells[row * cols + col] = cellToAttyxCell(row_cells[col], theme);
         }
     }
 }

@@ -38,7 +38,7 @@ fn handleQuery(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void
         return;
     };
 
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
     var decoded = graphics_decode.decode(alloc, payload, cmd) catch |err| {
         respondDecodeError(self, cmd, id, err);
         return;
@@ -50,7 +50,7 @@ fn handleQuery(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void
 
 fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void {
     const store = self.graphics_store orelse return;
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
 
     const effective_cmd = store.chunk_cmd orelse cmd;
     const id = store.assignId(effective_cmd.image_id);
@@ -112,7 +112,7 @@ fn handleTransmitAndDisplay(self: *TerminalState, cmd: GraphicsCommand, raw: []c
 
 fn handleTransmit(self: *TerminalState, cmd: GraphicsCommand, raw: []const u8) void {
     const store = self.graphics_store orelse return;
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
 
     const effective_cmd = store.chunk_cmd orelse cmd;
     const id = store.assignId(effective_cmd.image_id);
@@ -180,8 +180,8 @@ fn handleDelete(self: *TerminalState, cmd: GraphicsCommand) void {
     const store = self.graphics_store orelse return;
 
     switch (cmd.delete_target) {
-        .all => store.deleteAllVisible(self.grid.rows),
-        .all_data => store.deleteAllVisible(self.grid.rows),
+        .all => store.deleteAllVisible(self.ring.screen_rows),
+        .all_data => store.deleteAllVisible(self.ring.screen_rows),
         .by_id => store.deletePlacementsByImageId(cmd.image_id),
         .by_id_data => store.removeImage(cmd.image_id),
         .by_id_placement => {

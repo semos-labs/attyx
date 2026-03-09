@@ -6,7 +6,7 @@ pub fn startHyperlink(self: *TerminalState, uri: []const u8) void {
         self.pen_link_id = 0;
         return;
     }
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
     const uri_copy = alloc.dupe(u8, uri) catch return;
     self.link_uris.append(alloc, uri_copy) catch {
         alloc.free(uri_copy);
@@ -21,7 +21,7 @@ pub fn endHyperlink(self: *TerminalState) void {
 }
 
 pub fn setTitle(self: *TerminalState, title_slice: []const u8) void {
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
     // Detect whether the title actually changed before replacing.
     const changed = if (self.title) |old|
         old.len != title_slice.len or !std.mem.eql(u8, old, title_slice)
@@ -38,7 +38,7 @@ pub fn setTitle(self: *TerminalState, title_slice: []const u8) void {
 }
 
 pub fn setCwd(self: *TerminalState, uri: []const u8) void {
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
     if (self.working_directory) |old| alloc.free(old);
     if (uri.len == 0) {
         self.working_directory = null;
@@ -48,7 +48,7 @@ pub fn setCwd(self: *TerminalState, uri: []const u8) void {
 }
 
 pub fn setShellPath(self: *TerminalState, path: []const u8) void {
-    const alloc = self.grid.allocator;
+    const alloc = self.ring.allocator;
     if (self.shell_path) |old| alloc.free(old);
     if (path.len == 0) {
         self.shell_path = null;

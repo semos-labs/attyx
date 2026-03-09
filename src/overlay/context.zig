@@ -1,10 +1,8 @@
 const std = @import("std");
-const grid_mod = @import("../term/grid.zig");
-const scrollback_mod = @import("../term/scrollback.zig");
+const ring_mod = @import("../term/ring.zig");
 const extract = @import("context_extract.zig");
 
-const Grid = grid_mod.Grid;
-const Scrollback = scrollback_mod.Scrollback;
+const RingBuffer = ring_mod.RingBuffer;
 
 /// Why the AI overlay was invoked. Determines which context fields are
 /// populated and how the backend (future) interprets them.
@@ -161,13 +159,14 @@ pub const ContextBundle = struct {
 
 /// Capture a context bundle from terminal state. Called from the PTY thread.
 ///
+/// `ring`: the unified ring buffer (scrollback + visible screen).
+/// `cursor_row`: current cursor screen row.
 /// `title_buf` / `title_len`: the terminal's current OSC 2 title.
 /// `sel_bounds`: non-null when a selection is active.
-/// `excerpt_lines`: how many recent lines to include (scrollback + grid).
+/// `excerpt_lines`: how many recent lines to include (scrollback + screen).
 pub fn captureContext(
     allocator: std.mem.Allocator,
-    grid: *const Grid,
-    sb: *const Scrollback,
+    ring: *const RingBuffer,
     cursor_row: usize,
     title_buf: ?[*]const u8,
     title_len: usize,
@@ -188,7 +187,7 @@ pub fn captureContext(
     // Selection text
     var selection_text: ?[]u8 = null;
     if (sel_bounds) |sel| {
-        selection_text = try extract.extractSelectionText(allocator, grid, sel);
+        selection_text = try extract.extractSelectionText(allocator, ring, sel);
         if (selection_text.?.len == 0) {
             allocator.free(selection_text.?);
             selection_text = null;
@@ -200,7 +199,7 @@ pub fn captureContext(
     var scrollback_excerpt: ?[]u8 = null;
     var scrollback_line_count: u16 = 0;
     if (!alt_active and excerpt_lines > 0) {
-        const result = try extract.extractScrollbackExcerpt(allocator, grid, sb, excerpt_lines);
+        const result = try extract.extractScrollbackExcerpt(allocator, ring, excerpt_lines);
         scrollback_line_count = result.line_count;
         if (result.text.len > 0) {
             scrollback_excerpt = result.text;
@@ -212,8 +211,8 @@ pub fn captureContext(
 
     // Cursor line
     var cursor_line: ?[]u8 = null;
-    if (cursor_row < grid.rows) {
-        cursor_line = try extract.extractLineFromGrid(allocator, grid, cursor_row);
+    if (cursor_row < ring.screen_rows) {
+        cursor_line = try extract.extractLineFromRing(allocator, ring, cursor_row);
         if (cursor_line.?.len == 0) {
             allocator.free(cursor_line.?);
             cursor_line = null;
@@ -227,8 +226,8 @@ pub fn captureContext(
         .scrollback_excerpt = scrollback_excerpt,
         .scrollback_line_count = scrollback_line_count,
         .cursor_line = cursor_line,
-        .grid_cols = @intCast(grid.cols),
-        .grid_rows = @intCast(grid.rows),
+        .grid_cols = @intCast(ring.cols),
+        .grid_rows = @intCast(ring.screen_rows),
         .alt_active = alt_active,
         .allocator = allocator,
     };
@@ -239,18 +238,15 @@ pub fn captureContext(
 // ---------------------------------------------------------------------------
 
 test "captureContext: basic bundle" {
-    var g = try Grid.init(std.testing.allocator, 3, 10);
-    defer g.deinit();
-    var sb = try Scrollback.init(std.testing.allocator, 10, 10);
-    defer sb.deinit();
+    var ring = try RingBuffer.init(std.testing.allocator, 3, 10, 10);
+    defer ring.deinit();
 
-    g.setCell(1, 0, .{ .char = '$' });
-    g.setCell(1, 1, .{ .char = ' ' });
+    ring.setScreenCell(1, 0, .{ .char = '$' });
+    ring.setScreenCell(1, 1, .{ .char = ' ' });
 
     var bundle = try captureContext(
         std.testing.allocator,
-        &g,
-        &sb,
+        &ring,
         1, // cursor on row 1
         null,
         0,
@@ -269,19 +265,16 @@ test "captureContext: basic bundle" {
 }
 
 test "captureContext: with title and selection" {
-    var g = try Grid.init(std.testing.allocator, 3, 10);
-    defer g.deinit();
-    var sb = try Scrollback.init(std.testing.allocator, 10, 10);
-    defer sb.deinit();
+    var ring = try RingBuffer.init(std.testing.allocator, 3, 10, 10);
+    defer ring.deinit();
 
-    g.setCell(0, 0, .{ .char = 'H' });
-    g.setCell(0, 1, .{ .char = 'i' });
+    ring.setScreenCell(0, 0, .{ .char = 'H' });
+    ring.setScreenCell(0, 1, .{ .char = 'i' });
 
     const title_str = "vim";
     var bundle = try captureContext(
         std.testing.allocator,
-        &g,
-        &sb,
+        &ring,
         0,
         title_str.ptr,
         title_str.len,
@@ -297,18 +290,15 @@ test "captureContext: with title and selection" {
 }
 
 test "ContextBundle: summaryLine formatting" {
-    var g = try Grid.init(std.testing.allocator, 2, 5);
-    defer g.deinit();
-    var sb = try Scrollback.init(std.testing.allocator, 10, 5);
-    defer sb.deinit();
+    var ring = try RingBuffer.init(std.testing.allocator, 2, 5, 10);
+    defer ring.deinit();
 
-    g.setCell(0, 0, .{ .char = 'X' });
+    ring.setScreenCell(0, 0, .{ .char = 'X' });
 
     const title_str = "bash";
     var bundle = try captureContext(
         std.testing.allocator,
-        &g,
-        &sb,
+        &ring,
         0,
         title_str.ptr,
         title_str.len,
@@ -353,17 +343,14 @@ test "ContextBundle: serializeDiagnostics" {
 }
 
 test "ContextBundle: deinit frees correctly" {
-    var g = try Grid.init(std.testing.allocator, 2, 5);
-    defer g.deinit();
-    var sb = try Scrollback.init(std.testing.allocator, 10, 5);
-    defer sb.deinit();
+    var ring = try RingBuffer.init(std.testing.allocator, 2, 5, 10);
+    defer ring.deinit();
 
-    g.setCell(0, 0, .{ .char = 'A' });
+    ring.setScreenCell(0, 0, .{ .char = 'A' });
 
     var bundle = try captureContext(
         std.testing.allocator,
-        &g,
-        &sb,
+        &ring,
         0,
         null,
         0,
@@ -371,6 +358,6 @@ test "ContextBundle: deinit frees correctly" {
         2,
         false,
     );
-    // Explicit deinit — testing allocator will catch leaks
+    // Explicit deinit -- testing allocator will catch leaks
     bundle.deinit();
 }

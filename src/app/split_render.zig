@@ -84,42 +84,17 @@ fn fillRegion(
     theme: *const Theme,
 ) void {
     const vp = eng.state.viewport_offset;
-    const eng_cols = eng.state.grid.cols;
-    const eng_rows = eng.state.grid.rows;
-    const sb = &eng.state.scrollback;
+    const eng_cols = eng.state.ring.cols;
+    const eng_rows = eng.state.ring.screen_rows;
 
     const copy_rows = @min(rect.rows, eng_rows);
     const copy_cols = @min(rect.cols, eng_cols);
 
-    if (vp == 0) {
-        for (0..copy_rows) |row| {
-            const dst_offset = @as(usize, rect.row + @as(u16, @intCast(row))) * @as(usize, grid_cols) + rect.col;
-            for (0..copy_cols) |col| {
-                cells[dst_offset + col] = cellToRenderCell(
-                    eng.state.grid.cells[row * eng_cols + col],
-                    theme,
-                );
-            }
-        }
-    } else {
-        const effective_vp = @min(vp, sb.count);
-        for (0..copy_rows) |row| {
-            const dst_offset = @as(usize, rect.row + @as(u16, @intCast(row))) * @as(usize, grid_cols) + rect.col;
-            if (row < effective_vp) {
-                const sb_line_idx = sb.count - effective_vp + row;
-                const sb_cells = sb.getLine(sb_line_idx);
-                for (0..copy_cols) |col| {
-                    cells[dst_offset + col] = cellToRenderCell(sb_cells[col], theme);
-                }
-            } else {
-                const grid_row = row - effective_vp;
-                for (0..copy_cols) |col| {
-                    cells[dst_offset + col] = cellToRenderCell(
-                        eng.state.grid.cells[grid_row * eng_cols + col],
-                        theme,
-                    );
-                }
-            }
+    for (0..copy_rows) |row| {
+        const dst_offset = @as(usize, rect.row + @as(u16, @intCast(row))) * @as(usize, grid_cols) + rect.col;
+        const row_cells = eng.state.ring.viewportRow(vp, row);
+        for (0..copy_cols) |col| {
+            cells[dst_offset + col] = cellToRenderCell(row_cells[col], theme);
         }
     }
 }

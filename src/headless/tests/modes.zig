@@ -199,10 +199,10 @@ test "attr: auto-wrap off keeps cursor at last column" {
     engine.feed("\x1b[?7l");
     engine.feed("ABCDE");
     // With auto-wrap off, D writes at col 3, E overwrites col 3.
-    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, 'C'), engine.state.grid.getCell(0, 2).char);
-    try std.testing.expectEqual(@as(u21, 'E'), engine.state.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(0, 3).char);
     // Cursor stayed on row 0.
     try std.testing.expectEqual(@as(usize, 0), engine.state.cursor.row);
 }

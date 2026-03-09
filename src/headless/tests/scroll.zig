@@ -191,16 +191,16 @@ test "reverse index at top of region scrolls down" {
     var t = try TerminalState.init(alloc, 5, 2, 100);
     defer t.deinit();
 
-    t.grid.setCell(1, 0, .{ .char = 'B' });
-    t.grid.setCell(2, 0, .{ .char = 'C' });
-    t.grid.setCell(3, 0, .{ .char = 'D' });
+    t.ring.setScreenCell(1, 0, .{ .char = 'B' });
+    t.ring.setScreenCell(2, 0, .{ .char = 'C' });
+    t.ring.setScreenCell(3, 0, .{ .char = 'D' });
     t.scroll_top = 1;
     t.scroll_bottom = 3;
     t.cursor.row = 1;
     t.apply(.reverse_index);
 
     try std.testing.expectEqual(@as(usize, 1), t.cursor.row);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(2, 0).char);
-    try std.testing.expectEqual(@as(u21, 'C'), t.grid.getCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), t.ring.getScreenCell(3, 0).char);
 }

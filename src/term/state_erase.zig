@@ -5,38 +5,44 @@ const TerminalState = @import("state.zig").TerminalState;
 const Cell = grid_mod.Cell;
 
 pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
-    const cols = self.grid.cols;
+    const cols = self.ring.cols;
+    const rows = self.ring.screen_rows;
     switch (mode) {
         .to_end => {
-            const start = self.cursor.row * cols + self.cursor.col;
-            @memset(self.grid.cells[start..], Cell{});
-            for (self.cursor.row..self.grid.rows) |r| {
-                self.grid.row_wrapped[r] = false;
+            // Clear from cursor to end of screen
+            // Clear rest of current row
+            const row_cells = self.ring.getScreenRowMut(self.cursor.row);
+            @memset(row_cells[self.cursor.col..], Cell{});
+            self.ring.setScreenWrapped(self.cursor.row, false);
+            // Clear all rows below
+            for (self.cursor.row + 1..rows) |r| {
+                self.ring.clearScreenRow(r);
             }
-            self.dirty.markRange(self.cursor.row, self.grid.rows - 1);
+            self.dirty.markRange(self.cursor.row, rows - 1);
         },
         .to_start => {
-            const end = self.cursor.row * cols + self.cursor.col + 1;
-            @memset(self.grid.cells[0..end], Cell{});
-            for (0..self.cursor.row + 1) |r| {
-                self.grid.row_wrapped[r] = false;
+            // Clear from start of screen to cursor
+            for (0..self.cursor.row) |r| {
+                self.ring.clearScreenRow(r);
             }
+            // Clear current row up to and including cursor
+            const row_cells = self.ring.getScreenRowMut(self.cursor.row);
+            @memset(row_cells[0 .. self.cursor.col + 1], Cell{});
+            self.ring.setScreenWrapped(self.cursor.row, false);
             self.dirty.markRange(0, self.cursor.row);
         },
         .all => {
             if (!self.alt_active) {
-                // If the screen has visible content, save it to
-                // scrollback and pin the cursor to the bottom so
-                // the shell's next prompt lands there (e.g. `clear`).
+                // Save visible content to scrollback by advancing the screen.
                 var last_content_row: usize = 0;
                 var has_content = false;
                 {
-                    var r: usize = self.grid.rows;
+                    var r: usize = rows;
                     while (r > 0) {
                         r -= 1;
-                        const base = r * cols;
+                        const row_cells = self.ring.getScreenRow(r);
                         for (0..cols) |c| {
-                            if (!grid_mod.isDefaultCell(self.grid.cells[base + c])) {
+                            if (!grid_mod.isDefaultCell(row_cells[c])) {
                                 last_content_row = r;
                                 has_content = true;
                                 break;
@@ -46,40 +52,42 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
                     }
                 }
                 if (has_content) {
-                    for (0..last_content_row + 1) |r| {
-                        const start = r * cols;
-                        self.scrollback.pushLine(self.grid.cells[start .. start + cols], self.grid.row_wrapped[r]);
+                    // Advance screen N times to push content rows into scrollback.
+                    for (0..last_content_row + 1) |_| {
+                        _ = self.ring.advanceScreen();
                     }
                 }
             }
-            @memset(self.grid.cells, Cell{});
-            @memset(self.grid.row_wrapped[0..self.grid.rows], false);
-            self.dirty.markAll(self.grid.rows);
+            // Clear all screen rows
+            for (0..rows) |r| {
+                self.ring.clearScreenRow(r);
+            }
+            self.dirty.markAll(rows);
         },
         .scrollback => {
             // CSI 3 J — Erase Saved Lines: clear scrollback buffer.
             if (!self.alt_active) {
-                self.scrollback.clear();
+                self.ring.clearScrollback();
                 self.viewport_offset = 0;
             }
-            self.dirty.markAll(self.grid.rows);
+            self.dirty.markAll(rows);
         },
     }
 }
 
 pub fn eraseInLine(self: *TerminalState, mode: actions_mod.EraseMode) void {
-    const cols = self.grid.cols;
-    const row_start = self.cursor.row * cols;
+    const row_cells = self.ring.getScreenRowMut(self.cursor.row);
     switch (mode) {
         .to_end => {
-            @memset(self.grid.cells[row_start + self.cursor.col .. row_start + cols], Cell{});
-            self.grid.row_wrapped[self.cursor.row] = false;
+            @memset(row_cells[self.cursor.col..], Cell{});
+            self.ring.setScreenWrapped(self.cursor.row, false);
         },
         .to_start => {
-            @memset(self.grid.cells[row_start .. row_start + self.cursor.col + 1], Cell{});
+            @memset(row_cells[0 .. self.cursor.col + 1], Cell{});
         },
         .all => {
-            self.grid.clearRow(self.cursor.row);
+            @memset(row_cells, Cell{});
+            self.ring.setScreenWrapped(self.cursor.row, false);
         },
         .scrollback => {},
     }

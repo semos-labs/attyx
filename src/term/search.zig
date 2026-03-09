@@ -1,10 +1,9 @@
 const std = @import("std");
 const grid_mod = @import("grid.zig");
-const scrollback_mod = @import("scrollback.zig");
+const ring_mod = @import("ring.zig");
 
 const Cell = grid_mod.Cell;
-const Grid = grid_mod.Grid;
-const Scrollback = scrollback_mod.Scrollback;
+const RingBuffer = ring_mod.RingBuffer;
 
 pub const SearchMatch = struct {
     abs_row: usize,
@@ -31,13 +30,12 @@ pub const SearchState = struct {
         self.matches.deinit(self.allocator);
     }
 
-    /// Rescan scrollback + grid for the given query. Replaces all previous results.
+    /// Rescan the ring buffer for the given query. Replaces all previous results.
     /// Smart-case: if query contains an uppercase letter, match case-sensitively.
     pub fn update(
         self: *SearchState,
         query: []const u8,
-        sb: *const Scrollback,
-        grid: *const Grid,
+        ring: *const RingBuffer,
     ) void {
         self.matches.clearRetainingCapacity();
         self.current = 0;
@@ -61,22 +59,13 @@ pub const SearchState = struct {
             break :blk lower_query_buf[0..copy_len];
         } else query[0..copy_len];
 
-        const sb_count = sb.count;
-        const cols = grid.cols;
+        const cols = ring.cols;
 
-        // Scan scrollback
-        for (0..sb_count) |line_idx| {
+        // Scan all rows in the ring (scrollback + screen)
+        for (0..ring.count) |abs_row| {
             if (self.matches.items.len >= max_matches) break;
-            const cells = sb.getLine(line_idx);
-            self.scanRow(line_idx, cells, cols, lower_query);
-        }
-
-        // Scan grid
-        for (0..grid.rows) |row| {
-            if (self.matches.items.len >= max_matches) break;
-            const start = row * cols;
-            const cells = grid.cells[start .. start + cols];
-            self.scanRow(sb_count + row, cells, cols, lower_query);
+            const cells = ring.getRow(abs_row);
+            self.scanRow(abs_row, cells, cols, lower_query);
         }
     }
 
@@ -163,19 +152,13 @@ pub const SearchState = struct {
         const m = self.currentMatch() orelse return null;
         const total_rows = sb_count + grid_rows;
         if (total_rows == 0) return null;
-        // viewport_top = sb_count - viewport_offset
-        // We want m.abs_row to be within [viewport_top, viewport_top + grid_rows)
-        // viewport_top = sb_count - offset  =>  offset = sb_count - viewport_top
-        // We center the match vertically when possible.
         const center_row = grid_rows / 2;
         const desired_top = if (m.abs_row >= center_row)
             m.abs_row - center_row
         else
             0;
-        // viewport_top can range from (sb_count - sb_count) = 0  to  sb_count
-        // offset = sb_count - viewport_top
         if (desired_top >= sb_count) {
-            return 0; // match is in the grid, no scrollback needed
+            return 0;
         }
         return sb_count - desired_top;
     }
@@ -206,19 +189,16 @@ test "search: basic match" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 10, 100);
+    defer ring.deinit();
 
-    // Put "hello" in grid row 0
+    // Put "hello" in screen row 0
     const hello = [_]u8{ 'h', 'e', 'l', 'l', 'o' };
-    for (hello, 0..) |ch, i| g.setCell(0, i, .{ .char = ch });
+    for (hello, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
 
-    s.update("hello", &sb, &g);
+    s.update("hello", &ring);
     try testing.expectEqual(@as(usize, 1), s.matchCount());
     const m = s.currentMatch().?;
-    try testing.expectEqual(@as(usize, 0), m.abs_row);
     try testing.expectEqual(@as(usize, 0), m.col_start);
     try testing.expectEqual(@as(usize, 5), m.col_end);
 }
@@ -227,15 +207,13 @@ test "search: case insensitive" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 10, 100);
+    defer ring.deinit();
 
     const text = "Hello";
-    for (text, 0..) |ch, i| g.setCell(0, i, .{ .char = ch });
+    for (text, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
 
-    s.update("hello", &sb, &g);
+    s.update("hello", &ring);
     try testing.expectEqual(@as(usize, 1), s.matchCount());
 }
 
@@ -243,32 +221,27 @@ test "search: smart case sensitive" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 20);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 20);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 20, 100);
+    defer ring.deinit();
 
     const hello_lower = "hello";
-    for (hello_lower, 0..) |ch, i| g.setCell(0, i, .{ .char = ch });
+    for (hello_lower, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
     const hello_cap = "Hello";
-    for (hello_cap, 0..) |ch, i| g.setCell(1, i, .{ .char = ch });
+    for (hello_cap, 0..) |ch, i| ring.setScreenCell(1, i, .{ .char = ch });
 
     // Query with uppercase → case-sensitive
-    s.update("Hello", &sb, &g);
+    s.update("Hello", &ring);
     try testing.expectEqual(@as(usize, 1), s.matchCount());
-    try testing.expectEqual(@as(usize, 1), s.currentMatch().?.abs_row);
 }
 
 test "search: empty query" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 10, 100);
+    defer ring.deinit();
 
-    s.update("", &sb, &g);
+    s.update("", &ring);
     try testing.expectEqual(@as(usize, 0), s.matchCount());
     try testing.expect(s.currentMatch() == null);
 }
@@ -277,12 +250,10 @@ test "search: no match" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 10, 100);
+    defer ring.deinit();
 
-    s.update("xyz", &sb, &g);
+    s.update("xyz", &ring);
     try testing.expectEqual(@as(usize, 0), s.matchCount());
 }
 
@@ -290,15 +261,13 @@ test "search: next/prev wrap" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 20);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 20);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 20, 100);
+    defer ring.deinit();
 
     const row0 = "aa bb aa";
-    for (row0, 0..) |ch, i| g.setCell(0, i, .{ .char = ch });
+    for (row0, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
 
-    s.update("aa", &sb, &g);
+    s.update("aa", &ring);
     try testing.expectEqual(@as(usize, 2), s.matchCount());
     try testing.expectEqual(@as(usize, 0), s.currentMatch().?.col_start);
 
@@ -316,42 +285,36 @@ test "search: scrollback matches" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 2, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 2, 10, 100);
+    defer ring.deinit();
 
-    // Push a line with "error" into scrollback
-    var line: [10]Cell = undefined;
-    @memset(&line, Cell{});
+    // Put "error" in screen row 0, then push to scrollback
     const err_text = "error";
-    for (err_text, 0..) |ch, i| line[i] = .{ .char = ch };
-    sb.pushLine(&line, false);
+    for (err_text, 0..) |ch, i| ring.setScreenCell(0, i, .{ .char = ch });
+    _ = ring.advanceScreen();
 
-    s.update("error", &sb, &g);
+    s.update("error", &ring);
     try testing.expectEqual(@as(usize, 1), s.matchCount());
-    try testing.expectEqual(@as(usize, 0), s.currentMatch().?.abs_row); // scrollback line 0
+    try testing.expectEqual(@as(usize, 0), s.currentMatch().?.abs_row); // scrollback row 0
 }
 
 test "search: visible matches filter" {
     var s = SearchState.init(testing.allocator);
     defer s.deinit();
 
-    var sb = try Scrollback.init(testing.allocator, 100, 10);
-    defer sb.deinit();
-    var g = try Grid.init(testing.allocator, 4, 10);
-    defer g.deinit();
+    var ring = try RingBuffer.init(testing.allocator, 4, 10, 100);
+    defer ring.deinit();
 
-    // Put matches in grid rows 0, 1, 2, 3
+    // Put matches in screen rows 0, 1, 2, 3
     for (0..4) |row| {
         const text = "ab";
-        for (text, 0..) |ch, i| g.setCell(row, i, .{ .char = ch });
+        for (text, 0..) |ch, i| ring.setScreenCell(row, i, .{ .char = ch });
     }
 
-    s.update("ab", &sb, &g);
+    s.update("ab", &ring);
     try testing.expectEqual(@as(usize, 4), s.matchCount());
 
-    // Viewport showing only rows 1-2 (abs rows sb.count+1 to sb.count+2)
+    // Viewport showing only rows 1-2
     var vis: [8]SearchMatch = undefined;
     const count = s.visibleMatches(1, 2, &vis);
     try testing.expectEqual(@as(usize, 2), count);

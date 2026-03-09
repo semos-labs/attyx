@@ -103,8 +103,8 @@ test "engine feed produces same result as direct apply" {
     defer e.deinit();
 
     e.feed("Hi");
-    try std.testing.expectEqual(@as(u21, 'H'), e.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'i'), e.state.grid.getCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'H'), e.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'i'), e.state.ring.getScreenCell(0, 1).char);
     try std.testing.expectEqual(@as(usize, 2), e.state.cursor.col);
 }
 
@@ -114,10 +114,10 @@ test "literal Ptmux;] artifact is suppressed" {
     defer e.deinit();
 
     e.feed("AB" ++ "Ptmux;]" ++ "CD");
-    try std.testing.expectEqual(@as(u21, 'A'), e.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), e.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, 'C'), e.state.grid.getCell(0, 2).char);
-    try std.testing.expectEqual(@as(u21, 'D'), e.state.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'A'), e.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), e.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), e.state.ring.getScreenCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'D'), e.state.ring.getScreenCell(0, 3).char);
 }
 
 test "Ptmux;] filter works across feed boundaries" {
@@ -127,9 +127,9 @@ test "Ptmux;] filter works across feed boundaries" {
 
     e.feed("XPtmu");
     e.feed("x;]Y");
-    try std.testing.expectEqual(@as(u21, 'X'), e.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'Y'), e.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, ' '), e.state.grid.getCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'X'), e.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'Y'), e.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), e.state.ring.getScreenCell(0, 2).char);
 }
 
 test "partial Ptmux match flushes on mismatch" {
@@ -139,10 +139,10 @@ test "partial Ptmux match flushes on mismatch" {
 
     // "Ptm" doesn't complete the pattern — should be printed.
     e.feed("Ptm!");
-    try std.testing.expectEqual(@as(u21, 'P'), e.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 't'), e.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, 'm'), e.state.grid.getCell(0, 2).char);
-    try std.testing.expectEqual(@as(u21, '!'), e.state.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'P'), e.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 't'), e.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'm'), e.state.ring.getScreenCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, '!'), e.state.ring.getScreenCell(0, 3).char);
 }
 
 test "OSC 0 sets window title" {

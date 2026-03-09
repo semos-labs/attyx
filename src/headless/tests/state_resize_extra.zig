@@ -18,16 +18,16 @@ test "resize: scrollback migration on col change" {
         t.apply(.{ .control = .cr });
         for ("12345678") |ch| t.apply(.{ .print = ch });
     }
-    try std.testing.expect(t.scrollback.count > 0);
-    const sb_before = t.scrollback.count;
+    try std.testing.expect(t.ring.scrollbackCount() > 0);
+    const sb_before = t.ring.scrollbackCount();
 
     // Resize to different cols — scrollback should be reallocated
     try t.resize(4, 12);
 
     // Scrollback count should still be reasonable (not zero, preserved)
-    try std.testing.expect(t.scrollback.count > 0 or sb_before > 0);
-    try std.testing.expectEqual(@as(usize, 4), t.grid.rows);
-    try std.testing.expectEqual(@as(usize, 12), t.grid.cols);
+    try std.testing.expect(t.ring.scrollbackCount() > 0 or sb_before > 0);
+    try std.testing.expectEqual(@as(usize, 4), t.ring.screen_rows);
+    try std.testing.expectEqual(@as(usize, 12), t.ring.cols);
 }
 
 test "resize: alt screen resize no reflow" {
@@ -43,10 +43,10 @@ test "resize: alt screen resize no reflow" {
     try t.resize(4, 4);
 
     // First 4 chars should be on row 0 (no wrap to row 1 like reflow would)
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'D'), t.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), t.ring.getScreenCell(0, 3).char);
     // Row 1 should be blank (no reflow overflow)
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 0).char);
 }
 
 test "resize: reflow_on_resize = false skips reflow" {
@@ -60,10 +60,10 @@ test "resize: reflow_on_resize = false skips reflow" {
     // Shrink — should truncate, not reflow
     try t.resize(4, 4);
 
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'D'), t.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), t.ring.getScreenCell(0, 3).char);
     // No wrap into row 1
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 0).char);
 }
 
 test "resize: viewport_offset reset to 0" {
@@ -108,9 +108,9 @@ test "resize: right-aligned content stripped on shrink" {
     try t.resize(4, 20);
 
     // Left text preserved
-    try std.testing.expectEqual(@as(u21, 'H'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'O'), t.grid.getCell(0, 4).char);
+    try std.testing.expectEqual(@as(u21, 'H'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'O'), t.ring.getScreenCell(0, 4).char);
 
     // No wrapping on the prompt row
-    try std.testing.expect(!t.grid.row_wrapped[0]);
+    try std.testing.expect(!t.ring.getScreenWrapped(0));
 }
