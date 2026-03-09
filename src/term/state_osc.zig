@@ -1,3 +1,4 @@
+const std = @import("std");
 const TerminalState = @import("state.zig").TerminalState;
 
 pub fn startHyperlink(self: *TerminalState, uri: []const u8) void {
@@ -21,12 +22,19 @@ pub fn endHyperlink(self: *TerminalState) void {
 
 pub fn setTitle(self: *TerminalState, title_slice: []const u8) void {
     const alloc = self.ring.allocator;
+    // Detect whether the title actually changed before replacing.
+    const changed = if (self.title) |old|
+        old.len != title_slice.len or !std.mem.eql(u8, old, title_slice)
+    else
+        title_slice.len > 0;
+
     if (self.title) |old| alloc.free(old);
     if (title_slice.len == 0) {
         self.title = null;
-        return;
+    } else {
+        self.title = alloc.dupe(u8, title_slice) catch null;
     }
-    self.title = alloc.dupe(u8, title_slice) catch null;
+    if (changed) self.title_changed = true;
 }
 
 pub fn setCwd(self: *TerminalState, uri: []const u8) void {
