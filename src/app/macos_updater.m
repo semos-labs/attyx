@@ -533,7 +533,9 @@ static BOOL isPackageManaged(void) {
 static void doCheckSilent(void) {
     NSURL *url = [NSURL URLWithString:g_feedURL];
     if (!url) return;
-    [[NSURLSession.sharedSession dataTaskWithURL:url completionHandler:
+    NSURLRequest *req = [NSURLRequest requestWithURL:url
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:30];
+    [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:
       ^(NSData *data, NSURLResponse *resp, NSError *err) {
         if (err || !data) return;
         AttyxAppcastItem *item = [[AttyxAppcastParser new] parseData:data];
@@ -564,7 +566,9 @@ static void doCheckInteractive(void) {
         return;
     }
 
-    [[NSURLSession.sharedSession dataTaskWithURL:url completionHandler:
+    NSURLRequest *req = [NSURLRequest requestWithURL:url
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:30];
+    [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:
       ^(NSData *data, NSURLResponse *resp, NSError *err) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (err || !data) {
