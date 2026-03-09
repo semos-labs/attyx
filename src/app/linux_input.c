@@ -500,6 +500,35 @@ static void sendSgrMouse(int button, int col, int row, int press) {
     attyx_send_input((const uint8_t*)buf, len);
 }
 
+static void sendSgrMousePopup(int button, int col, int row, int press) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                       button, col, row, press ? 'M' : 'm');
+    attyx_popup_send_input((const uint8_t*)buf, len);
+}
+
+// Test if grid-space (col, row) is inside the popup bounds.
+// If inside, writes popup-local 1-based coordinates to outCol/outRow.
+static int popupHitTest(int col, int row, int *outCol, int *outRow) {
+    AttyxPopupDesc d = g_popup_desc;
+    if (!d.active) return 0;
+    // Popup is rendered at offY which includes g_grid_top_offset, so the
+    // visual row is shifted down. mouseToCell returns raw grid coords
+    // (row 0 = top of window), so we must account for that shift.
+    int vis_row = d.row + g_grid_top_offset;
+    if (col < d.col || col >= d.col + d.width) return 0;
+    if (row < vis_row || row >= vis_row + d.height) return 0;
+    int inner_col = col - d.col - d.content_col_off + 1;
+    int inner_row = row - vis_row - d.content_row_off + 1;
+    if (inner_col < 1) inner_col = 1;
+    if (inner_row < 1) inner_row = 1;
+    if (inner_col > d.inner_cols) inner_col = d.inner_cols;
+    if (inner_row > d.inner_rows) inner_row = d.inner_rows;
+    *outCol = inner_col;
+    *outRow = inner_row;
+    return 1;
+}
+
 static int mouseModifiers(int mods) {
     int m = 0;
     if (mods & GLFW_MOD_SHIFT)   m |= 4;
@@ -573,9 +602,42 @@ static void mouseXOffset(double mx, float *outOffX, float *outCellW) {
     *outCellW = cellW;
 }
 
+static int g_last_motion_col = -1, g_last_motion_row = -1;
+
 static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods) {
     double mx, my;
     glfwGetCursorPos(w, &mx, &my);
+
+    // Popup mouse routing: all clicks go to popup when active
+    if (g_popup_active) {
+        int col, row;
+        mouseToCell(mx, my, &col, &row);
+        int pc, pr;
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            if (action == GLFW_PRESS) {
+                if (popupHitTest(col, row, &pc, &pr) && g_popup_mouse_tracking && g_popup_mouse_sgr) {
+                    int btn = 0 | mouseModifiers(mods);
+                    sendSgrMousePopup(btn, pc, pr, 1);
+                    g_left_down = 1;
+                    g_last_motion_col = pc;
+                    g_last_motion_row = pr;
+                }
+            } else {
+                g_left_down = 0;
+                if (popupHitTest(col, row, &pc, &pr) && g_popup_mouse_tracking && g_popup_mouse_sgr) {
+                    int btn = 0 | mouseModifiers(mods);
+                    sendSgrMousePopup(btn, pc, pr, 0);
+                }
+            }
+        } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+            if (popupHitTest(col, row, &pc, &pr) && g_popup_mouse_tracking && g_popup_mouse_sgr)
+                sendSgrMousePopup(2 | mouseModifiers(mods), pc, pr, action == GLFW_PRESS);
+        } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
+            if (popupHitTest(col, row, &pc, &pr) && g_popup_mouse_tracking && g_popup_mouse_sgr)
+                sendSgrMousePopup(1 | mouseModifiers(mods), pc, pr, action == GLFW_PRESS);
+        }
+        return;
+    }
 
     // Context menu: consume all presses while open, then close.
     if (g_ctx_menu_open && action == GLFW_PRESS) {
@@ -794,10 +856,33 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
     }
 }
 
-static int g_last_motion_col = -1, g_last_motion_row = -1;
 
 static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     (void)w;
+    // Popup mouse routing: drag and move
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseToCell(mx, my, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                if (g_left_down && g_popup_mouse_tracking >= 2) {
+                    if (pc != g_last_motion_col || pr != g_last_motion_row) {
+                        sendSgrMousePopup(32, pc, pr, 1);
+                        g_last_motion_col = pc;
+                        g_last_motion_row = pr;
+                    }
+                } else if (!g_left_down && g_popup_mouse_tracking == 3) {
+                    if (pc != g_last_motion_col || pr != g_last_motion_row) {
+                        sendSgrMousePopup(35, pc, pr, 1);
+                        g_last_motion_col = pc;
+                        g_last_motion_row = pr;
+                    }
+                }
+            }
+        }
+        return;
+    }
     if (g_split_dragging && g_split_drag_active) {
         int col, row;
         mouseToCell(mx, my, &col, &row);
@@ -979,6 +1064,20 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
 
 static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
     (void)xoff;
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr && yoff != 0) {
+            double mx, my;
+            glfwGetCursorPos(w, &mx, &my);
+            int col, row;
+            mouseToCell(mx, my, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = (yoff > 0 ? 64 : 65);
+                sendSgrMousePopup(btn, pc, pr, 1);
+            }
+        }
+        return;
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         if (yoff == 0) return;
         double mx, my;
