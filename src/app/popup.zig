@@ -10,7 +10,7 @@ const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
 const Pane = @import("pane.zig").Pane;
-const Scrollback = attyx.Scrollback;
+const RingBuffer = attyx.RingBuffer;
 const theme_registry_mod = @import("../theme/registry.zig");
 const Theme = theme_registry_mod.Theme;
 
@@ -115,7 +115,7 @@ pub const PopupState = struct {
             }
             var argv: [8][:0]const u8 = undefined;
             for (tokens[0..tc], 0..) |t, i| argv[i] = t;
-            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, Scrollback.default_max_lines, .{
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, argv[0..tc], if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
                 .skip_shell_integration = true,
@@ -143,7 +143,7 @@ pub const PopupState = struct {
             defer allocator.free(cmd_z);
 
             const shell_argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
-            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, Scrollback.default_max_lines, .{
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
                 .skip_shell_integration = true,
@@ -223,11 +223,9 @@ pub const PopupState = struct {
                     // Content cell — map from engine grid
                     const inner_r = r - row_off;
                     const inner_c = col - col_off;
-                    const grid_idx = inner_r * self.cols + inner_c;
-                    var overlay = if (inner_r < self.rows and inner_c < self.cols and
-                        grid_idx < self.pane.engine.state.grid.cells.len)
+                    var overlay = if (inner_r < self.rows and inner_c < self.cols)
                     blk: {
-                        const cell = self.pane.engine.state.grid.cells[grid_idx];
+                        const cell = self.pane.engine.state.ring.getScreenCell(inner_r, inner_c);
                         // Only override bg for cells using the default (theme) bg;
                         // cells with explicit program-set colors stay as-is.
                         const eff_bg = if (cell.style.reverse) cell.style.fg else cell.style.bg;

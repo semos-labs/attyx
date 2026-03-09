@@ -666,7 +666,7 @@ pub fn run(
         .applied_cursor_blink = config.cursor_blink,
         .applied_cursor_trail = config.cursor_trail,
         .applied_font_ligatures = config.font_ligatures,
-        .applied_scrollback_lines = @intCast(tab_mgr.activePane().engine.state.scrollback.max_lines),
+        .applied_scrollback_lines = @intCast(tab_mgr.activePane().engine.state.ring.capacity - tab_mgr.activePane().engine.state.ring.screen_rows),
         .theme_registry = &theme_registry,
         .active_theme = initial_theme,
         .overlay_mgr = &overlay_mgr,

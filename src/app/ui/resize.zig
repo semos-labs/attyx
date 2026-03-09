@@ -59,7 +59,8 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
 
     // Forward resize to each session-backed pane on the daemon.
-    // Use each pane's actual split rect dimensions, not the full terminal size.
+    // Only send when the local debounce fires (pending_pty_resize is false)
+    // to avoid flooding the daemon's PTY with SIGWINCH during active resize.
     if (ctx.session_client) |sc| {
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             if (maybe_layout.*) |*lay| {
@@ -67,18 +68,24 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
                 const rlc = lay.collectLeaves(&rleaves);
                 for (rleaves[0..rlc]) |rleaf| {
                     if (rleaf.pane.daemon_pane_id) |dpid| {
-                        sc.sendPaneResize(dpid, rleaf.rect.rows, rleaf.rect.cols) catch {};
+                        if (!rleaf.pane.pending_pty_resize) {
+                            sc.sendPaneResize(dpid, rleaf.rect.rows, rleaf.rect.cols) catch {};
+                        }
                     }
                 }
             }
         }
     }
 
-    posix.nanosleep(0, 1_000_000);
-    // Drain local PTY data for the active pane (non-session mode)
+    // Drain local PTY data only if the shell has been notified of the new
+    // size (SIGWINCH already sent). When the PTY resize is debounced (active
+    // resizing), the shell hasn't written anything in response, so draining
+    // here would only pick up stale data from a previous SIGWINCH that the
+    // next reflow would treat as new content — causing prompt duplication.
     {
         const rpane = ctx.tab_mgr.activePane();
-        if (rpane.daemon_pane_id == null) {
+        if (rpane.daemon_pane_id == null and !rpane.pending_pty_resize) {
+            posix.nanosleep(0, 1_000_000);
             while (true) {
                 const n = rpane.pty.read(buf) catch break;
                 if (n == 0) break;
@@ -99,7 +106,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
             &ctx.active_theme,
         );
         const resize_rect = resize_layout.pool[resize_layout.focused].rect;
-        const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
+        const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + resize_rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
             @intCast(publish.ctxEngine(ctx).state.cursor.col + resize_rect.col),
@@ -108,7 +115,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     } else {
         const new_total = nr * nc;
         publish.fillCells(ctx.cells[0..new_total], publish.ctxEngine(ctx), new_total, &ctx.active_theme, null);
-        const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.scrollback.count);
+        const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
             @intCast(publish.ctxEngine(ctx).state.cursor.col),

@@ -58,7 +58,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
-    search.g_search = SearchState.init(publish.ctxEngine(ctx).state.grid.allocator);
+    search.g_search = SearchState.init(publish.ctxEngine(ctx).state.ring.allocator);
     defer {
         if (search.g_search) |*s| s.deinit();
         search.g_search = null;
@@ -104,6 +104,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     // cell buffer has content before the first drawFrame.
     if (ctx.session_client == null) {
         const startup_pane = ctx.tab_mgr.activePane();
+
         var startup_fds = [1]posix.pollfd{.{
             .fd = startup_pane.pty.master,
             .events = POLLIN,
@@ -112,7 +113,30 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Poll in short bursts: the shell may need a DA1 response (written
         // back from pane.feed → drainResponse → writeToPty) before it sends
         // the prompt, so we iterate to allow that round-trip.
+        //
+        // On each iteration, also check for window resize. WMs like aerospace
+        // reposition/resize the window right after launch. If the resize
+        // arrives mid-drain, apply it immediately (bypass debounce) so the
+        // PTY has the correct size before the shell draws its prompt.
         for (0..20) |_| {
+            // Check for WM resize on each drain iteration
+            {
+                var rr: c_int = 0;
+                var rc: c_int = 0;
+                if (c.attyx_check_resize(&rr, &rc) != 0) {
+                    const gaps = actions.computeSplitGaps();
+                    ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+                    ctx.grid_rows = @intCast(rr);
+                    ctx.grid_cols = @intCast(rc);
+                    const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                    ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
+                    // Send TIOCSWINSZ immediately so the shell starts at the
+                    // correct size — no debounce during startup.
+                    startup_pane.pty.resize(pty_rows, @intCast(rc)) catch {};
+                    startup_pane.pending_pty_resize = false;
+                    c.attyx_set_grid_size(rc, rr);
+                }
+            }
             startup_fds[0].revents = 0;
             _ = posix.poll(&startup_fds, 50) catch break;
             if (startup_fds[0].revents & POLLIN == 0) break;
@@ -127,7 +151,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Publish whatever the engine has to the cell buffer.
         {
             const eng = &startup_pane.engine;
-            const total = eng.state.grid.rows * eng.state.grid.cols;
+            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
             c.attyx_begin_cell_update();
             publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
             c.attyx_set_cursor(
@@ -326,17 +350,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Clear screen + scrollback (Cmd+K / Ctrl+Shift+K)
         if (@atomicRmw(i32, &input.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
             const eng = publish.ctxEngine(ctx);
-            const grid = &eng.state.grid;
             // Clear scrollback
-            eng.state.scrollback.clear();
+            eng.state.ring.clearScrollback();
             eng.state.viewport_offset = 0;
             // Clear screen
-            @memset(grid.cells, attyx.grid.Cell{});
-            @memset(grid.row_wrapped[0..grid.rows], false);
+            for (0..eng.state.ring.screen_rows) |r| {
+                eng.state.ring.clearScreenRow(r);
+                eng.state.ring.setScreenWrapped(r, false);
+            }
             // Move cursor home
             eng.state.cursor.row = 0;
             eng.state.cursor.col = 0;
-            eng.state.dirty.markAll(grid.rows);
+            eng.state.dirty.markAll(eng.state.ring.screen_rows);
             // Send form feed to shell so it redraws its prompt
             _ = posix.write(terminal.g_pty_master, "\x0c") catch {};
         }
@@ -386,6 +411,30 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         resize_mod.handleResize(ctx, &buf);
+        // Flush any debounced PTY resizes (SIGWINCH) across all panes.
+        // Engine state is resized immediately for correct display, but
+        // TIOCSWINSZ is throttled to avoid flooding shells with SIGWINCH
+        // during continuous window resizing.
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var flush_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const flush_lc = lay.collectLeaves(&flush_leaves);
+                for (flush_leaves[0..flush_lc]) |fleaf| {
+                    const was_pending = fleaf.pane.pending_pty_resize;
+                    const pr = fleaf.pane.pending_pty_rows;
+                    const pc = fleaf.pane.pending_pty_cols;
+                    fleaf.pane.flushPtyResize();
+                    // Forward to daemon if this flush actually sent TIOCSWINSZ
+                    if (was_pending and !fleaf.pane.pending_pty_resize) {
+                        if (fleaf.pane.daemon_pane_id) |dpid| {
+                            if (ctx.session_client) |sc| {
+                                sc.sendPaneResize(dpid, pr, pc) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Update viewport tracking after potential resize
         if (ctx.tab_mgr.count > 0) {
             if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
@@ -469,8 +518,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                         // engine NOW (right before feeding data) to prevent
                                         // blank-screen gap and duplicate content.
                                         if (result.pane.needs_engine_reinit) {
-                                            const rows: u16 = @intCast(result.pane.engine.state.grid.rows);
-                                            const cols: u16 = @intCast(result.pane.engine.state.grid.cols);
+                                            const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                                            const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
                                             const new_engine = @import("attyx").Engine.init(
                                                 result.pane.allocator,
                                                 rows,
@@ -538,14 +587,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                     }
                                 },
                                 .replay_end => |pane_id| {
-                                    // The daemon nudged the PTY size (+1 col) after
-                                    // replay to force a SIGWINCH.  Restore the correct
-                                    // size so the app gets a second resize event and
-                                    // repaints at the right dimensions.
+                                    // Force a SIGWINCH so the shell/TUI repaints at
+                                    // the correct size. Send shrink-then-restore
+                                    // back-to-back — the daemon processes both ioctls
+                                    // in sequence, so the shell sees the final correct
+                                    // size. This avoids the old approach where the
+                                    // daemon bumped cols+1 and the shell drew at the
+                                    // wrong width during the round-trip.
                                     if (findPaneByDaemonId(ctx, pane_id)) |result| {
-                                        const rows: u16 = @intCast(result.pane.engine.state.grid.rows);
-                                        const cols: u16 = @intCast(result.pane.engine.state.grid.cols);
+                                        const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                                        const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
                                         if (ctx.session_client) |scc| {
+                                            const nudged = if (cols > 1) cols - 1 else cols + 1;
+                                            scc.sendPaneResize(pane_id, rows, nudged) catch {};
                                             scc.sendPaneResize(pane_id, rows, cols) catch {};
                                         }
                                     }
@@ -677,7 +731,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 terminal.g_pane_rect_rows = @intCast(rect.rows);
                 terminal.g_pane_rect_cols = @intCast(rect.cols);
                 const eng = publish.ctxEngine(ctx);
-                const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+                const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
                     @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                     @intCast(eng.state.cursor.col + rect.col),
@@ -693,11 +747,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const eng = publish.ctxEngine(ctx);
                 const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw;
                 if (full_redraw) {
-                    eng.state.dirty.markAll(eng.state.grid.rows);
+                    eng.state.dirty.markAll(eng.state.ring.screen_rows);
                 }
-                const total = eng.state.grid.rows * eng.state.grid.cols;
+                const total = eng.state.ring.screen_rows * eng.state.ring.cols;
                 publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, &eng.state.dirty);
-                const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+                const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
                     @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
                     @intCast(eng.state.cursor.col),
@@ -966,8 +1020,8 @@ fn showLegacyDaemonOverlay(ctx: *PtyThreadCtx) void {
     const result = update_check.layoutLegacyDaemonCard(mgr.allocator) catch return;
 
     const eng = publish.ctxEngine(ctx);
-    const cols: u16 = @intCast(eng.state.grid.cols);
-    const rows: u16 = @intCast(eng.state.grid.rows);
+    const cols: u16 = @intCast(eng.state.ring.cols);
+    const rows: u16 = @intCast(eng.state.ring.screen_rows);
     const card_col = if (cols > result.width + 1) cols - result.width - 1 else 0;
     const card_row = if (rows > result.height + 1) rows - result.height - 1 else 0;
 

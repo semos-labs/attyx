@@ -146,8 +146,8 @@ test "attr: SGR 31m sets foreground to red" {
 
     engine.feed("\x1b[31mA\x1b[0mB");
 
-    const cell_a = engine.state.grid.getCell(0, 0);
-    const cell_b = engine.state.grid.getCell(0, 1);
+    const cell_a = engine.state.ring.getScreenCell(0, 0);
+    const cell_b = engine.state.ring.getScreenCell(0, 1);
     try std.testing.expectEqual(Color.red, cell_a.style.fg);
     try std.testing.expectEqual(Color.default, cell_b.style.fg);
 }
@@ -159,12 +159,12 @@ test "attr: SGR 0m resets all attributes" {
 
     engine.feed("\x1b[1;31;4mA\x1b[0mB");
 
-    const cell_a = engine.state.grid.getCell(0, 0);
+    const cell_a = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(Color.red, cell_a.style.fg);
     try std.testing.expect(cell_a.style.bold);
     try std.testing.expect(cell_a.style.underline);
 
-    const cell_b = engine.state.grid.getCell(0, 1);
+    const cell_b = engine.state.ring.getScreenCell(0, 1);
     try std.testing.expectEqual(Color.default, cell_b.style.fg);
     try std.testing.expect(!cell_b.style.bold);
     try std.testing.expect(!cell_b.style.underline);
@@ -177,7 +177,7 @@ test "attr: SGR sets foreground and background independently" {
 
     engine.feed("\x1b[32;43mA");
 
-    const cell = engine.state.grid.getCell(0, 0);
+    const cell = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(Color.green, cell.style.fg);
     try std.testing.expectEqual(Color.yellow, cell.style.bg);
 }
@@ -189,15 +189,15 @@ test "attr: SGR 39 resets fg, 49 resets bg" {
 
     engine.feed("\x1b[31;42mA\x1b[39mB\x1b[49mC");
 
-    const cell_a = engine.state.grid.getCell(0, 0);
+    const cell_a = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(Color.red, cell_a.style.fg);
     try std.testing.expectEqual(Color.green, cell_a.style.bg);
 
-    const cell_b = engine.state.grid.getCell(0, 1);
+    const cell_b = engine.state.ring.getScreenCell(0, 1);
     try std.testing.expectEqual(Color.default, cell_b.style.fg);
     try std.testing.expectEqual(Color.green, cell_b.style.bg);
 
-    const cell_c = engine.state.grid.getCell(0, 2);
+    const cell_c = engine.state.ring.getScreenCell(0, 2);
     try std.testing.expectEqual(Color.default, cell_c.style.fg);
     try std.testing.expectEqual(Color.default, cell_c.style.bg);
 }
@@ -209,15 +209,15 @@ test "attr: bold and underline flags" {
 
     engine.feed("\x1b[1mB\x1b[4mU\x1b[0mN");
 
-    const cell_b = engine.state.grid.getCell(0, 0);
+    const cell_b = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expect(cell_b.style.bold);
     try std.testing.expect(!cell_b.style.underline);
 
-    const cell_u = engine.state.grid.getCell(0, 1);
+    const cell_u = engine.state.ring.getScreenCell(0, 1);
     try std.testing.expect(cell_u.style.bold);
     try std.testing.expect(cell_u.style.underline);
 
-    const cell_n = engine.state.grid.getCell(0, 2);
+    const cell_n = engine.state.ring.getScreenCell(0, 2);
     try std.testing.expect(!cell_n.style.bold);
     try std.testing.expect(!cell_n.style.underline);
 }
@@ -388,5 +388,5 @@ test "golden: CSI SGR split across chunks preserves color" {
     defer engine.deinit();
     engine.feed("\x1b[3");
     engine.feed("1mAB");
-    try std.testing.expectEqual(Color.red, engine.state.grid.getCell(0, 0).style.fg);
+    try std.testing.expectEqual(Color.red, engine.state.ring.getScreenCell(0, 0).style.fg);
 }

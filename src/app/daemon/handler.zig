@@ -297,13 +297,6 @@ fn handleFocusPanes(
                 }
                 cl.sendPaneReplay(pane);
                 cl.sendReplayEnd(new_id);
-                // Force TUI apps to do a full repaint after session
-                // switch. Many frameworks (Node.js, React TUIs) only
-                // trigger a full redraw when the terminal size actually
-                // changes — a same-size SIGWINCH is ignored. Briefly
-                // shrink then restore the PTY size so the app sees a
-                // real resize event and invalidates its screen buffer.
-                pane.notifyRedraw();
             }
         }
     }

@@ -175,6 +175,11 @@
     if (!utf8) return;
     int len = (int)strlen(utf8);
 
+    if (g_sel_active) {
+        g_sel_active = 0;
+        attyx_mark_all_dirty();
+    }
+
     void (*send_fn)(const uint8_t*, int) =
         g_popup_active ? attyx_popup_send_input : attyx_send_input;
     if (g_bracketed_paste) {

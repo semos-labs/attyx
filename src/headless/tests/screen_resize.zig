@@ -15,12 +15,12 @@ test "resize: grow preserves content" {
 
     try t.resize(4, 8);
 
-    try std.testing.expectEqual(@as(usize, 4), t.grid.rows);
-    try std.testing.expectEqual(@as(usize, 8), t.grid.cols);
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 4).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(3, 0).char);
+    try std.testing.expectEqual(@as(usize, 4), t.ring.screen_rows);
+    try std.testing.expectEqual(@as(usize, 8), t.ring.cols);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 4).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(3, 0).char);
 }
 
 test "resize: shrink reflows content" {
@@ -40,15 +40,15 @@ test "resize: shrink reflows content" {
 
     try t.resize(4, 3);
 
-    try std.testing.expectEqual(@as(usize, 4), t.grid.rows);
-    try std.testing.expectEqual(@as(usize, 3), t.grid.cols);
+    try std.testing.expectEqual(@as(usize, 4), t.ring.screen_rows);
+    try std.testing.expectEqual(@as(usize, 3), t.ring.cols);
     // "ABCD" reflows: row 0 = "ABC" (wrapped), row 1 = "D"
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, 'C'), t.grid.getCell(0, 2).char);
-    try std.testing.expect(t.grid.row_wrapped[0]);
-    try std.testing.expectEqual(@as(u21, 'D'), t.grid.getCell(1, 0).char);
-    try std.testing.expect(!t.grid.row_wrapped[1]);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), t.ring.getScreenCell(0, 2).char);
+    try std.testing.expect(t.ring.getScreenWrapped(0));
+    try std.testing.expectEqual(@as(u21, 'D'), t.ring.getScreenCell(1, 0).char);
+    try std.testing.expect(!t.ring.getScreenWrapped(1));
 }
 
 test "resize: shrink then grow restores content" {
@@ -68,12 +68,12 @@ test "resize: shrink then grow restores content" {
     t.cursor.col = 0;
 
     try t.resize(4, 3);
-    try std.testing.expectEqual(@as(u21, 'D'), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), t.ring.getScreenCell(1, 0).char);
 
     try t.resize(4, 8);
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'F'), t.grid.getCell(0, 5).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'F'), t.ring.getScreenCell(0, 5).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 0).char);
 }
 
 test "resize: cursor mapped through reflow" {
@@ -151,9 +151,9 @@ test "resize: both buffers resized" {
 
     try t.resize(6, 12);
 
-    try std.testing.expectEqual(@as(usize, 6), t.grid.rows);
-    try std.testing.expectEqual(@as(usize, 12), t.grid.cols);
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(usize, 6), t.ring.screen_rows);
+    try std.testing.expectEqual(@as(usize, 12), t.ring.cols);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
     try std.testing.expectEqual(@as(usize, 6), t.inactive_grid.rows);
     try std.testing.expectEqual(@as(usize, 12), t.inactive_grid.cols);
     try std.testing.expectEqual(@as(u21, 'M'), t.inactive_grid.getCell(0, 0).char);
@@ -181,12 +181,12 @@ test "resize: same size is no-op" {
     defer t.deinit();
 
     t.apply(.{ .print = 'X' });
-    const ptr_before = t.grid.cells.ptr;
+    const ptr_before = t.ring.cells.ptr;
 
     try t.resize(4, 8);
 
-    try std.testing.expectEqual(ptr_before, t.grid.cells.ptr);
-    try std.testing.expectEqual(@as(u21, 'X'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(ptr_before, t.ring.cells.ptr);
+    try std.testing.expectEqual(@as(u21, 'X'), t.ring.getScreenCell(0, 0).char);
 }
 
 test "resize: marks all rows dirty" {

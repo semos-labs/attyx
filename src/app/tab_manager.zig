@@ -31,8 +31,8 @@ pub const TabManager = struct {
         // Set initial rects from the pane's engine dimensions so splitPane()
         // can read correct rects even before the first window resize event.
         sl.layout(
-            @intCast(initial_pane.engine.state.grid.rows),
-            @intCast(initial_pane.engine.state.grid.cols),
+            @intCast(initial_pane.engine.state.ring.screen_rows),
+            @intCast(initial_pane.engine.state.ring.cols),
         );
         mgr.tabs[0] = sl;
         mgr.count = 1;

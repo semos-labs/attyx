@@ -12,7 +12,7 @@ test "search: find text in engine grid" {
     var s = SearchState.init(std.testing.allocator);
     defer s.deinit();
 
-    s.update("hello", &eng.state.scrollback, &eng.state.grid);
+    s.update("hello", &eng.state.ring);
     try std.testing.expectEqual(@as(usize, 2), s.matchCount());
 }
 
@@ -29,7 +29,7 @@ test "search: find text pushed into scrollback" {
     var s = SearchState.init(std.testing.allocator);
     defer s.deinit();
 
-    s.update("error", &eng.state.scrollback, &eng.state.grid);
+    s.update("error", &eng.state.ring);
     try std.testing.expect(s.matchCount() >= 2);
 }
 
@@ -44,7 +44,7 @@ test "search: navigation scrolls through matches" {
     var s = SearchState.init(std.testing.allocator);
     defer s.deinit();
 
-    s.update("aaa", &eng.state.scrollback, &eng.state.grid);
+    s.update("aaa", &eng.state.ring);
     try std.testing.expectEqual(@as(usize, 2), s.matchCount());
 
     const m0 = s.currentMatch().?;
@@ -69,10 +69,10 @@ test "search: viewport offset for current match" {
     var s = SearchState.init(std.testing.allocator);
     defer s.deinit();
 
-    s.update("target", &eng.state.scrollback, &eng.state.grid);
+    s.update("target", &eng.state.ring);
     try std.testing.expect(s.matchCount() >= 1);
 
-    const vp = s.viewportForCurrent(eng.state.scrollback.count, eng.state.grid.rows);
+    const vp = s.viewportForCurrent(eng.state.ring.scrollbackCount(), eng.state.ring.screen_rows);
     try std.testing.expect(vp != null);
 }
 
@@ -85,7 +85,7 @@ test "search: clear resets state" {
     var s = SearchState.init(std.testing.allocator);
     defer s.deinit();
 
-    s.update("hello", &eng.state.scrollback, &eng.state.grid);
+    s.update("hello", &eng.state.ring);
     try std.testing.expect(s.matchCount() > 0);
 
     s.clear();

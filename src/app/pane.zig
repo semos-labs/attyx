@@ -13,6 +13,12 @@ const logging = @import("../logging/log.zig");
 const terminal = @import("terminal.zig");
 const c = terminal.c;
 
+/// Minimum interval between PTY resize (TIOCSWINSZ/SIGWINCH) signals.
+/// During continuous window resizing, the engine state is updated every
+/// frame for correct display, but SIGWINCH is throttled to avoid flooding
+/// the shell with prompt redraws that create ghost content.
+const pty_resize_debounce_ns: i128 = 80 * std.time.ns_per_ms;
+
 pub const Pane = struct {
     engine: Engine,
     pty: Pty,
@@ -26,6 +32,11 @@ pub const Pane = struct {
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,
+    /// Debounced PTY resize: pending dimensions and timestamp of last TIOCSWINSZ.
+    pending_pty_rows: u16 = 0,
+    pending_pty_cols: u16 = 0,
+    pending_pty_resize: bool = false,
+    last_pty_resize_ns: i128 = 0,
 
     pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
         if (self.daemon_proc_name_len == 0) return null;
@@ -116,23 +127,40 @@ pub const Pane = struct {
     }
 
     pub fn resize(self: *Pane, rows: u16, cols: u16) void {
-        const old_rows = self.engine.state.grid.rows;
-        const old_cols = self.engine.state.grid.cols;
+        const old_rows = self.engine.state.ring.screen_rows;
+        const old_cols = self.engine.state.ring.cols;
         self.engine.state.resize(rows, cols) catch |err| {
             logging.err("resize", "state.resize({d}x{d}) failed: {}", .{ cols, rows, err });
         };
-        // Only send TIOCSWINSZ when the size actually changed to avoid
-        // redundant SIGWINCHs (splitPane + layout both call resize).
+        // Trailing-edge debounce: always defer TIOCSWINSZ during active
+        // resizing. The event loop's flushPtyResize() sends it once no
+        // resize has occurred for the debounce interval. This prevents
+        // the shell from being flooded with SIGWINCHs that cause prompt
+        // redraws to pile up as ghost content.
         if (rows != old_rows or cols != old_cols) {
-            self.pty.resize(rows, cols) catch {};
+            self.pending_pty_rows = rows;
+            self.pending_pty_cols = cols;
+            self.pending_pty_resize = true;
+            self.last_pty_resize_ns = std.time.nanoTimestamp();
+        }
+    }
+
+    /// Send any deferred PTY resize once resizing has stopped (no resize
+    /// events for the debounce interval). Called from the event loop.
+    pub fn flushPtyResize(self: *Pane) void {
+        if (!self.pending_pty_resize) return;
+        const now = std.time.nanoTimestamp();
+        if (now - self.last_pty_resize_ns >= pty_resize_debounce_ns) {
+            self.pty.resize(self.pending_pty_rows, self.pending_pty_cols) catch {};
+            self.pending_pty_resize = false;
         }
     }
 
     /// Force TIOCSWINSZ even if engine dimensions match. Used after split
     /// to guarantee SIGWINCH delivery to child processes like vim.
     pub fn forceNotifySize(self: *Pane) void {
-        const rows: u16 = @intCast(self.engine.state.grid.rows);
-        const cols: u16 = @intCast(self.engine.state.grid.cols);
+        const rows: u16 = @intCast(self.engine.state.ring.screen_rows);
+        const cols: u16 = @intCast(self.engine.state.ring.cols);
         self.pty.resize(rows, cols) catch {};
     }
 

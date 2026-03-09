@@ -3,7 +3,7 @@ const grid_mod = @import("grid.zig");
 const actions_mod = @import("actions.zig");
 const sgr_mod = @import("sgr.zig");
 const dirty_mod = @import("dirty.zig");
-const scrollback_mod = @import("scrollback.zig");
+const ring_mod = @import("ring.zig");
 const graphics_store_mod = @import("graphics_store.zig");
 const unicode = @import("unicode.zig");
 
@@ -13,6 +13,7 @@ pub const Color = grid_mod.Color;
 pub const Style = grid_mod.Style;
 pub const Action = actions_mod.Action;
 pub const ControlCode = actions_mod.ControlCode;
+pub const RingBuffer = ring_mod.RingBuffer;
 
 /// Colors the terminal reports in response to OSC 10/11/12/4 queries.
 /// Set by the app layer from the active theme; defaults match the
@@ -38,8 +39,8 @@ pub const SavedCursor = struct {
 };
 
 pub const TerminalState = struct {
-    // -- Active buffer state (the currently displayed screen) ---------------
-    grid: Grid,
+    // -- Active buffer: unified ring (scrollback + visible screen) ----------
+    ring: RingBuffer,
     cursor: Cursor = .{},
     pen: Style = .{},
     scroll_top: usize = 0,
@@ -47,7 +48,7 @@ pub const TerminalState = struct {
     saved_cursor: ?SavedCursor = null,
     pen_link_id: u32 = 0,
 
-    // -- Inactive buffer state (swapped on alt screen toggle) --------------
+    // -- Inactive buffer state (flat Grid for alt screen, no scrollback) ---
     inactive_grid: Grid,
     inactive_cursor: Cursor = .{},
     inactive_pen: Style = .{},
@@ -88,8 +89,7 @@ pub const TerminalState = struct {
     notify_body_len: usize = 0,
     notify_pending: bool = false,
 
-    // -- Scrollback (main screen only, not alt) ------------------------------
-    scrollback: scrollback_mod.Scrollback,
+    // -- Viewport offset (scrollback browsing) ------------------------------
     viewport_offset: usize = 0,
 
     // -- Kitty graphics protocol ---------------------------------------------
@@ -104,8 +104,6 @@ pub const TerminalState = struct {
     keypad_app_mode: bool = false,
     cursor_visible: bool = true,
     cursor_shape: actions_mod.CursorShape = .blinking_block,
-    /// DEC private mode 2026 — Synchronized Output Mode.
-    /// When true the renderer should defer painting until the mode is reset.
     synchronized_output: bool = false,
 
     /// Whether to reflow content on resize (configurable, default true).
@@ -114,8 +112,6 @@ pub const TerminalState = struct {
     /// Colors reported by OSC 10/11/12/4 queries (set from active theme).
     theme_colors: ThemeColors = .{},
 
-    /// When true, apply() drops all actions until a CR or LF arrives.
-    /// Used to suppress the shell echo of injected commands.
     suppress_echo: bool = false,
 
     /// Kitty keyboard protocol flags stack (max 16 entries).
@@ -123,29 +119,23 @@ pub const TerminalState = struct {
     kitty_kbd_stack_len: u4 = 0,
 
     pub fn init(allocator: std.mem.Allocator, rows: usize, cols: usize, scrollback_lines: usize) !TerminalState {
-        var main_grid = try Grid.init(allocator, rows, cols);
-        errdefer main_grid.deinit();
+        var main_ring = try RingBuffer.init(allocator, rows, cols, scrollback_lines);
+        errdefer main_ring.deinit();
         var alt_grid = try Grid.init(allocator, rows, cols);
         errdefer alt_grid.deinit();
-        const sb = try scrollback_mod.Scrollback.init(
-            allocator,
-            scrollback_lines,
-            cols,
-        );
         const gs = try allocator.create(graphics_store_mod.GraphicsStore);
         gs.* = graphics_store_mod.GraphicsStore.init(allocator);
         return .{
-            .grid = main_grid,
+            .ring = main_ring,
             .scroll_bottom = rows - 1,
             .inactive_grid = alt_grid,
             .inactive_scroll_bottom = rows - 1,
-            .scrollback = sb,
             .graphics_store = gs,
         };
     }
 
     pub fn deinit(self: *TerminalState) void {
-        const alloc = self.grid.allocator;
+        const alloc = self.ring.allocator;
         for (self.link_uris.items) |uri| alloc.free(uri);
         self.link_uris.deinit(alloc);
         if (self.title) |t| alloc.free(t);
@@ -155,8 +145,7 @@ pub const TerminalState = struct {
             gs.deinit();
             alloc.destroy(gs);
         }
-        self.scrollback.deinit();
-        self.grid.deinit();
+        self.ring.deinit();
         self.inactive_grid.deinit();
     }
 
@@ -170,7 +159,6 @@ pub const TerminalState = struct {
 
     /// Apply a single Action to the terminal state.
     pub fn apply(self: *TerminalState, action: Action) void {
-        // Suppress echoed command text until a CR or LF signals acceptance.
         if (self.suppress_echo) {
             if (action == .control and (action.control == .lf or action.control == .cr)) {
                 self.suppress_echo = false;
@@ -178,7 +166,6 @@ pub const TerminalState = struct {
             return;
         }
 
-        // Clear wrap_next for cursor-moving actions.
         switch (action) {
             .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify => {},
             else => {
@@ -186,7 +173,6 @@ pub const TerminalState = struct {
             },
         }
 
-        // Mark old cursor row dirty for cursor overlay (before action moves it).
         const old_cursor_row = self.cursor.row;
 
         switch (action) {
@@ -201,10 +187,10 @@ pub const TerminalState = struct {
             .cursor_abs => |abs| self.cursorAbsolute(abs),
             .cursor_rel => |rel| self.cursorRelative(rel),
             .cursor_col_abs => |col| {
-                self.cursor.col = @min(@as(usize, col), self.grid.cols - 1);
+                self.cursor.col = @min(@as(usize, col), self.ring.cols - 1);
             },
             .cursor_row_abs => |row| {
-                self.cursor.row = @min(@as(usize, row), self.grid.rows - 1);
+                self.cursor.row = @min(@as(usize, row), self.ring.screen_rows - 1);
             },
             .cursor_next_line => |n| {
                 self.cursorRelative(.{ .dir = .down, .n = n });
@@ -220,44 +206,44 @@ pub const TerminalState = struct {
                 self.dirty.mark(self.cursor.row);
             },
             .insert_lines => |n| {
-                self.grid.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                self.ring.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
                 self.dirty.markRange(self.cursor.row, self.scroll_bottom);
             },
             .delete_lines => |n| {
-                if (self.cursor.row == self.scroll_top) {
+                if (self.cursor.row == self.scroll_top and self.isFullScreenScroll()) {
                     const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.cursor.row + 1);
                     for (0..count) |_| {
-                        self.saveToScrollback();
-                        self.grid.scrollUpRegion(self.cursor.row, self.scroll_bottom);
+                        self.fullScreenScroll();
                     }
                     self.dirty.markRange(self.cursor.row, self.scroll_bottom);
                 } else {
-                    self.grid.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                    self.ring.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
                     self.dirty.markRange(self.cursor.row, self.scroll_bottom);
                 }
             },
             .insert_chars => |n| {
-                self.grid.insertChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.insertChars(self.cursor.row, self.cursor.col, @intCast(n));
                 self.dirty.mark(self.cursor.row);
             },
             .delete_chars => |n| {
-                self.grid.deleteChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.deleteChars(self.cursor.row, self.cursor.col, @intCast(n));
                 self.dirty.mark(self.cursor.row);
             },
             .erase_chars => |n| {
-                self.grid.eraseChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.eraseChars(self.cursor.row, self.cursor.col, @intCast(n));
                 self.dirty.mark(self.cursor.row);
             },
             .scroll_up => |n| {
                 const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.scroll_top + 1);
-                for (0..count) |_| {
-                    self.saveToScrollback();
-                    self.grid.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+                if (self.isFullScreenScroll()) {
+                    for (0..count) |_| self.fullScreenScroll();
+                } else {
+                    for (0..count) |_| self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom);
                 }
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .scroll_down => |n| {
-                self.grid.scrollDownRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
+                self.ring.scrollDownRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .sgr => |sgr| sgr_mod.applySgr(&self.pen, sgr),
@@ -287,7 +273,7 @@ pub const TerminalState = struct {
             .kitty_pop_flags => |n| self.kittyPopFlags(n),
             .kitty_query_flags => self.respondKittyFlags(),
             .inject_into_main => |data| self.appendInject(data),
-            .dcs_passthrough => {}, // handled by engine, never reaches here
+            .dcs_passthrough => {},
             .set_keypad_app_mode => self.keypad_app_mode = true,
             .reset_keypad_app_mode => self.keypad_app_mode = false,
             .query_color => |target| self.respondColorQuery(target),
@@ -295,7 +281,6 @@ pub const TerminalState = struct {
             .notify => |n| self.queueNotification(n.title, n.body),
         }
 
-        // Mark old + new cursor rows dirty for cursor overlay movement.
         if (self.cursor.row != old_cursor_row) {
             self.dirty.mark(old_cursor_row);
             self.dirty.mark(self.cursor.row);
@@ -309,15 +294,14 @@ pub const TerminalState = struct {
     const charDisplayWidth = unicode.charDisplayWidth;
 
     fn printChar(self: *TerminalState, char: u21) void {
-        // Zero-width characters: absorb into the previous cell as combining marks.
         if (isZeroWidth(char) or isCombiningMark(char)) {
             if (self.cursor.col > 0) {
                 const prev_col = self.cursor.col - 1;
-                const idx = self.cursor.row * self.grid.cols + prev_col;
-                if (self.grid.cells[idx].combining[0] == 0) {
-                    self.grid.cells[idx].combining[0] = char;
-                } else if (self.grid.cells[idx].combining[1] == 0) {
-                    self.grid.cells[idx].combining[1] = char;
+                const row_cells = self.ring.getScreenRowMut(self.cursor.row);
+                if (row_cells[prev_col].combining[0] == 0) {
+                    row_cells[prev_col].combining[0] = char;
+                } else if (row_cells[prev_col].combining[1] == 0) {
+                    row_cells[prev_col].combining[1] = char;
                 }
                 self.dirty.mark(self.cursor.row);
             }
@@ -326,7 +310,7 @@ pub const TerminalState = struct {
 
         if (self.wrap_next) {
             if (self.auto_wrap) {
-                self.grid.row_wrapped[self.cursor.row] = true;
+                self.ring.setScreenWrapped(self.cursor.row, true);
                 self.cursor.col = 0;
                 self.cursorDown();
             }
@@ -335,18 +319,15 @@ pub const TerminalState = struct {
 
         const width = charDisplayWidth(char);
 
-        self.grid.setCell(self.cursor.row, self.cursor.col, .{
+        self.ring.setScreenCell(self.cursor.row, self.cursor.col, .{
             .char = char,
             .style = self.pen,
             .link_id = self.pen_link_id,
         });
         self.dirty.mark(self.cursor.row);
 
-        if (width == 2 and self.cursor.col + 1 < self.grid.cols) {
-            // Place a blank continuation cell at col+1 to hold the second column
-            // of the wide glyph. This prevents subsequent narrow characters from
-            // overwriting the right half of the rendered 2-cell quad.
-            self.grid.setCell(self.cursor.row, self.cursor.col + 1, .{
+        if (width == 2 and self.cursor.col + 1 < self.ring.cols) {
+            self.ring.setScreenCell(self.cursor.row, self.cursor.col + 1, .{
                 .char = ' ',
                 .style = self.pen,
                 .link_id = self.pen_link_id,
@@ -354,7 +335,7 @@ pub const TerminalState = struct {
         }
 
         const advance: usize = width;
-        if (self.cursor.col + advance >= self.grid.cols) {
+        if (self.cursor.col + advance >= self.ring.cols) {
             self.wrap_next = self.auto_wrap;
         } else {
             self.cursor.col += advance;
@@ -379,32 +360,42 @@ pub const TerminalState = struct {
 
     fn tab(self: *TerminalState) void {
         const next_stop = ((self.cursor.col / 8) + 1) * 8;
-        self.cursor.col = @min(next_stop, self.grid.cols - 1);
+        self.cursor.col = @min(next_stop, self.ring.cols - 1);
     }
 
-    /// Save the top visible row to scrollback before it gets shifted out.
-    /// Only saves when on the main screen with scroll_top at row 0.
-    fn saveToScrollback(self: *TerminalState) void {
-        if (self.alt_active) return;
-        if (self.scroll_top != 0) return;
-        const row_cells = self.grid.cells[0..self.grid.cols];
-        self.scrollback.pushLine(row_cells, self.grid.row_wrapped[0]);
-        if (self.viewport_offset > 0) self.viewport_offset += 1;
+    /// Full-screen scroll: advance the ring window (zero-copy).
+    /// Old screen row 0 becomes scrollback, new bottom row is cleared.
+    fn fullScreenScroll(self: *TerminalState) void {
+        _ = self.ring.advanceScreen();
+        if (self.viewport_offset > 0) {
+            self.viewport_offset = @min(self.viewport_offset + 1, self.ring.scrollbackCount());
+        }
+    }
+
+    /// Returns true when a scroll should use zero-copy ring advance
+    /// (full-screen on main buffer with scroll region covering all rows).
+    fn isFullScreenScroll(self: *const TerminalState) bool {
+        return !self.alt_active and
+            self.scroll_top == 0 and
+            self.scroll_bottom == self.ring.screen_rows - 1;
     }
 
     fn cursorDown(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_bottom) {
-            self.saveToScrollback();
-            self.grid.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+            if (self.isFullScreenScroll()) {
+                self.fullScreenScroll();
+            } else {
+                self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+            }
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
-        } else if (self.cursor.row < self.grid.rows - 1) {
+        } else if (self.cursor.row < self.ring.screen_rows - 1) {
             self.cursor.row += 1;
         }
     }
 
     fn reverseIndex(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_top) {
-            self.grid.scrollDownRegion(self.scroll_top, self.scroll_bottom);
+            self.ring.scrollDownRegion(self.scroll_top, self.scroll_bottom);
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row > 0) {
             self.cursor.row -= 1;
@@ -414,16 +405,16 @@ pub const TerminalState = struct {
     // -- CSI cursor positioning --------------------------------------------
 
     fn cursorAbsolute(self: *TerminalState, abs: actions_mod.CursorAbs) void {
-        self.cursor.row = @min(@as(usize, abs.row), self.grid.rows - 1);
-        self.cursor.col = @min(@as(usize, abs.col), self.grid.cols - 1);
+        self.cursor.row = @min(@as(usize, abs.row), self.ring.screen_rows - 1);
+        self.cursor.col = @min(@as(usize, abs.col), self.ring.cols - 1);
     }
 
     fn cursorRelative(self: *TerminalState, rel: actions_mod.CursorRel) void {
         const n: usize = @intCast(rel.n);
         switch (rel.dir) {
             .up => self.cursor.row -|= n,
-            .down => self.cursor.row = @min(self.cursor.row +| n, self.grid.rows - 1),
-            .right => self.cursor.col = @min(self.cursor.col +| n, self.grid.cols - 1),
+            .down => self.cursor.row = @min(self.cursor.row +| n, self.ring.screen_rows - 1),
+            .right => self.cursor.col = @min(self.cursor.col +| n, self.ring.cols - 1),
             .left => self.cursor.col -|= n,
         }
     }
@@ -439,7 +430,7 @@ pub const TerminalState = struct {
     // -- DECSTBM -----------------------------------------------------------
 
     fn setScrollRegion(self: *TerminalState, region: actions_mod.ScrollRegion) void {
-        const rows = self.grid.rows;
+        const rows = self.ring.screen_rows;
         const top_1: usize = if (region.top == 0) 1 else @intCast(@min(region.top, @as(u16, @intCast(rows))));
         const bottom_1: usize = if (region.bottom == 0) rows else @intCast(@min(region.bottom, @as(u16, @intCast(rows))));
 
@@ -530,7 +521,6 @@ pub const TerminalState = struct {
 
     // -- Kitty keyboard protocol ---------------------------------------------
 
-    /// Return the currently active kitty keyboard flags (top of stack, or 0).
     pub fn kittyFlags(self: *const TerminalState) u5 {
         if (self.kitty_kbd_stack_len == 0) return 0;
         return self.kitty_kbd_flags[self.kitty_kbd_stack_len - 1];
@@ -541,7 +531,6 @@ pub const TerminalState = struct {
             self.kitty_kbd_flags[self.kitty_kbd_stack_len] = flags;
             self.kitty_kbd_stack_len += 1;
         } else {
-            // Stack full — shift entries down and push at top
             for (0..15) |i| {
                 self.kitty_kbd_flags[i] = self.kitty_kbd_flags[i + 1];
             }
@@ -569,8 +558,6 @@ pub const TerminalState = struct {
     pub const respondColorQuery = @import("state_report.zig").respondColorQuery;
     pub const respondPaletteColorQuery = @import("state_report.zig").respondPaletteColorQuery;
 
-    /// Drain the response buffer. Returns the pending response bytes and
-    /// resets the buffer. Caller must write these to the PTY.
     pub fn drainResponse(self: *TerminalState) ?[]const u8 {
         if (self.response_len == 0) return null;
         const len = self.response_len;
@@ -578,7 +565,6 @@ pub const TerminalState = struct {
         return self.response_buf[0..len];
     }
 
-    /// Copy data into the inject buffer (OSC 7337 write-main payload).
     fn appendInject(self: *TerminalState, data: []const u8) void {
         const avail = self.inject_buf.len - self.inject_len;
         const n = @min(data.len, avail);
@@ -588,8 +574,6 @@ pub const TerminalState = struct {
         }
     }
 
-    /// Drain the inject buffer. Returns the pending payload and resets.
-    /// Caller writes these bytes to the main terminal PTY.
     pub fn drainMainInject(self: *TerminalState) ?[]const u8 {
         if (self.inject_len == 0) return null;
         const len = self.inject_len;
@@ -597,7 +581,6 @@ pub const TerminalState = struct {
         return self.inject_buf[0..len];
     }
 
-    /// Queue a desktop notification (OSC 9 / OSC 777).
     fn queueNotification(self: *TerminalState, title: []const u8, body: []const u8) void {
         const tlen = @min(title.len, self.notify_title_buf.len);
         const blen = @min(body.len, self.notify_body_buf.len);
@@ -608,7 +591,6 @@ pub const TerminalState = struct {
         self.notify_pending = true;
     }
 
-    /// Drain a pending notification. Returns title and body slices, resets flag.
     pub fn drainNotification(self: *TerminalState) ?struct { title: []const u8, body: []const u8 } {
         if (!self.notify_pending) return null;
         self.notify_pending = false;

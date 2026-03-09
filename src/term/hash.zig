@@ -1,5 +1,4 @@
 const std = @import("std");
-const grid_mod = @import("grid.zig");
 const state_mod = @import("state.zig");
 
 /// Compute a stable 64-bit hash of the visible terminal state.
@@ -16,9 +15,12 @@ pub fn hash(st: *const state_mod.TerminalState) u64 {
     h.update(std.mem.asBytes(&st.cursor.row));
     h.update(std.mem.asBytes(&st.cursor.col));
 
-    for (st.grid.cells) |cell| {
-        h.update(std.mem.asBytes(&cell.char));
-        h.update(std.mem.asBytes(&cell.style));
+    for (0..st.ring.screen_rows) |r| {
+        const row = st.ring.getScreenRow(r);
+        for (row) |cell| {
+            h.update(std.mem.asBytes(&cell.char));
+            h.update(std.mem.asBytes(&cell.style));
+        }
     }
 
     return h.final();
@@ -41,7 +43,7 @@ test "different content produces different hash" {
     var s2 = try state_mod.TerminalState.init(alloc, 4, 6, 100);
     defer s2.deinit();
 
-    s2.grid.setCell(0, 0, .{ .char = 'X' });
+    s2.ring.setScreenCell(0, 0, .{ .char = 'X' });
 
     try std.testing.expect(hash(&s1) != hash(&s2));
 }
