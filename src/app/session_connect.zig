@@ -4,12 +4,10 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("daemon/protocol.zig");
 const platform = @import("../platform/platform.zig");
+const spawn = @import("spawn.zig");
 
-extern "c" fn setsid() c_int;
 extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
 extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
-extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
-extern "c" fn _exit(status: c_int) noreturn;
 
 pub fn connectToSocket() !posix.fd_t {
     var path_buf: [256]u8 = undefined;
@@ -80,23 +78,16 @@ fn tryConnect(path: []const u8) ?posix.fd_t {
 }
 
 fn startDaemon() !void {
-    const pid = try posix.fork();
-    if (pid == 0) {
-        const pid2 = posix.fork() catch posix.abort();
-        if (pid2 == 0) {
-            _ = setsid();
-            var exe_buf: [1024]u8 = undefined;
-            const exe = getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
-            var exe_z_buf: [1024]u8 = undefined;
-            const exe_z = std.fmt.bufPrintZ(&exe_z_buf, "{s}", .{exe}) catch posix.abort();
-            const daemon_str: [*:0]const u8 = "daemon";
-            const argv = [_]?[*:0]const u8{ exe_z, daemon_str, null };
-            _ = execvp(exe_z, &argv);
-            posix.abort();
-        }
-        _exit(0);
-    }
-    _ = posix.waitpid(pid, 0);
+    var exe_buf: [1024]u8 = undefined;
+    const exe = getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
+    var exe_z_buf: [1024]u8 = undefined;
+    const exe_z: [*:0]const u8 = std.fmt.bufPrintZ(&exe_z_buf, "{s}", .{exe}) catch return error.SpawnFailed;
+
+    const daemon_str: [*:0]const u8 = "daemon";
+    const argv: [3:null]?[*:0]const u8 = .{ exe_z, daemon_str, null };
+
+    // posix_spawn instead of fork+exec — safe in multithreaded processes.
+    if (!spawn.spawnp(exe_z, &argv, true).ok) return error.SpawnFailed;
 }
 
 pub fn getExePath(buf: *[1024]u8) ?[]const u8 {

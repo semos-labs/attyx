@@ -260,9 +260,6 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
 // Open config file in $EDITOR
 // ---------------------------------------------------------------------------
 
-extern fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
-extern fn _exit(status: c_int) noreturn;
-
 fn openConfigInEditor() void {
     // Build config file path
     const home = std.posix.getenv("HOME") orelse return;
@@ -283,20 +280,10 @@ fn openConfigInEditor() void {
     }
 
     // Use the platform's default file opener (open on macOS, xdg-open on Linux).
-    // This lets the OS pick the right editor and avoids issues with terminal
-    // editors needing a TTY that a GUI app doesn't have.
     const opener = if (comptime @import("builtin").os.tag == .macos) "open" else "xdg-open";
 
-    // Double-fork to avoid zombie
-    const pid = posix.fork() catch return;
-    if (pid == 0) {
-        const pid2 = posix.fork() catch posix.abort();
-        if (pid2 == 0) {
-            const argv = [_]?[*:0]const u8{ opener, config_path, null };
-            _ = execvp(opener, &argv);
-            posix.abort();
-        }
-        _exit(0);
-    }
-    _ = posix.waitpid(pid, 0);
+    // posix_spawn instead of fork+exec — safe in multithreaded processes.
+    const spawn = @import("../spawn.zig");
+    const argv: [3:null]?[*:0]const u8 = .{ opener, config_path, null };
+    _ = spawn.spawnp(opener, &argv, false).ok;
 }

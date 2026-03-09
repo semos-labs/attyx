@@ -35,7 +35,13 @@ fn ensureDir(path: []const u8) void {
     }
 }
 
+extern "c" fn setsid() c_int;
+
 pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
+    // Detach from the parent's session. On macOS the spawner sets
+    // POSIX_SPAWN_SETSID, but on Linux we do it here.
+    _ = setsid();
+
     // Install signal handlers for clean shutdown
     const sa = posix.Sigaction{
         .handler = .{ .handler = signalHandler },
