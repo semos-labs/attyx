@@ -602,6 +602,8 @@ static void mouseXOffset(double mx, float *outOffX, float *outCellW) {
     *outCellW = cellW;
 }
 
+static int g_last_motion_col = -1, g_last_motion_row = -1;
+
 static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods) {
     double mx, my;
     glfwGetCursorPos(w, &mx, &my);
@@ -854,7 +856,6 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
     }
 }
 
-static int g_last_motion_col = -1, g_last_motion_row = -1;
 
 static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
     (void)w;
