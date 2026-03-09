@@ -85,7 +85,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         logging.info("update", "update check disabled by config", .{});
     }
     defer {
-        if (ai.g_update_checker) |*uc| uc.tryJoin();
+        if (ai.g_update_checker) |*uc| {
+            uc.tryJoin();
+        }
         ai.g_update_checker = null;
     }
 

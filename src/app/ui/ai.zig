@@ -366,6 +366,14 @@ pub fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     var checker = &(g_update_checker orelse return);
 
+    // Periodic re-check: if the previous check completed and enough time
+    // has passed, kick off a new background check.
+    if (checker.shouldRecheck()) {
+        logging.info("update", "starting periodic re-check", .{});
+        checker.start();
+        return;
+    }
+
     const status = checker.getStatus();
     switch (status) {
         .update_available => {
@@ -397,22 +405,14 @@ pub fn tickUpdateCheck(ctx: *PtyThreadCtx) void {
                 logging.info("update", "overlay published", .{});
             }
             checker.tryJoin();
-            g_update_checker = null;
         },
         .up_to_date => {
             logging.info("update", "up to date", .{});
             checker.tryJoin();
-            g_update_checker = null;
-        },
-        .throttled => {
-            logging.info("update", "throttled (checked within 24h)", .{});
-            checker.tryJoin();
-            g_update_checker = null;
         },
         .failed => {
             logging.warn("update", "update check failed", .{});
             checker.tryJoin();
-            g_update_checker = null;
         },
         else => {},
     }

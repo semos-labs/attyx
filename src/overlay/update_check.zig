@@ -17,7 +17,6 @@ pub const CheckStatus = enum(u8) {
     update_available = 2,
     up_to_date = 3,
     failed = 4,
-    throttled = 5,
 };
 
 pub const UpdateChecker = struct {
@@ -27,6 +26,11 @@ pub const UpdateChecker = struct {
     version_len: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
     thread: ?std.Thread = null,
     allocator: std.mem.Allocator,
+    /// Timestamp (seconds) of the last completed check, for periodic re-checking.
+    last_check_ts: i64 = 0,
+
+    /// How often to re-check while the app is running (4 hours).
+    const recheck_interval: i64 = 4 * 3600;
 
     pub fn start(self: *UpdateChecker) void {
         if (self.thread != null) return;
@@ -53,6 +57,14 @@ pub const UpdateChecker = struct {
             self.thread = null;
         }
     }
+
+    /// Returns true if enough time has passed for a periodic re-check.
+    pub fn shouldRecheck(self: *const UpdateChecker) bool {
+        if (self.thread != null) return false; // already running
+        if (self.last_check_ts == 0) return false; // never completed
+        const now = std.time.timestamp();
+        return (now - self.last_check_ts) >= recheck_interval;
+    }
 };
 
 /// Background worker thread.
@@ -63,27 +75,16 @@ fn updateWorker(checker: *UpdateChecker) void {
 }
 
 fn updateWorkerInner(checker: *UpdateChecker) !void {
-    // 1. Read throttle file — skip if checked within 24h
-    const throttle_path = getThrottlePath(checker.allocator) catch {
-        checker.status.store(@intFromEnum(CheckStatus.failed), .release);
-        return;
-    };
-    defer checker.allocator.free(throttle_path);
-
-    if (shouldSkipCheck(throttle_path)) {
-        checker.status.store(@intFromEnum(CheckStatus.throttled), .release);
-        return;
-    }
-
-    // 2. Fetch latest release from GitHub
+    // Fetch latest release from GitHub (no throttling — checks every launch
+    // and periodically while running)
     const response = fetchGithubRelease(checker.allocator) catch {
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
         return;
     };
     defer checker.allocator.free(response.body);
 
-    // 3. Write current timestamp to throttle file
-    writeThrottleTimestamp(throttle_path);
+    // Record completion time for periodic re-check scheduling
+    checker.last_check_ts = std.time.timestamp();
 
     if (response.status != 200) {
         checker.status.store(@intFromEnum(CheckStatus.failed), .release);
@@ -180,43 +181,6 @@ fn fetchGithubRelease(allocator: std.mem.Allocator) !ai_auth.HttpResponse {
     };
 
     return .{ .status = status, .body = resp_body };
-}
-
-fn getThrottlePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
-    const config_base = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
-    if (config_base.len > 0) {
-        return std.fmt.allocPrint(allocator, "{s}/attyx/last_update_check", .{config_base});
-    }
-    return std.fmt.allocPrint(allocator, "{s}/.config/attyx/last_update_check", .{home});
-}
-
-fn shouldSkipCheck(path: []const u8) bool {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    defer file.close();
-
-    var buf: [20]u8 = undefined;
-    const n = file.readAll(&buf) catch return false;
-    if (n == 0) return false;
-
-    const ts = std.fmt.parseInt(i64, std.mem.trimRight(u8, buf[0..n], "\n\r "), 10) catch return false;
-    const now = std.time.timestamp();
-    const elapsed = now - ts;
-    return elapsed < 86400; // 24 hours
-}
-
-fn writeThrottleTimestamp(path: []const u8) void {
-    // Ensure parent directory exists
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch {};
-    }
-
-    const file = std.fs.createFileAbsolute(path, .{}) catch return;
-    defer file.close();
-
-    var buf: [20]u8 = undefined;
-    const ts_str = std.fmt.bufPrint(&buf, "{d}", .{std.time.timestamp()}) catch return;
-    file.writeAll(ts_str) catch {};
 }
 
 pub const UpdateCardResult = struct {
