@@ -49,6 +49,38 @@ pub const RingBuffer = struct {
         self.allocator.free(self.wrapped);
     }
 
+    /// Change scrollback capacity, preserving newest content.
+    /// Screen rows are unchanged; only the max scrollback depth changes.
+    pub fn resizeScrollback(self: *RingBuffer, new_max_scrollback: usize) !void {
+        const new_cap = self.screen_rows + new_max_scrollback;
+        if (new_cap == self.capacity) return;
+
+        const new_cells = try self.allocator.alloc(Cell, new_cap * self.cols);
+        @memset(new_cells, Cell{});
+        const new_wrapped = try self.allocator.alloc(bool, new_cap);
+        errdefer self.allocator.free(new_cells);
+        @memset(new_wrapped, false);
+
+        // Copy newest rows that fit into the new capacity.
+        const rows_to_keep = @min(self.count, new_cap);
+        const skip = self.count - rows_to_keep;
+        for (0..rows_to_keep) |i| {
+            const src_slot = self.ringSlot(skip + i);
+            const src_off = src_slot * self.cols;
+            const dst_off = i * self.cols;
+            @memcpy(new_cells[dst_off..][0..self.cols], self.cells[src_off..][0..self.cols]);
+            new_wrapped[i] = self.wrapped[src_slot];
+        }
+
+        self.allocator.free(self.cells);
+        self.allocator.free(self.wrapped);
+        self.cells = new_cells;
+        self.wrapped = new_wrapped;
+        self.capacity = new_cap;
+        self.count = rows_to_keep;
+        self.head = 0;
+    }
+
     // -- Row addressing --
 
     /// Number of scrollback rows (rows above the visible screen).

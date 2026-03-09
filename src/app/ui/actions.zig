@@ -583,12 +583,12 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     }
 
     // Scrollback
-    // TODO: RingBuffer does not yet support dynamic scrollback resizing.
-    // For now, just update tracking and clamp viewport.
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
         const ring = &publish.ctxEngine(ctx).state.ring;
-        const max_sb = ring.capacity - ring.screen_rows;
-        ctx.applied_scrollback_lines = @intCast(max_sb);
+        ring.resizeScrollback(new_cfg.scrollback_lines) catch |err| {
+            logging.err("config", "scrollback resize failed: {}", .{err});
+        };
+        ctx.applied_scrollback_lines = @intCast(ring.capacity - ring.screen_rows);
         if (publish.ctxEngine(ctx).state.viewport_offset > ring.scrollbackCount()) {
             publish.ctxEngine(ctx).state.viewport_offset = ring.scrollbackCount();
             c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);

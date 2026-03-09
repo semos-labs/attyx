@@ -316,7 +316,9 @@ fn stripRprompts(ring: *RingBuffer, new_cols: usize) void {
 }
 
 /// Simple resize without reflow — for the alt screen buffer.
-/// Copies overlapping rectangle of content. No cursor mapping.
+/// Only copies visible screen rows; scrollback is dropped.
+/// This is correct for alt screen (no scrollback). If used on a main
+/// buffer with reflow disabled, scrollback would be lost.
 pub fn resizeNoReflow(
     old: *RingBuffer,
     new_screen_rows: usize,
