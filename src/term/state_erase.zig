@@ -28,6 +28,7 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
             // Clear current row up to and including cursor
             const row_cells = self.ring.getScreenRowMut(self.cursor.row);
             @memset(row_cells[0 .. self.cursor.col + 1], Cell{});
+            self.ring.setScreenWrapped(self.cursor.row, false);
             self.dirty.markRange(0, self.cursor.row);
         },
         .all => {

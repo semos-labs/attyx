@@ -199,7 +199,8 @@ pub fn resize(
     // Ensure ring has enough rows for scrollback + full screen.
     // Without this, scroll_off rows meant for scrollback would be counted
     // as screen rows (ring.count - screen_rows < scroll_off).
-    const min_ring_count = scroll_off + new_screen_rows;
+    // Cap to capacity so we never grow count past the ring's allocation.
+    const min_ring_count = @min(scroll_off + new_screen_rows, new_ring.capacity);
     while (new_ring.count < min_ring_count) {
         new_ring.count += 1;
         const idx = new_ring.count - 1;

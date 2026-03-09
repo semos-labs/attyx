@@ -367,7 +367,9 @@ pub const TerminalState = struct {
     /// Old screen row 0 becomes scrollback, new bottom row is cleared.
     fn fullScreenScroll(self: *TerminalState) void {
         _ = self.ring.advanceScreen();
-        if (self.viewport_offset > 0) self.viewport_offset += 1;
+        if (self.viewport_offset > 0) {
+            self.viewport_offset = @min(self.viewport_offset + 1, self.ring.scrollbackCount());
+        }
     }
 
     /// Returns true when a scroll should use zero-copy ring advance
