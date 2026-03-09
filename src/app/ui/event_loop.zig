@@ -498,6 +498,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (ctx.tab_mgr.count == 0) continue :outer;
         const active_focused_pane = ctx.tab_mgr.activePane();
 
+        // Sync viewport from C BEFORE feeding PTY data, so that
+        // fullScreenScroll's viewport_offset bump is not overwritten.
+        publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
+
         // Drain session socket — route pane_output by daemon_pane_id
         if (session_fd_idx) |si| {
             if (fds[si].revents & (POLLIN | POLLHUP) != 0) {
@@ -661,8 +665,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 ps.publishImagePlacements(pcfg);
             }
         }
-
-        publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
         // Check all panes for title changes (background tabs included).
         // This ensures tab bar / statusbar update even when the active tab
