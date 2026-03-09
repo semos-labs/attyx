@@ -52,23 +52,9 @@ pub fn openSessionPicker(ctx: *PtyThreadCtx) void {
     const panel_h = @as(u16, @intCast(@max(3, ctx.grid_rows))) / 2;
     const visible = if (panel_h > 5) @as(u8, @intCast(panel_h - 5)) else 3;
 
-    state.entry_count = count;
-    state.current_session_id = if (sc.attached_session_id) |sid| sid else null;
+    const current_id: ?u32 = if (sc.attached_session_id) |sid| sid else null;
+    state.load(state.entries[0..count], count, current_id);
     state.visible_rows = visible;
-    state.applyFilter();
-
-    // Pre-select first non-current alive session
-    var found_preselect = false;
-    for (0..state.filtered_count) |i| {
-        const e = &state.entries[state.filtered_indices[i]];
-        if (e.alive and (state.current_session_id == null or e.id != state.current_session_id.?)) {
-            state.selected = @intCast(i);
-            found_preselect = true;
-            break;
-        }
-    }
-    if (!found_preselect) state.selected = 0;
-    state.adjustScroll();
 
     g_picker_state = state;
     @atomicStore(i32, &terminal.g_session_picker_active, 1, .seq_cst);

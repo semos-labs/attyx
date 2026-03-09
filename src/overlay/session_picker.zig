@@ -87,19 +87,6 @@ pub const SessionPickerState = struct {
         self.filter_len = 0;
         self.rename_len = 0;
         self.applyFilter();
-        self.preselect();
-    }
-
-    /// Pre-select first non-current alive session.
-    fn preselect(self: *SessionPickerState) void {
-        for (0..self.filtered_count) |i| {
-            const e = &self.entries[self.filtered_indices[i]];
-            if (e.alive and (self.current_session_id == null or e.id != self.current_session_id.?)) {
-                self.selected = @intCast(i);
-                self.adjustScroll();
-                return;
-            }
-        }
     }
 
     /// Handle a character input. Returns action if one should be executed.
