@@ -628,13 +628,12 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
         }
     }
 
-    const sc = std.c;
+    const spawn = @import("spawn.zig");
     const i_flag: [*:0]const u8 = "-i";
     const c_flag: [*:0]const u8 = "-c";
     const argv: [5:null]?[*:0]const u8 = .{ shell_z.ptr, i_flag, c_flag, full.ptr, null };
 
-    var pid: sc.pid_t = 0;
-    _ = sc.posix_spawnp(&pid, shell_z.ptr, null, null, &argv, std.c.environ);
+    _ = spawn.spawnp(shell_z.ptr, &argv, false);
 }
 
 /// Clear the popup bridge state (called when popup closes).

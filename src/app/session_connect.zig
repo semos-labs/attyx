@@ -4,8 +4,7 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("daemon/protocol.zig");
 const platform = @import("../platform/platform.zig");
-const builtin = @import("builtin");
-const c = std.c;
+const spawn = @import("spawn.zig");
 
 extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
 extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
@@ -87,22 +86,8 @@ fn startDaemon() !void {
     const daemon_str: [*:0]const u8 = "daemon";
     const argv: [3:null]?[*:0]const u8 = .{ exe_z, daemon_str, null };
 
-    // Use posix_spawn instead of fork+exec — fork() from a background thread
-    // in a multithreaded process corrupts os_once_t on macOS (SIGTRAP in
-    // _notify_fork_child). posix_spawn is safe in this context.
-    var attr: c.posix_spawnattr_t = undefined;
-    if (c.posix_spawnattr_init(&attr) != 0) return error.SpawnFailed;
-    defer _ = c.posix_spawnattr_destroy(&attr);
-
-    // SETSID detaches the daemon from our session (replaces the old
-    // setsid() call that was done in the fork child).
-    if (comptime builtin.os.tag == .macos) {
-        _ = c.posix_spawnattr_setflags(&attr, c.POSIX_SPAWN.SETSID);
-    }
-
-    var pid: c.pid_t = 0;
-    const rc = c.posix_spawnp(&pid, exe_z, null, &attr, &argv, std.c.environ);
-    if (rc != 0) return error.SpawnFailed;
+    // posix_spawn instead of fork+exec — safe in multithreaded processes.
+    if (!spawn.spawnp(exe_z, &argv, true)) return error.SpawnFailed;
 }
 
 pub fn getExePath(buf: *[1024]u8) ?[]const u8 {

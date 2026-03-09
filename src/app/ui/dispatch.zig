@@ -283,9 +283,7 @@ fn openConfigInEditor() void {
     const opener = if (comptime @import("builtin").os.tag == .macos) "open" else "xdg-open";
 
     // posix_spawn instead of fork+exec — safe in multithreaded processes.
-    const sc = std.c;
+    const spawn = @import("../spawn.zig");
     const argv: [3:null]?[*:0]const u8 = .{ opener, config_path, null };
-
-    var pid: sc.pid_t = 0;
-    _ = sc.posix_spawnp(&pid, opener, null, null, &argv, std.c.environ);
+    _ = spawn.spawnp(opener, &argv, false);
 }
