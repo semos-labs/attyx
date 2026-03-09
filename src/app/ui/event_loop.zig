@@ -236,6 +236,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);
+            if (ctx.tab_mgr.count == 0) continue :outer;
         }
 
         // Tick AI (auth/SSE state + streaming reveal)
@@ -257,6 +258,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Session picker input polling
         if (terminal.g_session_picker_active != 0) {
             _ = session_picker_ui.consumePickerInput(ctx);
+            if (ctx.tab_mgr.count == 0) continue :outer;
             session_picker_ui.tickFinder(ctx);
         }
 
@@ -385,8 +387,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         resize_mod.handleResize(ctx, &buf);
         // Update viewport tracking after potential resize
-        if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
-            last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
+        if (ctx.tab_mgr.count > 0) {
+            if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
+                last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
+            }
         }
 
         // Build poll fd array:
@@ -442,6 +446,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
         _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
 
+        if (ctx.tab_mgr.count == 0) continue :outer;
         const active_focused_pane = ctx.tab_mgr.activePane();
 
         // Drain session socket — route pane_output by daemon_pane_id
