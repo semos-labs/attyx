@@ -274,6 +274,8 @@ pub const PopupState = struct {
             .height = @intCast(self.outer_h),
             .inner_cols = @intCast(self.cols),
             .inner_rows = @intCast(self.rows),
+            .content_col_off = @intCast(col_off),
+            .content_row_off = @intCast(row_off),
             .cursor_row = @intCast(self.pane.engine.state.cursor.row + row_off),
             .cursor_col = @intCast(self.pane.engine.state.cursor.col + col_off),
             .cursor_visible = if (cursor_vis) 1 else 0,
@@ -632,6 +634,8 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
 pub fn clearBridgeState() void {
     c.g_popup_desc.active = 0;
     c.g_popup_image_placement_count = 0;
+    c.g_popup_mouse_tracking = 0;
+    c.g_popup_mouse_sgr = 0;
     @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 0, .seq_cst);
     _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_popup_gen))), .Add, 1, .seq_cst);
 }

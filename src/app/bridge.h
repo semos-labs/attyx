@@ -410,6 +410,8 @@ typedef struct {
     int col, row;               // grid position (top-left of border)
     int width, height;          // total dims including border
     int inner_cols, inner_rows; // terminal grid inside popup
+    int content_col_off;        // inner content column offset within outer rect
+    int content_row_off;        // inner content row offset within outer rect
     int cursor_row, cursor_col;
     int cursor_visible;
     int cursor_shape;
@@ -420,6 +422,8 @@ extern AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
 extern volatile uint32_t g_popup_gen;
 extern volatile int      g_popup_active;        // 1 = popup visible, input routed there
 extern volatile int      g_popup_trail_active;  // 1 = popup cursor trail animating
+extern volatile int      g_popup_mouse_tracking; // popup engine mouse mode (0/1/2/3)
+extern volatile int      g_popup_mouse_sgr;      // popup engine SGR 1006 encoding
 
 #define ATTYX_POPUP_MAX_IMAGE_PLACEMENTS 16
 extern AttyxImagePlacement g_popup_image_placements[ATTYX_POPUP_MAX_IMAGE_PLACEMENTS];

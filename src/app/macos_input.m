@@ -67,6 +67,36 @@ static void sendSgrMouse(int button, int col, int row, BOOL press) {
     attyx_send_input((const uint8_t *)buf, len);
 }
 
+static void sendSgrMousePopup(int button, int col, int row, BOOL press) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                       button, col, row, press ? 'M' : 'm');
+    attyx_popup_send_input((const uint8_t *)buf, len);
+}
+
+// Test if grid-space (col, row) is inside the popup bounds.
+// If inside, writes popup-local 1-based coordinates to outCol/outRow.
+static BOOL popupHitTest(int col, int row, int *outCol, int *outRow) {
+    AttyxPopupDesc d = g_popup_desc;
+    if (!d.active) return NO;
+    // Popup is rendered at offY which includes g_grid_top_offset, so the
+    // visual row is shifted down. mouseCell0 returns raw grid coords
+    // (row 0 = top of window), so we must account for that shift.
+    int vis_row = d.row + g_grid_top_offset;
+    if (col < d.col || col >= d.col + d.width) return NO;
+    if (row < vis_row || row >= vis_row + d.height) return NO;
+    // Convert to inner terminal coordinates (1-based for SGR protocol)
+    int inner_col = col - d.col - d.content_col_off + 1;
+    int inner_row = row - vis_row - d.content_row_off + 1;
+    if (inner_col < 1) inner_col = 1;
+    if (inner_row < 1) inner_row = 1;
+    if (inner_col > d.inner_cols) inner_col = d.inner_cols;
+    if (inner_row > d.inner_rows) inner_row = d.inner_rows;
+    *outCol = inner_col;
+    *outRow = inner_row;
+    return YES;
+}
+
 // ---------------------------------------------------------------------------
 // Split separator hit-test (~20px grab zone around separator lines)
 // mouseX: raw mouse X in view points.  offX/cellW: grid origin and cell width.
@@ -260,6 +290,23 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    // Popup mouse routing: all clicks go to popup when active
+    if (g_popup_active) {
+        int col, row;
+        mouseCell0(event, self, &col, &row);
+        int pc, pr;
+        if (popupHitTest(col, row, &pc, &pr)) {
+            if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+                int btn = 0 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, YES);
+                _leftDown = YES;
+                _lastMouseCol = pc;
+                _lastMouseRow = pr;
+            }
+        }
+        return; // eat all clicks when popup is open
+    }
+
     // Mouse click exits copy mode
     if (g_copy_mode) {
         attyx_copy_mode_exit(0);
@@ -389,6 +436,19 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseUp:(NSEvent *)event {
+    if (g_popup_active) {
+        _leftDown = NO;
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = 0 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, NO);
+            }
+        }
+        return;
+    }
     _leftDown = NO;
     if (_splitDragging) {
         if (g_split_drag_active) attyx_split_drag_end();
@@ -412,6 +472,18 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = 2 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, YES);
+            }
+        }
+        return;
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         int col, row;
         mouseCell(event, self, &col, &row);
@@ -437,6 +509,19 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)rightMouseUp:(NSEvent *)event {
+    if (g_popup_active) {
+        _rightDown = NO;
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = 2 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, NO);
+            }
+        }
+        return;
+    }
     _rightDown = NO;
     if (!g_mouse_tracking || !g_mouse_sgr) return;
     int col, row;
@@ -446,6 +531,18 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)otherMouseDown:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = 1 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, YES);
+            }
+        }
+        return;
+    }
     if (!g_mouse_tracking || !g_mouse_sgr) return;
     int col, row;
     mouseCell(event, self, &col, &row);
@@ -457,6 +554,19 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)otherMouseUp:(NSEvent *)event {
+    if (g_popup_active) {
+        _middleDown = NO;
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = 1 | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, NO);
+            }
+        }
+        return;
+    }
     _middleDown = NO;
     if (!g_mouse_tracking || !g_mouse_sgr) return;
     int col, row;
@@ -466,6 +576,22 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr && g_popup_mouse_tracking >= 2) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                if (pc != _lastMouseCol || pr != _lastMouseRow) {
+                    int btn = 32 | mouseModifiers(event.modifierFlags);
+                    sendSgrMousePopup(btn, pc, pr, YES);
+                    _lastMouseCol = pc;
+                    _lastMouseRow = pr;
+                }
+            }
+        }
+        return;
+    }
     if (_splitDragging && g_split_drag_active) {
         int col, row;
         mouseCell0(event, self, &col, &row);
@@ -539,6 +665,22 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking >= 2 && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                if (pc != _lastMouseCol || pr != _lastMouseRow) {
+                    int btn = (32 | 2) | mouseModifiers(event.modifierFlags);
+                    sendSgrMousePopup(btn, pc, pr, YES);
+                    _lastMouseCol = pc;
+                    _lastMouseRow = pr;
+                }
+            }
+        }
+        return;
+    }
     int tracking = g_mouse_tracking;
     if (!tracking || !g_mouse_sgr) return;
     if (tracking < 2) return;
@@ -552,6 +694,22 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)otherMouseDragged:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking >= 2 && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                if (pc != _lastMouseCol || pr != _lastMouseRow) {
+                    int btn = (32 | 1) | mouseModifiers(event.modifierFlags);
+                    sendSgrMousePopup(btn, pc, pr, YES);
+                    _lastMouseCol = pc;
+                    _lastMouseRow = pr;
+                }
+            }
+        }
+        return;
+    }
     int tracking = g_mouse_tracking;
     if (!tracking || !g_mouse_sgr) return;
     if (tracking < 2) return;
@@ -565,6 +723,22 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)mouseMoved:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking == 3 && g_popup_mouse_sgr) {
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                if (pc != _lastMouseCol || pr != _lastMouseRow) {
+                    int btn = 35 | mouseModifiers(event.modifierFlags);
+                    sendSgrMousePopup(btn, pc, pr, YES);
+                    _lastMouseCol = pc;
+                    _lastMouseRow = pr;
+                }
+            }
+        }
+        return;
+    }
     // Split separator hover: always check before mouse tracking so the
     // resize cursor appears even when the focused pane tracks the mouse.
     if (g_split_active && !g_split_drag_active) {
@@ -671,6 +845,21 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 }
 
 - (void)scrollWheel:(NSEvent *)event {
+    if (g_popup_active) {
+        if (g_popup_mouse_tracking && g_popup_mouse_sgr) {
+            CGFloat dy = event.scrollingDeltaY;
+            if (event.hasPreciseScrollingDeltas) dy /= 3.0;
+            if (dy == 0) return;
+            int col, row;
+            mouseCell0(event, self, &col, &row);
+            int pc, pr;
+            if (popupHitTest(col, row, &pc, &pr)) {
+                int btn = (dy > 0 ? 64 : 65) | mouseModifiers(event.modifierFlags);
+                sendSgrMousePopup(btn, pc, pr, YES);
+            }
+        }
+        return;
+    }
     if (g_mouse_tracking && g_mouse_sgr) {
         CGFloat dy = event.scrollingDeltaY;
         if (event.hasPreciseScrollingDeltas) dy /= 3.0;

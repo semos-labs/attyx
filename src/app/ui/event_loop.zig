@@ -663,6 +663,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const pcfg = ctx.popup_configs[ps.config_index];
                 ps.publishCells(&ctx.active_theme, pcfg);
                 ps.publishImagePlacements(pcfg);
+                // Publish popup mouse mode so input handlers can route mouse events
+                c.g_popup_mouse_tracking = @intFromEnum(ps.pane.engine.state.mouse_tracking);
+                c.g_popup_mouse_sgr = @intFromBool(ps.pane.engine.state.mouse_sgr);
             }
         }
 
