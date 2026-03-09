@@ -184,16 +184,16 @@ test "scrollback: vertical shrink saves content, grow preserves scrollback" {
 
     // Grow back to 4 rows — scrollback content is preserved (not
     // injected into the grid, which would confuse the shell).  The
-    // user can scroll up to see it.  Content is pinned to the bottom
-    // because the cursor was at the last row of the 2-row grid.
+    // user can scroll up to see it.  Content stays at the top of the
+    // screen; the shell will redraw when it gets SIGWINCH.
     try engine.state.resize(4, 4);
     try std.testing.expectEqual(@as(usize, 2), engine.state.ring.scrollbackCount());
     try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getRow(0)[0].char);
     try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getRow(1)[0].char);
-    // Grid content shifted to bottom (rows 2-3), top rows blank
-    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(2, 0).char);
-    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
-    try std.testing.expectEqual(@as(usize, 3), engine.state.cursor.row);
+    // Screen content at top, blank rows below
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(usize, 1), engine.state.cursor.row);
 }
 
 test "scrollback: col-change resize saves dropped rows via reflow" {

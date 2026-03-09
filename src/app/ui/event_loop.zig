@@ -104,6 +104,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     // cell buffer has content before the first drawFrame.
     if (ctx.session_client == null) {
         const startup_pane = ctx.tab_mgr.activePane();
+
         var startup_fds = [1]posix.pollfd{.{
             .fd = startup_pane.pty.master,
             .events = POLLIN,
@@ -112,7 +113,30 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Poll in short bursts: the shell may need a DA1 response (written
         // back from pane.feed → drainResponse → writeToPty) before it sends
         // the prompt, so we iterate to allow that round-trip.
+        //
+        // On each iteration, also check for window resize. WMs like aerospace
+        // reposition/resize the window right after launch. If the resize
+        // arrives mid-drain, apply it immediately (bypass debounce) so the
+        // PTY has the correct size before the shell draws its prompt.
         for (0..20) |_| {
+            // Check for WM resize on each drain iteration
+            {
+                var rr: c_int = 0;
+                var rc: c_int = 0;
+                if (c.attyx_check_resize(&rr, &rc) != 0) {
+                    const gaps = actions.computeSplitGaps();
+                    ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+                    ctx.grid_rows = @intCast(rr);
+                    ctx.grid_cols = @intCast(rc);
+                    const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                    ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
+                    // Send TIOCSWINSZ immediately so the shell starts at the
+                    // correct size — no debounce during startup.
+                    startup_pane.pty.resize(pty_rows, @intCast(rc)) catch {};
+                    startup_pane.pending_pty_resize = false;
+                    c.attyx_set_grid_size(rc, rr);
+                }
+            }
             startup_fds[0].revents = 0;
             _ = posix.poll(&startup_fds, 50) catch break;
             if (startup_fds[0].revents & POLLIN == 0) break;
@@ -563,14 +587,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                     }
                                 },
                                 .replay_end => |pane_id| {
-                                    // The daemon nudged the PTY size (+1 col) after
-                                    // replay to force a SIGWINCH.  Restore the correct
-                                    // size so the app gets a second resize event and
-                                    // repaints at the right dimensions.
+                                    // Force a SIGWINCH so the shell/TUI repaints at
+                                    // the correct size. Send shrink-then-restore
+                                    // back-to-back — the daemon processes both ioctls
+                                    // in sequence, so the shell sees the final correct
+                                    // size. This avoids the old approach where the
+                                    // daemon bumped cols+1 and the shell drew at the
+                                    // wrong width during the round-trip.
                                     if (findPaneByDaemonId(ctx, pane_id)) |result| {
                                         const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
                                         const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
                                         if (ctx.session_client) |scc| {
+                                            const nudged = if (cols > 1) cols - 1 else cols + 1;
+                                            scc.sendPaneResize(pane_id, rows, nudged) catch {};
                                             scc.sendPaneResize(pane_id, rows, cols) catch {};
                                         }
                                     }
