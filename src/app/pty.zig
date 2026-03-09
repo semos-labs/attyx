@@ -26,6 +26,7 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn chdir(path: [*:0]const u8) c_int;
 extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
+extern "c" fn tcgetpgrp(fd: c_int) posix.pid_t;
 extern "c" fn getuid() c_uint;
 extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
@@ -206,6 +207,16 @@ pub const Pty = struct {
 
     pub fn writeToPty(self: *Pty, bytes: []const u8) !usize {
         return posix.write(self.master, bytes);
+    }
+
+    /// Send SIGWINCH to the PTY's foreground process group.
+    /// Used after session switch to force TUI apps to repaint even
+    /// when the terminal size hasn't changed.
+    pub fn sendSigwinch(self: *Pty) void {
+        const pgrp = tcgetpgrp(self.master);
+        if (pgrp > 0) {
+            posix.kill(-pgrp, posix.SIG.WINCH) catch {};
+        }
     }
 
     pub fn resize(self: *Pty, rows: u16, cols: u16) !void {

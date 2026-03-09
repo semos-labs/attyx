@@ -236,6 +236,17 @@ pub const DaemonPane = struct {
         self.cols = cols;
     }
 
+    /// Force a full repaint by nudging the PTY size by one column.
+    /// Many TUI frameworks (Node.js, ncurses, React-based) only trigger
+    /// a full redraw on an actual size change — a same-size SIGWINCH is
+    /// silently ignored. We bump cols+1 here; the client restores the
+    /// correct size on replay_end, providing a second SIGWINCH after the
+    /// round-trip delay ensures the app has processed the first one.
+    pub fn notifyRedraw(self: *DaemonPane) void {
+        const nudged = if (self.cols < std.math.maxInt(u16)) self.cols + 1 else self.cols - 1;
+        self.pty.resize(self.rows, nudged) catch {};
+    }
+
     /// Non-blocking check if child process has exited.
     /// Returns exit code if exited, null if still running.
     pub fn checkExit(self: *DaemonPane) ?u8 {
