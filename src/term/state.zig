@@ -63,6 +63,7 @@ pub const TerminalState = struct {
     link_uris: std.ArrayListUnmanaged([]const u8) = .{},
     next_link_id: u32 = 1,
     title: ?[]const u8 = null,
+    title_changed: bool = false,
     working_directory: ?[]const u8 = null,
     shell_path: ?[]const u8 = null,
 

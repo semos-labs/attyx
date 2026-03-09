@@ -610,6 +610,24 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
+        // Check all panes for title changes (background tabs included).
+        // This ensures tab bar / statusbar update even when the active tab
+        // is idle but a background tab's process sends an OSC title.
+        var title_changed = false;
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.engine.state.title_changed) {
+                        leaf.pane.engine.state.title_changed = false;
+                        title_changed = true;
+                    }
+                }
+            }
+        }
+        if (title_changed) got_data = true;
+
         const viewport_changed = (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp);
         const need_update = got_data or viewport_changed;
 
