@@ -285,5 +285,5 @@ fn openConfigInEditor() void {
     // posix_spawn instead of fork+exec — safe in multithreaded processes.
     const spawn = @import("../spawn.zig");
     const argv: [3:null]?[*:0]const u8 = .{ opener, config_path, null };
-    _ = spawn.spawnp(opener, &argv, false);
+    _ = spawn.spawnp(opener, &argv, false).ok;
 }

@@ -87,7 +87,7 @@ fn startDaemon() !void {
     const argv: [3:null]?[*:0]const u8 = .{ exe_z, daemon_str, null };
 
     // posix_spawn instead of fork+exec — safe in multithreaded processes.
-    if (!spawn.spawnp(exe_z, &argv, true)) return error.SpawnFailed;
+    if (!spawn.spawnp(exe_z, &argv, true).ok) return error.SpawnFailed;
 }
 
 pub fn getExePath(buf: *[1024]u8) ?[]const u8 {

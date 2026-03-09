@@ -595,45 +595,39 @@ fn skipEscape(data: []const u8, start: usize) usize {
     return i;
 }
 
-extern "c" fn getuid() c_uint;
-extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-
-/// Execute `cmd_prefix value` in a detached subprocess (fire-and-forget).
-/// Uses posix_spawn to avoid os_once_t corruption from fork() in
-/// multithreaded processes.
+/// Execute `cmd_prefix` with `value` as a separate argument in a detached
+/// subprocess. Uses posix_spawn to avoid os_once_t corruption from fork()
+/// in multithreaded processes. The value is passed as a distinct argv entry
+/// so shell metacharacters in it are not interpreted.
 pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value: []const u8) void {
-    const full_slice = std.fmt.allocPrint(allocator, "{s} {s}", .{ cmd_prefix, value }) catch return;
-    defer allocator.free(full_slice);
-    const full = allocator.dupeZ(u8, full_slice) catch return;
-    defer allocator.free(full);
+    const spawn = @import("spawn.zig");
+
     const shell = posix.getenv("SHELL") orelse "/bin/sh";
     const shell_z = allocator.dupeZ(u8, shell) catch return;
     defer allocator.free(shell_z);
 
-    // Set TMUX env before spawn so the child inherits it.
-    // setenv in the parent is safe — it only sets TMUX if absent.
-    if (getenv("TMUX") == null) {
-        const uid = getuid();
-        const base = getenv("TMUX_TMPDIR") orelse "/tmp";
-        var socket_buf: [256]u8 = undefined;
-        const sp = std.fmt.bufPrintZ(&socket_buf, "{s}/tmux-{d}/default", .{ base, uid }) catch null;
-        if (sp) |socket_path| {
-            if (access(socket_path, 0) == 0) {
-                var env_buf: [512]u8 = undefined;
-                const tv = std.fmt.bufPrintZ(&env_buf, "{s},0,0", .{socket_path}) catch null;
-                if (tv) |tmux_val| _ = setenv("TMUX", tmux_val, 1);
-            }
-        }
-    }
+    // Build command: $SHELL -ic 'cmd_prefix "$1"' _ value
+    // Using "$1" passes value as a literal argument, avoiding shell injection.
+    const wrapper_slice = std.fmt.allocPrint(allocator, "{s} \"$1\"", .{cmd_prefix}) catch return;
+    defer allocator.free(wrapper_slice);
+    const wrapper = allocator.dupeZ(u8, wrapper_slice) catch return;
+    defer allocator.free(wrapper);
+    const value_z = allocator.dupeZ(u8, value) catch return;
+    defer allocator.free(value_z);
 
-    const spawn = @import("spawn.zig");
-    const i_flag: [*:0]const u8 = "-i";
-    const c_flag: [*:0]const u8 = "-c";
-    const argv: [5:null]?[*:0]const u8 = .{ shell_z.ptr, i_flag, c_flag, full.ptr, null };
+    const i_flag: [*:0]const u8 = "-ic";
+    const placeholder: [*:0]const u8 = "_";
+    const argv: [6:null]?[*:0]const u8 = .{
+        shell_z.ptr, i_flag, wrapper.ptr, placeholder, value_z.ptr, null,
+    };
 
-    _ = spawn.spawnp(shell_z.ptr, &argv, false);
+    // Build custom envp with TMUX injected (if needed) to avoid mutating
+    // the parent process environment.
+    const envp = spawn.buildEnvWithTmux(allocator) orelse std.c.environ;
+    defer if (envp != std.c.environ) spawn.freeEnvp(allocator, envp);
+
+    const result = spawn.spawnpEnv(shell_z.ptr, &argv, false, envp);
+    if (result.ok) spawn.reapAsync(result.pid);
 }
 
 /// Clear the popup bridge state (called when popup closes).
