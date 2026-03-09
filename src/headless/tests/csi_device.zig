@@ -127,11 +127,11 @@ test "tmux passthrough with inner OSC hyperlink is silently consumed" {
         "\x1bPtmux;\x1b\x1b]8;;https://example.com\x07\x1b\\" ++
         "CD");
 
-    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, 'C'), engine.state.grid.getCell(0, 2).char);
-    try std.testing.expectEqual(@as(u21, 'D'), engine.state.grid.getCell(0, 3).char);
-    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 4).char);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(0, 4).char);
 }
 
 test "C1 DCS (0x90) payload is silently consumed" {
@@ -142,9 +142,9 @@ test "C1 DCS (0x90) payload is silently consumed" {
     // 8-bit DCS: \x90 payload \x9C (C1 ST).  Nothing should print.
     engine.feed("X" ++ "\x90" ++ "qpayload" ++ "\x9C" ++ "Y");
 
-    try std.testing.expectEqual(@as(u21, 'X'), engine.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'Y'), engine.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'X'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'Y'), engine.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(0, 2).char);
 }
 
 test "APC Kitty graphics payload is silently consumed" {
@@ -155,9 +155,9 @@ test "APC Kitty graphics payload is silently consumed" {
     // ESC _ G ... ESC \  (Kitty graphics protocol)
     engine.feed("A" ++ "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\" ++ "B");
 
-    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), engine.state.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, ' '), engine.state.grid.getCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(0, 2).char);
 }
 
 // ===========================================================================

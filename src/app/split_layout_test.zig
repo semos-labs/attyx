@@ -13,7 +13,7 @@ const Engine = attyx.Engine;
 const Pane = @import("pane.zig").Pane;
 
 fn createTestPane(allocator: Allocator) !Pane {
-    const engine = try Engine.init(allocator, 24, 80, attyx.Scrollback.default_max_lines);
+    const engine = try Engine.init(allocator, 24, 80, attyx.RingBuffer.default_max_scrollback);
     return Pane{
         .engine = engine,
         .pty = undefined, // Not used in layout tests

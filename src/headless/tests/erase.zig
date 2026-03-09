@@ -30,12 +30,12 @@ test "ED to_end: marks dirty rows from cursor to end" {
     try std.testing.expect(t.dirty.isDirty(3));
 
     // Content before cursor (row 0, row 1 cols 0-1) preserved
-    try std.testing.expectEqual(@as(u21, 'H'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'W'), t.grid.getCell(1, 0).char);
-    try std.testing.expectEqual(@as(u21, 'o'), t.grid.getCell(1, 1).char);
+    try std.testing.expectEqual(@as(u21, 'H'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'W'), t.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'o'), t.ring.getScreenCell(1, 1).char);
     // At and after cursor cleared
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 2).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 2).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(2, 0).char);
 }
 
 test "ED to_start: marks dirty rows from start to cursor" {
@@ -66,12 +66,12 @@ test "ED to_start: marks dirty rows from start to cursor" {
     try std.testing.expect(!t.dirty.isDirty(3));
 
     // Row 0 fully cleared
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 0).char);
     // Row 1 cols 0-3 cleared, cols 4-5 preserved
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 3).char);
-    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(1, 4).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 3).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.ring.getScreenCell(1, 4).char);
     // Row 2 preserved
-    try std.testing.expectEqual(@as(u21, 'C'), t.grid.getCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), t.ring.getScreenCell(2, 0).char);
 }
 
 test "ED all (main): saves content to scrollback before clear" {
@@ -84,15 +84,15 @@ test "ED all (main): saves content to scrollback before clear" {
     t.apply(.{ .control = .cr });
     for ("EFGH") |ch| t.apply(.{ .print = ch });
 
-    const count_before = t.scrollback.count;
+    const count_before = t.ring.scrollbackCount();
 
     t.apply(.{ .erase_display = .all });
 
     // Scrollback should have increased (rows 0-1 had content)
-    try std.testing.expect(t.scrollback.count > count_before);
+    try std.testing.expect(t.ring.scrollbackCount() > count_before);
     // Screen should be clear
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(1, 0).char);
 }
 
 test "ED all (alt): does NOT save to scrollback" {
@@ -103,14 +103,14 @@ test "ED all (alt): does NOT save to scrollback" {
     t.apply(.enter_alt_screen);
     for ("ABCD") |ch| t.apply(.{ .print = ch });
 
-    const count_before = t.scrollback.count;
+    const count_before = t.ring.scrollbackCount();
 
     t.apply(.{ .erase_display = .all });
 
     // Scrollback unchanged on alt screen
-    try std.testing.expectEqual(count_before, t.scrollback.count);
+    try std.testing.expectEqual(count_before, t.ring.scrollbackCount());
     // Screen cleared
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 0).char);
 }
 
 test "ED scrollback: clears scrollback and resets viewport_offset" {
@@ -121,14 +121,14 @@ test "ED scrollback: clears scrollback and resets viewport_offset" {
     // Push some lines to scrollback via ED all
     for ("ABCD") |ch| t.apply(.{ .print = ch });
     t.apply(.{ .erase_display = .all });
-    try std.testing.expect(t.scrollback.count > 0);
+    try std.testing.expect(t.ring.scrollbackCount() > 0);
 
     // Simulate user scrolled back
     t.viewport_offset = 5;
 
     t.apply(.{ .erase_display = .scrollback });
 
-    try std.testing.expectEqual(@as(usize, 0), t.scrollback.count);
+    try std.testing.expectEqual(@as(usize, 0), t.ring.scrollbackCount());
     try std.testing.expectEqual(@as(usize, 0), t.viewport_offset);
 }
 
@@ -143,18 +143,18 @@ test "EL to_end: clears row_wrapped flag" {
 
     // Fill row and trigger wrap
     for ("ABCDE") |ch| t.apply(.{ .print = ch });
-    try std.testing.expect(t.grid.row_wrapped[0]);
+    try std.testing.expect(t.ring.getScreenWrapped(0));
 
     // Move back to row 0 and erase to end
     t.cursor.row = 0;
     t.cursor.col = 2;
     t.apply(.{ .erase_line = .to_end });
 
-    try std.testing.expect(!t.grid.row_wrapped[0]);
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, 'B'), t.grid.getCell(0, 1).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 2).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 3).char);
+    try std.testing.expect(!t.ring.getScreenWrapped(0));
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.ring.getScreenCell(0, 1).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 2).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 3).char);
 }
 
 test "EL to_start: clears cells from start to cursor inclusive" {
@@ -169,11 +169,11 @@ test "EL to_start: clears cells from start to cursor inclusive" {
     t.apply(.{ .erase_line = .to_start });
 
     // Cols 0-3 cleared
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 3).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 3).char);
     // Cols 4-5 preserved
-    try std.testing.expectEqual(@as(u21, 'E'), t.grid.getCell(0, 4).char);
-    try std.testing.expectEqual(@as(u21, 'F'), t.grid.getCell(0, 5).char);
+    try std.testing.expectEqual(@as(u21, 'E'), t.ring.getScreenCell(0, 4).char);
+    try std.testing.expectEqual(@as(u21, 'F'), t.ring.getScreenCell(0, 5).char);
 }
 
 test "EL all: clears entire row" {
@@ -188,6 +188,6 @@ test "EL all: clears entire row" {
     t.apply(.{ .erase_line = .all });
 
     for (0..6) |c| {
-        try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, c).char);
+        try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, c).char);
     }
 }

@@ -160,38 +160,43 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var state = try TerminalState.init(allocator, 24, 80, @import("attyx").Scrollback.default_max_lines);
+    var state = try TerminalState.init(allocator, 24, 80, @import("attyx").RingBuffer.default_max_scrollback);
     defer state.deinit();
 
     populateDemo(&state);
 
-    const total = state.grid.rows * state.grid.cols;
+    const rows = state.ring.screen_rows;
+    const cols = state.ring.cols;
+    const total = rows * cols;
     const render_cells = try allocator.alloc(c.AttyxCell, total);
     defer allocator.free(render_cells);
 
-    for (0..total) |i| {
-        const cell = state.grid.cells[i];
-        const fg = color_mod.resolve(cell.style.fg, false);
-        const bg = color_mod.resolve(cell.style.bg, true);
-        render_cells[i] = .{
-            .character = cell.char,
-            .combining = .{ cell.combining[0], cell.combining[1] },
-            .fg_r = fg.r,
-            .fg_g = fg.g,
-            .fg_b = fg.b,
-            .bg_r = bg.r,
-            .bg_g = bg.g,
-            .bg_b = bg.b,
-            .flags = @as(u8, if (cell.style.bold) 1 else 0) |
-                @as(u8, if (cell.style.underline) 2 else 0),
-            .link_id = cell.link_id,
-        };
+    for (0..rows) |r| {
+        const row_cells = state.ring.getScreenRow(r);
+        for (0..cols) |co| {
+            const cell = row_cells[co];
+            const fg = color_mod.resolve(cell.style.fg, false);
+            const bg = color_mod.resolve(cell.style.bg, true);
+            render_cells[r * cols + co] = .{
+                .character = cell.char,
+                .combining = .{ cell.combining[0], cell.combining[1] },
+                .fg_r = fg.r,
+                .fg_g = fg.g,
+                .fg_b = fg.b,
+                .bg_r = bg.r,
+                .bg_g = bg.g,
+                .bg_b = bg.b,
+                .flags = @as(u8, if (cell.style.bold) 1 else 0) |
+                    @as(u8, if (cell.style.underline) 2 else 0),
+                .link_id = cell.link_id,
+            };
+        }
     }
 
     c.attyx_run(
         render_cells.ptr,
-        @intCast(state.grid.cols),
-        @intCast(state.grid.rows),
+        @intCast(cols),
+        @intCast(rows),
     );
 }
 
@@ -241,14 +246,14 @@ fn populateDemo(st: *TerminalState) void {
     writeStr(st, 8, 0, "256-color palette:", .{});
     for (0..72) |i| {
         const idx: u8 = @intCast(16 + i);
-        st.grid.setCell(9, i, .{
+        st.ring.setScreenCell(9, i, .{
             .char = ' ',
             .style = .{ .bg = .{ .palette = idx } },
         });
     }
     for (0..72) |i| {
         const idx: u8 = @intCast(88 + i);
-        st.grid.setCell(10, i, .{
+        st.ring.setScreenCell(10, i, .{
             .char = ' ',
             .style = .{ .bg = .{ .palette = idx } },
         });
@@ -258,14 +263,14 @@ fn populateDemo(st: *TerminalState) void {
     writeStr(st, 12, 0, "RGB gradient:", .{});
     for (0..80) |i| {
         const t: u8 = @intCast(i * 255 / 79);
-        st.grid.setCell(13, i, .{
+        st.ring.setScreenCell(13, i, .{
             .char = ' ',
             .style = .{ .bg = .{ .rgb = .{ .r = t, .g = 50, .b = 255 -| t } } },
         });
     }
     for (0..80) |i| {
         const t: u8 = @intCast(i * 255 / 79);
-        st.grid.setCell(14, i, .{
+        st.ring.setScreenCell(14, i, .{
             .char = ' ',
             .style = .{ .bg = .{ .rgb = .{ .r = 20, .g = t, .b = 120 } } },
         });
@@ -285,7 +290,7 @@ fn populateDemo(st: *TerminalState) void {
         if (10 + i >= 80) break;
         const hue: u8 = @intCast(i * 255 / (rainbow.len - 1));
         const rgb = hueToRgb(hue);
-        st.grid.setCell(18, 10 + i, .{
+        st.ring.setScreenCell(18, 10 + i, .{
             .char = ch,
             .style = .{ .fg = .{ .rgb = rgb } },
         });
@@ -302,7 +307,7 @@ fn populateDemo(st: *TerminalState) void {
 
     // Status bar
     for (0..80) |i| {
-        st.grid.setCell(23, i, .{
+        st.ring.setScreenCell(23, i, .{
             .char = ' ',
             .style = .{ .bg = .{ .rgb = .{ .r = 40, .g = 44, .b = 52 } } },
         });
@@ -315,8 +320,8 @@ fn populateDemo(st: *TerminalState) void {
 
 fn writeStr(st: *TerminalState, row: usize, col: usize, text: []const u8, style: Style) void {
     for (text, 0..) |ch, i| {
-        if (col + i >= st.grid.cols) break;
-        st.grid.setCell(row, col + i, .{
+        if (col + i >= st.ring.cols) break;
+        st.ring.setScreenCell(row, col + i, .{
             .char = ch,
             .style = style,
         });
@@ -325,8 +330,8 @@ fn writeStr(st: *TerminalState, row: usize, col: usize, text: []const u8, style:
 
 fn fillBlock(st: *TerminalState, row: usize, col: usize, width: usize, style: Style) void {
     for (0..width) |i| {
-        if (col + i >= st.grid.cols) break;
-        st.grid.setCell(row, col + i, .{
+        if (col + i >= st.ring.cols) break;
+        st.ring.setScreenCell(row, col + i, .{
             .char = ' ',
             .style = style,
         });

@@ -8,18 +8,16 @@ const logging = @import("../../logging/log.zig");
 const Cell = attyx.grid.Cell;
 
 /// Copy the current selection (g_sel_*) to the clipboard, reading from
-/// both scrollback and the live grid. Selection rows are viewport-relative
+/// the unified ring buffer. Selection rows are viewport-relative
 /// (content-space, with g_grid_top_offset already subtracted).
 pub fn copySelection(is_block: bool) void {
     const eng = terminal.g_engine orelse return;
-    const sb = &eng.state.scrollback;
-    const grid = &eng.state.grid;
-    const eng_cols: i32 = @intCast(grid.cols);
+    const ring = &eng.state.ring;
+    const eng_cols: i32 = @intCast(ring.cols);
     if (eng_cols <= 0) return;
-    const ucols: usize = @intCast(eng_cols);
     const vp = c.g_viewport_offset;
-    const sb_count: i32 = @intCast(sb.count);
-    const grid_rows: i32 = @intCast(grid.rows);
+    const sb_count: i32 = @intCast(ring.scrollbackCount());
+    const grid_rows: i32 = @intCast(ring.screen_rows);
     const total_lines = sb_count + grid_rows;
     if (total_lines <= 0) return;
 
@@ -47,10 +45,8 @@ pub fn copySelection(is_block: bool) void {
 
     var abs_row = abs_sr;
     while (abs_row <= abs_er) : (abs_row += 1) {
-        const line_cells: []const Cell = if (abs_row < sb_count)
-            sb.getLine(@intCast(abs_row))
-        else if (abs_row - sb_count < grid_rows)
-            grid.cells[@as(usize, @intCast(abs_row - sb_count)) * ucols ..][0..ucols]
+        const line_cells: []const Cell = if (abs_row < sb_count + grid_rows)
+            ring.getRow(@intCast(abs_row))
         else
             continue;
 
@@ -93,10 +89,7 @@ pub fn copySelection(is_block: bool) void {
 
         // Add newline between rows (respect soft-wrap)
         if (abs_row < abs_er) {
-            const wrapped = if (abs_row < sb_count)
-                sb.getLineWrapped(@intCast(abs_row))
-            else
-                grid.row_wrapped[@intCast(abs_row - sb_count)];
+            const wrapped = ring.getWrapped(@intCast(abs_row));
             if (is_block or !wrapped) {
                 if (pos < buf.len) {
                     buf[pos] = '\n';

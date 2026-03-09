@@ -129,7 +129,7 @@ test "apply print writes to grid and advances cursor" {
     defer t.deinit();
 
     t.apply(.{ .print = 'A' });
-    try std.testing.expectEqual(@as(u21, 'A'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), t.ring.getScreenCell(0, 0).char);
     try std.testing.expectEqual(@as(usize, 0), t.cursor.row);
     try std.testing.expectEqual(@as(usize, 1), t.cursor.col);
 }
@@ -188,7 +188,7 @@ test "apply nop has no effect" {
     t.apply(.{ .nop = {} });
     try std.testing.expectEqual(row_before, t.cursor.row);
     try std.testing.expectEqual(col_before, t.cursor.col);
-    try std.testing.expectEqual(@as(u21, 'X'), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'X'), t.ring.getScreenCell(0, 0).char);
 }
 
 test "printed cells carry current pen style" {
@@ -198,7 +198,7 @@ test "printed cells carry current pen style" {
 
     t.pen = .{ .fg = Color.red, .bold = true };
     t.apply(.{ .print = 'A' });
-    const cell = t.grid.getCell(0, 0);
+    const cell = t.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(Color.red, cell.style.fg);
     try std.testing.expect(cell.style.bold);
 }
@@ -215,7 +215,7 @@ test "combining diacritical attaches to previous cell" {
 
     t.apply(.{ .print = 'a' });
     t.apply(.{ .print = 0x0308 }); // combining diaeresis
-    const cell = t.grid.getCell(0, 0);
+    const cell = t.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(@as(u21, 'a'), cell.char);
     try std.testing.expectEqual(@as(u21, 0x0308), cell.combining[0]);
     try std.testing.expectEqual(@as(u21, 0), cell.combining[1]);
@@ -232,7 +232,7 @@ test "two combining marks attach to same cell" {
     t.apply(.{ .print = 'a' });
     t.apply(.{ .print = 0x0308 });
     t.apply(.{ .print = 0x0301 });
-    const cell = t.grid.getCell(0, 0);
+    const cell = t.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(@as(u21, 'a'), cell.char);
     try std.testing.expectEqual(@as(u21, 0x0308), cell.combining[0]);
     try std.testing.expectEqual(@as(u21, 0x0301), cell.combining[1]);
@@ -247,7 +247,7 @@ test "Thai combining marks stored in cell" {
     t.apply(.{ .print = 0x0E01 }); // ko kai (base consonant)
     t.apply(.{ .print = 0x0E34 }); // sara i (above vowel)
     t.apply(.{ .print = 0x0E48 }); // mai ek (tone mark)
-    const cell = t.grid.getCell(0, 0);
+    const cell = t.ring.getScreenCell(0, 0);
     try std.testing.expectEqual(@as(u21, 0x0E01), cell.char);
     try std.testing.expectEqual(@as(u21, 0x0E34), cell.combining[0]);
     try std.testing.expectEqual(@as(u21, 0x0E48), cell.combining[1]);
@@ -262,7 +262,7 @@ test "combining mark at column 0 is absorbed without crash" {
     t.apply(.{ .print = 0x0308 }); // combining diaeresis at col 0
     // Should not crash; mark is silently dropped since there's no previous cell
     try std.testing.expectEqual(@as(usize, 0), t.cursor.col);
-    try std.testing.expectEqual(@as(u21, ' '), t.grid.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), t.ring.getScreenCell(0, 0).char);
 }
 
 test "golden: combining mark in snapshot output" {
@@ -285,11 +285,11 @@ test "Thai UTF-8 combining marks are zero-width through engine" {
 
     try std.testing.expectEqual(@as(usize, 5), e.state.cursor.col);
     // ผ at col 1 should have ่ (U+0E48) as combining mark
-    const cell1 = e.state.grid.getCell(0, 1);
+    const cell1 = e.state.ring.getScreenCell(0, 1);
     try std.testing.expectEqual(@as(u21, 0x0E1C), cell1.char); // ผ
     try std.testing.expectEqual(@as(u21, 0x0E48), cell1.combining[0]); // ่
     // ด at col 3 should have ิ (U+0E34) as combining mark
-    const cell3 = e.state.grid.getCell(0, 3);
+    const cell3 = e.state.ring.getScreenCell(0, 3);
     try std.testing.expectEqual(@as(u21, 0x0E14), cell3.char); // ด
     try std.testing.expectEqual(@as(u21, 0x0E34), cell3.combining[0]); // ิ
 }

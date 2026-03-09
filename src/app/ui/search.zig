@@ -146,7 +146,7 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
     g_search_bar.total_matches = @intCast(@as(c_uint, @bitCast(c.g_search_total)));
     g_search_bar.current_match = @intCast(@as(c_uint, @bitCast(c.g_search_current)));
 
-    const grid_cols: u16 = @intCast(publish.ctxEngine(ctx).state.grid.cols);
+    const grid_cols: u16 = @intCast(publish.ctxEngine(ctx).state.ring.cols);
 
     const result = overlay_search.layoutSearchBar(
         mgr.allocator,
@@ -212,7 +212,7 @@ pub fn processSearch(state: *attyx.TerminalState) void {
         for (0..clamped) |i| {
             query_copy[i] = c.g_search_query[i];
         }
-        s.update(query_copy[0..clamped], &state.scrollback, &state.grid);
+        s.update(query_copy[0..clamped], &state.ring);
     }
 
     // Process navigation
@@ -227,7 +227,7 @@ pub fn processSearch(state: *attyx.TerminalState) void {
 
     // Scroll viewport to current match
     if (nav != 0) {
-        if (s.viewportForCurrent(state.scrollback.count, state.grid.rows)) |vp| {
+        if (s.viewportForCurrent(state.ring.scrollbackCount(), state.ring.screen_rows)) |vp| {
             state.viewport_offset = vp;
             c.g_viewport_offset = @intCast(vp);
             c.attyx_mark_all_dirty();
@@ -239,8 +239,8 @@ pub fn processSearch(state: *attyx.TerminalState) void {
     c.g_search_current = @intCast(s.current);
 
     // Compute viewport window in absolute row coordinates
-    const sb_count = state.scrollback.count;
-    const grid_rows = state.grid.rows;
+    const sb_count = state.ring.scrollbackCount();
+    const grid_rows = state.ring.screen_rows;
     const vp_offset = state.viewport_offset;
     const viewport_top = if (sb_count >= vp_offset) sb_count - vp_offset else 0;
 

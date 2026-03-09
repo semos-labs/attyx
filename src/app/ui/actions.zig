@@ -360,7 +360,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
         );
         const rect = layout.pool[layout.focused].rect;
         const eng = &pane.engine;
-        const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+        const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
             @intCast(eng.state.cursor.col + rect.col),
@@ -384,9 +384,9 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
             };
         }
         const eng = &pane.engine;
-        const total = eng.state.grid.rows * eng.state.grid.cols;
+        const total = eng.state.ring.screen_rows * eng.state.ring.cols;
         publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
-        const vp_cur = @min(eng.state.viewport_offset, eng.state.scrollback.count);
+        const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
             @intCast(eng.state.cursor.col),
@@ -583,16 +583,17 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     }
 
     // Scrollback
+    // TODO: RingBuffer does not yet support dynamic scrollback resizing.
+    // For now, just update tracking and clamp viewport.
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
-        publish.ctxEngine(ctx).state.scrollback.reallocate(new_cfg.scrollback_lines) catch |err| {
-            logging.err("config", "scrollback resize failed: {}", .{err});
-        };
-        ctx.applied_scrollback_lines = @intCast(publish.ctxEngine(ctx).state.scrollback.max_lines);
-        if (publish.ctxEngine(ctx).state.viewport_offset > publish.ctxEngine(ctx).state.scrollback.count) {
-            publish.ctxEngine(ctx).state.viewport_offset = publish.ctxEngine(ctx).state.scrollback.count;
+        const ring = &publish.ctxEngine(ctx).state.ring;
+        const max_sb = ring.capacity - ring.screen_rows;
+        ctx.applied_scrollback_lines = @intCast(max_sb);
+        if (publish.ctxEngine(ctx).state.viewport_offset > ring.scrollbackCount()) {
+            publish.ctxEngine(ctx).state.viewport_offset = ring.scrollbackCount();
             c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
         }
-        c.g_scrollback_count = @intCast(publish.ctxEngine(ctx).state.scrollback.count);
+        c.g_scrollback_count = @intCast(ring.scrollbackCount());
     }
 
     // Font

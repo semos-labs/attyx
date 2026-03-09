@@ -20,9 +20,9 @@ test "attr: OSC 8 hyperlink attaches link_id to cells" {
     engine.feed("\x1b]8;;\x1b\\");
     engine.feed("No");
 
-    const cell_h = engine.state.grid.getCell(0, 0);
-    const cell_i = engine.state.grid.getCell(0, 1);
-    const cell_n = engine.state.grid.getCell(0, 2);
+    const cell_h = engine.state.ring.getScreenCell(0, 0);
+    const cell_i = engine.state.ring.getScreenCell(0, 1);
+    const cell_n = engine.state.ring.getScreenCell(0, 2);
 
     try std.testing.expect(cell_h.link_id != 0);
     try std.testing.expect(cell_i.link_id != 0);
@@ -44,8 +44,8 @@ test "attr: multiple OSC 8 links get different IDs" {
     engine.feed("\x1b]8;;https://b.com\x1b\\B");
     engine.feed("\x1b]8;;\x1b\\");
 
-    const cell_a = engine.state.grid.getCell(0, 0);
-    const cell_b = engine.state.grid.getCell(0, 1);
+    const cell_a = engine.state.ring.getScreenCell(0, 0);
+    const cell_b = engine.state.ring.getScreenCell(0, 1);
 
     try std.testing.expect(cell_a.link_id != cell_b.link_id);
     try std.testing.expectEqualStrings("https://a.com", engine.state.getLinkUri(cell_a.link_id).?);
@@ -60,7 +60,7 @@ test "attr: OSC 8 with BEL terminator" {
     engine.feed("\x1b]8;;https://bel.com\x07X");
     engine.feed("\x1b]8;;\x07");
 
-    const cell = engine.state.grid.getCell(0, 0);
+    const cell = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expect(cell.link_id != 0);
     try std.testing.expectEqualStrings("https://bel.com", engine.state.getLinkUri(cell.link_id).?);
 }
@@ -76,7 +76,7 @@ test "attr: OSC 8 survives chunked input" {
     engine.feed("X");
     engine.feed("\x1b]8;;\x1b\\");
 
-    const cell = engine.state.grid.getCell(0, 0);
+    const cell = engine.state.ring.getScreenCell(0, 0);
     try std.testing.expect(cell.link_id != 0);
     try std.testing.expectEqualStrings("https://example.com", engine.state.getLinkUri(cell.link_id).?);
 }
@@ -93,8 +93,8 @@ test "attr: OSC overflow is safely ignored" {
     engine.feed("\x07");
     engine.feed("A");
 
-    try std.testing.expectEqual(@as(u21, 'A'), engine.state.grid.getCell(0, 0).char);
-    try std.testing.expectEqual(@as(u32, 0), engine.state.grid.getCell(0, 0).link_id);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u32, 0), engine.state.ring.getScreenCell(0, 0).link_id);
 }
 
 test "golden: OSC sequences don't affect character output" {
@@ -146,7 +146,7 @@ test "printed cells carry pen_link_id" {
 
     t.pen_link_id = 42;
     t.apply(.{ .print = 'L' });
-    try std.testing.expectEqual(@as(u32, 42), t.grid.getCell(0, 0).link_id);
+    try std.testing.expectEqual(@as(u32, 42), t.ring.getScreenCell(0, 0).link_id);
 }
 
 test "startHyperlink allocates URI and sets pen_link_id" {
@@ -188,11 +188,11 @@ test "OSC 8 link spans multiple cells with same link_id" {
     engine.feed("\x1b]8;;\x1b\\");
     engine.feed("X");
 
-    const id_L = engine.state.grid.getCell(0, 0).link_id;
-    const id_I = engine.state.grid.getCell(0, 1).link_id;
-    const id_N = engine.state.grid.getCell(0, 2).link_id;
-    const id_K = engine.state.grid.getCell(0, 3).link_id;
-    const id_X = engine.state.grid.getCell(0, 4).link_id;
+    const id_L = engine.state.ring.getScreenCell(0, 0).link_id;
+    const id_I = engine.state.ring.getScreenCell(0, 1).link_id;
+    const id_N = engine.state.ring.getScreenCell(0, 2).link_id;
+    const id_K = engine.state.ring.getScreenCell(0, 3).link_id;
+    const id_X = engine.state.ring.getScreenCell(0, 4).link_id;
 
     try std.testing.expect(id_L != 0);
     try std.testing.expectEqual(id_L, id_I);
