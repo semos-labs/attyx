@@ -76,7 +76,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .pane_resize_grow, .name = "pane_resize_grow", .description = "Grow focused pane", .scope = .global, .mac_hotkey = "cmd+ctrl+=", .linux_hotkey = "ctrl+alt+=" },
     .{ .action = .pane_resize_shrink, .name = "pane_resize_shrink", .description = "Shrink focused pane", .scope = .global, .mac_hotkey = "cmd+ctrl+-", .linux_hotkey = "ctrl+alt+-" },
     .{ .action = .clear_screen, .name = "clear_screen", .description = "Clear screen and scrollback", .scope = .global, .mac_hotkey = "cmd+k", .linux_hotkey = "ctrl+shift+k" },
-    .{ .action = .session_switcher_toggle, .name = "session_switcher_toggle", .description = "Toggle session switcher", .scope = .global, .mac_hotkey = "ctrl+shift+s", .linux_hotkey = "ctrl+shift+s" },
+    .{ .action = .session_switcher_toggle, .name = "session_switcher_toggle", .description = "Toggle session switcher", .scope = .global, .mac_hotkey = "cmd+shift+s", .linux_hotkey = "ctrl+shift+s" },
     .{ .action = .session_create, .name = "session_create", .description = "Create new session", .scope = .global, .mac_hotkey = "ctrl+shift+n", .linux_hotkey = "ctrl+shift+n" },
     .{ .action = .session_kill, .name = "session_kill", .description = "Kill current session", .scope = .global, .mac_hotkey = "ctrl+d", .linux_hotkey = "ctrl+d" },
     .{ .action = .command_palette_toggle, .name = "command_palette_toggle", .description = "Toggle command palette", .scope = .global, .mac_hotkey = "cmd+shift+p", .linux_hotkey = "ctrl+shift+p" },
