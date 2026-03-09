@@ -43,13 +43,17 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     var last_publish_ns: i128 = 0;
     const min_frame_ns: i128 = 16 * std.time.ns_per_ms; // ~60fps publish cap
 
-    // Save layout to daemon on clean shutdown (before terminal.zig closes the socket).
+    // Save layout and last-session on clean shutdown (before terminal.zig closes the socket).
     defer {
         if (ctx.session_client) |sc| {
             var save_buf: [4096]u8 = undefined;
             const save_len = ctx.tab_mgr.serializeLayout(&save_buf) catch 0;
             if (save_len > 0) {
                 sc.sendSaveLayout(save_buf[0..save_len]) catch {};
+            }
+            if (sc.attached_session_id) |sid| {
+                const session_connect = @import("../session_connect.zig");
+                session_connect.saveLastSession(sid);
             }
         }
     }

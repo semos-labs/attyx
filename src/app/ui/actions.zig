@@ -104,12 +104,14 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             if (ctx.tab_mgr.count <= 1) return;
             ctx.tab_mgr.nextTab();
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
         .tab_prev => {
             if (ctx.tab_mgr.count <= 1) return;
             ctx.tab_mgr.prevTab();
             switchActiveTab(ctx);
+            saveSessionLayout(ctx);
             logging.info("tabs", "switched to tab {d}", .{ctx.tab_mgr.active + 1});
         },
         .tab_move_left => {
@@ -134,6 +136,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             if (idx < ctx.tab_mgr.count and idx != ctx.tab_mgr.active) {
                 ctx.tab_mgr.switchTo(idx);
                 switchActiveTab(ctx);
+                saveSessionLayout(ctx);
                 logging.info("tabs", "switched to tab {d}", .{idx + 1});
             }
         },
@@ -189,10 +192,10 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
             switchActiveTab(ctx);
             saveSessionLayout(ctx);
         },
-        .pane_focus_up => { layout.navigate(.up); switchActiveTab(ctx); },
-        .pane_focus_down => { layout.navigate(.down); switchActiveTab(ctx); },
-        .pane_focus_left => { layout.navigate(.left); switchActiveTab(ctx); },
-        .pane_focus_right => { layout.navigate(.right); switchActiveTab(ctx); },
+        .pane_focus_up => { layout.navigate(.up); switchActiveTab(ctx); saveSessionLayout(ctx); },
+        .pane_focus_down => { layout.navigate(.down); switchActiveTab(ctx); saveSessionLayout(ctx); },
+        .pane_focus_left => { layout.navigate(.left); switchActiveTab(ctx); saveSessionLayout(ctx); },
+        .pane_focus_right => { layout.navigate(.right); switchActiveTab(ctx); saveSessionLayout(ctx); },
         .pane_resize_left, .pane_resize_right => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
             if (layout.findResizeTarget(.vertical)) |target| {
