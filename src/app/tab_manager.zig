@@ -70,11 +70,23 @@ pub const TabManager = struct {
         cwd: ?[*:0]const u8,
         scrollback_lines: usize,
     ) !void {
+        return self.addTabWithArgv(rows, cols, null, cwd, scrollback_lines);
+    }
+
+    /// Spawn a new tab with a custom argv (e.g. $SHELL -c '<cmd>').
+    pub fn addTabWithArgv(
+        self: *TabManager,
+        rows: u16,
+        cols: u16,
+        argv: ?[]const [:0]const u8,
+        cwd: ?[*:0]const u8,
+        scrollback_lines: usize,
+    ) !void {
         if (self.count >= max_tabs) return error.TooManyTabs;
 
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
-        pane.* = try Pane.spawn(self.allocator, rows, cols, null, cwd, scrollback_lines);
+        pane.* = try Pane.spawn(self.allocator, rows, cols, argv, cwd, scrollback_lines);
 
         self.insertTab(pane, rows, cols);
     }

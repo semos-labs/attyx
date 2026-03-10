@@ -30,11 +30,11 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // ── Tab commands → dispatch actions (silent success) ──
         .tab_create => {
             if (cmd.payload_len > 0) {
-                sendError(cmd, "tab create with --cmd is not yet supported via IPC");
-                return;
+                handleTabCreateWithCmd(cmd, ctx);
+            } else {
+                dispatchAction(.tab_new);
+                sendOk(cmd, "");
             }
-            dispatchAction(.tab_new);
-            sendOk(cmd, "");
         },
         .tab_close => {
             dispatchAction(.tab_close);
@@ -78,19 +78,19 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // ── Split / pane commands (silent success) ──
         .split_vertical => {
             if (cmd.payload_len > 0) {
-                sendError(cmd, "split with --cmd is not yet supported via IPC");
-                return;
+                handleSplitWithCmd(cmd, ctx, .vertical);
+            } else {
+                dispatchAction(.split_vertical);
+                sendOk(cmd, "");
             }
-            dispatchAction(.split_vertical);
-            sendOk(cmd, "");
         },
         .split_horizontal => {
             if (cmd.payload_len > 0) {
-                sendError(cmd, "split with --cmd is not yet supported via IPC");
-                return;
+                handleSplitWithCmd(cmd, ctx, .horizontal);
+            } else {
+                dispatchAction(.split_horizontal);
+                sendOk(cmd, "");
             }
-            dispatchAction(.split_horizontal);
-            sendOk(cmd, "");
         },
         .pane_close => {
             dispatchAction(.pane_close);
@@ -209,6 +209,117 @@ extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
 
 fn sendInputToActivePty(text: []const u8) void {
     attyx_send_input(text.ptr, @intCast(text.len));
+}
+
+// ---------------------------------------------------------------------------
+// Tab/split create with --cmd: spawn $SHELL -c '<command>'
+// ---------------------------------------------------------------------------
+
+fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (ctx.sessions_enabled) {
+        sendError(cmd, "tab create with --cmd is not supported in session mode");
+        return;
+    }
+    const command = cmd.payload[0..cmd.payload_len];
+    const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const cols: u16 = ctx.grid_cols;
+
+    const argv = buildShellArgv(ctx, command) orelse {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer freeShellArgv(ctx, argv);
+
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+    const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+    defer if (cwd_z) |z| ctx.allocator.free(z);
+
+    ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch {
+        sendError(cmd, "failed to create tab");
+        return;
+    };
+    publish.updateGridTopOffset(ctx);
+    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
+    sendOk(cmd, "");
+}
+
+fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction) void {
+    if (ctx.sessions_enabled) {
+        sendError(cmd, "split with --cmd is not supported in session mode");
+        return;
+    }
+    const command = cmd.payload[0..cmd.payload_len];
+    const layout = ctx.tab_mgr.activeLayout();
+
+    const argv = buildShellArgv(ctx, command) orelse {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer freeShellArgv(ctx, argv);
+
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+
+    layout.splitPaneResolvedWithArgv(dir, ctx.allocator, &argv, resolved.cwd, ctx.applied_scrollback_lines) catch {
+        sendError(cmd, "failed to create split");
+        return;
+    };
+
+    // Set theme colors on newly created pane
+    if (layout.pool[layout.focused].pane) |pane| {
+        pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    }
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    layout.layout(pty_rows, ctx.grid_cols);
+
+    const split_actions = @import("../app/ui/split_actions.zig");
+    split_actions.notifyPaneSizes(ctx, layout);
+    actions.updateSplitActive(ctx);
+    actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
+    sendOk(cmd, "");
+}
+
+/// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.
+fn buildShellArgv(ctx: *PtyThreadCtx, command: []const u8) ?[3][:0]const u8 {
+    const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
+    const shell_z = ctx.allocator.dupeZ(u8, shell_env) catch return null;
+    const c_flag = ctx.allocator.dupeZ(u8, "-c") catch {
+        ctx.allocator.free(shell_z);
+        return null;
+    };
+    // Inject PATH from shell integration (app bundle may have minimal PATH)
+    const shell_path = publish.ctxEngine(ctx).state.shell_path;
+    const cmd_z = if (shell_path) |sp| blk: {
+        const wrapped = std.fmt.allocPrint(ctx.allocator, "export PATH='{s}'; {s}", .{ sp, command }) catch
+            break :blk ctx.allocator.dupeZ(u8, command) catch {
+            ctx.allocator.free(c_flag);
+            ctx.allocator.free(shell_z);
+            return null;
+        };
+        defer ctx.allocator.free(wrapped);
+        break :blk ctx.allocator.dupeZ(u8, wrapped) catch {
+            ctx.allocator.free(c_flag);
+            ctx.allocator.free(shell_z);
+            return null;
+        };
+    } else ctx.allocator.dupeZ(u8, command) catch {
+        ctx.allocator.free(c_flag);
+        ctx.allocator.free(shell_z);
+        return null;
+    };
+    return .{ shell_z, c_flag, cmd_z };
+}
+
+fn freeShellArgv(ctx: *PtyThreadCtx, argv: [3][:0]const u8) void {
+    ctx.allocator.free(argv[2]);
+    ctx.allocator.free(argv[1]);
+    ctx.allocator.free(argv[0]);
 }
 
 // ---------------------------------------------------------------------------

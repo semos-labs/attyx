@@ -106,6 +106,18 @@ pub const SplitLayout = struct {
         cwd: ?[]const u8,
         scrollback_lines: usize,
     ) !void {
+        return self.splitPaneResolvedWithArgv(dir, allocator, null, cwd, scrollback_lines);
+    }
+
+    /// Split the focused pane with a custom argv and pre-resolved CWD.
+    pub fn splitPaneResolvedWithArgv(
+        self: *SplitLayout,
+        dir: Direction,
+        allocator: Allocator,
+        argv: ?[]const [:0]const u8,
+        cwd: ?[]const u8,
+        scrollback_lines: usize,
+    ) !void {
         const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| allocator.free(z);
 
@@ -118,7 +130,7 @@ pub const SplitLayout = struct {
             allocator,
             child_size.rows,
             child_size.cols,
-            null,
+            argv,
             if (cwd_z) |z| z.ptr else null,
             scrollback_lines,
         );
