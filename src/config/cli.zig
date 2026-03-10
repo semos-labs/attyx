@@ -22,6 +22,7 @@ pub const Action = enum {
     daemon,
     daemon_restore,
     kill_daemon,
+    ipc_command,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -65,6 +66,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;
+            return result;
+        } else if (isIpcSubcommand(first)) {
+            result.action = .ipc_command;
             return result;
         }
     }
@@ -336,6 +340,20 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
     }
 }
 
+/// Returns true if the arg is an IPC subcommand (control a running instance).
+fn isIpcSubcommand(arg: []const u8) bool {
+    const ipc_subs = [_][]const u8{
+        "tab",       "split",     "focus",      "send-keys",
+        "send-text", "get-text",  "reload",     "theme",
+        "scroll-to", "list",      "session",    "run",
+        "--target", // --target <pid> before subcommand
+    };
+    for (ipc_subs) |s| {
+        if (std.mem.eql(u8, arg, s)) return true;
+    }
+    return false;
+}
+
 pub fn printUsage() void {
     const usage =
         \\Attyx — GPU-accelerated VT-compatible terminal emulator
@@ -350,6 +368,20 @@ pub fn printUsage() void {
         \\  uninstall                  Remove config, auth tokens, and desktop entry
         \\  daemon                     Run the session daemon
         \\  kill-daemon                Kill the session daemon and remove socket
+        \\
+        \\IPC commands (control a running instance):
+        \\  tab          Create, close, switch, move, or rename tabs
+        \\  split        Create, close, rotate, or zoom pane splits
+        \\  focus        Move focus between panes (up/down/left/right)
+        \\  session      List, create, kill, switch, or rename sessions
+        \\  send-keys    Send a key sequence to the active pane
+        \\  send-text    Send literal text to the active pane
+        \\  get-text     Read visible text from the active pane
+        \\  reload       Reload configuration from disk
+        \\  theme        Switch to a named theme
+        \\  scroll-to    Scroll the viewport (top/bottom)
+        \\  list         Show tabs, panes, and sessions
+        \\  run          Open a new tab with a command
         \\
         \\Options:
         \\  --rows N                   Terminal rows (default: 24)

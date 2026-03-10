@@ -26,6 +26,8 @@ const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
 const copy_mode = @import("copy_mode.zig");
+const ipc_queue = @import("../../ipc/queue.zig");
+const ipc_handler = @import("../../ipc/handler.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -178,6 +180,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Config reload check (atomic read-and-reset)
         if (@atomicRmw(i32, &terminal.g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
             actions.doReloadConfig(ctx);
+        }
+
+        // Drain IPC command queue
+        while (ipc_queue.dequeue()) |cmd| {
+            ipc_handler.handle(cmd, ctx);
+            ipc_queue.advance();
         }
 
         // Tick statusbar widgets (skip if quitting — widget ticks fork child

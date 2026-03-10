@@ -26,6 +26,7 @@ const diag = @import("../logging/diag.zig");
 const platform = @import("../platform/platform.zig");
 const statusbar_mod = @import("statusbar.zig");
 pub const Statusbar = statusbar_mod.Statusbar;
+const ipc_server = @import("../ipc/server.zig");
 
 pub const c = @cImport({
     @cInclude("bridge.h");
@@ -698,6 +699,22 @@ pub fn run(
     publish.publishThemeToEngines(&ctx);
     // Push theme colors to daemon for direct OSC 10/11/12/4 response.
     publish.publishThemeToDaemon(&ctx);
+
+    // Start IPC control socket server
+    ipc_server.start() catch |err| {
+        logging.warn("ipc", "failed to start IPC server: {}", .{err});
+    };
+    const ipc_thread = if (ipc_server.g_ipc_shutdown == 0)
+        std.Thread.spawn(.{}, ipc_server.run, .{}) catch |err| blk: {
+            logging.warn("ipc", "failed to spawn IPC thread: {}", .{err});
+            break :blk null;
+        }
+    else
+        null;
+    defer {
+        ipc_server.shutdown();
+        if (ipc_thread) |t| t.join();
+    }
 
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer thread.join();
