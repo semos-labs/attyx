@@ -267,15 +267,28 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
 
 // ── V2 Encode helpers (pane-multiplexed) ──
 
-/// Encode CreatePane payload: rows:u16, cols:u16
+/// Encode CreatePane payload: rows:u16, cols:u16, cwd_len:u16, cwd, [cmd_len:u16, cmd]
 pub fn encodeCreatePane(buf: []u8, rows: u16, cols: u16, cwd: []const u8) ![]u8 {
+    return encodeCreatePaneWithCmd(buf, rows, cols, cwd, "");
+}
+
+/// Encode CreatePane with optional command to run in the new pane.
+pub fn encodeCreatePaneWithCmd(buf: []u8, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8) ![]u8 {
     const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
-    const total: usize = 4 + 2 + cwd_len;
+    const cmd_len: u16 = @intCast(@min(cmd.len, 4096));
+    const total: usize = 4 + 2 + cwd_len + 2 + cmd_len;
     if (buf.len < total) return error.BufferTooSmall;
+    var pos: usize = 0;
     std.mem.writeInt(u16, buf[0..2], rows, .little);
     std.mem.writeInt(u16, buf[2..4], cols, .little);
-    std.mem.writeInt(u16, buf[4..6], cwd_len, .little);
-    if (cwd_len > 0) @memcpy(buf[6 .. 6 + cwd_len], cwd[0..cwd_len]);
+    pos = 4;
+    std.mem.writeInt(u16, buf[pos..][0..2], cwd_len, .little);
+    pos += 2;
+    if (cwd_len > 0) @memcpy(buf[pos .. pos + cwd_len], cwd[0..cwd_len]);
+    pos += cwd_len;
+    std.mem.writeInt(u16, buf[pos..][0..2], cmd_len, .little);
+    pos += 2;
+    if (cmd_len > 0) @memcpy(buf[pos .. pos + cmd_len], cmd[0..cmd_len]);
     return buf[0..total];
 }
 
@@ -359,20 +372,33 @@ pub fn encodeAttachedV2(
 
 // ── V2 Decode helpers ──
 
-pub const CreatePaneMsg = struct { rows: u16, cols: u16, cwd: []const u8 };
+pub const CreatePaneMsg = struct { rows: u16, cols: u16, cwd: []const u8, cmd: []const u8 = "" };
 
 pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
     if (payload.len < 4) return error.PayloadTooShort;
     const rows = std.mem.readInt(u16, payload[0..2], .little);
     const cols = std.mem.readInt(u16, payload[2..4], .little);
     // CWD field is optional for backward compat with old clients.
-    if (payload.len >= 6) {
-        const cwd_len = std.mem.readInt(u16, payload[4..6], .little);
-        if (payload.len >= 6 + @as(usize, cwd_len)) {
-            return .{ .rows = rows, .cols = cols, .cwd = payload[6 .. 6 + cwd_len] };
+    var cwd: []const u8 = "";
+    var pos: usize = 4;
+    if (payload.len >= pos + 2) {
+        const cwd_len = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        if (payload.len >= pos + @as(usize, cwd_len)) {
+            cwd = payload[pos .. pos + cwd_len];
+            pos += cwd_len;
         }
     }
-    return .{ .rows = rows, .cols = cols, .cwd = "" };
+    // Command field is optional (new in v2.1).
+    var cmd: []const u8 = "";
+    if (payload.len >= pos + 2) {
+        const cmd_len = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        if (payload.len >= pos + @as(usize, cmd_len)) {
+            cmd = payload[pos .. pos + cmd_len];
+        }
+    }
+    return .{ .rows = rows, .cols = cols, .cwd = cwd, .cmd = cmd };
 }
 
 pub fn decodeClosePane(payload: []const u8) !u32 {

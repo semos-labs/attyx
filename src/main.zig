@@ -7,6 +7,7 @@ const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
 const daemon = @import("app/daemon/daemon.zig");
 const session_connect = @import("app/session_connect.zig");
+const ipc_client = @import("ipc/client.zig");
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
     "https://app.semos.sh"
@@ -80,6 +81,10 @@ pub fn main() !void {
         },
         .kill_daemon => {
             cli_commands.doKillDaemon();
+            return;
+        },
+        .ipc_command => {
+            ipc_client.run(args);
             return;
         },
         .print_config => {

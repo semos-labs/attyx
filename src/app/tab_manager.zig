@@ -70,11 +70,23 @@ pub const TabManager = struct {
         cwd: ?[*:0]const u8,
         scrollback_lines: usize,
     ) !void {
+        return self.addTabWithArgv(rows, cols, null, cwd, scrollback_lines);
+    }
+
+    /// Spawn a new tab with a custom argv (e.g. $SHELL -c '<cmd>').
+    pub fn addTabWithArgv(
+        self: *TabManager,
+        rows: u16,
+        cols: u16,
+        argv: ?[]const [:0]const u8,
+        cwd: ?[*:0]const u8,
+        scrollback_lines: usize,
+    ) !void {
         if (self.count >= max_tabs) return error.TooManyTabs;
 
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
-        pane.* = try Pane.spawn(self.allocator, rows, cols, null, cwd, scrollback_lines);
+        pane.* = try Pane.spawn(self.allocator, rows, cols, argv, cwd, scrollback_lines);
 
         self.insertTab(pane, rows, cols);
     }
@@ -371,9 +383,10 @@ pub const TabManager = struct {
                 tab.focused_idx = if (lay.focused < split_layout_mod.max_nodes) remap[lay.focused] else 0;
 
                 // Capture the displayed tab title using the same fallback chain
-                // as resolveTabTitles: OSC title → local proc name → daemon proc name.
+                // as resolveTabTitles: custom → OSC title → local proc → daemon proc.
                 const focused_pane = lay.focusedPane();
-                const title_src: ?[]const u8 = focused_pane.engine.state.title orelse blk: {
+                const title_src: ?[]const u8 = focused_pane.getCustomTitle() orelse
+                    focused_pane.engine.state.title orelse blk: {
                     var name_buf: [256]u8 = undefined;
                     if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
                         break :blk name;

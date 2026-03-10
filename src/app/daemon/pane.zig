@@ -79,10 +79,19 @@ pub const DaemonPane = struct {
         replay_capacity: usize,
         cwd: ?[*:0]const u8,
         shell: ?[*:0]const u8,
+        cmd: ?[*:0]const u8,
     ) !DaemonPane {
-        // Build argv from shell if configured, otherwise PTY falls back to $SHELL.
+        // If a command override is given, run it via $SHELL -c '<cmd>'.
+        // Otherwise, use the session shell or fall back to $SHELL.
+        var cmd_argv: [3][:0]const u8 = undefined;
         var shell_argv: [1][:0]const u8 = undefined;
-        const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
+        const argv: ?[]const [:0]const u8 = if (cmd) |c| blk: {
+            const sh = shell orelse @as([*:0]const u8, std.posix.getenv("SHELL") orelse "/bin/sh");
+            cmd_argv[0] = std.mem.sliceTo(sh, 0);
+            cmd_argv[1] = "-c";
+            cmd_argv[2] = std.mem.sliceTo(c, 0);
+            break :blk &cmd_argv;
+        } else if (shell) |s| blk: {
             shell_argv[0] = std.mem.sliceTo(s, 0);
             break :blk &shell_argv;
         } else null;
