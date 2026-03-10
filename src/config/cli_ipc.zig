@@ -332,20 +332,13 @@ fn parsePopup(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
             i += 1;
             result.width_pct = std.fmt.parseInt(u8, args[i], 10) catch fatal("--width must be 1-100");
             if (result.width_pct < 1 or result.width_pct > 100) fatal("--width must be 1-100");
-        } else if (std.mem.eql(u8, arg, "--height") or std.mem.eql(u8, arg, "-h")) {
-            // Disambiguate -h: if it looks like a number arg follows, treat as height
-            if (i + 1 < args.len) {
-                if (std.fmt.parseInt(u8, args[i + 1], 10)) |v| {
-                    i += 1;
-                    result.height_pct = v;
-                    if (result.height_pct < 1 or result.height_pct > 100) fatal("--height must be 1-100");
-                } else |_| {
-                    // Not a number — treat -h as help
-                    showHelp(help.popup);
-                }
-            } else {
-                showHelp(help.popup);
-            }
+        } else if (std.mem.eql(u8, arg, "--height")) {
+            if (i + 1 >= args.len) fatal("--height requires a value (1-100)");
+            i += 1;
+            result.height_pct = std.fmt.parseInt(u8, args[i], 10) catch fatal("--height must be 1-100");
+            if (result.height_pct < 1 or result.height_pct > 100) fatal("--height must be 1-100");
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            showHelp(help.popup);
         } else if (std.mem.eql(u8, arg, "--border") or std.mem.eql(u8, arg, "-b")) {
             if (i + 1 >= args.len) fatal("--border requires a value");
             i += 1;
@@ -363,8 +356,6 @@ fn parsePopup(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
             } else {
                 fatal("--border must be single, double, rounded, heavy, or none");
             }
-        } else if (std.mem.eql(u8, arg, "--help")) {
-            showHelp(help.popup);
         } else if (result.text_arg.len == 0) {
             result.text_arg = arg;
         } else {

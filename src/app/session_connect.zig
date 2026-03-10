@@ -53,6 +53,17 @@ pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     return statePath(buf, "sessions{s}.sock");
 }
 
+/// Return the attyx state directory path (with trailing slash).
+/// Uses XDG_STATE_HOME if set, otherwise ~/.local/state/attyx/.
+pub fn stateDir(buf: []u8) ?[]const u8 {
+    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
+        if (sh.len > 0)
+            return std.fmt.bufPrint(buf, "{s}/attyx/", .{sh}) catch null;
+    }
+    const home = std.posix.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/", .{home}) catch null;
+}
+
 fn probeAlive(fd: posix.fd_t) bool {
     var buf: [protocol.header_size]u8 = undefined;
     protocol.encodeHeader(&buf, .list, 0);

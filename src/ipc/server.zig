@@ -8,6 +8,7 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 const queue = @import("queue.zig");
+const session_connect = @import("../app/session_connect.zig");
 
 pub var g_ipc_shutdown: i32 = 0;
 
@@ -26,15 +27,11 @@ pub fn start() !void {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
     const pid = std.posix.system.getpid();
 
+    var dir_buf: [256]u8 = undefined;
+    const dir = session_connect.stateDir(&dir_buf) orelse return error.NoHome;
+
     var path_buf: [256]u8 = undefined;
-    const path = blk: {
-        if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
-            if (sh.len > 0)
-                break :blk std.fmt.bufPrint(&path_buf, "{s}/attyx/ctl-{d}{s}.sock", .{ sh, pid, suffix }) catch return error.PathTooLong;
-        }
-        const home = std.posix.getenv("HOME") orelse return error.NoHome;
-        break :blk std.fmt.bufPrint(&path_buf, "{s}/.local/state/attyx/ctl-{d}{s}.sock", .{ home, pid, suffix }) catch return error.PathTooLong;
-    };
+    const path = std.fmt.bufPrint(&path_buf, "{s}ctl-{d}{s}.sock", .{ dir, pid, suffix }) catch return error.PathTooLong;
 
     // Ensure state dir exists with owner-only permissions (0700)
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| {
@@ -44,8 +41,8 @@ pub fn start() !void {
             else => return err,
         };
         // Restrict directory to owner-only (defense against permissive umask)
-        var dir = std.fs.openDirAbsolute(dir_path, .{}) catch null;
-        if (dir) |*d| {
+        var state_dir = std.fs.openDirAbsolute(dir_path, .{}) catch null;
+        if (state_dir) |*d| {
             posix.fchmod(d.fd, 0o700) catch {};
             d.close();
         }
@@ -55,7 +52,8 @@ pub fn start() !void {
     std.fs.deleteFileAbsolute(path) catch {};
 
     // Create + bind + listen with restrictive permissions
-    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    // CLOEXEC prevents the listener fd from leaking into child processes (shells)
+    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
 
     // Set umask to restrict socket file to owner-only (0600)
@@ -93,8 +91,8 @@ pub fn run() void {
         if (ready == 0) continue; // timeout
         if (pfd[0].revents & 0x0001 == 0) continue;
 
-        // Accept
-        const client_fd = posix.accept(fd, null, null, 0) catch continue;
+        // Accept with CLOEXEC to prevent fd inheritance across exec
+        const client_fd = posix.accept(fd, null, null, posix.SOCK.CLOEXEC) catch continue;
 
         // Read one request (header + payload), enqueue, wait for response
         handleClient(client_fd);

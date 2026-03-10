@@ -7,6 +7,7 @@
 const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
+const session_connect = @import("../app/session_connect.zig");
 
 const max_response = 65536;
 
@@ -34,14 +35,7 @@ pub fn discoverSocket(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
     // Scan state dir for ctl-*.sock files
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
     var dir_buf: [256]u8 = undefined;
-    const dir_path = blk: {
-        if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
-            if (sh.len > 0)
-                break :blk std.fmt.bufPrint(&dir_buf, "{s}/attyx/", .{sh}) catch return null;
-        }
-        const home = std.posix.getenv("HOME") orelse return null;
-        break :blk std.fmt.bufPrint(&dir_buf, "{s}/.local/state/attyx/", .{home}) catch return null;
-    };
+    const dir_path = session_connect.stateDir(&dir_buf) orelse return null;
 
     var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return null;
     defer dir.close();
@@ -85,12 +79,9 @@ pub fn discoverSocket(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
 
 fn formatSocketPath(buf: *[256]u8, pid: u32) ?[]const u8 {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
-        if (sh.len > 0)
-            return std.fmt.bufPrint(buf, "{s}/attyx/ctl-{d}{s}.sock", .{ sh, pid, suffix }) catch null;
-    }
-    const home = std.posix.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/ctl-{d}{s}.sock", .{ home, pid, suffix }) catch null;
+    var dir_buf: [256]u8 = undefined;
+    const dir = session_connect.stateDir(&dir_buf) orelse return null;
+    return std.fmt.bufPrint(buf, "{s}ctl-{d}{s}.sock", .{ dir, pid, suffix }) catch null;
 }
 
 /// Connect to the control socket, send a request, read response, return payload.
@@ -171,7 +162,7 @@ pub fn run(args: []const [:0]const u8) void {
     var resp_buf: [max_response]u8 = undefined;
     const resp = sendCommand(socket_path, request, &resp_buf) catch |err| {
         switch (err) {
-            error.ConnectionRefused => writeStderr("error: no running Attyx instance found (stale socket removed)\n"),
+            error.ConnectionRefused => writeStderr("error: no running Attyx instance found\n"),
             else => writeStderr("error: failed to communicate with Attyx instance\n"),
         }
         std.process.exit(1);
@@ -198,10 +189,10 @@ pub fn run(args: []const [:0]const u8) void {
         },
         .err => {
             if (parsed.json_output) {
-                // JSON error format
+                // JSON error format — escape payload for valid JSON string
                 const stderr = std.fs.File.stderr();
                 stderr.writeAll("{\"error\":\"") catch {};
-                stderr.writeAll(resp.payload) catch {};
+                writeJsonEscaped(stderr, resp.payload);
                 stderr.writeAll("\"}\n") catch {};
             } else {
                 writeStderr("error: ");
@@ -250,11 +241,14 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .list_splits => protocol.encodeMessage(buf, .list_splits, ""),
         .popup => blk: {
             // Payload: [width_pct:u8][height_pct:u8][border_style:u8][command...]
-            var payload_buf: [4099]u8 = undefined;
+            // Clamp command to max_payload - 3 bytes for the option header
+            const queue_mod = @import("queue.zig");
+            const max_cmd = queue_mod.max_payload - 3;
+            var payload_buf: [queue_mod.max_payload]u8 = undefined;
             payload_buf[0] = parsed.width_pct;
             payload_buf[1] = parsed.height_pct;
             payload_buf[2] = parsed.border_style;
-            const cmd_len = @min(parsed.text_arg.len, payload_buf.len - 3);
+            const cmd_len = @min(parsed.text_arg.len, max_cmd);
             @memcpy(payload_buf[3 .. 3 + cmd_len], parsed.text_arg[0..cmd_len]);
             break :blk protocol.encodeMessage(buf, .popup, payload_buf[0 .. 3 + cmd_len]);
         },
@@ -276,4 +270,26 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
 
 fn writeStderr(msg: []const u8) void {
     std.fs.File.stderr().writeAll(msg) catch {};
+}
+
+/// Write a string with JSON escaping (quotes, backslashes, control chars).
+fn writeJsonEscaped(file: std.fs.File, s: []const u8) void {
+    for (s) |ch| {
+        switch (ch) {
+            '"' => file.writeAll("\\\"") catch return,
+            '\\' => file.writeAll("\\\\") catch return,
+            '\n' => file.writeAll("\\n") catch return,
+            '\r' => file.writeAll("\\r") catch return,
+            '\t' => file.writeAll("\\t") catch return,
+            else => {
+                if (ch < 0x20) {
+                    var buf: [6]u8 = undefined;
+                    _ = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{ch}) catch return;
+                    file.writeAll(&buf) catch return;
+                } else {
+                    file.writeAll(&.{ch}) catch return;
+                }
+            },
+        }
+    }
 }
