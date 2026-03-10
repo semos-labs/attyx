@@ -819,10 +819,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         [fileMenu addItem:actionItem(@"Previous Tab", 52)];
         [fileMenu addItem:[NSMenuItem separatorItem]];
         // Splits
-        [fileMenu addItem:actionItem(@"Split Right", 53)];
-        [fileMenu addItem:actionItem(@"Split Left", 90)];
-        [fileMenu addItem:actionItem(@"Split Down", 54)];
-        [fileMenu addItem:actionItem(@"Split Up", 91)];
+        [fileMenu addItem:actionItem(@"Split Vertical", 53)];
+        [fileMenu addItem:actionItem(@"Split Horizontal", 54)];
         [fileMenu addItem:[NSMenuItem separatorItem]];
         // Close group
         [fileMenu addItem:actionItem(@"Close", 14)];

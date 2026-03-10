@@ -258,7 +258,10 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 // AttyxView
 // ---------------------------------------------------------------------------
 
-@implementation AttyxView
+@implementation AttyxView {
+    int _ctxMenuCol;
+    int _ctxMenuRow;
+}
 
 - (instancetype)initWithFrame:(NSRect)frameRect device:(id<MTLDevice>)device {
     self = [super initWithFrame:frameRect device:device];
@@ -495,14 +498,37 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         return;
     }
 
+    // Compute grid cell for pane-aware context menu actions
+    int ctxCol, ctxRow;
+    mouseCell(event, self, &ctxCol, &ctxRow);
+    _ctxMenuCol = ctxCol;
+    _ctxMenuRow = ctxRow;
+
     // Show native context menu
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@""];
     [menu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@""];
     [menu addItem:[NSMenuItem separatorItem]];
-    [menu addItemWithTitle:@"Reload Config" action:@selector(reloadConfig:) keyEquivalent:@""];
+
+    // Split actions (target the right-clicked pane)
+    [menu addItemWithTitle:@"Split Vertical" action:@selector(ctxSplitVertical:) keyEquivalent:@""];
+    [menu addItemWithTitle:@"Split Horizontal" action:@selector(ctxSplitHorizontal:) keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Rotate (works on all panes regardless of click target)
+    [menu addItemWithTitle:@"Rotate Panes" action:@selector(ctxRotate:) keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Close pane (targets the right-clicked pane)
+    [menu addItemWithTitle:@"Close Pane" action:@selector(ctxClosePane:) keyEquivalent:@""];
+
     [NSMenu popUpContextMenu:menu withEvent:event forView:self];
 }
+
+- (void)ctxSplitVertical:(id)sender   { attyx_context_menu_action(53, _ctxMenuCol, _ctxMenuRow); }
+- (void)ctxSplitHorizontal:(id)sender { attyx_context_menu_action(54, _ctxMenuCol, _ctxMenuRow); }
+- (void)ctxRotate:(id)sender          { attyx_dispatch_action(78); }
+- (void)ctxClosePane:(id)sender       { attyx_context_menu_action(55, _ctxMenuCol, _ctxMenuRow); }
 
 - (void)reloadConfig:(id)sender {
     attyx_trigger_config_reload();

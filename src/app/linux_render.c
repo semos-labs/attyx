@@ -931,8 +931,9 @@ int drawFrame(void) {
         float padX = cmGw * 0.5f, padY = cmGh * 0.25f;
         float itemH = cmGh + padY * 2.0f;
         float sepH  = padY * 2.0f;
-        float menuW = padX * 2.0f + 13.0f * cmGw; // 13 = len("Reload Config")
-        float menuH = itemH * 3.0f + sepH;
+        // 6 real items + 3 separators
+        float menuW = padX * 2.0f + 16.0f * cmGw; // 16 = len("Split Horizontal")
+        float menuH = itemH * 6.0f + sepH * 3.0f;
 
         // Clamp to content area (centered grid bounds).
         float vpW = offX + cols * cmGw, vpH = offY + rows * cmGh;
@@ -943,29 +944,49 @@ int drawFrame(void) {
         if (menuY < offY) menuY = offY;
 
         // Item labels and Y offsets
-        const char* labels[CTX_MENU_ITEM_COUNT] = { "Copy", "Paste", NULL, "Reload Config" };
-        int labelLens[CTX_MENU_ITEM_COUNT]      = {  4,      5,      0,    13 };
+        const char* labels[CTX_MENU_ITEM_COUNT] = {
+            "Copy", "Paste", NULL,
+            "Split Vertical", "Split Horizontal", NULL,
+            "Rotate Panes", NULL,
+            "Close Pane"
+        };
+        int labelLens[CTX_MENU_ITEM_COUNT] = {
+            4, 5, 0,
+            14, 16, 0,
+            12, 0,
+            10
+        };
+        int isSep[CTX_MENU_ITEM_COUNT] = {
+            0, 0, 1,
+            0, 0, 1,
+            0, 1,
+            0
+        };
         float itemY[CTX_MENU_ITEM_COUNT];
-        itemY[CTX_MENU_ITEM_COPY]          = 0;
-        itemY[CTX_MENU_ITEM_PASTE]         = itemH;
-        itemY[CTX_MENU_ITEM_SEPARATOR]     = itemH * 2.0f;
-        itemY[CTX_MENU_ITEM_RELOAD_CONFIG] = itemH * 2.0f + sepH;
+        float y = 0;
+        for (int mi = 0; mi < CTX_MENU_ITEM_COUNT; mi++) {
+            itemY[mi] = y;
+            y += isSep[mi] ? sepH : itemH;
+        }
 
-        // Solid pass: background rect + hover highlight + separator line.
-        // bg(6) + hover(6) + separator(6) = 18 max
-        Vertex cmBg[18];
+        // Solid pass: background rect + hover highlight + separator lines.
+        // bg(6) + hover(6) + 3 * sep(6) = 30 max
+        Vertex cmBg[30];
         int cmi = 0;
         cmi = emitRect(cmBg, cmi, menuX, menuY, menuW, menuH,
                        0.12f, 0.12f, 0.16f, 0.97f);
-        if (g_ctx_menu_hover >= 0 && g_ctx_menu_hover != CTX_MENU_ITEM_SEPARATOR) {
+        if (g_ctx_menu_hover >= 0 && !isSep[g_ctx_menu_hover]) {
             cmi = emitRect(cmBg, cmi, menuX, menuY + itemY[g_ctx_menu_hover],
                            menuW, itemH, 0.20f, 0.35f, 0.60f, 1.0f);
         }
-        // Separator line
+        // Separator lines
         float sepLineH = fmaxf(1.0f, 1.0f);
-        float sepLineY = menuY + itemY[CTX_MENU_ITEM_SEPARATOR] + (sepH - sepLineH) * 0.5f;
-        cmi = emitRect(cmBg, cmi, menuX + padX, sepLineY, menuW - padX * 2.0f, sepLineH,
-                       0.30f, 0.30f, 0.35f, 1.0f);
+        for (int mi = 0; mi < CTX_MENU_ITEM_COUNT; mi++) {
+            if (!isSep[mi]) continue;
+            float sepLineY = menuY + itemY[mi] + (sepH - sepLineH) * 0.5f;
+            cmi = emitRect(cmBg, cmi, menuX + padX, sepLineY, menuW - padX * 2.0f, sepLineH,
+                           0.30f, 0.30f, 0.35f, 1.0f);
+        }
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -976,11 +997,12 @@ int drawFrame(void) {
         glDrawArrays(GL_TRIANGLES, 0, cmi);
         glDisable(GL_BLEND);
 
-        // Text pass: item labels (skip separator).
-        Vertex cmTv[22 * 6]; // 4+5+13 = 22 chars max
+        // Text pass: item labels (skip separators).
+        // Total label chars: 4+5+14+16+12+10 = 61
+        Vertex cmTv[61 * 6];
         int cti = 0;
         for (int mi = 0; mi < CTX_MENU_ITEM_COUNT; mi++) {
-            if (mi == CTX_MENU_ITEM_SEPARATOR) continue;
+            if (isSep[mi]) continue;
             cti = emitString(cmTv, cti, &g_gc, labels[mi], labelLens[mi],
                              menuX + padX, menuY + itemY[mi] + padY,
                              cmGw, cmGh, 0.90f, 0.90f, 0.95f);

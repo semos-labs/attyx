@@ -164,6 +164,7 @@ export fn attyx_copy_selection() void {}
 export fn attyx_keybind_match(_: u16, _: u8, _: u32) u8 { return 0; }
 export fn attyx_keybind_for_action(_: u8, _: *u16, _: *u8, _: *u32) u8 { return 0; }
 export fn attyx_dispatch_action(_: u8) u8 { return 0; }
+export fn attyx_context_menu_action(_: u8, _: c_int, _: c_int) void {}
 var _seq_stub: u8 = 0;
 export var g_keybind_matched_seq: [*]const u8 = @ptrCast(&_seq_stub);
 export var g_keybind_matched_seq_len: c_int = 0;

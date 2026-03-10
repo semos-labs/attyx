@@ -326,6 +326,23 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Overlay interactions: dismiss, focus cycle, activate, mouse click/scroll
         overlay_input.processOverlayInteractions(ctx);
 
+        // Context menu action: focus pane at click position, then dispatch
+        if (@atomicRmw(i32, &input.g_ctx_action_pending, .Xchg, 0, .seq_cst) != 0) {
+            const ctx_col: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_ctx_action_col, .seq_cst)));
+            const ctx_row_raw = @atomicLoad(i32, &input.g_ctx_action_row, .seq_cst);
+            const ctx_row: u16 = @intCast(@max(0, ctx_row_raw - terminal.g_grid_top_offset));
+            const ctx_action: u8 = @intCast(@atomicLoad(i32, &input.g_ctx_action_id, .seq_cst));
+            const layout = ctx.tab_mgr.activeLayout();
+            if (layout.paneAt(ctx_row, ctx_col)) |target_idx| {
+                if (target_idx != layout.focused) {
+                    layout.focused = target_idx;
+                    actions.switchActiveTab(ctx);
+                }
+            }
+            // Now dispatch the action on the (now-focused) pane
+            input.splitAction(@intCast(ctx_action));
+        }
+
         actions.processTabActions(ctx);
         actions.processSplitActions(ctx);
         actions.processSplitDrag(ctx);

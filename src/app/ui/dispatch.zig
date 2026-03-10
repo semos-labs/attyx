@@ -14,6 +14,7 @@ const platform = @import("../../platform/platform.zig");
 const terminal = @import("../terminal.zig");
 const c = terminal.c;
 const copy_mode = @import("copy_mode.zig");
+const input = @import("input.zig");
 
 // ---------------------------------------------------------------------------
 // Platform callbacks (implemented in platform C files)
@@ -254,6 +255,12 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         else => return 0,
     }
+}
+
+/// Dispatch an action on the pane at the given grid position.
+/// Used by context menus to target the right-clicked pane.
+pub export fn attyx_context_menu_action(action_id: u8, col: c_int, row: c_int) void {
+    input.contextMenuAction(@intCast(action_id), col, row);
 }
 
 // ---------------------------------------------------------------------------
