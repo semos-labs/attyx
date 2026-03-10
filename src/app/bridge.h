@@ -37,6 +37,11 @@ void attyx_spawn_new_window(void);
 // Signal the window to close (called from PTY thread on child exit).
 void attyx_request_quit(void);
 
+// Clean up IPC sockets and resources before exit.
+// Called from applicationWillTerminate on macOS, where [NSApp terminate:]
+// calls exit() and Zig defer blocks never run.
+void attyx_cleanup(void);
+
 // Check if the window has been closed (polled by PTY thread).
 int attyx_should_quit(void);
 

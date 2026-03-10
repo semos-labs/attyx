@@ -370,18 +370,18 @@ pub fn printUsage() void {
         \\  daemon                     Run the session daemon
         \\  kill-daemon                Kill the session daemon and remove socket
         \\
-        \\IPC commands (control a running instance):
-        \\  tab          Create, close, switch, move, or rename tabs
-        \\  split        Create, close, rotate, or zoom pane splits
-        \\  focus        Move focus between panes (up/down/left/right)
-        \\  session      List, create, kill, switch, or rename sessions
-        \\  send-keys    Send a key sequence to the active pane
-        \\  send-text    Send literal text to the active pane
+        \\IPC commands (control a running instance, usable by agents/scripts):
+        \\  tab          Manage tabs (create, close, switch, move, rename)
+        \\  split        Manage pane splits (create, close, rotate, zoom)
+        \\  focus        Move focus between panes (up, down, left, right)
+        \\  session      Manage sessions (list, create, kill, switch, rename)
+        \\  send-keys    Send keystrokes with escape sequences (\n, \x03, etc.)
+        \\  send-text    Send raw text (no escape processing)
         \\  get-text     Read visible text from the active pane
         \\  reload       Reload configuration from disk
         \\  theme        Switch to a named theme
-        \\  scroll-to    Scroll the viewport (top/bottom)
-        \\  list         Show tabs, panes, and sessions
+        \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
+        \\  list         Query tabs, panes, sessions (supports --json)
         \\  popup        Open a popup terminal overlay
         \\  run          Open a new tab with a command
         \\

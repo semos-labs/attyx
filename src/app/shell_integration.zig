@@ -208,8 +208,22 @@ const zsh_script =
     \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
     \\# OSC 7337: report PATH for popup commands
     \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" }
+    \\# Execute startup command after full shell init, then remove the hook
+    \\__attyx_startup() {
+    \\  __attyx_chpwd; __attyx_report_path
+    \\  if [[ -n "$__ATTYX_STARTUP_CMD" ]]; then
+    \\    local cmd="$__ATTYX_STARTUP_CMD"
+    \\    unset __ATTYX_STARTUP_CMD
+    \\    eval "$cmd"
+    \\  fi
+    \\}
     \\__attyx_precmd() { __attyx_chpwd; __attyx_report_path }
-    \\[[ -z "${precmd_functions[(r)__attyx_precmd]}" ]] && precmd_functions+=(__attyx_precmd)
+    \\# Run startup hook once on first prompt, then switch to normal precmd
+    \\__attyx_first_precmd() {
+    \\  __attyx_startup
+    \\  precmd_functions=(${precmd_functions:#__attyx_first_precmd} __attyx_precmd)
+    \\}
+    \\[[ -z "${precmd_functions[(r)__attyx_first_precmd]}" ]] && precmd_functions+=(__attyx_first_precmd)
     \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
     \\__attyx_chpwd
     \\
@@ -229,7 +243,19 @@ const bash_script =
     \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "$(hostname)" "$PWD"; }
     \\# OSC 7337: report PATH for popup commands
     \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH"; }
-    \\PROMPT_COMMAND="__attyx_chpwd;__attyx_report_path${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+    \\# Execute startup command on first prompt, then remove the hook
+    \\__attyx_first_prompt() {
+    \\  __attyx_chpwd; __attyx_report_path
+    \\  if [ -n "$__ATTYX_STARTUP_CMD" ]; then
+    \\    local cmd="$__ATTYX_STARTUP_CMD"
+    \\    unset __ATTYX_STARTUP_CMD
+    \\    eval "$cmd"
+    \\  fi
+    \\  PROMPT_COMMAND="__attyx_chpwd;__attyx_report_path${__ATTYX_ORIG_PC:+;$__ATTYX_ORIG_PC}"
+    \\  unset __ATTYX_ORIG_PC
+    \\}
+    \\__ATTYX_ORIG_PC="$PROMPT_COMMAND"
+    \\PROMPT_COMMAND="__attyx_first_prompt"
     \\
 ;
 
@@ -242,6 +268,17 @@ const fish_script =
     \\# OSC 7: report cwd on directory changes and on every prompt
     \\function __attyx_chpwd --on-variable PWD
     \\  printf '\e]7;file://%s%s\a' (hostname) "$PWD"
+    \\end
+    \\# Execute startup command on first prompt, then switch to normal hook
+    \\function __attyx_first_prompt --on-event fish_prompt
+    \\  __attyx_chpwd
+    \\  printf '\e]7337;set-path;%s\a' "$PATH"
+    \\  if set -q __ATTYX_STARTUP_CMD
+    \\    set -l cmd $__ATTYX_STARTUP_CMD
+    \\    set -e __ATTYX_STARTUP_CMD
+    \\    eval $cmd
+    \\  end
+    \\  functions -e __attyx_first_prompt
     \\end
     \\# OSC 7337: report PATH for popup commands; also report CWD on prompt
     \\function __attyx_report_path --on-event fish_prompt
@@ -261,6 +298,12 @@ const nushell_script =
     \\      print -n $"\e]7;file://(sys host | get hostname)(pwd)\a"
     \\      # OSC 7337: report PATH for popup commands
     \\      print -n $"\e]7337;set-path;($env.PATH | str join ':')\a"
+    \\      # Execute startup command on first prompt
+    \\      if ($env.__ATTYX_STARTUP_CMD? | is-not-empty) {
+    \\        let cmd = $env.__ATTYX_STARTUP_CMD
+    \\        hide-env __ATTYX_STARTUP_CMD
+    \\        nu -c $cmd
+    \\      }
     \\    }]
     \\  }
     \\})

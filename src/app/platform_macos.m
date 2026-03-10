@@ -510,6 +510,7 @@ void attyx_spawn_new_window(void) {
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
     g_should_quit = 1;
+    attyx_cleanup();
 }
 
 - (void)reloadConfig:(id)sender {

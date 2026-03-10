@@ -73,12 +73,12 @@ fn isHelp(arg: []const u8) bool {
 }
 
 fn showHelp(comptime text: []const u8) noreturn {
-    std.debug.print(text, .{});
+    std.fs.File.stderr().writeAll(text) catch {};
     std.process.exit(0);
 }
 
 fn printHelp(comptime text: []const u8) void {
-    std.debug.print(text, .{});
+    std.fs.File.stderr().writeAll(text) catch {};
 }
 
 /// Check if any arg after `start` is --help / -h.

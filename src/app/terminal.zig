@@ -209,6 +209,13 @@ comptime {
 // ---------------------------------------------------------------------------
 // Export fn — thin delegators to sub-modules
 // ---------------------------------------------------------------------------
+/// Called from platform layer on app termination (e.g. applicationWillTerminate
+/// on macOS) to clean up IPC sockets. On macOS, [NSApp terminate:] calls exit()
+/// which skips Zig defer blocks, so we need an explicit cleanup path.
+export fn attyx_cleanup() void {
+    ipc_server.shutdown();
+}
+
 export fn attyx_toggle_debug_overlay() void {
     @atomicStore(i32, &g_toggle_debug_overlay, 1, .seq_cst);
 }

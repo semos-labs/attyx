@@ -48,8 +48,12 @@ pub fn start() !void {
         }
     }
 
-    // Remove stale socket
+    // Remove stale socket for our PID
     std.fs.deleteFileAbsolute(path) catch {};
+
+    // Sweep stale sockets left by dead processes (e.g. force-quit on macOS
+    // where [NSApp terminate:] calls exit() and Zig defers don't run).
+    cleanStaleSockets(dir, suffix);
 
     // Create + bind + listen with restrictive permissions
     // CLOEXEC prevents the listener fd from leaking into child processes (shells)
@@ -161,9 +165,47 @@ pub fn shutdown() void {
         listener_fd = -1;
     }
     if (socket_path_len > 0) {
-        // Null-terminate for deleteFileAbsolute
         const path = socket_path_buf[0..socket_path_len];
         std.fs.deleteFileAbsolute(path) catch {};
         socket_path_len = 0;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stale socket cleanup
+// ---------------------------------------------------------------------------
+
+/// Remove ctl-*.sock files that no longer have a live Attyx instance behind them.
+/// Cleans both -dev and non-dev sockets. We probe each socket with a connect()
+/// attempt rather than kill(pid, 0), because PID recycling means a dead attyx
+/// PID could now belong to an unrelated process.
+fn cleanStaleSockets(dir: []const u8, comptime suffix: []const u8) void {
+    _ = suffix; // clean all variants, not just our suffix
+    var d = std.fs.openDirAbsolute(dir, .{ .iterate = true }) catch return;
+    defer d.close();
+
+    var it = d.iterate();
+    while (it.next() catch null) |entry| {
+        const name = entry.name;
+        if (!std.mem.startsWith(u8, name, "ctl-")) continue;
+        if (!std.mem.endsWith(u8, name, ".sock")) continue;
+
+        // Build absolute path for this socket
+        var path_buf: [512]u8 = undefined;
+        const sock_path = std.fmt.bufPrint(&path_buf, "{s}{s}", .{ dir, name }) catch continue;
+
+        // Try connecting — if refused or unreachable, the socket is stale.
+        if (!probeSocket(sock_path)) {
+            d.deleteFile(name) catch {};
+        }
+    }
+}
+
+/// Try to connect to a Unix socket. Returns true if a listener accepts.
+fn probeSocket(path: []const u8) bool {
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return false;
+    defer posix.close(fd);
+    const addr = std.net.Address.initUnix(path) catch return false;
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch return false;
+    return true;
 }
