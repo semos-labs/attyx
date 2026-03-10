@@ -428,6 +428,94 @@ pub export fn attyx_keybind_match(key: u16, mods: u8, codepoint: u32) u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime table queries (for command palette display)
+// ---------------------------------------------------------------------------
+
+/// Find the KeyCombo currently bound to an action in the installed table.
+/// Returns null if the action has no binding (e.g. unbound via "none").
+pub fn findComboForAction(action: Action) ?KeyCombo {
+    const count: usize = g_table.count;
+    for (g_table.entries[0..count]) |entry| {
+        if (entry.action == action) return entry.combo;
+    }
+    return null;
+}
+
+/// Format a KeyCombo into a compact display string.
+/// macOS uses standard symbols: ⌃⌥⇧⌘K (no separators).
+/// Linux uses: ^+Alt+Shift+Super+K (short, with separators).
+/// Returns the number of bytes written.
+pub fn formatKeyCombo(combo: KeyCombo, buf: []u8) u8 {
+    var pos: u8 = 0;
+    const is_macos = comptime builtin.os.tag == .macos;
+
+    if (is_macos) {
+        // macOS: standard modifier order ⌃⌥⇧⌘ with + separators
+        if (combo.mods & MOD_CTRL != 0) pos = appendStr(buf, pos, "⌃+");
+        if (combo.mods & MOD_ALT != 0) pos = appendStr(buf, pos, "⌥+");
+        if (combo.mods & MOD_SHIFT != 0) pos = appendStr(buf, pos, "⇧+");
+        if (combo.mods & MOD_SUPER != 0) pos = appendStr(buf, pos, "⌘+");
+    } else {
+        // Linux: compact with separators
+        if (combo.mods & MOD_CTRL != 0) pos = appendStr(buf, pos, "^");
+        if (combo.mods & MOD_ALT != 0) pos = appendStr(buf, pos, "Alt+");
+        if (combo.mods & MOD_SHIFT != 0) pos = appendStr(buf, pos, "Shift+");
+        if (combo.mods & MOD_SUPER != 0) pos = appendStr(buf, pos, "Super+");
+    }
+
+    // Key name — codepoints written directly to avoid dangling temporaries
+    if (combo.key == KC_CODEPOINT) {
+        if (pos < buf.len) {
+            // Uppercase the letter for display
+            const ch: u8 = if (combo.codepoint >= 0x20 and combo.codepoint < 0x7f)
+                @intCast(combo.codepoint)
+            else
+                '?';
+            buf[pos] = if (ch >= 'a' and ch <= 'z') ch - 32 else ch;
+            pos += 1;
+        }
+    } else {
+        pos = appendStr(buf, pos, keyName(combo.key));
+    }
+
+    return pos;
+}
+
+fn appendStr(buf: []u8, pos: u8, s: []const u8) u8 {
+    const end = @as(usize, pos) + s.len;
+    if (end > buf.len) return pos;
+    @memcpy(buf[pos..][0..s.len], s);
+    return @intCast(end);
+}
+
+fn keyName(key: u16) []const u8 {
+    return switch (key) {
+        KC_UP => "↑",
+        KC_DOWN => "↓",
+        KC_LEFT => "←",
+        KC_RIGHT => "→",
+        KC_HOME => "Home",
+        KC_END => "End",
+        KC_PAGE_UP => "PgUp",
+        KC_PAGE_DOWN => "PgDn",
+        KC_INSERT => "Ins",
+        KC_DELETE => "Del",
+        KC_BACKSPACE => if (comptime builtin.os.tag == .macos) "⌫" else "Bksp",
+        KC_ENTER => if (comptime builtin.os.tag == .macos) "⏎" else "Enter",
+        KC_TAB => "⇥",
+        KC_ESCAPE => "Esc",
+        else => blk: {
+            // Function keys
+            if (key >= KC_F1 and key <= KC_F1 + 11) {
+                const fkeys = [_][]const u8{ "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12" };
+                break :blk fkeys[key - KC_F1];
+            }
+            break :blk "?";
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
