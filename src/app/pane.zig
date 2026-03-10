@@ -41,6 +41,9 @@ pub const Pane = struct {
     ipc_wait_fd: posix.fd_t = -1,
     /// Stored exit code for daemon-backed panes (set from pane_died message).
     stored_exit_code: ?u8 = null,
+    /// Captured stdout for --wait mode. When set, stdout_read_fd is drained
+    /// here and sent to the IPC client alongside the exit code.
+    captured_stdout: ?*std.ArrayList(u8) = null,
     /// Debounced PTY resize: pending dimensions and timestamp of last TIOCSWINSZ.
     pending_pty_rows: u16 = 0,
     pending_pty_cols: u16 = 0,
@@ -122,24 +125,49 @@ pub const Pane = struct {
     }
 
     pub fn deinit(self: *Pane) void {
+        // Drain any remaining stdout before sending exit response.
+        self.drainCapturedStdout();
+
         // Notify any IPC --wait client with the exit code before cleanup.
         if (self.ipc_wait_fd != -1) {
             const exit_code: u8 = self.stored_exit_code orelse
                 if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
-            // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1]
-            var resp: [6]u8 = undefined;
-            std.mem.writeInt(u32, resp[0..4], 1, .little);
-            resp[4] = 0xA2; // exit_code message type
-            resp[5] = exit_code;
-            _ = posix.write(self.ipc_wait_fd, &resp) catch {};
+            const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
+            const payload_len: u32 = 1 + @as(u32, @intCast(stdout_data.len));
+            // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1][stdout...]
+            var resp_hdr: [6]u8 = undefined;
+            std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
+            resp_hdr[4] = 0xA2; // exit_code message type
+            resp_hdr[5] = exit_code;
+            _ = posix.write(self.ipc_wait_fd, &resp_hdr) catch {};
+            if (stdout_data.len > 0) {
+                _ = posix.write(self.ipc_wait_fd, stdout_data) catch {};
+            }
             posix.close(self.ipc_wait_fd);
             self.ipc_wait_fd = -1;
+        }
+        if (self.captured_stdout) |cs| {
+            cs.deinit(self.allocator);
+            self.allocator.destroy(cs);
+            self.captured_stdout = null;
         }
         if (self.daemon_pane_id == null) {
             _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
             self.pty.deinit();
         }
         self.engine.deinit();
+    }
+
+    /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
+    pub fn drainCapturedStdout(self: *Pane) void {
+        const cs = self.captured_stdout orelse return;
+        if (self.pty.stdout_read_fd == -1) return;
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const n = posix.read(self.pty.stdout_read_fd, &buf) catch break;
+            if (n == 0) break;
+            cs.appendSlice(self.allocator, buf[0..n]) catch break;
+        }
     }
 
     pub fn feed(self: *Pane, data: []const u8) void {

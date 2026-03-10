@@ -26,7 +26,7 @@ pub const ListEntry = struct {
 pub const DaemonMessage = union(enum) {
     pane_output: struct { pane_id: u32, data: []const u8 },
     pane_created: u32,
-    pane_died: struct { pane_id: u32, exit_code: u8 },
+    pane_died: struct { pane_id: u32, exit_code: u8, stdout: []const u8 = "" },
     pane_proc_name: struct { pane_id: u32, name: []const u8 },
     replay_end: u32, // pane_id whose replay just finished
     session_attached: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
@@ -172,8 +172,15 @@ pub const SessionClient = struct {
 
     /// Create a new pane with a custom command (e.g. "htop").
     pub fn sendCreatePaneWithCmd(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8) !void {
-        var payload_buf: [8204]u8 = undefined;
-        const payload = try protocol.encodeCreatePaneWithCmd(&payload_buf, rows, cols, cwd, cmd);
+        var payload_buf: [8205]u8 = undefined;
+        const payload = try protocol.encodeCreatePaneWithCmdFlags(&payload_buf, rows, cols, cwd, cmd, 0);
+        try self.sendMessage(.create_pane, payload);
+    }
+
+    /// Create a new pane with capture_stdout for --wait mode.
+    pub fn sendCreatePaneWithCmdWait(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8) !void {
+        var payload_buf: [8205]u8 = undefined;
+        const payload = try protocol.encodeCreatePaneWithCmdFlags(&payload_buf, rows, cols, cwd, cmd, 0x01);
         try self.sendMessage(.create_pane, payload);
     }
 
@@ -434,8 +441,11 @@ pub const SessionClient = struct {
                         self.consumeBytes(total);
                         continue;
                     };
+                    // Copy stdout to output_buf so it survives consumeBytes
+                    const slen = @min(msg.stdout.len, self.output_buf.len);
+                    if (slen > 0) @memcpy(self.output_buf[0..slen], msg.stdout[0..slen]);
                     self.consumeBytes(total);
-                    return .{ .pane_died = .{ .pane_id = msg.pane_id, .exit_code = msg.exit_code } };
+                    return .{ .pane_died = .{ .pane_id = msg.pane_id, .exit_code = msg.exit_code, .stdout = self.output_buf[0..slen] } };
                 },
                 .pane_proc_name => {
                     const msg = protocol.decodePaneProcName(payload) catch {

@@ -91,6 +91,12 @@ pub const TabManager = struct {
         self.insertTab(pane, rows, cols);
     }
 
+    /// Add a tab with a pre-created pane (e.g. for --wait with capture_stdout).
+    pub fn addTabWithPane(self: *TabManager, pane: *Pane, rows: u16, cols: u16) !void {
+        if (self.count >= max_tabs) return error.TooManyTabs;
+        self.insertTab(pane, rows, cols);
+    }
+
     /// Add a new tab backed by a daemon PTY (no local PTY spawn).
     pub fn addDaemonTab(self: *TabManager, rows: u16, cols: u16, scrollback_lines: usize) !*Pane {
         if (self.count >= max_tabs) return error.TooManyTabs;

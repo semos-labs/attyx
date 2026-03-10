@@ -202,6 +202,12 @@ pub const Pty = struct {
         const current = std.posix.fcntl(master, F_GETFL, 0) catch 0;
         _ = std.posix.fcntl(master, F_SETFL, current | platform.O_NONBLOCK) catch {};
 
+        // Non-blocking reads on stdout capture pipe (if present)
+        if (stdout_pipe[0] != -1) {
+            const sflags = std.posix.fcntl(stdout_pipe[0], F_GETFL, 0) catch 0;
+            _ = std.posix.fcntl(stdout_pipe[0], F_SETFL, sflags | platform.O_NONBLOCK) catch {};
+        }
+
         return .{ .master = master, .pid = pid, .stdout_read_fd = stdout_pipe[0] };
     }
 

@@ -33,10 +33,23 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: 
             sendError(cmd, "sessions not available");
             return;
         };
-        sc.sendCreatePaneWithCmd(rows, cols, resolved.cwd orelse "", command) catch {
-            sendError(cmd, "failed to send create_pane");
-            return;
-        };
+        if (wait) {
+            // --wait: wrap command so shell exits after it, use capture_stdout
+            const wrapped = wrapCommandForWait(ctx.allocator, command) orelse {
+                sendError(cmd, "out of memory");
+                return;
+            };
+            defer ctx.allocator.free(wrapped);
+            sc.sendCreatePaneWithCmdWait(rows, cols, resolved.cwd orelse "", wrapped) catch {
+                sendError(cmd, "failed to send create_pane");
+                return;
+            };
+        } else {
+            sc.sendCreatePaneWithCmd(rows, cols, resolved.cwd orelse "", command) catch {
+                sendError(cmd, "failed to send create_pane");
+                return;
+            };
+        }
         const pane_id = sc.waitForPaneCreated(5000) catch {
             sendError(cmd, "daemon pane creation failed");
             return;
@@ -55,10 +68,31 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: 
         defer freeShellArgv(ctx, argv);
         const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| ctx.allocator.free(z);
-        ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch {
-            sendError(cmd, "failed to create tab");
-            return;
-        };
+        if (wait) {
+            // --wait: spawn with capture_stdout so stdout pipes back to caller.
+            const Pane = @import("../app/pane.zig").Pane;
+            const pane = ctx.allocator.create(Pane) catch {
+                sendError(cmd, "out of memory");
+                return;
+            };
+            pane.* = Pane.spawnOpts(ctx.allocator, rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines, .{ .capture_stdout = true }) catch {
+                ctx.allocator.destroy(pane);
+                sendError(cmd, "failed to create tab");
+                return;
+            };
+            pane.captured_stdout = initCapturedStdout(ctx.allocator);
+            ctx.tab_mgr.addTabWithPane(pane, rows, cols) catch {
+                pane.deinit();
+                ctx.allocator.destroy(pane);
+                sendError(cmd, "failed to create tab");
+                return;
+            };
+        } else {
+            ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch {
+                sendError(cmd, "failed to create tab");
+                return;
+            };
+        }
     }
     publish.updateGridTopOffset(ctx);
     const new_pane = ctx.tab_mgr.activePane();
@@ -93,10 +127,22 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
             sendError(cmd, "pane too small to split");
             return;
         };
-        sc.sendCreatePaneWithCmd(sz.rows, sz.cols, resolved.cwd orelse "", command) catch {
-            sendError(cmd, "failed to send create_pane");
-            return;
-        };
+        if (wait) {
+            const wrapped = wrapCommandForWait(ctx.allocator, command) orelse {
+                sendError(cmd, "out of memory");
+                return;
+            };
+            defer ctx.allocator.free(wrapped);
+            sc.sendCreatePaneWithCmdWait(sz.rows, sz.cols, resolved.cwd orelse "", wrapped) catch {
+                sendError(cmd, "failed to send create_pane");
+                return;
+            };
+        } else {
+            sc.sendCreatePaneWithCmd(sz.rows, sz.cols, resolved.cwd orelse "", command) catch {
+                sendError(cmd, "failed to send create_pane");
+                return;
+            };
+        }
         const pane_id = sc.waitForPaneCreated(5000) catch {
             sendError(cmd, "daemon pane creation failed");
             return;
@@ -123,10 +169,36 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
             return;
         };
         defer freeShellArgv(ctx, argv);
-        layout.splitPaneResolvedWithArgv(dir, ctx.allocator, &argv, resolved.cwd, ctx.applied_scrollback_lines) catch {
-            sendError(cmd, "failed to create split");
-            return;
-        };
+        if (wait) {
+            // --wait: spawn with capture_stdout so stdout pipes back to caller.
+            const sz = layout.splitChildSize(dir, layout.pool[layout.focused].rect) orelse {
+                sendError(cmd, "pane too small to split");
+                return;
+            };
+            const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+            defer if (cwd_z) |z| ctx.allocator.free(z);
+            const new_split_pane = ctx.allocator.create(Pane) catch {
+                sendError(cmd, "out of memory");
+                return;
+            };
+            new_split_pane.* = Pane.spawnOpts(ctx.allocator, sz.rows, sz.cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines, .{ .capture_stdout = true }) catch {
+                ctx.allocator.destroy(new_split_pane);
+                sendError(cmd, "failed to create split");
+                return;
+            };
+            new_split_pane.captured_stdout = initCapturedStdout(ctx.allocator);
+            layout.splitPaneWith(dir, new_split_pane) catch {
+                new_split_pane.deinit();
+                ctx.allocator.destroy(new_split_pane);
+                sendError(cmd, "failed to split");
+                return;
+            };
+        } else {
+            layout.splitPaneResolvedWithArgv(dir, ctx.allocator, &argv, resolved.cwd, ctx.applied_scrollback_lines) catch {
+                sendError(cmd, "failed to create split");
+                return;
+            };
+        }
     }
 
     // Set theme colors on newly created pane
@@ -190,6 +262,18 @@ pub fn freeShellArgv(ctx: *PtyThreadCtx, argv: [3][:0]const u8) void {
     ctx.allocator.free(argv[2]);
     ctx.allocator.free(argv[1]);
     ctx.allocator.free(argv[0]);
+}
+
+/// Wrap a command for --wait mode: append "; exit $?" so the shell exits
+/// after the command finishes (instead of staying alive at a prompt).
+fn wrapCommandForWait(allocator: std.mem.Allocator, command: []const u8) ?[]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}; exit $?", .{command}) catch null;
+}
+
+fn initCapturedStdout(allocator: std.mem.Allocator) ?*std.ArrayList(u8) {
+    const cs = allocator.create(std.ArrayList(u8)) catch return null;
+    cs.* = .empty;
+    return cs;
 }
 
 pub fn handlePopup(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {

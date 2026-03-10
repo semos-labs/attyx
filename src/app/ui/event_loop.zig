@@ -591,6 +591,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                     if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
                                         // Store exit code so pane.deinit() can notify --wait clients.
                                         result.pane.stored_exit_code = died.exit_code;
+                                        // Store captured stdout for --wait panes
+                                        if (died.stdout.len > 0 and result.pane.ipc_wait_fd != -1) {
+                                            if (result.pane.captured_stdout == null) {
+                                                const new_cs = ctx.allocator.create(std.ArrayList(u8)) catch null;
+                                                if (new_cs) |ncs| {
+                                                    ncs.* = .empty;
+                                                    result.pane.captured_stdout = ncs;
+                                                }
+                                            }
+                                            if (result.pane.captured_stdout) |cs| {
+                                                cs.appendSlice(ctx.allocator, died.stdout) catch {};
+                                            }
+                                        }
                                         // Close pane BEFORE clearing daemon_pane_id to avoid
                                         // waitpid(0) reaping random children.
                                         if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
@@ -678,6 +691,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     if (fd_tab_idx[i] == ctx.tab_mgr.active) got_data = true;
                     p.feed(buf[0..n]);
                 }
+                // Drain stdout capture pipe for --wait panes (non-blocking)
+                p.drainCapturedStdout();
             }
         }
 

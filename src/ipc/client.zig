@@ -196,8 +196,11 @@ pub fn run(args: []const [:0]const u8) void {
             std.process.exit(1);
         },
         .exit_code => {
-            // --wait response: exit with the process's exit code
+            // --wait response: [exit_code:u8][captured_stdout...]
             const code: u8 = if (resp.payload.len > 0) resp.payload[0] else 1;
+            if (resp.payload.len > 1) {
+                stdout.writeAll(resp.payload[1..]) catch {};
+            }
             std.process.exit(code);
         },
         else => {

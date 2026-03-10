@@ -233,11 +233,19 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                     }
                 }
             }
+            // Drain stdout capture pipe (non-blocking, every poll cycle)
+            if (sessions[entry.session_idx]) |*s| {
+                if (s.panes[entry.pane_idx]) |*pane| {
+                    pane.drainCapturedStdout();
+                }
+            }
             // Check POLLHUP on pane PTY
             if (fds[poll_idx].revents & 0x0010 != 0) {
                 if (sessions[entry.session_idx]) |*s| {
                     if (s.panes[entry.pane_idx]) |*pane| {
                         if (pane.checkExit()) |exit_code| {
+                            // Final stdout drain before sending pane_died
+                            pane.drainCapturedStdout();
                             // Check if session is still alive
                             var any_alive = false;
                             for (s.panes) |slot| {
@@ -248,10 +256,11 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                             }
                             if (!any_alive) s.alive = false;
 
+                            const stdout_data = pane.getCapturedStdout();
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id) {
-                                        cl.sendPaneDied(pane.id, exit_code);
+                                        cl.sendPaneDiedWithStdout(pane.id, exit_code, stdout_data);
                                         if (!s.alive) {
                                             cl.attached_session = null;
                                         }
