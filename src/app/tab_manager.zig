@@ -171,6 +171,29 @@ pub const TabManager = struct {
         self.active = dst;
     }
 
+    /// Move tab from position `from` to position `to` (shift intermediate tabs).
+    pub fn moveTabTo(self: *TabManager, from: u8, to: u8) void {
+        if (self.count <= 1) return;
+        if (from >= self.count or to >= self.count) return;
+        if (from == to) return;
+        const saved = self.tabs[from];
+        if (from < to) {
+            // Shift left: [from+1..to] → [from..to-1]
+            var i: u8 = from;
+            while (i < to) : (i += 1) {
+                self.tabs[i] = self.tabs[i + 1];
+            }
+        } else {
+            // Shift right: [to..from-1] → [to+1..from]
+            var i: u8 = from;
+            while (i > to) : (i -= 1) {
+                self.tabs[i] = self.tabs[i - 1];
+            }
+        }
+        self.tabs[to] = saved;
+        self.active = to;
+    }
+
     /// Resize all tabs. For each tab, calls layout() which recursively
     /// resizes all split panes to fit within the given dimensions.
     pub fn resizeAll(self: *TabManager, rows: u16, cols: u16) void {

@@ -474,6 +474,18 @@ extern volatile int g_native_tab_active;       // PTY→main: current active ind
 extern char g_native_tab_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX]; // Zig-owned
 extern volatile int g_native_tab_titles_changed; // Zig-owned: set to 1 when titles updated
 extern volatile int g_native_tab_click;          // Zig-owned: main→PTY (-1=none)
+extern volatile int g_native_tab_reorder;        // Zig-owned: main→PTY packed (from<<8)|to (-1=none)
+
+// Session dropdown for native tab bar (Zig→main)
+#define ATTYX_MAX_SESSIONS 32
+#define ATTYX_SESSION_NAME_MAX 64
+extern volatile int g_sessions_active;           // 1 when sessions connected
+extern volatile int g_session_count;             // number of sessions in list
+extern volatile int g_active_session_idx;        // index of current session in list (-1=unknown)
+extern uint32_t    g_session_ids[ATTYX_MAX_SESSIONS];
+extern char        g_session_names[ATTYX_MAX_SESSIONS][ATTYX_SESSION_NAME_MAX];
+extern volatile int g_session_list_changed;      // set to 1 when list updated
+extern volatile int g_session_switch_id;         // main→PTY: session ID to switch to (-1=none)
 
 // Tab management (called from input thread via keybind dispatch)
 void attyx_tab_action(int action);

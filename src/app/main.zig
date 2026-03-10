@@ -103,7 +103,16 @@ export var g_native_tab_count: i32 = 1;
 export var g_native_tab_active: i32 = 0;
 export var g_native_tab_titles_changed: i32 = 0;
 export var g_native_tab_click: i32 = -1;
+export var g_native_tab_reorder: i32 = -1;
 export var g_native_tab_titles: [16][128]u8 = .{.{0} ** 128} ** 16;
+// Session dropdown stubs
+export var g_sessions_active: i32 = 0;
+export var g_session_count: i32 = 0;
+export var g_active_session_idx: i32 = -1;
+export var g_session_ids: [32]u32 = .{0} ** 32;
+export var g_session_names: [32][64]u8 = .{.{0} ** 64} ** 32;
+export var g_session_list_changed: i32 = 0;
+export var g_session_switch_id: i32 = -1;
 export fn attyx_split_drag_start(_: c_int, _: c_int) void {}
 export fn attyx_split_drag_update(_: c_int, _: c_int) void {}
 export fn attyx_split_drag_end() void {}

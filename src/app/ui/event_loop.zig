@@ -265,6 +265,20 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             if (ctx.tab_mgr.count == 0) continue :outer;
         }
 
+        // Session dropdown: switch to session by ID (main thread → PTY thread)
+        {
+            const switch_id = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_session_switch_id))), .Xchg, -1, .seq_cst);
+            if (switch_id >= 0 and ctx.sessions_enabled) {
+                session_actions.doSessionSwitch(ctx, @intCast(switch_id));
+                if (ctx.tab_mgr.count == 0) continue :outer;
+            }
+        }
+
+        // Publish session list for native tab bar dropdown
+        if (ctx.sessions_enabled and c.g_native_tabs_enabled != 0) {
+            publishSessionList(ctx);
+        }
+
         // Tick AI (auth/SSE state + streaming reveal)
         ai.tickAi(ctx);
 
@@ -342,6 +356,21 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 if (idx != ctx.tab_mgr.active) {
                     ctx.tab_mgr.switchTo(idx);
                     actions.switchActiveTab(ctx);
+                }
+            }
+        }
+
+        // Native tab drag-reorder (main thread → PTY thread)
+        {
+            const reorder_val = @atomicRmw(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_native_tab_reorder))), .Xchg, -1, .seq_cst);
+            if (reorder_val >= 0) {
+                const from: u8 = @intCast((reorder_val >> 8) & 0xFF);
+                const to: u8 = @intCast(reorder_val & 0xFF);
+                if (from < ctx.tab_mgr.count and to < ctx.tab_mgr.count and from != to) {
+                    ctx.tab_mgr.moveTabTo(from, to);
+                    actions.switchActiveTab(ctx);
+                    actions.saveSessionLayout(ctx);
+                    logging.info("tabs", "reordered tab {d} → {d}", .{ from + 1, to + 1 });
                 }
             }
         }
@@ -1055,4 +1084,47 @@ fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import
         }
     }
     return null;
+}
+
+/// Publish session list to bridge globals for the native tab bar dropdown.
+/// Called each tick when sessions are enabled and native tabs are active.
+/// Uses requestListSync with a short timeout; skips if list request fails.
+var session_list_tick: u32 = 0;
+fn publishSessionList(ctx: *PtyThreadCtx) void {
+    const SessionClient = @import("../session_client.zig").SessionClient;
+    // Only refresh every ~60 ticks (~1 second at 16ms poll)
+    session_list_tick +%= 1;
+    if (session_list_tick % 60 != 0) {
+        // Still mark sessions as active even between refreshes
+        @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_sessions_active))), 1, .seq_cst);
+        return;
+    }
+    const sc: *SessionClient = ctx.session_client orelse return;
+    sc.requestListSync(200) catch return;
+    if (!sc.pending_list_ready) return;
+
+    const raw_count: usize = @min(sc.pending_list_count, 32);
+    const current_id = sc.attached_session_id;
+    var active_idx: i32 = -1;
+    var out: usize = 0;
+
+    for (0..raw_count) |i| {
+        const entry = &sc.pending_list[i];
+        const name = entry.getName();
+        // Hide "default" session — same filter as session picker
+        if (std.mem.eql(u8, name, "default")) continue;
+        c.g_session_ids[out] = entry.id;
+        const len = @min(name.len, 63);
+        @memcpy(c.g_session_names[out][0..len], name[0..len]);
+        c.g_session_names[out][len] = 0;
+        if (current_id != null and entry.id == current_id.?) {
+            active_idx = @intCast(out);
+        }
+        out += 1;
+    }
+
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_session_count))), @intCast(out), .seq_cst);
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_active_session_idx))), active_idx, .seq_cst);
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_sessions_active))), 1, .seq_cst);
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_session_list_changed))), 1, .seq_cst);
 }
