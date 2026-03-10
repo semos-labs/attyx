@@ -188,9 +188,11 @@ pub export var g_theme_picker_active: i32 = 0;
 // Ensure keybind, dispatch, and copy mode exports are linked
 comptime {
     _ = &keybinds_mod.attyx_keybind_match;
+    _ = &keybinds_mod.attyx_keybind_for_action;
     _ = &keybinds_mod.g_keybind_matched_seq;
     _ = &keybinds_mod.g_keybind_matched_seq_len;
     _ = &dispatch.attyx_dispatch_action;
+    _ = &dispatch.attyx_context_menu_action;
     _ = &copy_mode.attyx_copy_mode_enter;
     _ = &copy_mode.attyx_copy_mode_key;
     _ = &copy_mode.attyx_copy_mode_exit;

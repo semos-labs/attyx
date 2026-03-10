@@ -537,6 +537,17 @@ static int mouseModifiers(int mods) {
     return m;
 }
 
+// Context menu geometry helpers.
+// 6 real items + 3 separators = 9 total.
+// Widest label: "Split Horizontal" = 16 chars.
+#define CTX_MENU_LABEL_MAX 16
+#define CTX_MENU_REAL_ITEMS 6  // non-separator items
+#define CTX_MENU_SEPS       3  // separator items
+
+static int ctxMenuIsSep(int idx) {
+    return idx == CTX_MENU_ITEM_SEP1 || idx == CTX_MENU_ITEM_SEP2 || idx == CTX_MENU_ITEM_SEP3;
+}
+
 // Helper: context menu hit-test.
 // Returns item index (CTX_MENU_ITEM_*) or -1 if outside the menu.
 static int ctxMenuHitItem(float px, float py) {
@@ -544,18 +555,21 @@ static int ctxMenuHitItem(float px, float py) {
     float padX = gw * 0.5f, padY = gh * 0.25f;
     float itemH = gh + padY * 2.0f;
     float sepH  = padY * 2.0f;
-    float menuW = padX * 2.0f + 13.0f * gw; // 13 = len("Reload Config")
-    float menuH = itemH * 3.0f + sepH;       // Copy, Paste, sep, Reload Config
+    float menuW = padX * 2.0f + CTX_MENU_LABEL_MAX * gw;
+    float menuH = itemH * CTX_MENU_REAL_ITEMS + sepH * CTX_MENU_SEPS;
 
     if (px < g_ctx_menu_x || px > g_ctx_menu_x + menuW ||
         py < g_ctx_menu_y || py > g_ctx_menu_y + menuH)
         return -1;
 
-    float relY = py - g_ctx_menu_y;
-    if (relY < itemH)              return CTX_MENU_ITEM_COPY;
-    if (relY < itemH * 2.0f)      return CTX_MENU_ITEM_PASTE;
-    if (relY < itemH * 2.0f + sepH) return CTX_MENU_ITEM_SEPARATOR;
-    return CTX_MENU_ITEM_RELOAD_CONFIG;
+    // Walk items accumulating Y offset
+    float y = 0;
+    for (int i = 0; i < CTX_MENU_ITEM_COUNT; i++) {
+        float h = ctxMenuIsSep(i) ? sepH : itemH;
+        if (py - g_ctx_menu_y < y + h) return i;
+        y += h;
+    }
+    return CTX_MENU_ITEM_COUNT - 1;
 }
 
 // Split separator hit-test (~20px grab zone around separator lines).
@@ -646,9 +660,12 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
             int item = ctxMenuHitItem(px, py);
             switch (item) {
-                case CTX_MENU_ITEM_COPY:          attyx_platform_copy(); break;
-                case CTX_MENU_ITEM_PASTE:         attyx_platform_paste(); break;
-                case CTX_MENU_ITEM_RELOAD_CONFIG: attyx_trigger_config_reload(); break;
+                case CTX_MENU_ITEM_COPY:        attyx_platform_copy(); break;
+                case CTX_MENU_ITEM_PASTE:       attyx_platform_paste(); break;
+                case CTX_MENU_ITEM_SPLIT_VERT:  attyx_context_menu_action(53, g_ctx_menu_col, g_ctx_menu_row); break;
+                case CTX_MENU_ITEM_SPLIT_HORIZ: attyx_context_menu_action(54, g_ctx_menu_col, g_ctx_menu_row); break;
+                case CTX_MENU_ITEM_ROTATE:      attyx_dispatch_action(78); break;
+                case CTX_MENU_ITEM_CLOSE_PANE:  attyx_context_menu_action(55, g_ctx_menu_col, g_ctx_menu_row); break;
                 default: break;
             }
         }
@@ -815,8 +832,8 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             float padX = gw * 0.5f, padY = gh * 0.25f;
             float itemH = gh + padY * 2.0f;
             float sepH  = padY * 2.0f;
-            float menuW = padX * 2.0f + 13.0f * gw;
-            float menuH = itemH * 3.0f + sepH;  // Copy, Paste, sep, Reload Config
+            float menuW = padX * 2.0f + CTX_MENU_LABEL_MAX * gw;
+            float menuH = itemH * CTX_MENU_REAL_ITEMS + sepH * CTX_MENU_SEPS;
             float px = (float)(mx * g_content_scale);
             float py = (float)(my * g_content_scale);
             int fb_w2, fb_h2;
@@ -837,6 +854,13 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             if (py + menuH > offYpx + g_rows * gh) py = offYpx + g_rows * gh - menuH;
             if (px < offXpx) px = offXpx;
             if (py < offYpx) py = offYpx;
+            // Store grid cell for pane-aware actions
+            {
+                int ccol, crow;
+                mouseToCell(mx, my, &ccol, &crow);
+                g_ctx_menu_col = ccol;
+                g_ctx_menu_row = crow;
+            }
             g_ctx_menu_x = px;
             g_ctx_menu_y = py;
             g_ctx_menu_open = 1;
@@ -1054,7 +1078,7 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         float py = (float)(my * g_content_scale);
         int newHover = ctxMenuHitItem(px, py);
         // Don't highlight the separator
-        if (newHover == CTX_MENU_ITEM_SEPARATOR) newHover = -1;
+        if (ctxMenuIsSep(newHover)) newHover = -1;
         if (newHover != g_ctx_menu_hover) {
             g_ctx_menu_hover = newHover;
             g_full_redraw = 1;

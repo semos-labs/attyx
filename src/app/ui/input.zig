@@ -200,6 +200,20 @@ pub var g_split_click_col: i32 = -1;
 pub var g_split_click_row: i32 = -1;
 pub var g_split_click_pending: i32 = 0;
 
+// Context menu action — dispatches an action on a specific pane (by grid position).
+// The event loop focuses the pane at (col, row) first, then runs the action.
+pub var g_ctx_action_id: i32 = 0;
+pub var g_ctx_action_col: i32 = -1;
+pub var g_ctx_action_row: i32 = -1;
+pub var g_ctx_action_pending: i32 = 0;
+
+pub fn contextMenuAction(action_id: c_int, col: c_int, row: c_int) void {
+    @atomicStore(i32, &g_ctx_action_col, col, .seq_cst);
+    @atomicStore(i32, &g_ctx_action_row, row, .seq_cst);
+    @atomicStore(i32, &g_ctx_action_id, action_id, .seq_cst);
+    @atomicStore(i32, &g_ctx_action_pending, 1, .seq_cst);
+}
+
 pub fn splitAction(action: c_int) void {
     @atomicStore(i32, &g_split_action_request, action, .seq_cst);
 }

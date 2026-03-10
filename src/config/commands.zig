@@ -106,6 +106,12 @@ pub const registry = [_]CommandDef{
     .{ .action = .font_size_increase, .name = "font_size_increase_shift", .description = "Increase font size", .scope = .global, .mac_hotkey = "cmd+shift+=", .linux_hotkey = "ctrl+shift+=", .hidden = true },
     .{ .action = .font_size_decrease, .name = "font_size_decrease", .description = "Decrease font size", .scope = .global, .mac_hotkey = "cmd+-", .linux_hotkey = "ctrl+-" },
     .{ .action = .font_size_reset, .name = "font_size_reset", .description = "Reset font size", .scope = .global, .mac_hotkey = "cmd+0", .linux_hotkey = "ctrl+0" },
+    // Split directions
+    .{ .action = .split_left, .name = "split_left", .description = "Split pane left", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
+    .{ .action = .split_up, .name = "split_up", .description = "Split pane up", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
+    // Close-all actions
+    .{ .action = .close_all_tabs, .name = "close_all_tabs", .description = "Close all tabs", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
+    .{ .action = .close_all_windows, .name = "close_all_windows", .description = "Close all windows", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
 };
 
 // ---------------------------------------------------------------------------

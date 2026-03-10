@@ -101,6 +101,8 @@ int   g_ctx_menu_open  = 0;
 float g_ctx_menu_x     = 0;
 float g_ctx_menu_y     = 0;
 int   g_ctx_menu_hover = -1;
+int   g_ctx_menu_col   = 0;
+int   g_ctx_menu_row   = 0;
 
 // GLFW window handle (shared with input and render)
 GLFWwindow* g_window = NULL;

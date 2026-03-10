@@ -444,6 +444,12 @@ extern volatile int        g_popup_image_placement_count;
 // g_keybind_matched_seq/len are set before returning.
 uint8_t attyx_keybind_match(uint16_t key, uint8_t mods, uint32_t codepoint);
 
+// Look up the keybind for an action ID. Returns 1 if found, 0 if unbound.
+uint8_t attyx_keybind_for_action(uint8_t action_id, uint16_t *out_key, uint8_t *out_mods, uint32_t *out_codepoint);
+
+// Dispatch an action on the pane at the given grid position (for context menus).
+void attyx_context_menu_action(uint8_t action_id, int col, int row);
+
 // Sequence result (valid after attyx_keybind_match returns send_sequence)
 extern const uint8_t* g_keybind_matched_seq;
 extern volatile int    g_keybind_matched_seq_len;

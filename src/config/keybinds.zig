@@ -119,6 +119,10 @@ pub const Action = enum(u8) {
     font_size_reset = 87,
     theme_picker_toggle = 88,
     open_config = 89,
+    split_left = 90,
+    split_up = 91,
+    close_all_tabs = 92,
+    close_all_windows = 93,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -439,6 +443,18 @@ pub fn findComboForAction(action: Action) ?KeyCombo {
         if (entry.action == action) return entry.combo;
     }
     return null;
+}
+
+/// C-callable: look up the keybind for an action ID.
+/// Writes key, mods, codepoint to out params. Returns 1 if found, 0 if unbound.
+pub export fn attyx_keybind_for_action(action_id: u8, out_key: *u16, out_mods: *u8, out_codepoint: *u32) u8 {
+    if (findComboForAction(@enumFromInt(action_id))) |combo| {
+        out_key.* = combo.key;
+        out_mods.* = combo.mods;
+        out_codepoint.* = combo.codepoint;
+        return 1;
+    }
+    return 0;
 }
 
 /// Format a KeyCombo into a compact display string.
