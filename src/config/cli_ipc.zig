@@ -58,6 +58,7 @@ pub const IpcRequest = struct {
     session_id_arg: u32 = 0,
     target_pid: ?u32 = null,
     json_output: bool = false,
+    wait: bool = false,
     width_pct: u8 = 80,
     height_pct: u8 = 80,
     border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
@@ -156,7 +157,19 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     if (std.mem.eql(u8, sub, "run")) {
         if (hasHelp(args, start)) showHelp(help.run);
         if (start + 1 >= args.len) { printHelp(help.run); return null; }
-        return .{ .command = .tab_create, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
+        var run_cmd: []const u8 = "";
+        var run_wait = false;
+        var ri = start + 1;
+        while (ri < args.len) {
+            if (std.mem.eql(u8, args[ri], "--wait") or std.mem.eql(u8, args[ri], "-w")) {
+                run_wait = true;
+            } else if (run_cmd.len == 0) {
+                run_cmd = args[ri];
+            }
+            ri += 1;
+        }
+        if (run_cmd.len == 0) { printHelp(help.run); return null; }
+        return .{ .command = .tab_create, .text_arg = run_cmd, .target_pid = target_pid, .json_output = json_output, .wait = run_wait };
     }
 
     std.debug.print("error: unknown command '{s}'\n\n", .{sub});
@@ -178,10 +191,20 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
     if (std.mem.eql(u8, action, "create")) {
         if (hasHelp(args, start + 1)) showHelp(help.tab_create);
         var cmd: []const u8 = "";
-        if (start + 2 < args.len and std.mem.eql(u8, args[start + 2], "--cmd")) {
-            if (start + 3 < args.len) cmd = args[start + 3];
+        var wait = false;
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--cmd")) {
+                if (i + 1 < args.len) {
+                    cmd = args[i + 1];
+                    i += 2;
+                } else i += 1;
+            } else if (std.mem.eql(u8, args[i], "--wait") or std.mem.eql(u8, args[i], "-w")) {
+                wait = true;
+                i += 1;
+            } else i += 1;
         }
-        return .{ .command = .tab_create, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output };
+        return .{ .command = .tab_create, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output, .wait = wait };
     } else if (std.mem.eql(u8, action, "close") or std.mem.eql(u8, action, "kill")) {
         return .{ .command = .tab_close, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "next")) {
@@ -230,17 +253,37 @@ fn parseSplit(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
     if (std.mem.eql(u8, action, "vertical") or std.mem.eql(u8, action, "v")) {
         if (hasHelp(args, start + 1)) showHelp(help.split_create);
         var cmd: []const u8 = "";
-        if (start + 2 < args.len and std.mem.eql(u8, args[start + 2], "--cmd")) {
-            if (start + 3 < args.len) cmd = args[start + 3];
+        var wait = false;
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--cmd")) {
+                if (i + 1 < args.len) {
+                    cmd = args[i + 1];
+                    i += 2;
+                } else i += 1;
+            } else if (std.mem.eql(u8, args[i], "--wait") or std.mem.eql(u8, args[i], "-w")) {
+                wait = true;
+                i += 1;
+            } else i += 1;
         }
-        return .{ .command = .split_vertical, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output };
+        return .{ .command = .split_vertical, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output, .wait = wait };
     } else if (std.mem.eql(u8, action, "horizontal") or std.mem.eql(u8, action, "h")) {
         if (hasHelp(args, start + 1)) showHelp(help.split_create);
         var cmd: []const u8 = "";
-        if (start + 2 < args.len and std.mem.eql(u8, args[start + 2], "--cmd")) {
-            if (start + 3 < args.len) cmd = args[start + 3];
+        var wait = false;
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--cmd")) {
+                if (i + 1 < args.len) {
+                    cmd = args[i + 1];
+                    i += 2;
+                } else i += 1;
+            } else if (std.mem.eql(u8, args[i], "--wait") or std.mem.eql(u8, args[i], "-w")) {
+                wait = true;
+                i += 1;
+            } else i += 1;
         }
-        return .{ .command = .split_horizontal, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output };
+        return .{ .command = .split_horizontal, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output, .wait = wait };
     } else if (std.mem.eql(u8, action, "close") or std.mem.eql(u8, action, "kill")) {
         return .{ .command = .split_close, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "rotate")) {

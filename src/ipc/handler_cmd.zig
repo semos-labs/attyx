@@ -18,7 +18,7 @@ const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
 const sendError = handler.sendError;
 
-pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: bool) void {
     const command = cmd.payload[0..cmd.payload_len];
     const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     const cols: u16 = ctx.grid_cols;
@@ -61,13 +61,21 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         };
     }
     publish.updateGridTopOffset(ctx);
-    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    const new_pane = ctx.tab_mgr.activePane();
+    new_pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     actions.switchActiveTab(ctx);
     actions.saveSessionLayout(ctx);
-    sendOk(cmd, "");
+
+    if (wait) {
+        // Transfer response_fd ownership to the pane — response sent on exit.
+        new_pane.ipc_wait_fd = cmd.response_fd;
+        cmd.response_fd = -1; // prevent sendOk/sendError from closing it
+    } else {
+        sendOk(cmd, "");
+    }
 }
 
-pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction) void {
+pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction, wait: bool) void {
     const Pane = @import("../app/pane.zig").Pane;
     const command = cmd.payload[0..cmd.payload_len];
     const layout = ctx.tab_mgr.activeLayout();
@@ -122,7 +130,8 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
     }
 
     // Set theme colors on newly created pane
-    if (layout.pool[layout.focused].pane) |pane| {
+    const new_pane = if (layout.pool[layout.focused].pane) |pane| pane else null;
+    if (new_pane) |pane| {
         pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
@@ -133,7 +142,17 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
     actions.updateSplitActive(ctx);
     actions.switchActiveTab(ctx);
     actions.saveSessionLayout(ctx);
-    sendOk(cmd, "");
+
+    if (wait) {
+        if (new_pane) |pane| {
+            pane.ipc_wait_fd = cmd.response_fd;
+            cmd.response_fd = -1;
+        } else {
+            sendOk(cmd, "");
+        }
+    } else {
+        sendOk(cmd, "");
+    }
 }
 
 /// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.

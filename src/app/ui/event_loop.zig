@@ -589,6 +589,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 },
                                 .pane_died => |died| {
                                     if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
+                                        // Store exit code so pane.deinit() can notify --wait clients.
+                                        result.pane.stored_exit_code = died.exit_code;
                                         // Close pane BEFORE clearing daemon_pane_id to avoid
                                         // waitpid(0) reaping random children.
                                         if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {

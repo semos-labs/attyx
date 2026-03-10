@@ -35,6 +35,12 @@ pub const Pane = struct {
     /// User-set custom title (via IPC `tab rename`). Overrides all other title sources.
     custom_title_buf: [128]u8 = undefined,
     custom_title_len: u8 = 0,
+    /// IPC --wait: fd to write exit code to when this pane's process exits.
+    /// Set by IPC handler when a client requests --wait. The fd is owned by
+    /// this pane: deinit writes the exit code response and closes it.
+    ipc_wait_fd: posix.fd_t = -1,
+    /// Stored exit code for daemon-backed panes (set from pane_died message).
+    stored_exit_code: ?u8 = null,
     /// Debounced PTY resize: pending dimensions and timestamp of last TIOCSWINSZ.
     pending_pty_rows: u16 = 0,
     pending_pty_cols: u16 = 0,
@@ -116,6 +122,19 @@ pub const Pane = struct {
     }
 
     pub fn deinit(self: *Pane) void {
+        // Notify any IPC --wait client with the exit code before cleanup.
+        if (self.ipc_wait_fd != -1) {
+            const exit_code: u8 = self.stored_exit_code orelse
+                if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
+            // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1]
+            var resp: [6]u8 = undefined;
+            std.mem.writeInt(u32, resp[0..4], 1, .little);
+            resp[4] = 0xA2; // exit_code message type
+            resp[5] = exit_code;
+            _ = posix.write(self.ipc_wait_fd, &resp) catch {};
+            posix.close(self.ipc_wait_fd);
+            self.ipc_wait_fd = -1;
+        }
         if (self.daemon_pane_id == null) {
             _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
             self.pty.deinit();
