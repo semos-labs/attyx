@@ -9,6 +9,7 @@ const publish = @import("publish.zig");
 const input = @import("input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const commands = @import("../../config/commands.zig");
+const keybinds = @import("../../config/keybinds.zig");
 
 const attyx = @import("attyx");
 const palette_state_mod = attyx.overlay_command_palette;
@@ -45,15 +46,17 @@ pub fn openCommandPalette(ctx: *PtyThreadCtx) void {
         const dlen: u8 = @intCast(@min(cmd.description.len, 80));
         @memcpy(entry.desc[0..dlen], cmd.description[0..dlen]);
         entry.desc_len = dlen;
-        if (cmd.mac_hotkey) |hk| {
-            const hlen: u8 = @intCast(@min(hk.len, 32));
-            @memcpy(entry.mac_hotkey[0..hlen], hk[0..hlen]);
-            entry.mac_hotkey_len = hlen;
-        }
-        if (cmd.linux_hotkey) |hk| {
-            const hlen: u8 = @intCast(@min(hk.len, 32));
-            @memcpy(entry.linux_hotkey[0..hlen], hk[0..hlen]);
-            entry.linux_hotkey_len = hlen;
+        // Use the runtime keybind table to show actual (possibly overridden) hotkeys.
+        // Fall back to registry defaults if no runtime binding exists.
+        const is_macos = comptime @import("builtin").os.tag == .macos;
+        if (keybinds.findComboForAction(cmd.action)) |combo| {
+            if (is_macos) {
+                entry.mac_hotkey_len = keybinds.formatKeyCombo(combo, &entry.mac_hotkey);
+            } else {
+                entry.linux_hotkey_len = keybinds.formatKeyCombo(combo, &entry.linux_hotkey);
+            }
+        } else {
+            // Action was unbound — show no hotkey (leave len = 0)
         }
         state.entries[entry_idx] = entry;
         entry_idx += 1;
