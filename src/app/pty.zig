@@ -54,6 +54,11 @@ pub const Pty = struct {
         /// Popup one-shot commands don't need integration hooks, and the
         /// ZDOTDIR trick can cause init scripts to rebuild PATH.
         skip_shell_integration: bool = false,
+        /// Command to execute after shell initialization completes.
+        /// Set as __ATTYX_STARTUP_CMD env var; shell integration scripts
+        /// pick it up and eval it after all rc files are sourced, ensuring
+        /// the user's full PATH is available.
+        startup_cmd: ?[*:0]const u8 = null,
     };
 
     /// Wrap an existing PTY master fd and child pid (e.g. inherited across exec).
@@ -120,6 +125,12 @@ pub const Pty = struct {
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
             _ = setenv("ATTYX_PID", attyx_pid, 1);
+
+            // Set startup command for shell integration to execute after init.
+            // This ensures the command runs with the user's full PATH loaded.
+            if (opts.startup_cmd) |cmd| {
+                _ = setenv("__ATTYX_STARTUP_CMD", cmd, 1);
+            }
 
             var argv_override: ShellIntegration.ArgvOverride = .{};
             if (!opts.skip_shell_integration) {

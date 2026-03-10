@@ -81,23 +81,28 @@ pub const DaemonPane = struct {
         shell: ?[*:0]const u8,
         cmd: ?[*:0]const u8,
     ) !DaemonPane {
-        // If a command override is given, run it via $SHELL -c '<cmd>'.
-        // Otherwise, use the session shell or fall back to $SHELL.
-        var cmd_argv: [3][:0]const u8 = undefined;
+        // If a command is given, start a normal interactive shell with
+        // __ATTYX_STARTUP_CMD set. The shell integration scripts execute
+        // it after full init (precmd/PROMPT_COMMAND), so the user's PATH
+        // and environment are fully loaded. This avoids the old $SHELL -c
+        // approach where non-interactive shells skip .zshrc/.bashrc.
         var shell_argv: [1][:0]const u8 = undefined;
-        const argv: ?[]const [:0]const u8 = if (cmd) |c| blk: {
-            const sh = shell orelse @as([*:0]const u8, std.posix.getenv("SHELL") orelse "/bin/sh");
-            cmd_argv[0] = std.mem.sliceTo(sh, 0);
-            cmd_argv[1] = "-c";
-            cmd_argv[2] = std.mem.sliceTo(c, 0);
-            break :blk &cmd_argv;
-        } else if (shell) |s| blk: {
+        const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
             shell_argv[0] = std.mem.sliceTo(s, 0);
             break :blk &shell_argv;
         } else null;
+
+        const startup_cmd: ?[*:0]const u8 = if (cmd) |c| c else null;
+
         return .{
             .id = id,
-            .pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .cwd = cwd, .argv = argv }),
+            .pty = try Pty.spawn(.{
+                .rows = rows,
+                .cols = cols,
+                .cwd = cwd,
+                .argv = argv,
+                .startup_cmd = startup_cmd,
+            }),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,
