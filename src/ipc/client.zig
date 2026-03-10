@@ -20,68 +20,62 @@ pub const ClientError = error{
 };
 
 /// Discover the control socket path for a running instance.
-/// Globs ~/.local/state/attyx/ctl-*.sock and picks the most recent.
-/// If `target_pid` is set, use that specific PID.
+/// Scans ~/.local/state/attyx/ for ctl-*.sock files, matching both
+/// -dev and non-dev sockets so release CLI can talk to debug instances
+/// and vice versa.
+/// If `target_pid` is set, look for that specific PID's socket.
 pub fn discoverSocket(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
-    if (target_pid) |pid| {
-        return formatSocketPath(buf, pid);
-    }
-    // Check ATTYX_PID env var (set automatically inside Attyx panes)
-    if (std.posix.getenv("ATTYX_PID")) |pid_str| {
-        if (std.fmt.parseInt(u32, pid_str, 10)) |pid| {
-            return formatSocketPath(buf, pid);
-        } else |_| {}
-    }
-    // Scan state dir for ctl-*.sock files
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
     var dir_buf: [256]u8 = undefined;
     const dir_path = session_connect.stateDir(&dir_buf) orelse return null;
 
+    // If a specific PID is requested (--target or ATTYX_PID), try both
+    // suffixes for that PID — the instance could be debug or release.
+    const pid_hint: ?u32 = target_pid orelse if (std.posix.getenv("ATTYX_PID")) |pid_str|
+        std.fmt.parseInt(u32, pid_str, 10) catch null
+    else
+        null;
+
+    if (pid_hint) |pid| {
+        // Try -dev first, then plain — order doesn't matter, just need to find it.
+        for ([_][]const u8{ "-dev", "" }) |sfx| {
+            const path = std.fmt.bufPrint(buf, "{s}ctl-{d}{s}.sock", .{ dir_path, pid, sfx }) catch continue;
+            // Verify the file exists before returning
+            std.fs.accessAbsolute(path, .{}) catch continue;
+            return path;
+        }
+    }
+
+    // Scan state dir for ctl-*.sock files — match any suffix.
+    // Pick the most recently modified socket.
     var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return null;
     defer dir.close();
 
-    var best_pid: ?u32 = null;
+    var best_name_buf: [128]u8 = undefined;
+    var best_name_len: usize = 0;
     var best_mtime: i128 = 0;
 
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         const name = entry.name;
-        // Match ctl-<pid>.sock or ctl-<pid>-dev.sock
         if (!std.mem.startsWith(u8, name, "ctl-")) continue;
-        const rest = name[4..];
-        // Find the dash before suffix or dot before .sock
-        const end = if (suffix.len > 0)
-            std.mem.indexOf(u8, rest, suffix) orelse continue
-        else
-            std.mem.indexOf(u8, rest, ".sock") orelse continue;
-        const pid_str = rest[0..end];
-        const pid = std.fmt.parseInt(u32, pid_str, 10) catch continue;
-        // Check suffix matches
-        const after_pid = rest[end..];
-        var expected_suffix_buf: [64]u8 = undefined;
-        const expected_suffix = std.fmt.bufPrint(&expected_suffix_buf, "{s}.sock", .{suffix}) catch continue;
-        if (!std.mem.eql(u8, after_pid, expected_suffix)) continue;
+        if (!std.mem.endsWith(u8, name, ".sock")) continue;
+        if (name.len > best_name_buf.len) continue;
 
-        // Get mtime to pick most recent
         const stat = dir.statFile(name) catch continue;
-        const mtime = stat.mtime;
-        if (best_pid == null or mtime > best_mtime) {
-            best_pid = pid;
-            best_mtime = mtime;
+        if (best_name_len == 0 or stat.mtime > best_mtime) {
+            @memcpy(best_name_buf[0..name.len], name);
+            best_name_len = name.len;
+            best_mtime = stat.mtime;
         }
     }
 
-    if (best_pid) |pid| {
-        return formatSocketPath(buf, pid);
+    if (best_name_len > 0) {
+        return std.fmt.bufPrint(buf, "{s}{s}", .{
+            dir_path,
+            best_name_buf[0..best_name_len],
+        }) catch null;
     }
     return null;
-}
-
-fn formatSocketPath(buf: *[256]u8, pid: u32) ?[]const u8 {
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    var dir_buf: [256]u8 = undefined;
-    const dir = session_connect.stateDir(&dir_buf) orelse return null;
-    return std.fmt.bufPrint(buf, "{s}ctl-{d}{s}.sock", .{ dir, pid, suffix }) catch null;
 }
 
 /// Connect to the control socket, send a request, read response, return payload.
@@ -227,8 +221,13 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .focus_down => protocol.encodeMessage(buf, .focus_down, ""),
         .focus_left => protocol.encodeMessage(buf, .focus_left, ""),
         .focus_right => protocol.encodeMessage(buf, .focus_right, ""),
-        .send_keys => protocol.encodeMessage(buf, .send_keys, parsed.text_arg),
-        .send_text => protocol.encodeMessage(buf, .send_text, parsed.text_arg),
+        .send_keys, .send_text => |cmd| blk: {
+            // Process C-style escape sequences: \n \t \x03 \\ etc.
+            var esc_buf: [4096]u8 = undefined;
+            const processed = unescapeKeys(parsed.text_arg, &esc_buf);
+            const msg_type: protocol.MessageType = if (cmd == .send_keys) .send_keys else .send_text;
+            break :blk protocol.encodeMessage(buf, msg_type, processed);
+        },
         .get_text => protocol.encodeMessage(buf, .get_text, ""),
         .config_reload => protocol.encodeMessage(buf, .config_reload, ""),
         .theme_set => protocol.encodeMessage(buf, .theme_set, parsed.text_arg),
@@ -266,6 +265,112 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .session_rename => protocol.encodeSessionRename(buf, parsed.session_id_arg, parsed.text_arg),
     };
+}
+
+/// Process C-style escape sequences in a send-keys string.
+/// Supports: \n \t \r \\ \' \" \0 \a \b \e (ESC) \xHH
+fn unescapeKeys(input: []const u8, out: []u8) []const u8 {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < input.len and o < out.len) {
+        if (input[i] != '\\' or i + 1 >= input.len) {
+            out[o] = input[i];
+            o += 1;
+            i += 1;
+            continue;
+        }
+        // Escape sequence
+        i += 1; // skip backslash
+        switch (input[i]) {
+            'n' => {
+                out[o] = '\n';
+                o += 1;
+                i += 1;
+            },
+            't' => {
+                out[o] = '\t';
+                o += 1;
+                i += 1;
+            },
+            'r' => {
+                out[o] = '\r';
+                o += 1;
+                i += 1;
+            },
+            '\\' => {
+                out[o] = '\\';
+                o += 1;
+                i += 1;
+            },
+            '\'' => {
+                out[o] = '\'';
+                o += 1;
+                i += 1;
+            },
+            '"' => {
+                out[o] = '"';
+                o += 1;
+                i += 1;
+            },
+            '0' => {
+                out[o] = 0;
+                o += 1;
+                i += 1;
+            },
+            'a' => {
+                out[o] = 0x07; // BEL
+                o += 1;
+                i += 1;
+            },
+            'b' => {
+                out[o] = 0x08; // BS
+                o += 1;
+                i += 1;
+            },
+            'e' => {
+                out[o] = 0x1b; // ESC
+                o += 1;
+                i += 1;
+            },
+            'x' => {
+                // \xHH — two hex digits
+                i += 1;
+                if (i + 1 < input.len) {
+                    if (std.fmt.parseInt(u8, input[i .. i + 2], 16)) |byte| {
+                        out[o] = byte;
+                        o += 1;
+                        i += 2;
+                    } else |_| {
+                        // Invalid hex — emit literal \x
+                        out[o] = '\\';
+                        o += 1;
+                        if (o < out.len) {
+                            out[o] = 'x';
+                            o += 1;
+                        }
+                    }
+                } else {
+                    out[o] = '\\';
+                    o += 1;
+                    if (o < out.len) {
+                        out[o] = 'x';
+                        o += 1;
+                    }
+                }
+            },
+            else => {
+                // Unknown escape — emit literal backslash + char
+                out[o] = '\\';
+                o += 1;
+                if (o < out.len) {
+                    out[o] = input[i];
+                    o += 1;
+                }
+                i += 1;
+            },
+        }
+    }
+    return out[0..o];
 }
 
 fn writeStderr(msg: []const u8) void {

@@ -21,6 +21,7 @@ export var g_kitty_kbd_flags: i32 = 0;
 export var g_needs_font_rebuild: i32 = 0;
 export var g_needs_window_update: i32 = 0;
 export fn attyx_trigger_config_reload() void {}
+export fn attyx_cleanup() void {}
 export fn attyx_log(_: c_int, _: [*:0]const u8, _: [*:0]const u8) void {}
 export var g_background_opacity: f32 = 1.0;
 export var g_background_blur: i32 = 30;
