@@ -652,7 +652,9 @@ pub fn resolveTabTitles(
     for (0..ctx.tab_mgr.count) |i| {
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
         const pane = layout.focusedPane();
-        if (pane.engine.state.title) |t| {
+        if (pane.getCustomTitle()) |ct| {
+            titles[i] = ct;
+        } else if (pane.engine.state.title) |t| {
             titles[i] = t;
         } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
             titles[i] = name;

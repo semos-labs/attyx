@@ -87,6 +87,10 @@ pub const Pty = struct {
             if (stdout_pipe[1] != -1) posix.close(stdout_pipe[1]);
         }
 
+        // Format Attyx PID before fork so the child can set ATTYX_PID
+        var pid_buf: [16]u8 = undefined;
+        const attyx_pid = std.fmt.bufPrintZ(&pid_buf, "{d}", .{std.posix.system.getpid()}) catch "0";
+
         const pid = try posix.fork();
 
         if (pid == 0) {
@@ -115,6 +119,7 @@ pub const Pty = struct {
             _ = setenv("COLORTERM", "truecolor", 1);
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
+            _ = setenv("ATTYX_PID", attyx_pid, 1);
 
             var argv_override: ShellIntegration.ArgvOverride = .{};
             if (!opts.skip_shell_integration) {
