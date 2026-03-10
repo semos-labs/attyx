@@ -5,7 +5,7 @@
 <h1 align="center">Attyx</h1>
 
 <p align="center">
-  <strong>GPU-accelerated terminal emulator written in Zig</strong>
+  <strong>GPU-accelerated terminal environment written in Zig</strong>
 </p>
 
 <p align="center">
@@ -26,15 +26,11 @@
 
 ## About
 
-Attyx is a GPU-accelerated, VT-compatible terminal emulator built from scratch in Zig. It uses Metal on macOS and OpenGL 3.3 on Linux, with a deterministic state machine core that is fully testable without rendering or a PTY.
+Attyx is a GPU-accelerated terminal environment built from scratch in Zig. Sessions, splits, tabs, popups, a status bar, command palette — the stuff you'd usually need tmux and a bunch of config for, just works out of the box. Metal on macOS, OpenGL on Linux, under 5MB.
 
-I started Attyx as an experiment because I wanted to understand how terminals work, what's under the hood. Besides, I wanted to learn a new language. That combined turned out as a little weekend project that unexpectedly grew into something real. Currently, I'm daily-driving Attyx and it's pretty solid for my tasks. That said, I'm sharing Attyx with you.
+I started Attyx because I wanted to understand how terminals actually work — and I wanted to learn Zig. Weekend experiment that got out of hand. I'm daily-driving it now and it's solid enough for real work, so here it is.
 
-You may ask, why not Ghostty or Kitty. Those are great terminals and in fact I've been using Ghostty since it became public. Same for Kitty, I used to use it before moved to Ghostty. Both are amazing. Although, I needed to build my thing to get some understanding, so here we are.
-
-There's one take that I started getting a lot: you stole from Ghostty. Well, if "GPU accelerated terminal written in Zig" is a trademark, then, apparently, yes. Otherwise you won't find a single matching line of code -- Attyx is built completely from scratch.
-
-One thing that I'm especially proud is that its binary is under 5mb. Just a tiny little brag :)
+Why not Ghostty or Kitty? Both are great — I used both before this. But I needed to build my own to really understand what's going on. And no, I didn't steal from Ghostty. "GPU terminal in Zig" is a category, not a trademark. Not a single matching line of code.
 
 For more details, see the [documentation](https://semos.sh/docs/attyx).
 
