@@ -25,6 +25,12 @@ pub fn discoverSocket(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
     if (target_pid) |pid| {
         return formatSocketPath(buf, pid);
     }
+    // Check ATTYX_PID env var (set automatically inside Attyx panes)
+    if (std.posix.getenv("ATTYX_PID")) |pid_str| {
+        if (std.fmt.parseInt(u32, pid_str, 10)) |pid| {
+            return formatSocketPath(buf, pid);
+        } else |_| {}
+    }
     // Scan state dir for ctl-*.sock files
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
     var dir_buf: [256]u8 = undefined;
