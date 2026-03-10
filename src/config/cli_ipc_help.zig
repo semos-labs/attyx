@@ -265,7 +265,8 @@ pub const get_text =
     \\
     \\Usage: attyx get-text
     \\
-    \\Returns the visible text content of the active pane as JSON.
+    \\Returns the visible text content of the active pane as plain text
+    \\(one line per screen row, trailing whitespace trimmed).
     \\
 ;
 

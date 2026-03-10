@@ -130,11 +130,11 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
 
     if (std.mem.eql(u8, sub, "send-keys")) {
         if (hasHelp(args, start)) showHelp(help.send_keys);
-        return parseSendText(args, start, .send_keys, json_output);
+        return parseSendText(args, start, .send_keys, target_pid, json_output);
     }
     if (std.mem.eql(u8, sub, "send-text")) {
         if (hasHelp(args, start)) showHelp(help.send_text);
-        return parseSendText(args, start, .send_text, json_output);
+        return parseSendText(args, start, .send_text, target_pid, json_output);
     }
     if (std.mem.eql(u8, sub, "get-text")) {
         if (hasHelp(args, start)) showHelp(help.get_text);
@@ -277,7 +277,7 @@ fn parseFocus(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
 // Send text / keys
 // ---------------------------------------------------------------------------
 
-fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, json_output: bool) ?IpcRequest {
+fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, target_pid: ?u32, json_output: bool) ?IpcRequest {
     if (start + 1 >= args.len) {
         if (cmd == .send_keys) {
             printHelp(help.send_keys);
@@ -286,7 +286,7 @@ fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, json
         }
         return null;
     }
-    return .{ .command = cmd, .text_arg = args[start + 1], .json_output = json_output };
+    return .{ .command = cmd, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 // Reuses the same 5-byte framing as the daemon protocol:
 //   [4B payload_len LE][1B msg_type][payload...]
 //
-// Requests: 0x20–0x3F   (client → instance)
+// Requests: 0x20–0x42   (client → instance)
 // Responses: 0xA0–0xA1  (instance → client)
 
 const std = @import("std");

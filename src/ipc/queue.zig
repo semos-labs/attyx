@@ -13,8 +13,7 @@ pub const IpcCommand = struct {
     msg_type: u8,
     payload: [max_payload]u8,
     payload_len: u16,
-    response_fd: posix.fd_t,
-    done: i32 = 0, // set to 1 by handler when response has been written
+    response_fd: posix.fd_t, // handler owns this fd: writes response, then closes it
 };
 
 var ring: [max_queued]IpcCommand = undefined;

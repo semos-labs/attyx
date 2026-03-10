@@ -704,7 +704,7 @@ pub fn run(
     ipc_server.start() catch |err| {
         logging.warn("ipc", "failed to start IPC server: {}", .{err});
     };
-    const ipc_thread = if (ipc_server.g_ipc_shutdown == 0)
+    const ipc_thread = if (ipc_server.isStarted())
         std.Thread.spawn(.{}, ipc_server.run, .{}) catch |err| blk: {
             logging.warn("ipc", "failed to spawn IPC thread: {}", .{err});
             break :blk null;

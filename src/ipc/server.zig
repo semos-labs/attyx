@@ -15,6 +15,11 @@ var listener_fd: posix.fd_t = -1;
 var socket_path_buf: [256]u8 = undefined;
 var socket_path_len: usize = 0;
 
+/// Returns true if the IPC server started successfully.
+pub fn isStarted() bool {
+    return listener_fd != -1;
+}
+
 /// Start the IPC server: bind, listen, and return the listener fd.
 /// Call `run()` on a dedicated thread after this.
 pub fn start() !void {
@@ -31,23 +36,40 @@ pub fn start() !void {
         break :blk std.fmt.bufPrint(&path_buf, "{s}/.local/state/attyx/ctl-{d}{s}.sock", .{ home, pid, suffix }) catch return error.PathTooLong;
     };
 
-    // Ensure state dir exists
+    // Ensure state dir exists with owner-only permissions (0700)
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| {
-        std.fs.makeDirAbsolute(path[0..i]) catch |err| switch (err) {
+        const dir_path = path[0..i];
+        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
+        // Restrict directory to owner-only (defense against permissive umask)
+        var dir = std.fs.openDirAbsolute(dir_path, .{}) catch null;
+        if (dir) |*d| {
+            posix.fchmod(d.fd, 0o700) catch {};
+            d.close();
+        }
     }
 
     // Remove stale socket
     std.fs.deleteFileAbsolute(path) catch {};
 
-    // Create + bind + listen
+    // Create + bind + listen with restrictive permissions
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
     errdefer posix.close(fd);
 
-    var addr = std.net.Address.initUnix(path) catch return error.PathTooLong;
-    try posix.bind(fd, &addr.any, addr.getOsSockLen());
+    // Set umask to restrict socket file to owner-only (0600)
+    const old_umask = std.c.umask(0o177);
+    var addr = std.net.Address.initUnix(path) catch {
+        _ = std.c.umask(old_umask);
+        return error.PathTooLong;
+    };
+    posix.bind(fd, &addr.any, addr.getOsSockLen()) catch |err| {
+        _ = std.c.umask(old_umask);
+        return err;
+    };
+    _ = std.c.umask(old_umask);
+
     try posix.listen(fd, 4);
 
     listener_fd = fd;
@@ -88,55 +110,49 @@ fn handleClient(fd: posix.fd_t) void {
     const h = protocol.decodeHeader(&hdr) catch return;
 
     if (h.payload_len > queue.max_payload) {
-        // Too large — send error and close
         var err_buf: [128]u8 = undefined;
-        const err_msg = protocol.encodeErrorResponse(&err_buf, "payload too large") catch return;
+        const err_msg = protocol.encodeMessage(&err_buf, .err, "payload too large") catch return;
         _ = posix.write(fd, err_msg) catch {};
         return;
     }
 
-    // Build command
+    // Duplicate the client fd for the PTY thread to write the response.
+    // The PTY handler owns and closes this dup when done, so we can return
+    // from handleClient without having to poll for completion.
+    const response_fd = posix.dup(fd) catch {
+        var err_buf: [128]u8 = undefined;
+        const err_msg = protocol.encodeMessage(&err_buf, .err, "internal error") catch return;
+        _ = posix.write(fd, err_msg) catch {};
+        return;
+    };
+
     var cmd = queue.IpcCommand{
         .msg_type = @intFromEnum(h.msg_type),
         .payload = undefined,
         .payload_len = @intCast(h.payload_len),
-        .response_fd = fd,
+        .response_fd = response_fd,
     };
 
     // Read payload
     if (h.payload_len > 0) {
-        protocol.readExact(fd, cmd.payload[0..h.payload_len]) catch return;
+        protocol.readExact(fd, cmd.payload[0..h.payload_len]) catch {
+            posix.close(response_fd);
+            return;
+        };
     }
 
     // Enqueue for PTY thread
     if (!queue.enqueue(cmd)) {
+        posix.close(response_fd);
         var err_buf: [128]u8 = undefined;
-        const err_msg = protocol.encodeErrorResponse(&err_buf, "command queue full") catch return;
+        const err_msg = protocol.encodeMessage(&err_buf, .err, "command queue full") catch return;
         _ = posix.write(fd, err_msg) catch {};
         return;
     }
 
-    // Wait for response: the PTY thread will write to response_fd and we
-    // detect it's done by poll-reading the fd. The handler closes its dup
-    // and we detect EOF. But simpler: we just block here waiting for
-    // the PTY thread to write the response to this fd. The client_fd stays
-    // open because we're still in handleClient — we only close on defer.
-    //
-    // Actually, the PTY thread writes the response directly to response_fd.
-    // We need to wait until the PTY thread is done before we close the fd.
-    // We do this by polling until the PTY thread signals completion by
-    // setting response_fd to -1 in the command struct.
-    //
-    // Simpler approach: just sleep-poll the queue slot until it's consumed.
-    // The response is written directly to the client fd by the handler.
-    // We wait up to 5 seconds.
-    var attempts: u32 = 0;
-    while (attempts < 500) : (attempts += 1) {
-        if (@atomicLoad(i32, &g_ipc_shutdown, .seq_cst) != 0) return;
-        if (@atomicLoad(i32, &cmd.done, .seq_cst) != 0) return;
-        posix.nanosleep(0, 10_000_000); // 10ms
-    }
-    // Timeout — response never came. The fd closes on return.
+    // The PTY thread now owns response_fd — it will write the response
+    // and close the fd when done. We return immediately; the defer
+    // closes the original client fd.
 }
 
 /// Shutdown: signal the listener thread, close fd, unlink socket.

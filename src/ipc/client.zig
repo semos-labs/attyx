@@ -133,8 +133,9 @@ fn connectUnix(path: []const u8) !posix.fd_t {
 
     posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
         error.ConnectionRefused => {
-            // Stale socket — try to unlink and report no instance
-            std.fs.deleteFileAbsolute(path) catch {};
+            // Connection refused — do not unlink the socket here to avoid
+            // accidentally deleting a live instance's control socket during
+            // transient failures (startup race, backlog, etc.).
             return error.ConnectionRefused;
         },
         else => return err,

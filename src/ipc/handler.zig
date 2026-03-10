@@ -14,7 +14,6 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const split_layout_mod = @import("../app/split_layout.zig");
 const platform = @import("../platform/platform.zig");
 const publish = @import("../app/ui/publish.zig");
-const SessionClient = @import("../app/session_client.zig");
 const popup_mod = @import("../app/popup.zig");
 const actions = @import("../app/ui/actions.zig");
 const statusbar = @import("../app/statusbar.zig");
@@ -28,9 +27,12 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     };
 
     switch (msg_type) {
-        // ── Tab commands → dispatch actions ──
         // ── Tab commands → dispatch actions (silent success) ──
         .tab_create => {
+            if (cmd.payload_len > 0) {
+                sendError(cmd, "tab create with --cmd is not yet supported via IPC");
+                return;
+            }
             dispatchAction(.tab_new);
             sendOk(cmd, "");
         },
@@ -75,10 +77,18 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
         // ── Split / pane commands (silent success) ──
         .split_vertical => {
+            if (cmd.payload_len > 0) {
+                sendError(cmd, "split with --cmd is not yet supported via IPC");
+                return;
+            }
             dispatchAction(.split_vertical);
             sendOk(cmd, "");
         },
         .split_horizontal => {
+            if (cmd.payload_len > 0) {
+                sendError(cmd, "split with --cmd is not yet supported via IPC");
+                return;
+            }
             dispatchAction(.split_horizontal);
             sendOk(cmd, "");
         },
@@ -523,17 +533,24 @@ fn handleSessionRename(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 // Response helpers
 // ---------------------------------------------------------------------------
 
-fn sendOk(cmd: *queue.IpcCommand, json: []const u8) void {
+fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
+    defer posix.close(cmd.response_fd);
     var buf: [protocol.header_size + 4096]u8 = undefined;
-    const msg = protocol.encodeSuccess(&buf, json) catch return;
-    _ = posix.write(cmd.response_fd, msg) catch {};
-    // Signal server thread that we're done
-    @atomicStore(i32, &cmd.done, 1, .seq_cst);
+    const msg = protocol.encodeSuccess(&buf, payload) catch {
+        // Payload too large for stack buffer — write header + payload separately
+        var hdr: [protocol.header_size]u8 = undefined;
+        protocol.encodeHeader(&hdr, .success, @intCast(payload.len));
+        protocol.writeAll(cmd.response_fd, &hdr) catch return;
+        protocol.writeAll(cmd.response_fd, payload) catch {};
+        return;
+    };
+    protocol.writeAll(cmd.response_fd, msg) catch {};
 }
 
-fn sendError(cmd: *queue.IpcCommand, msg: []const u8) void {
+fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
+    defer posix.close(cmd.response_fd);
+    // Send plain text error — the client formats it for display/JSON
     var buf: [protocol.header_size + 512]u8 = undefined;
-    const resp = protocol.encodeErrorResponse(&buf, msg) catch return;
-    _ = posix.write(cmd.response_fd, resp) catch {};
-    @atomicStore(i32, &cmd.done, 1, .seq_cst);
+    const resp = protocol.encodeMessage(&buf, .err, err_msg) catch return;
+    protocol.writeAll(cmd.response_fd, resp) catch {};
 }
