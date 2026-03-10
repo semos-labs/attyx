@@ -182,7 +182,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.log_level = requireArg(args, &i, "--log-level");
         } else if (std.mem.eql(u8, arg, "--log-file")) {
             result.config.log_file = requireArg(args, &i, "--log-file");
-        } else if (std.mem.eql(u8, arg, "--cmd")) {
+        } else if (std.mem.eql(u8, arg, "--cmd") or std.mem.eql(u8, arg, "--command") or
+            std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "-c"))
+        {
             result.config.argv = @ptrCast(args[i + 1 ..]);
             break;
         } else {
@@ -316,7 +318,9 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         } else if (std.mem.eql(u8, arg, "--log-file")) {
             i += 1;
             if (i < args.len) config.log_file = args[i];
-        } else if (std.mem.eql(u8, arg, "--cmd")) {
+        } else if (std.mem.eql(u8, arg, "--cmd") or std.mem.eql(u8, arg, "--command") or
+            std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "-c"))
+        {
             config.argv = @ptrCast(args[i + 1 ..]);
             break;
         } else if (std.mem.eql(u8, arg, "--config") or
@@ -350,7 +354,7 @@ pub fn printUsage() void {
         \\Options:
         \\  --rows N                   Terminal rows (default: 24)
         \\  --cols N                   Terminal cols (default: 80)
-        \\  --cmd <command...>         Override shell command
+        \\  -e, -c, --cmd <command...> Override shell command
         \\  --config <path>            Load config from a specific file
         \\  --no-config                Skip reading config from disk
         \\  --font-family <string>     Font family (default: "JetBrains Mono")

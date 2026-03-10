@@ -55,6 +55,7 @@ pub const UpdateChecker = struct {
         if (self.thread) |t| {
             t.join();
             self.thread = null;
+            self.status.store(@intFromEnum(CheckStatus.idle), .release);
         }
     }
 
