@@ -721,6 +721,13 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         [aboutItem setTarget:delegate];
         [appMenu addItem:aboutItem];
         [appMenu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem* openConfigItem = [[NSMenuItem alloc] initWithTitle:@"Open Config…"
+                                                                action:@selector(dispatchMenuAction:)
+                                                         keyEquivalent:@","];
+        openConfigItem.tag = 89; // open_config action
+        openConfigItem.target = delegate;
+        [appMenu addItem:openConfigItem];
+
         NSMenuItem* reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload Config"
                                                             action:@selector(reloadConfig:)
                                                      keyEquivalent:@""];
@@ -739,17 +746,92 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                     keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
 
-        // Helper to create a menu item that dispatches a keybind action by tag
-        NSMenuItem* (^actionItem)(NSString*, uint8_t, NSString*, NSEventModifierFlags) =
-            ^NSMenuItem*(NSString* title, uint8_t actionId, NSString* key, NSEventModifierFlags mods) {
+        // Helper: convert our KC_* key + MOD_* bitmask to NSMenuItem key equivalent.
+        // KeyCode enum values matching keybinds.zig
+        enum { KC_UP_=0, KC_DOWN_, KC_LEFT_, KC_RIGHT_, KC_HOME_, KC_END_,
+               KC_PAGE_UP_, KC_PAGE_DOWN_, KC_INSERT_, KC_DELETE_,
+               KC_BACKSPACE_, KC_ENTER_, KC_TAB_, KC_ESCAPE_, KC_F1_ };
+        NSString* (^keyEquivFromKC)(uint16_t, uint32_t) = ^NSString*(uint16_t key, uint32_t cp) {
+            switch (key) {
+                case KC_UP_:        return [NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey];
+                case KC_DOWN_:      return [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey];
+                case KC_LEFT_:      return [NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey];
+                case KC_RIGHT_:     return [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey];
+                case KC_HOME_:      return [NSString stringWithFormat:@"%C", (unichar)NSHomeFunctionKey];
+                case KC_END_:       return [NSString stringWithFormat:@"%C", (unichar)NSEndFunctionKey];
+                case KC_PAGE_UP_:   return [NSString stringWithFormat:@"%C", (unichar)NSPageUpFunctionKey];
+                case KC_PAGE_DOWN_: return [NSString stringWithFormat:@"%C", (unichar)NSPageDownFunctionKey];
+                case KC_DELETE_:    return [NSString stringWithFormat:@"%C", (unichar)NSDeleteFunctionKey];
+                case KC_BACKSPACE_: return [NSString stringWithFormat:@"%C", (unichar)NSBackspaceCharacter];
+                case KC_ENTER_:     return @"\r";
+                case KC_TAB_:       return @"\t";
+                case KC_ESCAPE_:    return @"\033";
+                default:
+                    // Function keys F1-F12
+                    if (key >= KC_F1_ && key <= KC_F1_ + 11)
+                        return [NSString stringWithFormat:@"%C", (unichar)(NSF1FunctionKey + key - KC_F1_)];
+                    // Codepoint (letters, digits, punctuation)
+                    if (cp >= 0x20 && cp < 0x7f)
+                        return [NSString stringWithFormat:@"%c", (char)cp];
+                    return @"";
+            }
+        };
+        NSEventModifierFlags (^modsFromKB)(uint8_t) = ^NSEventModifierFlags(uint8_t m) {
+            NSEventModifierFlags flags = 0;
+            if (m & 1) flags |= NSEventModifierFlagShift;
+            if (m & 2) flags |= NSEventModifierFlagOption;
+            if (m & 4) flags |= NSEventModifierFlagControl;
+            if (m & 8) flags |= NSEventModifierFlagCommand;
+            return flags;
+        };
+
+        // Helper to create a menu item that dispatches a keybind action by tag.
+        // Key equivalent is looked up from the runtime keybind table automatically.
+        NSMenuItem* (^actionItem)(NSString*, uint8_t) =
+            ^NSMenuItem*(NSString* title, uint8_t actionId) {
+                uint16_t key = 0; uint8_t mods = 0; uint32_t cp = 0;
+                NSString* keyEquiv = @"";
+                NSEventModifierFlags modFlags = 0;
+                if (attyx_keybind_for_action(actionId, &key, &mods, &cp)) {
+                    keyEquiv = keyEquivFromKC(key, cp);
+                    modFlags = modsFromKB(mods);
+                }
                 NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                               action:@selector(dispatchMenuAction:)
-                                                       keyEquivalent:key];
+                                                       keyEquivalent:keyEquiv];
                 item.tag = actionId;
                 item.target = delegate;
-                item.keyEquivalentModifierMask = mods;
+                item.keyEquivalentModifierMask = modFlags;
                 return item;
             };
+
+        // -- File menu --
+        NSMenuItem* fileMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:fileMenuItem];
+        NSMenu* fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+        // Window & tabs
+        [fileMenu addItemWithTitle:@"New Window"
+                            action:@selector(spawnNewWindow:)
+                     keyEquivalent:@"n"];
+        [fileMenu addItem:actionItem(@"New Tab", 49)];
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        [fileMenu addItem:actionItem(@"Next Tab", 51)];
+        [fileMenu addItem:actionItem(@"Previous Tab", 52)];
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        // Splits
+        [fileMenu addItem:actionItem(@"Split Right", 53)];
+        [fileMenu addItem:actionItem(@"Split Left", 90)];
+        [fileMenu addItem:actionItem(@"Split Down", 54)];
+        [fileMenu addItem:actionItem(@"Split Up", 91)];
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        // Close group
+        [fileMenu addItem:actionItem(@"Close", 14)];
+        [fileMenu addItem:actionItem(@"Close Tab", 50)];
+        [fileMenu addItem:actionItem(@"Close Pane", 55)];
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        [fileMenu addItem:actionItem(@"Close All Tabs", 92)];
+        [fileMenu addItem:actionItem(@"Close All Windows", 93)];
+        [fileMenuItem setSubmenu:fileMenu];
 
         // -- Edit menu --
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
@@ -758,51 +840,28 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         [editMenu addItemWithTitle:@"Copy"   action:@selector(copy:)  keyEquivalent:@"c"];
         [editMenu addItemWithTitle:@"Paste"  action:@selector(paste:) keyEquivalent:@"v"];
         [editMenu addItem:[NSMenuItem separatorItem]];
-        [editMenu addItem:actionItem(@"Find…", 3, @"f", NSEventModifierFlagCommand)];
-        [editMenu addItem:actionItem(@"Find Next", 4, @"g", NSEventModifierFlagCommand)];
-        [editMenu addItem:actionItem(@"Find Previous", 5, @"g",
-            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [editMenu addItem:actionItem(@"Find…", 3)];
+        [editMenu addItem:actionItem(@"Find Next", 4)];
+        [editMenu addItem:actionItem(@"Find Previous", 5)];
         [editMenu addItem:[NSMenuItem separatorItem]];
-        [editMenu addItem:actionItem(@"Clear Screen", 73, @"k", NSEventModifierFlagCommand)];
+        [editMenu addItem:actionItem(@"Clear Screen", 73)];
         [editMenuItem setSubmenu:editMenu];
 
         // -- View menu --
         NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:viewMenuItem];
         NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
-        [viewMenu addItem:actionItem(@"Bigger", 85, @"=", NSEventModifierFlagCommand)];
-        [viewMenu addItem:actionItem(@"Smaller", 86, @"-", NSEventModifierFlagCommand)];
-        [viewMenu addItem:actionItem(@"Reset Font Size", 87, @"0", NSEventModifierFlagCommand)];
+        [viewMenu addItem:actionItem(@"Bigger", 85)];
+        [viewMenu addItem:actionItem(@"Smaller", 86)];
+        [viewMenu addItem:actionItem(@"Reset Font Size", 87)];
         [viewMenu addItem:[NSMenuItem separatorItem]];
-        [viewMenu addItem:actionItem(@"Command Palette", 77, @"p",
-            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [viewMenu addItem:actionItem(@"Command Palette", 77)];
         [viewMenuItem setSubmenu:viewMenu];
-
-        // -- Shell menu --
-        NSMenuItem* shellMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:shellMenuItem];
-        NSMenu* shellMenu = [[NSMenu alloc] initWithTitle:@"Shell"];
-        [shellMenu addItem:actionItem(@"New Tab", 49, @"t", NSEventModifierFlagCommand)];
-        [shellMenu addItem:actionItem(@"Close Tab", 50, @"w", NSEventModifierFlagCommand)];
-        [shellMenu addItem:[NSMenuItem separatorItem]];
-        [shellMenu addItem:actionItem(@"Next Tab", 51, @"\t",
-            NSEventModifierFlagControl)];
-        [shellMenu addItem:actionItem(@"Previous Tab", 52, @"\t",
-            NSEventModifierFlagControl | NSEventModifierFlagShift)];
-        [shellMenu addItem:[NSMenuItem separatorItem]];
-        [shellMenu addItem:actionItem(@"Split Vertically", 53, @"d", NSEventModifierFlagCommand)];
-        [shellMenu addItem:actionItem(@"Split Horizontally", 54, @"d",
-            NSEventModifierFlagCommand | NSEventModifierFlagShift)];
-        [shellMenuItem setSubmenu:shellMenu];
 
         // -- Window menu --
         NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:windowMenuItem];
         NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
-        [windowMenu addItemWithTitle:@"New Window"
-                              action:@selector(spawnNewWindow:)
-                       keyEquivalent:@"n"];
-        [windowMenu addItem:[NSMenuItem separatorItem]];
         [windowMenu addItemWithTitle:@"Minimize Window"
                               action:@selector(performMiniaturize:)
                        keyEquivalent:@"m"];
