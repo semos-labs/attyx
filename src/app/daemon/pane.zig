@@ -350,6 +350,27 @@ pub const DaemonPane = struct {
                 }
             }
 
+            // APC kitty graphics query: ESC _ G ... ESC \
+            // Applications send `a=q` to detect kitty graphics support.
+            if (data[i + 1] == '_') {
+                if (i + 2 < data.len and data[i + 2] == 'G') {
+                    // Find the APC terminator: ESC \ (ST)
+                    var j = i + 3;
+                    while (j + 1 < data.len) : (j += 1) {
+                        if (data[j] == '\x1b' and data[j + 1] == '\\') break;
+                    }
+                    if (j + 1 < data.len) {
+                        const params = data[i + 3 .. j];
+                        if (isGraphicsQuery(params)) {
+                            const gfx_id = parseGraphicsId(params);
+                            self.respondGraphicsOk(gfx_id);
+                        }
+                        i = j + 2;
+                        continue;
+                    }
+                }
+            }
+
             // OSC sequences: ESC ] <num> ; ? <terminator>
             if (data[i + 1] == ']') {
                 var j = i + 2;
@@ -411,6 +432,38 @@ pub const DaemonPane = struct {
 
             i += 1;
         }
+    }
+
+    /// Check if a kitty graphics APC payload contains `a=q` (query action).
+    fn isGraphicsQuery(params: []const u8) bool {
+        // params is the content between 'G' and 'ESC \', e.g. "a=q,i=31,s=1,v=1,f=24;AAAA"
+        // The key-value part is before the ';' (if any).
+        const kv = if (std.mem.indexOfScalar(u8, params, ';')) |semi| params[0..semi] else params;
+        // Look for "a=q" as a key-value pair.
+        var iter = std.mem.splitScalar(u8, kv, ',');
+        while (iter.next()) |pair| {
+            if (std.mem.eql(u8, pair, "a=q")) return true;
+        }
+        return false;
+    }
+
+    /// Parse the image_id (`i=N`) from a kitty graphics parameter string.
+    fn parseGraphicsId(params: []const u8) u32 {
+        const kv = if (std.mem.indexOfScalar(u8, params, ';')) |semi| params[0..semi] else params;
+        var iter = std.mem.splitScalar(u8, kv, ',');
+        while (iter.next()) |pair| {
+            if (pair.len > 2 and pair[0] == 'i' and pair[1] == '=') {
+                return std.fmt.parseInt(u32, pair[2..], 10) catch 0;
+            }
+        }
+        return 0;
+    }
+
+    /// Respond to a kitty graphics query with OK.
+    fn respondGraphicsOk(self: *DaemonPane, image_id: u32) void {
+        var buf: [64]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1b_Gi={d};OK\x1b\\", .{image_id}) catch return;
+        _ = self.pty.writeToPty(resp) catch {};
     }
 
     fn respondDECRPM(self: *DaemonPane, mode: u16) void {
