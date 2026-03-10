@@ -353,7 +353,7 @@ pub fn run(
     defer if (session_client) |*sc| sc.deinit();
     var sessions_enabled = false;
 
-    if (config.sessions_enabled) {
+    if (config.sessions_enabled and config.argv == null) {
         if (SessionClient.connect(allocator)) |sc| {
             session_client = sc;
             sessions_enabled = true;

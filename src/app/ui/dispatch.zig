@@ -257,8 +257,14 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Open config file in $EDITOR
+// Open config file in $EDITOR (smart dispatch)
 // ---------------------------------------------------------------------------
+
+const is_macos = builtin.os.tag == .macos;
+
+const macos_ffi = if (is_macos) struct {
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+} else struct {};
 
 fn openConfigInEditor() void {
     // Build config file path
@@ -279,11 +285,97 @@ fn openConfigInEditor() void {
         if (f) |file| file.close();
     }
 
-    // Use the platform's default file opener (open on macOS, xdg-open on Linux).
-    const opener = if (comptime @import("builtin").os.tag == .macos) "open" else "xdg-open";
+    const editor_raw = std.posix.getenv("VISUAL") orelse
+        std.posix.getenv("EDITOR") orelse "";
 
-    // posix_spawn instead of fork+exec — safe in multithreaded processes.
+    if (editor_raw.len == 0) {
+        systemOpen(config_path);
+        return;
+    }
+
+    const basename = editorBasename(editor_raw);
     const spawn = @import("../spawn.zig");
-    const argv: [3:null]?[*:0]const u8 = .{ opener, config_path, null };
-    _ = spawn.spawnp(opener, &argv, false).ok;
+
+    if (isTuiEditor(basename)) {
+        // TUI editor — open in a new attyx window via --cmd sh -c '...'
+        const exe = getSelfExePath() orelse return;
+        var sh_buf: [1024]u8 = undefined;
+        const sh_cmd = std.fmt.bufPrintZ(
+            &sh_buf,
+            "{s} '{s}'",
+            .{ editor_raw, config_path },
+        ) catch return;
+        const argv: [6:null]?[*:0]const u8 = .{ exe, "--cmd", "sh", "-c", sh_cmd, null };
+        _ = spawn.spawnp(exe, &argv, false);
+    } else if (isGuiEditor(basename)) {
+        // GUI editor — launch directly via sh -c to handle multi-word $EDITOR
+        var sh_buf: [1024]u8 = undefined;
+        const sh_cmd = std.fmt.bufPrintZ(
+            &sh_buf,
+            "{s} '{s}'",
+            .{ editor_raw, config_path },
+        ) catch return;
+        const argv: [4:null]?[*:0]const u8 = .{ "sh", "-c", sh_cmd, null };
+        _ = spawn.spawnp("sh", &argv, false);
+    } else {
+        // Unknown editor — fall back to system opener (open / xdg-open)
+        systemOpen(config_path);
+    }
+}
+
+/// Extract the basename of the first word in an editor string.
+/// e.g. "/usr/bin/nvim -u NONE" → "nvim"
+fn editorBasename(editor: []const u8) []const u8 {
+    const cmd_end = std.mem.indexOfScalar(u8, editor, ' ') orelse editor.len;
+    const cmd = editor[0..cmd_end];
+    const slash = std.mem.lastIndexOfScalar(u8, cmd, '/');
+    return if (slash) |i| cmd[i + 1 ..] else cmd;
+}
+
+fn isTuiEditor(basename: []const u8) bool {
+    const tui = [_][]const u8{
+        "vi", "vim", "nvim", "nano", "pico", "micro",
+        "helix", "hx", "joe", "jed", "ne", "kak", "vis", "mg", "ed",
+    };
+    for (tui) |e| {
+        if (std.mem.eql(u8, basename, e)) return true;
+    }
+    return false;
+}
+
+fn isGuiEditor(basename: []const u8) bool {
+    const gui = [_][]const u8{
+        "code",           "code-insiders", "codium",    "vscodium",
+        "zed",            "subl",          "sublime_text",
+        "atom",           "gedit",         "kate",      "mousepad",
+        "idea",           "goland",        "pycharm",   "webstorm",
+        "rustrover",      "fleet",         "emacs",     "emacsclient",
+    };
+    for (gui) |e| {
+        if (std.mem.eql(u8, basename, e)) return true;
+    }
+    return false;
+}
+
+fn systemOpen(path: [:0]const u8) void {
+    const opener: [*:0]const u8 = if (comptime is_macos) "open" else "xdg-open";
+    const spawn = @import("../spawn.zig");
+    const argv: [3:null]?[*:0]const u8 = .{ opener, path, null };
+    _ = spawn.spawnp(opener, &argv, false);
+}
+
+var exe_path_buf: [4096]u8 = undefined;
+
+fn getSelfExePath() ?[:0]const u8 {
+    if (comptime is_macos) {
+        var size: u32 = @intCast(exe_path_buf.len);
+        if (macos_ffi._NSGetExecutablePath(&exe_path_buf, &size) != 0) return null;
+        const len = std.mem.indexOfScalar(u8, &exe_path_buf, 0) orelse return null;
+        return exe_path_buf[0..len :0];
+    } else {
+        const link = posix.readlinkZ("/proc/self/exe", &exe_path_buf) catch return null;
+        if (link.len >= exe_path_buf.len) return null;
+        exe_path_buf[link.len] = 0;
+        return exe_path_buf[0..link.len :0];
+    }
 }
