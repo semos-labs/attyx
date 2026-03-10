@@ -195,6 +195,14 @@ pub fn run(args: []const [:0]const u8) void {
             }
             std.process.exit(1);
         },
+        .exit_code => {
+            // --wait response: [exit_code:u8][captured_stdout...]
+            const code: u8 = if (resp.payload.len > 0) resp.payload[0] else 1;
+            if (resp.payload.len > 1) {
+                stdout.writeAll(resp.payload[1..]) catch {};
+            }
+            std.process.exit(code);
+        },
         else => {
             writeStderr("error: unexpected response type\n");
             std.process.exit(1);
@@ -204,7 +212,7 @@ pub fn run(args: []const [:0]const u8) void {
 
 fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
     return switch (parsed.command) {
-        .tab_create => protocol.encodeMessage(buf, .tab_create, parsed.text_arg),
+        .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => protocol.encodeMessage(buf, .tab_close, ""),
         .tab_next => protocol.encodeMessage(buf, .tab_next, ""),
         .tab_prev => protocol.encodeMessage(buf, .tab_prev, ""),
@@ -212,8 +220,8 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .tab_move_left => protocol.encodeMessage(buf, .tab_move_left, ""),
         .tab_move_right => protocol.encodeMessage(buf, .tab_move_right, ""),
         .tab_rename => protocol.encodeMessage(buf, .tab_rename, parsed.text_arg),
-        .split_vertical => protocol.encodeMessage(buf, .split_vertical, parsed.text_arg),
-        .split_horizontal => protocol.encodeMessage(buf, .split_horizontal, parsed.text_arg),
+        .split_vertical => protocol.encodeMessage(buf, if (parsed.wait) .split_vertical_wait else .split_vertical, parsed.text_arg),
+        .split_horizontal => protocol.encodeMessage(buf, if (parsed.wait) .split_horizontal_wait else .split_horizontal, parsed.text_arg),
         .split_close => protocol.encodeMessage(buf, .pane_close, ""),
         .split_rotate => protocol.encodeMessage(buf, .pane_rotate, ""),
         .split_zoom => protocol.encodeMessage(buf, .pane_zoom_toggle, ""),

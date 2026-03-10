@@ -274,9 +274,15 @@ pub fn encodeCreatePane(buf: []u8, rows: u16, cols: u16, cwd: []const u8) ![]u8 
 
 /// Encode CreatePane with optional command to run in the new pane.
 pub fn encodeCreatePaneWithCmd(buf: []u8, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8) ![]u8 {
+    return encodeCreatePaneWithCmdFlags(buf, rows, cols, cwd, cmd, 0);
+}
+
+/// Encode CreatePane with command and flags byte.
+/// flags bit 0: capture_stdout (pipe stdout to parent, for --wait)
+pub fn encodeCreatePaneWithCmdFlags(buf: []u8, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8, flags: u8) ![]u8 {
     const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
     const cmd_len: u16 = @intCast(@min(cmd.len, 4096));
-    const total: usize = 4 + 2 + cwd_len + 2 + cmd_len;
+    const total: usize = 4 + 2 + cwd_len + 2 + cmd_len + 1;
     if (buf.len < total) return error.BufferTooSmall;
     var pos: usize = 0;
     std.mem.writeInt(u16, buf[0..2], rows, .little);
@@ -289,6 +295,8 @@ pub fn encodeCreatePaneWithCmd(buf: []u8, rows: u16, cols: u16, cwd: []const u8,
     std.mem.writeInt(u16, buf[pos..][0..2], cmd_len, .little);
     pos += 2;
     if (cmd_len > 0) @memcpy(buf[pos .. pos + cmd_len], cmd[0..cmd_len]);
+    pos += cmd_len;
+    buf[pos] = flags;
     return buf[0..total];
 }
 
@@ -336,12 +344,23 @@ pub fn encodePaneCreated(buf: []u8, pane_id: u32) ![]u8 {
     return buf[0..4];
 }
 
-/// Encode PaneDied response: pane_id:u32, exit_code:u8
+/// Encode PaneDied response: pane_id:u32, exit_code:u8, [stdout_len:u32, stdout_data...]
 pub fn encodePaneDied(buf: []u8, pane_id: u32, exit_code: u8) ![]u8 {
     if (buf.len < 5) return error.BufferTooSmall;
     std.mem.writeInt(u32, buf[0..4], pane_id, .little);
     buf[4] = exit_code;
     return buf[0..5];
+}
+
+/// Encode PaneDied with captured stdout data.
+pub fn encodePaneDiedWithStdout(buf: []u8, pane_id: u32, exit_code: u8, stdout_data: []const u8) ![]u8 {
+    const total = 5 + 4 + stdout_data.len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    buf[4] = exit_code;
+    std.mem.writeInt(u32, buf[5..9], @intCast(stdout_data.len), .little);
+    if (stdout_data.len > 0) @memcpy(buf[9 .. 9 + stdout_data.len], stdout_data);
+    return buf[0..total];
 }
 
 /// Encode SessionAttachedV2 payload:
@@ -372,7 +391,13 @@ pub fn encodeAttachedV2(
 
 // ── V2 Decode helpers ──
 
-pub const CreatePaneMsg = struct { rows: u16, cols: u16, cwd: []const u8, cmd: []const u8 = "" };
+pub const CreatePaneMsg = struct {
+    rows: u16,
+    cols: u16,
+    cwd: []const u8,
+    cmd: []const u8 = "",
+    capture_stdout: bool = false,
+};
 
 pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
     if (payload.len < 4) return error.PayloadTooShort;
@@ -396,9 +421,15 @@ pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
         pos += 2;
         if (payload.len >= pos + @as(usize, cmd_len)) {
             cmd = payload[pos .. pos + cmd_len];
+            pos += cmd_len;
         }
     }
-    return .{ .rows = rows, .cols = cols, .cwd = cwd, .cmd = cmd };
+    // Flags byte is optional (new in v2.2).
+    var capture_stdout = false;
+    if (payload.len >= pos + 1) {
+        capture_stdout = (payload[pos] & 0x01) != 0;
+    }
+    return .{ .rows = rows, .cols = cols, .cwd = cwd, .cmd = cmd, .capture_stdout = capture_stdout };
 }
 
 pub fn decodeClosePane(payload: []const u8) !u32 {
@@ -448,13 +479,25 @@ pub fn decodePaneCreated(payload: []const u8) !u32 {
     return std.mem.readInt(u32, payload[0..4], .little);
 }
 
-pub const PaneDiedMsg = struct { pane_id: u32, exit_code: u8 };
+pub const PaneDiedMsg = struct {
+    pane_id: u32,
+    exit_code: u8,
+    stdout: []const u8 = "",
+};
 
 pub fn decodePaneDied(payload: []const u8) !PaneDiedMsg {
     if (payload.len < 5) return error.PayloadTooShort;
+    var stdout: []const u8 = "";
+    if (payload.len >= 9) {
+        const stdout_len = std.mem.readInt(u32, payload[5..9], .little);
+        if (payload.len >= 9 + @as(usize, stdout_len)) {
+            stdout = payload[9 .. 9 + stdout_len];
+        }
+    }
     return .{
         .pane_id = std.mem.readInt(u32, payload[0..4], .little),
         .exit_code = payload[4],
+        .stdout = stdout,
     };
 }
 

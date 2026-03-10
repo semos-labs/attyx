@@ -322,11 +322,30 @@ pub const DaemonClient = struct {
 
     /// Send a PaneDied notification.
     pub fn sendPaneDied(self: *DaemonClient, pane_id: u32, exit_code: u8) void {
-        var buf: [protocol.header_size + 5]u8 = undefined;
-        var payload: [5]u8 = undefined;
-        _ = protocol.encodePaneDied(&payload, pane_id, exit_code) catch return;
-        _ = protocol.encodeMessage(&buf, .pane_died, &payload) catch return;
-        self.sendRaw(&buf);
+        self.sendPaneDiedWithStdout(pane_id, exit_code, &[_]u8{});
+    }
+
+    pub fn sendPaneDiedWithStdout(self: *DaemonClient, pane_id: u32, exit_code: u8, stdout_data: []const u8) void {
+        if (stdout_data.len == 0) {
+            // Small fixed-size message for common case
+            var buf: [protocol.header_size + 5]u8 = undefined;
+            var payload: [5]u8 = undefined;
+            _ = protocol.encodePaneDied(&payload, pane_id, exit_code) catch return;
+            _ = protocol.encodeMessage(&buf, .pane_died, &payload) catch return;
+            self.sendRaw(&buf);
+        } else {
+            // Variable-size: header + pane_id(4) + exit_code(1) + stdout_len(4) + stdout_data
+            const payload_len: u32 = @intCast(5 + 4 + stdout_data.len);
+            var hdr: [protocol.header_size]u8 = undefined;
+            protocol.encodeHeader(&hdr, .pane_died, payload_len);
+            self.sendRaw(&hdr);
+            var meta: [9]u8 = undefined;
+            std.mem.writeInt(u32, meta[0..4], pane_id, .little);
+            meta[4] = exit_code;
+            std.mem.writeInt(u32, meta[5..9], @intCast(stdout_data.len), .little);
+            self.sendRaw(&meta);
+            self.sendRaw(stdout_data);
+        }
     }
 
     /// Send a ReplayEnd notification for a pane, signaling that scrollback

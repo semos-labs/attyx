@@ -58,6 +58,11 @@ pub const MessageType = enum(u8) {
     // ── Popup ──
     popup = 0x42,
 
+    // ── Wait variants (--wait flag: hold response until process exits) ──
+    tab_create_wait = 0x43,
+    split_vertical_wait = 0x44,
+    split_horizontal_wait = 0x45,
+
     // ── Session commands ──
     session_list = 0x3B,
     session_create = 0x3C,
@@ -68,6 +73,7 @@ pub const MessageType = enum(u8) {
     // ── Responses ──
     success = 0xA0,
     err = 0xA1,
+    exit_code = 0xA2, // process exit code (1-byte payload: u8 code)
 };
 
 // ---------------------------------------------------------------------------

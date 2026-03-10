@@ -26,9 +26,11 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
     switch (msg_type) {
         // ── Tab commands → dispatch actions (silent success) ──
-        .tab_create => {
+        .tab_create, .tab_create_wait => {
             if (cmd.payload_len > 0) {
-                handler_cmd.handleTabCreateWithCmd(cmd, ctx);
+                handler_cmd.handleTabCreateWithCmd(cmd, ctx, msg_type == .tab_create_wait);
+            } else if (msg_type == .tab_create_wait) {
+                sendError(cmd, "--wait requires --cmd");
             } else {
                 dispatchAction(.tab_new);
                 sendOk(cmd, "");
@@ -74,17 +76,23 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         },
 
         // ── Split / pane commands (silent success) ──
-        .split_vertical => {
+        .split_vertical, .split_vertical_wait => {
+            const wait = (msg_type == .split_vertical_wait);
             if (cmd.payload_len > 0) {
-                handler_cmd.handleSplitWithCmd(cmd, ctx, .vertical);
+                handler_cmd.handleSplitWithCmd(cmd, ctx, .vertical, wait);
+            } else if (wait) {
+                sendError(cmd, "--wait requires --cmd");
             } else {
                 dispatchAction(.split_vertical);
                 sendOk(cmd, "");
             }
         },
-        .split_horizontal => {
+        .split_horizontal, .split_horizontal_wait => {
+            const wait = (msg_type == .split_horizontal_wait);
             if (cmd.payload_len > 0) {
-                handler_cmd.handleSplitWithCmd(cmd, ctx, .horizontal);
+                handler_cmd.handleSplitWithCmd(cmd, ctx, .horizontal, wait);
+            } else if (wait) {
+                sendError(cmd, "--wait requires --cmd");
             } else {
                 dispatchAction(.split_horizontal);
                 sendOk(cmd, "");
@@ -181,7 +189,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .session_rename => handler_query.handleSessionRename(cmd, ctx),
 
         // ── Responses (should not be received by server) ──
-        .success, .err => {
+        .success, .err, .exit_code => {
             sendError(cmd, "unexpected message type");
         },
     }
@@ -212,6 +220,7 @@ fn sendInputToActivePty(text: []const u8) void {
 // ---------------------------------------------------------------------------
 
 pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
+    if (cmd.response_fd == -1) return;
     defer posix.close(cmd.response_fd);
     var buf: [protocol.header_size + 4096]u8 = undefined;
     const msg = protocol.encodeSuccess(&buf, payload) catch {
@@ -226,6 +235,7 @@ pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
 }
 
 pub fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
+    if (cmd.response_fd == -1) return;
     defer posix.close(cmd.response_fd);
     // Send plain text error — the client formats it for display/JSON
     var buf: [protocol.header_size + 512]u8 = undefined;

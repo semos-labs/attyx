@@ -85,18 +85,20 @@ pub const tab =
 pub const tab_create =
     \\Create a new tab.
     \\
-    \\Usage: attyx tab create [--cmd <command>]
+    \\Usage: attyx tab create [--cmd <command>] [--wait]
     \\
     \\Options:
     \\  --cmd <command>   Run a command in the new tab instead of a bare shell.
     \\                    The command runs inside a full interactive shell, so
     \\                    your PATH and shell config are fully available.
     \\                    When the command exits, the shell remains open.
+    \\  --wait, -w        Wait for the command to exit and return its exit code.
+    \\                    Requires --cmd. Useful for scripting and automation.
     \\
     \\Examples:
     \\  attyx tab create
     \\  attyx tab create --cmd htop
-    \\  attyx tab create --cmd "tail -f /var/log/syslog"
+    \\  attyx tab create --cmd "make test" --wait
     \\  attyx tab create --cmd claude
     \\
 ;
@@ -173,13 +175,15 @@ pub const split =
 pub const split_create =
     \\Split the active pane.
     \\
-    \\Usage: attyx split <vertical|horizontal> [--cmd <command>]
+    \\Usage: attyx split <vertical|horizontal> [--cmd <command>] [--wait]
     \\
     \\Options:
     \\  --cmd <command>   Run a command in the new pane instead of a bare shell.
     \\                    The command runs inside a full interactive shell, so
     \\                    your PATH and shell config are fully available.
     \\                    When the command exits, the shell remains open.
+    \\  --wait, -w        Wait for the command to exit and return its exit code.
+    \\                    Requires --cmd. Useful for scripting and automation.
     \\
     \\Directions:
     \\  vertical (v)     New pane appears to the right of the current pane
@@ -188,7 +192,7 @@ pub const split_create =
     \\Examples:
     \\  attyx split vertical
     \\  attyx split horizontal --cmd htop
-    \\  attyx split v --cmd "tail -f /var/log/syslog"
+    \\  attyx split v --cmd "make test" --wait
     \\  attyx split v --cmd claude
     \\
 ;
@@ -446,16 +450,20 @@ pub const popup =
 pub const run =
     \\Open a new tab with a command.
     \\
-    \\Usage: attyx run <command>
+    \\Usage: attyx run <command> [--wait]
     \\
     \\Shorthand for 'attyx tab create --cmd <command>'.
     \\The command runs inside a full interactive shell, so your PATH and
     \\shell config are fully available. When the command exits, the shell
     \\remains open.
     \\
+    \\Options:
+    \\  --wait, -w   Wait for the command to exit and return its exit code.
+    \\               Useful for scripting: `attyx run "make test" --wait && echo OK`
+    \\
     \\Examples:
     \\  attyx run htop
-    \\  attyx run "tail -f /var/log/syslog"
+    \\  attyx run "make test" --wait
     \\  attyx run claude
     \\
 ;

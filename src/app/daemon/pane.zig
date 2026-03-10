@@ -28,6 +28,11 @@ pub const DaemonPane = struct {
     osc7337_path: [2048]u8 = .{0} ** 2048,
     osc7337_path_len: u16 = 0,
 
+    /// Heap-allocated captured stdout for --wait mode.
+    /// Only allocated when capture_stdout is requested at spawn time.
+    captured_stdout: ?*std.ArrayList(u8) = null,
+    stdout_allocator: ?std.mem.Allocator = null,
+
     /// Theme colors for OSC 10/11/12/4 query responses.
     /// Defaults match Theme.default(). Updated by the client via protocol.
     theme_fg: [3]u8 = .{ 220, 220, 220 },
@@ -80,6 +85,7 @@ pub const DaemonPane = struct {
         cwd: ?[*:0]const u8,
         shell: ?[*:0]const u8,
         cmd: ?[*:0]const u8,
+        capture_stdout: bool,
     ) !DaemonPane {
         // If a command is given, start a normal interactive shell with
         // __ATTYX_STARTUP_CMD set. The shell integration scripts execute
@@ -94,7 +100,7 @@ pub const DaemonPane = struct {
 
         const startup_cmd: ?[*:0]const u8 = if (cmd) |c| c else null;
 
-        return .{
+        var pane = DaemonPane{
             .id = id,
             .pty = try Pty.spawn(.{
                 .rows = rows,
@@ -102,11 +108,21 @@ pub const DaemonPane = struct {
                 .cwd = cwd,
                 .argv = argv,
                 .startup_cmd = startup_cmd,
+                .capture_stdout = capture_stdout,
             }),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,
         };
+
+        if (capture_stdout) {
+            const cs = allocator.create(std.ArrayList(u8)) catch null;
+            if (cs) |c| c.* = .empty;
+            pane.captured_stdout = cs;
+            pane.stdout_allocator = allocator;
+        }
+
+        return pane;
     }
 
     /// Non-blocking read from PTY master. Stores data in replay buffer.
@@ -558,7 +574,32 @@ pub const DaemonPane = struct {
         .{ 255, 255, 255 },
     };
 
+    /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
+    pub fn drainCapturedStdout(self: *DaemonPane) void {
+        const cs = self.captured_stdout orelse return;
+        const alloc = self.stdout_allocator orelse return;
+        if (self.pty.stdout_read_fd == -1) return;
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const n = posix.read(self.pty.stdout_read_fd, &buf) catch break;
+            if (n == 0) break;
+            cs.appendSlice(alloc, buf[0..n]) catch break;
+        }
+    }
+
+    /// Get captured stdout data (if any).
+    pub fn getCapturedStdout(self: *const DaemonPane) []const u8 {
+        if (self.captured_stdout) |cs| return cs.items;
+        return &[_]u8{};
+    }
+
     pub fn deinit(self: *DaemonPane) void {
+        if (self.captured_stdout) |cs| {
+            if (self.stdout_allocator) |alloc| {
+                cs.deinit(alloc);
+                alloc.destroy(cs);
+            }
+        }
         self.pty.deinit();
         self.replay.deinit();
         self.* = undefined;
