@@ -68,13 +68,14 @@ pub const DaemonSession = struct {
             session.shell_len = @intCast(slen);
         }
 
-        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd, shell);
+        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd, shell, null);
         session.pane_count = 1;
         return session;
     }
 
     /// Add a new pane with a caller-assigned ID (globally unique).
     /// Uses the provided CWD if given, otherwise falls back to session CWD.
+    /// If cmd_override is set, spawns `$SHELL -c '<cmd>'` instead of the session shell.
     pub fn addPaneWithId(
         self: *DaemonSession,
         allocator: std.mem.Allocator,
@@ -83,13 +84,14 @@ pub const DaemonSession = struct {
         cols: u16,
         replay_capacity: usize,
         cwd_override: ?[*:0]const u8,
+        cmd_override: ?[*:0]const u8,
     ) !u32 {
         const slot_idx = for (&self.panes, 0..) |*slot, i| {
             if (slot.* == null) break i;
         } else return error.TooManyPanes;
         const cwd: ?[*:0]const u8 = cwd_override orelse if (self.cwd_len > 0) @as([*:0]const u8, self.cwd[0..self.cwd_len :0]) else null;
         const shell: ?[*:0]const u8 = if (self.shell_len > 0) @as([*:0]const u8, self.shell[0..self.shell_len :0]) else null;
-        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd, shell);
+        self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd, shell, cmd_override);
         self.pane_count += 1;
         return pane_id;
     }

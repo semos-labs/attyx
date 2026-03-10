@@ -11,15 +11,13 @@ const keybinds = @import("../config/keybinds.zig");
 const Action = keybinds.Action;
 const terminal = @import("../app/terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
-const split_layout_mod = @import("../app/split_layout.zig");
-const platform = @import("../platform/platform.zig");
 const publish = @import("../app/ui/publish.zig");
-const popup_mod = @import("../app/popup.zig");
-const actions = @import("../app/ui/actions.zig");
-const statusbar = @import("../app/statusbar.zig");
+
+const handler_cmd = @import("handler_cmd.zig");
+const handler_query = @import("handler_query.zig");
 
 /// Process one IPC command. Writes response to cmd.response_fd, then
-/// signals the server thread via the done flag.
+/// closes it.
 pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     const msg_type = std.meta.intToEnum(protocol.MessageType, cmd.msg_type) catch {
         sendError(cmd, "unknown command");
@@ -30,7 +28,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // ── Tab commands → dispatch actions (silent success) ──
         .tab_create => {
             if (cmd.payload_len > 0) {
-                handleTabCreateWithCmd(cmd, ctx);
+                handler_cmd.handleTabCreateWithCmd(cmd, ctx);
             } else {
                 dispatchAction(.tab_new);
                 sendOk(cmd, "");
@@ -78,7 +76,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // ── Split / pane commands (silent success) ──
         .split_vertical => {
             if (cmd.payload_len > 0) {
-                handleSplitWithCmd(cmd, ctx, .vertical);
+                handler_cmd.handleSplitWithCmd(cmd, ctx, .vertical);
             } else {
                 dispatchAction(.split_vertical);
                 sendOk(cmd, "");
@@ -86,7 +84,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         },
         .split_horizontal => {
             if (cmd.payload_len > 0) {
-                handleSplitWithCmd(cmd, ctx, .horizontal);
+                handler_cmd.handleSplitWithCmd(cmd, ctx, .horizontal);
             } else {
                 dispatchAction(.split_horizontal);
                 sendOk(cmd, "");
@@ -165,24 +163,22 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             }
             sendOk(cmd, "");
         },
-        .get_text => {
-            buildGetText(cmd, ctx);
-        },
+        .get_text => handler_query.buildGetText(cmd, ctx),
 
         // ── Popup ──
-        .popup => handlePopup(cmd, ctx),
+        .popup => handler_cmd.handlePopup(cmd, ctx),
 
         // ── Query ──
-        .list => buildList(cmd, ctx),
-        .list_tabs => buildTabList(cmd, ctx),
-        .list_splits => buildSplitList(cmd, ctx),
+        .list => handler_query.buildList(cmd, ctx),
+        .list_tabs => handler_query.buildTabList(cmd, ctx),
+        .list_splits => handler_query.buildSplitList(cmd, ctx),
 
         // ── Session commands ──
-        .session_list => handleSessionList(cmd, ctx),
-        .session_create => handleSessionCreate(cmd, ctx),
-        .session_kill => handleSessionKill(cmd, ctx),
-        .session_switch => handleSessionSwitch(cmd, ctx),
-        .session_rename => handleSessionRename(cmd, ctx),
+        .session_list => handler_query.handleSessionList(cmd, ctx),
+        .session_create => handler_query.handleSessionCreate(cmd, ctx),
+        .session_kill => handler_query.handleSessionKill(cmd, ctx),
+        .session_switch => handler_query.handleSessionSwitch(cmd, ctx),
+        .session_rename => handler_query.handleSessionRename(cmd, ctx),
 
         // ── Responses (should not be received by server) ──
         .success, .err => {
@@ -212,439 +208,10 @@ fn sendInputToActivePty(text: []const u8) void {
 }
 
 // ---------------------------------------------------------------------------
-// Tab/split create with --cmd: spawn $SHELL -c '<command>'
+// Response helpers (pub so handler_cmd/handler_query can use them)
 // ---------------------------------------------------------------------------
 
-fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (ctx.sessions_enabled) {
-        sendError(cmd, "tab create with --cmd is not supported in session mode");
-        return;
-    }
-    const command = cmd.payload[0..cmd.payload_len];
-    const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    const cols: u16 = ctx.grid_cols;
-
-    const argv = buildShellArgv(ctx, command) orelse {
-        sendError(cmd, "out of memory");
-        return;
-    };
-    defer freeShellArgv(ctx, argv);
-
-    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
-    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
-    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
-    const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
-    defer if (cwd_z) |z| ctx.allocator.free(z);
-
-    ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch {
-        sendError(cmd, "failed to create tab");
-        return;
-    };
-    publish.updateGridTopOffset(ctx);
-    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-    actions.switchActiveTab(ctx);
-    actions.saveSessionLayout(ctx);
-    sendOk(cmd, "");
-}
-
-fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction) void {
-    if (ctx.sessions_enabled) {
-        sendError(cmd, "split with --cmd is not supported in session mode");
-        return;
-    }
-    const command = cmd.payload[0..cmd.payload_len];
-    const layout = ctx.tab_mgr.activeLayout();
-
-    const argv = buildShellArgv(ctx, command) orelse {
-        sendError(cmd, "out of memory");
-        return;
-    };
-    defer freeShellArgv(ctx, argv);
-
-    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
-    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
-    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
-
-    layout.splitPaneResolvedWithArgv(dir, ctx.allocator, &argv, resolved.cwd, ctx.applied_scrollback_lines) catch {
-        sendError(cmd, "failed to create split");
-        return;
-    };
-
-    // Set theme colors on newly created pane
-    if (layout.pool[layout.focused].pane) |pane| {
-        pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-    }
-    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    layout.layout(pty_rows, ctx.grid_cols);
-
-    const split_actions = @import("../app/ui/split_actions.zig");
-    split_actions.notifyPaneSizes(ctx, layout);
-    actions.updateSplitActive(ctx);
-    actions.switchActiveTab(ctx);
-    actions.saveSessionLayout(ctx);
-    sendOk(cmd, "");
-}
-
-/// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.
-fn buildShellArgv(ctx: *PtyThreadCtx, command: []const u8) ?[3][:0]const u8 {
-    const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
-    const shell_z = ctx.allocator.dupeZ(u8, shell_env) catch return null;
-    const c_flag = ctx.allocator.dupeZ(u8, "-c") catch {
-        ctx.allocator.free(shell_z);
-        return null;
-    };
-    // Inject PATH from shell integration (app bundle may have minimal PATH)
-    const shell_path = publish.ctxEngine(ctx).state.shell_path;
-    const cmd_z = if (shell_path) |sp| blk: {
-        const wrapped = std.fmt.allocPrint(ctx.allocator, "export PATH='{s}'; {s}", .{ sp, command }) catch
-            break :blk ctx.allocator.dupeZ(u8, command) catch {
-            ctx.allocator.free(c_flag);
-            ctx.allocator.free(shell_z);
-            return null;
-        };
-        defer ctx.allocator.free(wrapped);
-        break :blk ctx.allocator.dupeZ(u8, wrapped) catch {
-            ctx.allocator.free(c_flag);
-            ctx.allocator.free(shell_z);
-            return null;
-        };
-    } else ctx.allocator.dupeZ(u8, command) catch {
-        ctx.allocator.free(c_flag);
-        ctx.allocator.free(shell_z);
-        return null;
-    };
-    return .{ shell_z, c_flag, cmd_z };
-}
-
-fn freeShellArgv(ctx: *PtyThreadCtx, argv: [3][:0]const u8) void {
-    ctx.allocator.free(argv[2]);
-    ctx.allocator.free(argv[1]);
-    ctx.allocator.free(argv[0]);
-}
-
-// ---------------------------------------------------------------------------
-// List: build tab/pane tree
-// ---------------------------------------------------------------------------
-
-fn resolveTitle(pane: anytype, name_buf: *[256]u8) []const u8 {
-    return pane.getCustomTitle() orelse
-        pane.engine.state.title orelse
-        platform.getForegroundProcessName(pane.pty.master, name_buf) orelse
-        pane.getDaemonProcName() orelse
-        "shell";
-}
-
-fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    var buf: [8192]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
-
-    const mgr = ctx.tab_mgr;
-    for (0..mgr.count) |i| {
-        const layout = &(mgr.tabs[i] orelse continue);
-        const is_active = (i == mgr.active);
-
-        var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(layout.focusedPane(), &name_buf);
-
-        w.print("{d}\t{s}", .{ i + 1, title }) catch break;
-        if (is_active) w.writeAll("\t*") catch break;
-        if (layout.pane_count > 1) {
-            w.print("\t{d} panes", .{layout.pane_count}) catch break;
-        }
-        if (layout.isZoomed()) w.writeAll("\tzoomed") catch break;
-        w.writeAll("\n") catch break;
-
-        // If multiple panes, list them indented
-        if (layout.pane_count > 1) {
-            var leaves: [8]split_layout_mod.LeafEntry = undefined;
-            const lc = layout.collectLeaves(&leaves);
-            for (leaves[0..lc]) |leaf| {
-                var pane_name_buf: [256]u8 = undefined;
-                const pane_title = resolveTitle(leaf.pane, &pane_name_buf);
-                const focused = (leaf.index == layout.focused);
-                w.print("  {d}.{d}\t{s}", .{ i + 1, leaf.index, pane_title }) catch break;
-                if (focused) w.writeAll("\t*") catch break;
-                w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
-                w.writeAll("\n") catch break;
-            }
-        }
-    }
-
-    sendOk(cmd, stream.getWritten());
-}
-
-fn buildTabList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    var buf: [4096]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
-
-    const mgr = ctx.tab_mgr;
-    for (0..mgr.count) |i| {
-        const layout = &(mgr.tabs[i] orelse continue);
-        const is_active = (i == mgr.active);
-
-        var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(layout.focusedPane(), &name_buf);
-
-        w.print("{d}\t{s}", .{ i + 1, title }) catch break;
-        if (is_active) w.writeAll("\t*") catch break;
-        if (layout.pane_count > 1) {
-            w.print("\t{d} panes", .{layout.pane_count}) catch break;
-        }
-        if (layout.isZoomed()) w.writeAll("\tzoomed") catch break;
-        w.writeAll("\n") catch break;
-    }
-
-    sendOk(cmd, stream.getWritten());
-}
-
-fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    var buf: [4096]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
-
-    const mgr = ctx.tab_mgr;
-    const layout = &(mgr.tabs[mgr.active] orelse {
-        sendOk(cmd, "");
-        return;
-    });
-
-    var leaves: [8]split_layout_mod.LeafEntry = undefined;
-    const lc = layout.collectLeaves(&leaves);
-    for (leaves[0..lc]) |leaf| {
-        var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(leaf.pane, &name_buf);
-        const focused = (leaf.index == layout.focused);
-
-        w.print("{d}\t{s}", .{ leaf.index, title }) catch break;
-        if (focused) w.writeAll("\t*") catch break;
-        w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
-        w.writeAll("\n") catch break;
-    }
-
-    sendOk(cmd, stream.getWritten());
-}
-
-// ---------------------------------------------------------------------------
-// Popup: open ad-hoc popup terminal
-// ---------------------------------------------------------------------------
-
-fn handlePopup(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 4) {
-        sendError(cmd, "missing popup command");
-        return;
-    }
-    // Payload: [width_pct:u8][height_pct:u8][border_style:u8][command...]
-    const width_pct = cmd.payload[0];
-    const height_pct = cmd.payload[1];
-    const border_raw = cmd.payload[2];
-    const command = cmd.payload[3..cmd.payload_len];
-
-    const border_style: popup_mod.BorderStyle = switch (border_raw) {
-        0 => .single,
-        1 => .double,
-        2 => .rounded,
-        3 => .heavy,
-        4 => .none,
-        else => .rounded,
-    };
-
-    // Close existing popup if any
-    if (ctx.popup_state != null) {
-        actions.closePopup(ctx);
-    }
-
-    // Resolve CWD from focused pane
-    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
-    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
-    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
-
-    // Store ad-hoc config in a spare slot so the event loop can re-publish
-    const cfg_idx: u8 = if (ctx.popup_config_count < 32) ctx.popup_config_count else 31;
-    ctx.popup_configs[cfg_idx] = popup_mod.PopupConfig{
-        .command = command,
-        .width_pct = if (width_pct >= 1 and width_pct <= 100) width_pct else 80,
-        .height_pct = if (height_pct >= 1 and height_pct <= 100) height_pct else 80,
-        .border_style = border_style,
-        .border_fg = .{ 128, 128, 128 },
-    };
-    const cfg = ctx.popup_configs[cfg_idx];
-
-    const main_shell_path = publish.ctxEngine(ctx).state.shell_path;
-    var ps = ctx.allocator.create(popup_mod.PopupState) catch {
-        sendError(cmd, "failed to allocate popup");
-        return;
-    };
-    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, ctx.grid_cols, ctx.grid_rows, resolved.cwd, main_shell_path) catch {
-        ctx.allocator.destroy(ps);
-        sendError(cmd, "failed to spawn popup");
-        return;
-    };
-    ps.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-    ps.config_index = cfg_idx;
-    ctx.popup_state = ps;
-    terminal.g_popup_pty_master = ps.pane.pty.master;
-    terminal.g_popup_engine = &ps.pane.engine;
-
-    const c = terminal.c;
-    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
-    ps.publishCells(&ctx.active_theme, cfg);
-    ps.publishImagePlacements(cfg);
-
-    sendOk(cmd, "");
-}
-
-// ---------------------------------------------------------------------------
-// Get text: read visible screen content
-// ---------------------------------------------------------------------------
-
-fn buildGetText(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const pane = ctx.tab_mgr.activePane();
-    const ring = &pane.engine.state.ring;
-    const rows = ring.screen_rows;
-    const cols = ring.cols;
-
-    // Worst case: 4 bytes per char (UTF-8) + newline per row
-    var buf: [32768]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
-
-    for (0..rows) |r| {
-        const row_cells = ring.getScreenRow(r);
-        // Find last non-space cell to trim trailing whitespace
-        var last: usize = cols;
-        while (last > 0 and row_cells[last - 1].char == ' ') last -= 1;
-
-        for (row_cells[0..last]) |cell| {
-            var codepoint_buf: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cell.char, &codepoint_buf) catch continue;
-            w.writeAll(codepoint_buf[0..len]) catch break;
-        }
-        w.writeAll("\n") catch break;
-    }
-
-    sendOk(cmd, stream.getWritten());
-}
-
-// ---------------------------------------------------------------------------
-// Session commands
-// ---------------------------------------------------------------------------
-
-fn handleSessionList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
-        sendError(cmd, "sessions not enabled");
-        return;
-    };
-    sc.requestListSync(3000) catch {
-        sendError(cmd, "failed to fetch session list");
-        return;
-    };
-    if (!sc.pending_list_ready) {
-        sendError(cmd, "session list timeout");
-        return;
-    }
-
-    var buf: [4096]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
-
-    for (sc.pending_list[0..sc.pending_list_count]) |*entry| {
-        const name = entry.getName();
-        const active = if (sc.attached_session_id) |aid| aid == entry.id else false;
-        w.print("{d}\t{s}", .{ entry.id, name }) catch break;
-        if (active) w.writeAll("\t*") catch break;
-        if (!entry.alive) w.writeAll("\tdead") catch break;
-        w.print("\t{d} panes", .{entry.pane_count}) catch break;
-        w.writeAll("\n") catch break;
-    }
-
-    sendOk(cmd, stream.getWritten());
-}
-
-fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
-        sendError(cmd, "sessions not enabled");
-        return;
-    };
-    const name = if (cmd.payload_len > 0) cmd.payload[0..cmd.payload_len] else "new";
-    const rows = ctx.grid_rows;
-    const cols = ctx.grid_cols;
-    const sid = sc.createSession(name, rows, cols, "", "") catch {
-        sendError(cmd, "failed to create session");
-        return;
-    };
-
-    var buf: [64]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    stream.writer().print("{d}", .{sid}) catch {};
-    sendOk(cmd, stream.getWritten());
-}
-
-fn handleSessionKill(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
-        sendError(cmd, "sessions not enabled");
-        return;
-    };
-    if (cmd.payload_len < 4) {
-        sendError(cmd, "missing session id");
-        return;
-    }
-    const sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
-    sc.killSession(sid) catch {
-        sendError(cmd, "failed to kill session");
-        return;
-    };
-    sendOk(cmd, "");
-}
-
-fn handleSessionSwitch(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
-        sendError(cmd, "sessions not enabled");
-        return;
-    };
-    if (cmd.payload_len < 4) {
-        sendError(cmd, "missing session id");
-        return;
-    }
-    const sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
-    sc.attach(sid, ctx.grid_rows, ctx.grid_cols) catch {
-        sendError(cmd, "failed to switch session");
-        return;
-    };
-    sendOk(cmd, "");
-}
-
-fn handleSessionRename(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
-        sendError(cmd, "sessions not enabled");
-        return;
-    };
-    if (cmd.payload_len < 5) {
-        sendError(cmd, "missing session id or name");
-        return;
-    }
-    var sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
-    // sid 0 means "current session" — requires an attached daemon session
-    if (sid == 0) {
-        sid = sc.attached_session_id orelse {
-            sendError(cmd, "not attached to a session (use 'session rename <id> <name>')");
-            return;
-        };
-    }
-    const name = cmd.payload[4..cmd.payload_len];
-    sc.renameSession(sid, name) catch {
-        sendError(cmd, "failed to rename session");
-        return;
-    };
-    sendOk(cmd, "");
-}
-
-// ---------------------------------------------------------------------------
-// Response helpers
-// ---------------------------------------------------------------------------
-
-fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
+pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
     defer posix.close(cmd.response_fd);
     var buf: [protocol.header_size + 4096]u8 = undefined;
     const msg = protocol.encodeSuccess(&buf, payload) catch {
@@ -658,7 +225,7 @@ fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
     protocol.writeAll(cmd.response_fd, msg) catch {};
 }
 
-fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
+pub fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
     defer posix.close(cmd.response_fd);
     // Send plain text error — the client formats it for display/JSON
     var buf: [protocol.header_size + 512]u8 = undefined;

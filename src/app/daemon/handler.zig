@@ -231,7 +231,14 @@ fn handleCreatePane(
         cwd_z_buf[msg.cwd.len] = 0;
         break :blk @ptrCast(&cwd_z_buf);
     } else null;
-    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z) catch {
+    // Optional command override (e.g. from `attyx run htop`).
+    var cmd_z_buf: [4097]u8 = undefined;
+    const cmd_z: ?[*:0]const u8 = if (msg.cmd.len > 0 and msg.cmd.len < cmd_z_buf.len) blk: {
+        @memcpy(cmd_z_buf[0..msg.cmd.len], msg.cmd);
+        cmd_z_buf[msg.cmd.len] = 0;
+        break :blk @ptrCast(&cmd_z_buf);
+    } else null;
+    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, cmd_z) catch {
         cl.sendError(3, "create pane failed");
         return;
     };
@@ -396,7 +403,7 @@ fn reviveSession(
                 const pane_id = next_pane_id.*;
                 next_pane_id.* += 1;
                 new_ids[i] = pane_id;
-                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd) catch continue;
+                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null) catch continue;
                 if (session.findPane(pane_id)) |pane| {
                     setNonBlocking(pane.pty.master);
                 }
@@ -418,7 +425,7 @@ fn reviveSession(
     // Fallback: spawn a single pane (no layout or deserialization failed).
     const pane_id = next_pane_id.*;
     next_pane_id.* += 1;
-    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd) catch return;
+    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null) catch return;
     if (session.findPane(pane_id)) |pane| {
         setNonBlocking(pane.pty.master);
     }

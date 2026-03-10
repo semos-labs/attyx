@@ -167,8 +167,13 @@ pub const SessionClient = struct {
 
     /// Create a new pane in the attached session.
     pub fn sendCreatePane(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8) !void {
-        var payload_buf: [4102]u8 = undefined;
-        const payload = try protocol.encodeCreatePane(&payload_buf, rows, cols, cwd);
+        return self.sendCreatePaneWithCmd(rows, cols, cwd, "");
+    }
+
+    /// Create a new pane with a custom command (e.g. "htop").
+    pub fn sendCreatePaneWithCmd(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8) !void {
+        var payload_buf: [8204]u8 = undefined;
+        const payload = try protocol.encodeCreatePaneWithCmd(&payload_buf, rows, cols, cwd, cmd);
         try self.sendMessage(.create_pane, payload);
     }
 
