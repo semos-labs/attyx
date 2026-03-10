@@ -19,6 +19,7 @@ pub const top_level =
     \\  theme        Switch to a named theme
     \\  scroll-to    Scroll the viewport (top, bottom)
     \\  list         Show tabs, panes, and sessions (list tabs, list splits, ...)
+    \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
     \\Global options:
@@ -325,6 +326,25 @@ pub const list =
     \\  attyx list tabs
     \\  attyx list splits
     \\  attyx list tabs | fzf
+    \\
+;
+
+pub const popup =
+    \\Open a popup terminal overlay.
+    \\
+    \\Usage: attyx popup <command> [options]
+    \\
+    \\Options:
+    \\  --width, -w <1-100>        Width as percentage of terminal (default: 80)
+    \\  --height <1-100>           Height as percentage of terminal (default: 80)
+    \\  --border, -b <style>       Border style: single, double, rounded, heavy, none
+    \\                             (default: rounded)
+    \\
+    \\Examples:
+    \\  attyx popup lazygit
+    \\  attyx popup htop --width 90 --height 90
+    \\  attyx popup "k9s" --border heavy
+    \\  attyx popup fzf --width 60 --height 40 --border none
     \\
 ;
 

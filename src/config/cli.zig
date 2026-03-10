@@ -345,7 +345,7 @@ fn isIpcSubcommand(arg: []const u8) bool {
     const ipc_subs = [_][]const u8{
         "tab",       "split",     "focus",      "send-keys",
         "send-text", "get-text",  "reload",     "theme",
-        "scroll-to", "list",      "session",    "run",
+        "scroll-to", "list",      "session",    "popup",  "run",
         "--target", // --target <pid> before subcommand
     };
     for (ipc_subs) |s| {
@@ -381,6 +381,7 @@ pub fn printUsage() void {
         \\  theme        Switch to a named theme
         \\  scroll-to    Scroll the viewport (top/bottom)
         \\  list         Show tabs, panes, and sessions
+        \\  popup        Open a popup terminal overlay
         \\  run          Open a new tab with a command
         \\
         \\Options:

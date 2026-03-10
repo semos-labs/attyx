@@ -43,6 +43,7 @@ pub const IpcCommand = enum {
     list,
     list_tabs,
     list_splits,
+    popup,
     session_list,
     session_create,
     session_kill,
@@ -57,6 +58,9 @@ pub const IpcRequest = struct {
     session_id_arg: u32 = 0,
     target_pid: ?u32 = null,
     json_output: bool = false,
+    width_pct: u8 = 80,
+    height_pct: u8 = 80,
+    border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -146,6 +150,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         return .{ .command = .theme_set, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
     }
     if (std.mem.eql(u8, sub, "scroll-to")) return parseScrollTo(args, start, target_pid, json_output);
+    if (std.mem.eql(u8, sub, "popup")) return parsePopup(args, start, target_pid, json_output);
     if (std.mem.eql(u8, sub, "list")) return parseList(args, start, target_pid, json_output);
     if (std.mem.eql(u8, sub, "session")) return parseSession(args, start, target_pid, json_output);
     if (std.mem.eql(u8, sub, "run")) {
@@ -300,6 +305,82 @@ fn parseScrollTo(args: []const [:0]const u8, start: usize, target_pid: ?u32, jso
     std.debug.print("error: unknown position '{s}'\n\n", .{pos});
     printHelp(help.scroll_to);
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Popup
+// ---------------------------------------------------------------------------
+
+fn parsePopup(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
+    if (start + 1 >= args.len or isHelp(args[start + 1])) {
+        if (start + 1 < args.len and isHelp(args[start + 1])) showHelp(help.popup);
+        printHelp(help.popup);
+        return null;
+    }
+
+    var result = IpcRequest{
+        .command = .popup,
+        .target_pid = target_pid,
+        .json_output = json_output,
+    };
+
+    var i = start + 1;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--width") or std.mem.eql(u8, arg, "-w")) {
+            if (i + 1 >= args.len) fatal("--width requires a value (1-100)");
+            i += 1;
+            result.width_pct = std.fmt.parseInt(u8, args[i], 10) catch fatal("--width must be 1-100");
+            if (result.width_pct < 1 or result.width_pct > 100) fatal("--width must be 1-100");
+        } else if (std.mem.eql(u8, arg, "--height") or std.mem.eql(u8, arg, "-h")) {
+            // Disambiguate -h: if it looks like a number arg follows, treat as height
+            if (i + 1 < args.len) {
+                if (std.fmt.parseInt(u8, args[i + 1], 10)) |v| {
+                    i += 1;
+                    result.height_pct = v;
+                    if (result.height_pct < 1 or result.height_pct > 100) fatal("--height must be 1-100");
+                } else |_| {
+                    // Not a number — treat -h as help
+                    showHelp(help.popup);
+                }
+            } else {
+                showHelp(help.popup);
+            }
+        } else if (std.mem.eql(u8, arg, "--border") or std.mem.eql(u8, arg, "-b")) {
+            if (i + 1 >= args.len) fatal("--border requires a value");
+            i += 1;
+            const bs = args[i];
+            if (std.mem.eql(u8, bs, "single")) {
+                result.border_style = 0;
+            } else if (std.mem.eql(u8, bs, "double")) {
+                result.border_style = 1;
+            } else if (std.mem.eql(u8, bs, "rounded")) {
+                result.border_style = 2;
+            } else if (std.mem.eql(u8, bs, "heavy")) {
+                result.border_style = 3;
+            } else if (std.mem.eql(u8, bs, "none")) {
+                result.border_style = 4;
+            } else {
+                fatal("--border must be single, double, rounded, heavy, or none");
+            }
+        } else if (std.mem.eql(u8, arg, "--help")) {
+            showHelp(help.popup);
+        } else if (result.text_arg.len == 0) {
+            result.text_arg = arg;
+        } else {
+            std.debug.print("error: unexpected argument '{s}'\n\n", .{arg});
+            printHelp(help.popup);
+            return null;
+        }
+        i += 1;
+    }
+
+    if (result.text_arg.len == 0) {
+        printHelp(help.popup);
+        return null;
+    }
+
+    return result;
 }
 
 // ---------------------------------------------------------------------------

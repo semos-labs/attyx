@@ -15,6 +15,9 @@ const split_layout_mod = @import("../app/split_layout.zig");
 const platform = @import("../platform/platform.zig");
 const publish = @import("../app/ui/publish.zig");
 const SessionClient = @import("../app/session_client.zig");
+const popup_mod = @import("../app/popup.zig");
+const actions = @import("../app/ui/actions.zig");
+const statusbar = @import("../app/statusbar.zig");
 
 /// Process one IPC command. Writes response to cmd.response_fd, then
 /// signals the server thread via the done flag.
@@ -155,6 +158,9 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .get_text => {
             buildGetText(cmd, ctx);
         },
+
+        // ── Popup ──
+        .popup => handlePopup(cmd, ctx),
 
         // ── Query ──
         .list => buildList(cmd, ctx),
@@ -297,6 +303,75 @@ fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     }
 
     sendOk(cmd, stream.getWritten());
+}
+
+// ---------------------------------------------------------------------------
+// Popup: open ad-hoc popup terminal
+// ---------------------------------------------------------------------------
+
+fn handlePopup(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing popup command");
+        return;
+    }
+    // Payload: [width_pct:u8][height_pct:u8][border_style:u8][command...]
+    const width_pct = cmd.payload[0];
+    const height_pct = cmd.payload[1];
+    const border_raw = cmd.payload[2];
+    const command = cmd.payload[3..cmd.payload_len];
+
+    const border_style: popup_mod.BorderStyle = switch (border_raw) {
+        0 => .single,
+        1 => .double,
+        2 => .rounded,
+        3 => .heavy,
+        4 => .none,
+        else => .rounded,
+    };
+
+    // Close existing popup if any
+    if (ctx.popup_state != null) {
+        actions.closePopup(ctx);
+    }
+
+    // Resolve CWD from focused pane
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+
+    // Store ad-hoc config in a spare slot so the event loop can re-publish
+    const cfg_idx: u8 = if (ctx.popup_config_count < 32) ctx.popup_config_count else 31;
+    ctx.popup_configs[cfg_idx] = popup_mod.PopupConfig{
+        .command = command,
+        .width_pct = if (width_pct >= 1 and width_pct <= 100) width_pct else 80,
+        .height_pct = if (height_pct >= 1 and height_pct <= 100) height_pct else 80,
+        .border_style = border_style,
+        .border_fg = .{ 128, 128, 128 },
+    };
+    const cfg = ctx.popup_configs[cfg_idx];
+
+    const main_shell_path = publish.ctxEngine(ctx).state.shell_path;
+    var ps = ctx.allocator.create(popup_mod.PopupState) catch {
+        sendError(cmd, "failed to allocate popup");
+        return;
+    };
+    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, ctx.grid_cols, ctx.grid_rows, resolved.cwd, main_shell_path) catch {
+        ctx.allocator.destroy(ps);
+        sendError(cmd, "failed to spawn popup");
+        return;
+    };
+    ps.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    ps.config_index = cfg_idx;
+    ctx.popup_state = ps;
+    terminal.g_popup_pty_master = ps.pane.pty.master;
+    terminal.g_popup_engine = &ps.pane.engine;
+
+    const c = terminal.c;
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
+    ps.publishCells(&ctx.active_theme, cfg);
+    ps.publishImagePlacements(cfg);
+
+    sendOk(cmd, "");
 }
 
 // ---------------------------------------------------------------------------

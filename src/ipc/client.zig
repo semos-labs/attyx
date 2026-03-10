@@ -247,6 +247,16 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .list => protocol.encodeMessage(buf, .list, ""),
         .list_tabs => protocol.encodeMessage(buf, .list_tabs, ""),
         .list_splits => protocol.encodeMessage(buf, .list_splits, ""),
+        .popup => blk: {
+            // Payload: [width_pct:u8][height_pct:u8][border_style:u8][command...]
+            var payload_buf: [4099]u8 = undefined;
+            payload_buf[0] = parsed.width_pct;
+            payload_buf[1] = parsed.height_pct;
+            payload_buf[2] = parsed.border_style;
+            const cmd_len = @min(parsed.text_arg.len, payload_buf.len - 3);
+            @memcpy(payload_buf[3 .. 3 + cmd_len], parsed.text_arg[0..cmd_len]);
+            break :blk protocol.encodeMessage(buf, .popup, payload_buf[0 .. 3 + cmd_len]);
+        },
         .session_list => protocol.encodeMessage(buf, .session_list, ""),
         .session_create => protocol.encodeMessage(buf, .session_create, ""),
         .session_kill => blk: {

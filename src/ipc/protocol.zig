@@ -55,6 +55,9 @@ pub const MessageType = enum(u8) {
     list_tabs = 0x40,
     list_splits = 0x41,
 
+    // ── Popup ──
+    popup = 0x42,
+
     // ── Session commands ──
     session_list = 0x3B,
     session_create = 0x3C,
