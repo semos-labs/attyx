@@ -114,11 +114,25 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
         // Delete the upgrade file regardless of success.
         std.fs.deleteFileAbsolute(rpath) catch {};
     } else {
-        // Normal startup: load persisted dead sessions from previous daemon run.
-        state_persist.load(&sessions, &next_session_id, &next_pane_id);
-        // Count loaded dead sessions so session_count is accurate.
-        for (sessions) |slot| {
-            if (slot != null) session_count += 1;
+        // Normal startup: check for orphaned upgrade state (crash recovery).
+        // If a previous upgrade crashed, upgrade.bin survives with session
+        // metadata (names, layouts, CWD). We restore them as dead sessions —
+        // when a client attaches, reviveSession spawns fresh shells preserving
+        // the tab/split layout.
+        const stale_recovered = upgrade.tryRecoverStale(&sessions, &next_session_id, &next_pane_id, allocator);
+        if (stale_recovered > 0) {
+            for (sessions) |slot| {
+                if (slot != null) session_count += 1;
+            }
+            var msg_buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "daemon: recovered {d} sessions from orphaned upgrade state\n", .{stale_recovered}) catch "daemon: recovered sessions\n";
+            stderr.writeAll(msg) catch {};
+        } else {
+            // Load persisted dead sessions from previous daemon run.
+            state_persist.load(&sessions, &next_session_id, &next_pane_id);
+            for (sessions) |slot| {
+                if (slot != null) session_count += 1;
+            }
         }
     }
 

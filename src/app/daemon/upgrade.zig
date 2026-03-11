@@ -6,6 +6,7 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const session_connect = @import("../session_connect.zig");
 const spawn = @import("../spawn.zig");
+const protocol = @import("protocol.zig");
 
 const magic = "ATUP";
 const format_version: u8 = 2;
@@ -369,6 +370,12 @@ pub fn performUpgrade(
         return .failed;
     };
 
+    // Count sessions — we'll verify the new daemon preserved all of them.
+    var expected_sessions: u16 = 0;
+    for (sessions) |s| {
+        if (s != null) expected_sessions += 1;
+    }
+
     stderr.writeAll("upgrade: state saved, spawning new daemon...\n") catch {};
 
     // Close all client sockets
@@ -398,24 +405,75 @@ pub fn performUpgrade(
         return .failed;
     }
 
-    // Wait for new daemon to become reachable (up to 5s)
-    for (0..50) |_| {
+    // Wait for new daemon to start AND verify sessions are intact.
+    // Phase 1: probe until socket is reachable.
+    // Phase 2: verify session count matches (new daemon needs time to restore).
+    var verified = false;
+    var probed = false;
+
+    for (0..80) |_| { // up to 8s total
         posix.nanosleep(0, 100_000_000); // 100ms
-        if (probeNewDaemon(socket_path)) {
-            stderr.writeAll("upgrade: new daemon is running\n") catch {};
-            return .success;
+        if (!probed) {
+            if (!probeNewDaemon(socket_path)) continue;
+            probed = true;
+            if (expected_sessions == 0) { verified = true; break; }
+            continue; // give restore a moment before verifying
+        }
+        if (verifySessionCount(socket_path, expected_sessions)) {
+            verified = true;
+            break;
         }
     }
 
-    // New daemon didn't start in time — kill it and recover
-    stderr.writeAll("upgrade: new daemon failed to start, recovering...\n") catch {};
+    if (verified) {
+        stderr.writeAll("upgrade: new daemon verified, sessions intact\n") catch {};
+        cleanupAndReturn(upgrade_path);
+        return .success;
+    }
+
+    // Verification failed — kill new daemon, recover with old state
+    if (probed) {
+        stderr.writeAll("upgrade: session verification failed, rolling back\n") catch {};
+    } else {
+        stderr.writeAll("upgrade: new daemon failed to start, recovering...\n") catch {};
+    }
     _ = kill(spawn_result.pid, 9);
     spawn.reapAsync(spawn_result.pid);
     cleanupAndReturn(upgrade_path);
-    // New daemon may have left a partial socket
     std.fs.deleteFileAbsolute(socket_path) catch {};
     rebindSocket(listen_fd, socket_path, stderr);
     return .failed;
+}
+
+/// Connect to new daemon, send a list request, verify session count matches.
+fn verifySessionCount(socket_path: []const u8, expected: u16) bool {
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return false;
+    defer posix.close(fd);
+    const addr = std.net.Address.initUnix(socket_path) catch return false;
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch return false;
+
+    // Send list request (header only, no payload)
+    var hdr: [protocol.header_size]u8 = undefined;
+    protocol.encodeHeader(&hdr, .list, 0);
+    _ = posix.write(fd, &hdr) catch return false;
+
+    // Wait for response (up to 2s)
+    var fds_arr = [1]posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+    _ = posix.poll(&fds_arr, 2000) catch return false;
+    if (fds_arr[0].revents & 0x0001 == 0) return false;
+
+    // Read response
+    var resp: [4096]u8 = undefined;
+    const n = posix.read(fd, &resp) catch return false;
+    if (n < protocol.header_size) return false;
+    const header = protocol.decodeHeader(resp[0..protocol.header_size]) catch return false;
+    if (header.msg_type != .session_list) return false;
+    if (n < protocol.header_size + header.payload_len) return false;
+    if (header.payload_len < 2) return false;
+
+    // First 2 bytes of payload = session count (u16 LE)
+    const count = std.mem.readInt(u16, resp[protocol.header_size..][0..2], .little);
+    return count >= expected;
 }
 
 fn probeNewDaemon(path: []const u8) bool {
@@ -459,6 +517,57 @@ fn setNonBlocking(fd: posix.fd_t) void {
 
 fn cleanupAndReturn(upgrade_path: []const u8) void {
     std.fs.deleteFileAbsolute(upgrade_path) catch {};
+}
+
+/// Recover dead sessions from an orphaned upgrade.bin (crash recovery).
+/// If a previous upgrade spawned a new daemon that crashed before cleaning up,
+/// the upgrade.bin file survives with session metadata (names, layouts, CWD).
+/// We restore these as dead sessions — when a client attaches, reviveSession
+/// spawns fresh shells preserving the tab/split layout.
+///
+/// Panes are stripped (their PTY fds are stale), but session structure is kept.
+/// Returns the number of sessions recovered.
+pub fn tryRecoverStale(
+    sessions: *[max_sessions]?DaemonSession,
+    next_session_id: *u32,
+    next_pane_id: *u32,
+    allocator: std.mem.Allocator,
+) u8 {
+    var path_buf: [256]u8 = undefined;
+    const upgrade_path = getUpgradePath(&path_buf) orelse return 0;
+
+    const data = std.fs.cwd().readFileAlloc(allocator, upgrade_path, 128 * 1024 * 1024) catch return 0;
+    defer allocator.free(data);
+
+    const restored = deserialize(data, sessions, next_session_id, next_pane_id, allocator) catch {
+        std.fs.deleteFileAbsolute(upgrade_path) catch {};
+        return 0;
+    };
+
+    if (restored == 0) {
+        std.fs.deleteFileAbsolute(upgrade_path) catch {};
+        return 0;
+    }
+
+    // Strip panes — their PTY fds are from a dead process. Closing them
+    // via deinit is dangerous (posix.close may assert on -1, and waitpid
+    // on a stale pid could reap unrelated children). Instead, free ring
+    // buffers directly and null out pane slots.
+    for (sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*p| {
+                    p.replay.deinit();
+                    pslot.* = null;
+                }
+            }
+            s.pane_count = 0;
+            s.alive = false;
+        }
+    }
+
+    std.fs.deleteFileAbsolute(upgrade_path) catch {};
+    return restored;
 }
 
 // ---------------------------------------------------------------------------
