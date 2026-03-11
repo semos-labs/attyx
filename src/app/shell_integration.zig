@@ -204,10 +204,12 @@ const zsh_script =
     \\fi
     \\unset __ATTYX_BIN_DIR
     \\# OSC 7: report cwd on directory changes and on every prompt
-    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
+    \\# Write to stderr so OSC sequences reach the terminal even when stdout
+    \\# is redirected (e.g. --wait capture pipe).
+    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" >&2 }
     \\[[ -z "${chpwd_functions[(r)__attyx_chpwd]}" ]] && chpwd_functions+=(__attyx_chpwd)
     \\# OSC 7337: report PATH for popup commands
-    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" }
+    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" >&2 }
     \\# Execute startup command after full shell init, then remove the hook
     \\__attyx_startup() {
     \\  __attyx_chpwd; __attyx_report_path
@@ -239,10 +241,10 @@ const bash_script =
     \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
     \\fi
     \\unset __ATTYX_BIN_DIR
-    \\# OSC 7: report cwd
-    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "$(hostname)" "$PWD"; }
+    \\# OSC 7: report cwd (stderr so --wait capture pipe doesn't eat it)
+    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "$(hostname)" "$PWD" >&2; }
     \\# OSC 7337: report PATH for popup commands
-    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH"; }
+    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" >&2; }
     \\# Execute startup command on first prompt, then remove the hook
     \\__attyx_first_prompt() {
     \\  __attyx_chpwd; __attyx_report_path
@@ -267,12 +269,12 @@ const fish_script =
     \\set -e __ATTYX_BIN_DIR
     \\# OSC 7: report cwd on directory changes and on every prompt
     \\function __attyx_chpwd --on-variable PWD
-    \\  printf '\e]7;file://%s%s\a' (hostname) "$PWD"
+    \\  printf '\e]7;file://%s%s\a' (hostname) "$PWD" >&2
     \\end
     \\# Execute startup command on first prompt, then switch to normal hook
     \\function __attyx_first_prompt --on-event fish_prompt
     \\  __attyx_chpwd
-    \\  printf '\e]7337;set-path;%s\a' "$PATH"
+    \\  printf '\e]7337;set-path;%s\a' "$PATH" >&2
     \\  if set -q __ATTYX_STARTUP_CMD
     \\    set -l cmd $__ATTYX_STARTUP_CMD
     \\    set -e __ATTYX_STARTUP_CMD
@@ -283,7 +285,7 @@ const fish_script =
     \\# OSC 7337: report PATH for popup commands; also report CWD on prompt
     \\function __attyx_report_path --on-event fish_prompt
     \\  __attyx_chpwd
-    \\  printf '\e]7337;set-path;%s\a' "$PATH"
+    \\  printf '\e]7337;set-path;%s\a' "$PATH" >&2
     \\end
     \\__attyx_chpwd
     \\
@@ -294,10 +296,10 @@ const nushell_script =
     \\$env.config = ($env.config? | default {} | merge {
     \\  hooks: {
     \\    pre_prompt: [{ ||
-    \\      # OSC 7: report cwd
-    \\      print -n $"\e]7;file://(sys host | get hostname)(pwd)\a"
+    \\      # OSC 7: report cwd (stderr so --wait capture pipe doesn't eat it)
+    \\      print -ne $"\e]7;file://(sys host | get hostname)(pwd)\a"
     \\      # OSC 7337: report PATH for popup commands
-    \\      print -n $"\e]7337;set-path;($env.PATH | str join ':')\a"
+    \\      print -ne $"\e]7337;set-path;($env.PATH | str join ':')\a"
     \\      # Execute startup command on first prompt
     \\      if ($env.__ATTYX_STARTUP_CMD? | is-not-empty) {
     \\        let cmd = $env.__ATTYX_STARTUP_CMD
