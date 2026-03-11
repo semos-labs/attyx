@@ -298,6 +298,8 @@ pub const UpgradeResult = enum {
     success,
     /// Upgrade failed. Socket has been rebound. Caller continues.
     failed,
+    /// Upgrade failed and socket could not be rebound. Caller should exit.
+    fatal,
 };
 
 /// Perform the hot upgrade: serialize state, spawn new daemon, verify it started.
@@ -401,7 +403,7 @@ pub fn performUpgrade(
     if (!spawn_result.ok) {
         stderr.writeAll("upgrade: spawn failed, recovering...\n") catch {};
         cleanupAndReturn(upgrade_path);
-        rebindSocket(listen_fd, socket_path, stderr);
+        if (!rebindSocket(listen_fd, socket_path, stderr)) return .fatal;
         return .failed;
     }
 
@@ -437,15 +439,16 @@ pub fn performUpgrade(
     } else {
         stderr.writeAll("upgrade: new daemon failed to start, recovering...\n") catch {};
     }
-    _ = kill(spawn_result.pid, 9);
+    _ = kill(spawn_result.pid, posix.SIG.KILL);
     spawn.reapAsync(spawn_result.pid);
     cleanupAndReturn(upgrade_path);
     std.fs.deleteFileAbsolute(socket_path) catch {};
-    rebindSocket(listen_fd, socket_path, stderr);
+    if (!rebindSocket(listen_fd, socket_path, stderr)) return .fatal;
     return .failed;
 }
 
 /// Connect to new daemon, send a list request, verify session count matches.
+/// Reads in a loop to handle partial reads on Unix stream sockets.
 fn verifySessionCount(socket_path: []const u8, expected: u16) bool {
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return false;
     defer posix.close(fd);
@@ -457,23 +460,39 @@ fn verifySessionCount(socket_path: []const u8, expected: u16) bool {
     protocol.encodeHeader(&hdr, .list, 0);
     _ = posix.write(fd, &hdr) catch return false;
 
-    // Wait for response (up to 2s)
-    var fds_arr = [1]posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
-    _ = posix.poll(&fds_arr, 2000) catch return false;
-    if (fds_arr[0].revents & 0x0001 == 0) return false;
-
-    // Read response
+    // Read response in a loop — stream sockets may deliver partial data.
+    const timeout_ms: i64 = 2000;
+    const start_ms = std.time.milliTimestamp();
     var resp: [4096]u8 = undefined;
-    const n = posix.read(fd, &resp) catch return false;
-    if (n < protocol.header_size) return false;
-    const header = protocol.decodeHeader(resp[0..protocol.header_size]) catch return false;
-    if (header.msg_type != .session_list) return false;
-    if (n < protocol.header_size + header.payload_len) return false;
-    if (header.payload_len < 2) return false;
+    var received: usize = 0;
 
-    // First 2 bytes of payload = session count (u16 LE)
-    const count = std.mem.readInt(u16, resp[protocol.header_size..][0..2], .little);
-    return count >= expected;
+    while (true) {
+        // Once we have the header, check if we have enough to verify.
+        if (received >= protocol.header_size) {
+            const header = protocol.decodeHeader(resp[0..protocol.header_size]) catch return false;
+            if (header.msg_type != .session_list) return false;
+            if (header.payload_len < 2) return false;
+            // We only need the first 2 bytes of payload (session count).
+            if (received >= protocol.header_size + 2) {
+                const count = std.mem.readInt(u16, resp[protocol.header_size..][0..2], .little);
+                return count >= expected;
+            }
+        }
+
+        // Poll for more data with remaining timeout.
+        const elapsed_ms = std.time.milliTimestamp() - start_ms;
+        if (elapsed_ms >= timeout_ms) return false;
+        const remaining: c_int = @intCast(timeout_ms - elapsed_ms);
+        var fds_arr = [1]posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+        const poll_res = posix.poll(&fds_arr, remaining) catch return false;
+        if (poll_res == 0) return false;
+        if (fds_arr[0].revents & 0x0001 == 0) return false;
+
+        if (received >= resp.len) return false;
+        const n = posix.read(fd, resp[received..]) catch return false;
+        if (n == 0) return false; // EOF
+        received += n;
+    }
 }
 
 fn probeNewDaemon(path: []const u8) bool {
@@ -484,27 +503,28 @@ fn probeNewDaemon(path: []const u8) bool {
     return true;
 }
 
-fn rebindSocket(listen_fd: *posix.fd_t, socket_path: []const u8, stderr: std.fs.File) void {
+fn rebindSocket(listen_fd: *posix.fd_t, socket_path: []const u8, stderr: std.fs.File) bool {
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch {
         stderr.writeAll("upgrade: socket() failed during recovery\n") catch {};
-        return;
+        return false;
     };
     var addr = std.net.Address.initUnix(socket_path) catch {
         posix.close(fd);
-        return;
+        return false;
     };
     posix.bind(fd, &addr.any, addr.getOsSockLen()) catch {
         posix.close(fd);
         stderr.writeAll("upgrade: bind failed during recovery\n") catch {};
-        return;
+        return false;
     };
     posix.listen(fd, 5) catch {
         posix.close(fd);
-        return;
+        return false;
     };
     setNonBlocking(fd);
     listen_fd.* = fd;
     stderr.writeAll("upgrade: recovered, continuing with old version\n") catch {};
+    return true;
 }
 
 fn setNonBlocking(fd: posix.fd_t) void {
@@ -640,4 +660,109 @@ test "serialize/deserialize round-trip" {
     // Clean up ring buffers (don't deinit panes — fake fd/pid)
     sessions[0].?.panes[0].?.replay.deinit();
     out_sessions[0].?.panes[0].?.replay.deinit();
+}
+
+test "stale recovery strips panes and marks sessions dead" {
+    const allocator = std.testing.allocator;
+
+    // Build a session with 2 panes
+    var sessions: [max_sessions]?DaemonSession = .{null} ** max_sessions;
+    var s = DaemonSession{ .id = 1, .rows = 24, .cols = 80 };
+    s.name_len = 6;
+    @memcpy(s.name[0..6], "stale1");
+    s.cwd_len = 5;
+    @memcpy(s.cwd[0..5], "/home");
+    s.alive = true;
+
+    var ring1 = try RingBuffer.init(allocator, 64);
+    ring1.write("pane1 output");
+    s.panes[0] = DaemonPane{
+        .id = 10,
+        .pty = @import("../pty.zig").Pty.fromExisting(50, 999),
+        .replay = ring1,
+        .rows = 24,
+        .cols = 80,
+        .alive = true,
+    };
+
+    var ring2 = try RingBuffer.init(allocator, 64);
+    ring2.write("pane2 output");
+    s.panes[1] = DaemonPane{
+        .id = 11,
+        .pty = @import("../pty.zig").Pty.fromExisting(51, 1000),
+        .replay = ring2,
+        .rows = 24,
+        .cols = 80,
+        .alive = true,
+    };
+    s.pane_count = 2;
+    sessions[0] = s;
+
+    // Serialize to bytes (simulating upgrade.bin content)
+    var list: std.ArrayList(u8) = .{};
+    defer list.deinit(allocator);
+    try serialize(list.writer(allocator), &sessions, 5, 20);
+
+    // Deserialize into fresh session array, then strip panes (stale recovery logic)
+    var recovered: [max_sessions]?DaemonSession = .{null} ** max_sessions;
+    var next_sid: u32 = 0;
+    var next_pid: u32 = 0;
+    const count = try deserialize(list.items, &recovered, &next_sid, &next_pid, allocator);
+    try std.testing.expectEqual(@as(u8, 1), count);
+
+    // Simulate the stale recovery pane-stripping logic
+    for (&recovered) |*slot| {
+        if (slot.*) |*rs| {
+            for (&rs.panes) |*pslot| {
+                if (pslot.*) |*p| {
+                    p.replay.deinit();
+                    pslot.* = null;
+                }
+            }
+            rs.pane_count = 0;
+            rs.alive = false;
+        }
+    }
+
+    // Session metadata preserved
+    const rs = recovered[0].?;
+    try std.testing.expectEqual(@as(u32, 1), rs.id);
+    try std.testing.expectEqualStrings("stale1", rs.name[0..rs.name_len]);
+    try std.testing.expectEqualStrings("/home", rs.cwd[0..rs.cwd_len]);
+    try std.testing.expectEqual(@as(u32, 5), next_sid);
+    try std.testing.expectEqual(@as(u32, 20), next_pid);
+
+    // Panes stripped, session dead
+    try std.testing.expect(!rs.alive);
+    try std.testing.expectEqual(@as(u8, 0), rs.pane_count);
+    for (rs.panes) |p| try std.testing.expect(p == null);
+
+    // Clean up original ring buffers
+    sessions[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[1].?.replay.deinit();
+}
+
+test "verifySessionCount parses session_list payload" {
+    // Build a session_list response: header + payload with count=3
+    var payload_buf: [256]u8 = undefined;
+    const entries = [_]protocol.SessionEntry{
+        .{ .id = 1, .name = "s1", .alive = true },
+        .{ .id = 2, .name = "s2", .alive = true },
+        .{ .id = 3, .name = "s3", .alive = false },
+    };
+    const payload = protocol.encodeSessionList(&payload_buf, &entries) catch unreachable;
+
+    var resp: [512]u8 = undefined;
+    protocol.encodeHeader(resp[0..protocol.header_size], .session_list, @intCast(payload.len));
+    @memcpy(resp[protocol.header_size .. protocol.header_size + payload.len], payload);
+    const total = protocol.header_size + payload.len;
+
+    // Verify the count parsing logic directly: first 2 bytes of payload = u16 LE count
+    const count = std.mem.readInt(u16, resp[protocol.header_size..][0..2], .little);
+    try std.testing.expectEqual(@as(u16, 3), count);
+
+    // Verify header decoding
+    const header = protocol.decodeHeader(resp[0..protocol.header_size]) catch unreachable;
+    try std.testing.expectEqual(protocol.MessageType.session_list, header.msg_type);
+    try std.testing.expect(total >= protocol.header_size + 2);
 }

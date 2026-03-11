@@ -353,6 +353,12 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                     // this session — avoids infinite loop if binary is broken.
                     g_upgrade_failed = true;
                 },
+                .fatal => {
+                    // Socket could not be rebound — daemon is unreachable.
+                    // Exit so the next client can start a fresh daemon.
+                    stderr.writeAll("upgrade: unrecoverable failure, exiting\n") catch {};
+                    g_running = false;
+                },
             }
             g_upgrade_requested = false;
         }
