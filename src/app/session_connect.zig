@@ -75,7 +75,7 @@ fn probeAlive(fd: posix.fd_t) bool {
     return false;
 }
 
-fn tryConnect(path: []const u8) ?posix.fd_t {
+pub fn tryConnect(path: []const u8) ?posix.fd_t {
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
     const addr = std.net.Address.initUnix(path) catch {
         posix.close(fd);

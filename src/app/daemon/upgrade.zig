@@ -5,13 +5,14 @@ const DaemonPane = @import("pane.zig").DaemonPane;
 const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const session_connect = @import("../session_connect.zig");
+const spawn = @import("../spawn.zig");
 
 const magic = "ATUP";
 const format_version: u8 = 2;
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
-extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+extern "c" fn kill(pid: std.c.pid_t, sig: c_int) c_int;
 
 // ── Binary format helpers (write to ArrayList, read from slice) ──
 
@@ -290,23 +291,32 @@ fn getUpgradePath(buf: *[256]u8) ?[]const u8 {
     return session_connect.statePath(buf, "upgrade{s}.bin");
 }
 
-/// Perform the hot upgrade: serialize state, close sockets, exec self.
-/// On exec failure, the state file is cleaned up and the function returns.
+/// Result of an upgrade attempt.
+pub const UpgradeResult = enum {
+    /// New daemon is running. Caller should exit immediately.
+    success,
+    /// Upgrade failed. Socket has been rebound. Caller continues.
+    failed,
+};
+
+/// Perform the hot upgrade: serialize state, spawn new daemon, verify it started.
+/// Uses posix_spawn instead of exec — allows recovery if the new daemon fails.
+/// On failure, the socket is rebound so the old daemon can continue serving.
 pub fn performUpgrade(
     sessions: *[max_sessions]?DaemonSession,
     clients: *[16]?DaemonClient,
-    listen_fd: posix.fd_t,
+    listen_fd: *posix.fd_t,
     socket_path: []const u8,
     next_session_id: u32,
     next_pane_id: u32,
     allocator: std.mem.Allocator,
-) void {
+) UpgradeResult {
     const stderr = std.fs.File.stderr();
 
     var path_buf: [256]u8 = undefined;
     const upgrade_path = getUpgradePath(&path_buf) orelse {
         stderr.writeAll("upgrade: cannot determine state file path\n") catch {};
-        return;
+        return .failed;
     };
 
     // Serialize state into memory buffer
@@ -315,35 +325,51 @@ pub fn performUpgrade(
 
     serialize(list.writer(allocator), sessions, next_session_id, next_pane_id) catch {
         stderr.writeAll("upgrade: serialization failed\n") catch {};
-        return;
+        return .failed;
     };
 
     // Write to temp file, then rename atomically
     var tmp_buf: [260]u8 = undefined;
     const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{upgrade_path}) catch {
         stderr.writeAll("upgrade: path too long\n") catch {};
-        return;
+        return .failed;
     };
 
     const file = std.fs.createFileAbsolute(tmp_path, .{}) catch {
         stderr.writeAll("upgrade: cannot create state file\n") catch {};
-        return;
+        return .failed;
     };
     file.writeAll(list.items) catch {
         file.close();
         std.fs.deleteFileAbsolute(tmp_path) catch {};
         stderr.writeAll("upgrade: write failed\n") catch {};
-        return;
+        return .failed;
     };
     file.close();
 
     std.fs.renameAbsolute(tmp_path, upgrade_path) catch {
         std.fs.deleteFileAbsolute(tmp_path) catch {};
         stderr.writeAll("upgrade: rename failed\n") catch {};
-        return;
+        return .failed;
     };
 
-    stderr.writeAll("upgrade: state saved, exec'ing new binary...\n") catch {};
+    // Build exe path and args before closing sockets
+    var exe_buf: [1024]u8 = undefined;
+    const exe = session_connect.getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
+    var exe_z: [1024]u8 = undefined;
+    const exe_z_ptr: [*:0]const u8 = std.fmt.bufPrintZ(&exe_z, "{s}", .{exe}) catch {
+        stderr.writeAll("upgrade: exe path too long\n") catch {};
+        cleanupAndReturn(upgrade_path);
+        return .failed;
+    };
+
+    var restore_z: [260]u8 = undefined;
+    const restore_arg: [*:0]const u8 = std.fmt.bufPrintZ(&restore_z, "{s}", .{upgrade_path}) catch {
+        cleanupAndReturn(upgrade_path);
+        return .failed;
+    };
+
+    stderr.writeAll("upgrade: state saved, spawning new daemon...\n") catch {};
 
     // Close all client sockets
     for (clients) |*slot| {
@@ -353,34 +379,82 @@ pub fn performUpgrade(
         }
     }
 
-    // Close listener and unlink socket
-    posix.close(listen_fd);
+    // Close listener and unlink socket so new daemon can bind
+    posix.close(listen_fd.*);
+    listen_fd.* = -1;
     std.fs.deleteFileAbsolute(socket_path) catch {};
 
-    // Exec self with --restore flag
-    var exe_buf: [1024]u8 = undefined;
-    const exe = session_connect.getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
-    var exe_z: [1024]u8 = undefined;
-    const exe_z_ptr: [*:0]const u8 = std.fmt.bufPrintZ(&exe_z, "{s}", .{exe}) catch {
-        stderr.writeAll("upgrade: exe path too long\n") catch {};
-        cleanupAndReturn(upgrade_path);
-        return;
-    };
-
-    var restore_z: [260]u8 = undefined;
-    const restore_arg: [*:0]const u8 = std.fmt.bufPrintZ(&restore_z, "{s}", .{upgrade_path}) catch {
-        cleanupAndReturn(upgrade_path);
-        return;
-    };
-
+    // Spawn new daemon process instead of exec — allows recovery on failure.
+    // PTY master fds are inherited by the child (not close-on-exec).
     const daemon_str: [*:0]const u8 = "daemon";
     const restore_flag: [*:0]const u8 = "--restore";
-    const argv = [_]?[*:0]const u8{ exe_z_ptr, daemon_str, restore_flag, restore_arg, null };
-    _ = execvp(exe_z_ptr, &argv);
+    const argv: [4:null]?[*:0]const u8 = .{ exe_z_ptr, daemon_str, restore_flag, restore_arg };
+    const spawn_result = spawn.spawnp(exe_z_ptr, &argv, true);
 
-    // exec failed — rollback
-    stderr.writeAll("upgrade: exec failed, rolling back\n") catch {};
+    if (!spawn_result.ok) {
+        stderr.writeAll("upgrade: spawn failed, recovering...\n") catch {};
+        cleanupAndReturn(upgrade_path);
+        rebindSocket(listen_fd, socket_path, stderr);
+        return .failed;
+    }
+
+    // Wait for new daemon to become reachable (up to 5s)
+    for (0..50) |_| {
+        posix.nanosleep(0, 100_000_000); // 100ms
+        if (probeNewDaemon(socket_path)) {
+            stderr.writeAll("upgrade: new daemon is running\n") catch {};
+            return .success;
+        }
+    }
+
+    // New daemon didn't start in time — kill it and recover
+    stderr.writeAll("upgrade: new daemon failed to start, recovering...\n") catch {};
+    _ = kill(spawn_result.pid, 9);
+    spawn.reapAsync(spawn_result.pid);
     cleanupAndReturn(upgrade_path);
+    // New daemon may have left a partial socket
+    std.fs.deleteFileAbsolute(socket_path) catch {};
+    rebindSocket(listen_fd, socket_path, stderr);
+    return .failed;
+}
+
+fn probeNewDaemon(path: []const u8) bool {
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return false;
+    defer posix.close(fd);
+    const addr = std.net.Address.initUnix(path) catch return false;
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch return false;
+    return true;
+}
+
+fn rebindSocket(listen_fd: *posix.fd_t, socket_path: []const u8, stderr: std.fs.File) void {
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch {
+        stderr.writeAll("upgrade: socket() failed during recovery\n") catch {};
+        return;
+    };
+    var addr = std.net.Address.initUnix(socket_path) catch {
+        posix.close(fd);
+        return;
+    };
+    posix.bind(fd, &addr.any, addr.getOsSockLen()) catch {
+        posix.close(fd);
+        stderr.writeAll("upgrade: bind failed during recovery\n") catch {};
+        return;
+    };
+    posix.listen(fd, 5) catch {
+        posix.close(fd);
+        return;
+    };
+    setNonBlocking(fd);
+    listen_fd.* = fd;
+    stderr.writeAll("upgrade: recovered, continuing with old version\n") catch {};
+}
+
+fn setNonBlocking(fd: posix.fd_t) void {
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    const platform = @import("../../platform/platform.zig");
+    const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;
+    _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
 }
 
 fn cleanupAndReturn(upgrade_path: []const u8) void {

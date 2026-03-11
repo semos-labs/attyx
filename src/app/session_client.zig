@@ -97,8 +97,29 @@ pub const SessionClient = struct {
             return;
         }
 
-        // Version mismatch — daemon supports hello, send it to trigger upgrade
+        // Version mismatch — trigger daemon upgrade and reconnect to new daemon.
+        // The daemon will spawn the new version and hand off sessions.
         self.sendHello();
+        posix.close(self.socket_fd);
+        self.socket_fd = -1;
+
+        // Poll for new daemon socket (don't auto-start — upgrade is in progress).
+        // The daemon takes up to 5s to verify the new process, so we poll for 6s.
+        var socket_buf: [256]u8 = undefined;
+        const socket_path = conn.getSocketPath(&socket_buf) orelse return;
+
+        for (0..60) |_| {
+            posix.nanosleep(0, 100_000_000); // 100ms
+            if (conn.tryConnect(socket_path)) |fd| {
+                self.socket_fd = fd;
+                conn.setNonBlocking(fd);
+                return;
+            }
+        }
+
+        // Upgrade likely failed or timed out — fall back to full connect flow
+        self.socket_fd = conn.connectToSocket() catch return;
+        conn.setNonBlocking(self.socket_fd);
     }
 
     /// Send hello message to trigger daemon upgrade.

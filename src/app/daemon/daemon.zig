@@ -68,7 +68,7 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     cleanStaleSocket(socket_path);
 
     // Bind Unix socket
-    const listen_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    var listen_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
     errdefer posix.close(listen_fd);
 
     var addr = std.net.Address.initUnix(socket_path) catch return error.PathTooLong;
@@ -149,6 +149,7 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     var pty_buf: [65536]u8 = undefined;
     var proc_name_tick: u32 = 0;
     var g_upgrade_requested: bool = false;
+    var g_upgrade_failed: bool = false;
 
     const max_panes_total = max_sessions * @import("session.zig").max_panes_per_session;
 
@@ -323,10 +324,22 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             }
         }
 
-        // Hot-upgrade: serialize state and exec new binary
-        if (g_upgrade_requested) {
-            upgrade.performUpgrade(&sessions, &clients, listen_fd, socket_path, next_session_id, next_pane_id, allocator);
-            // If we get here, exec failed — continue running old version.
+        // Hot-upgrade: serialize state and spawn new daemon
+        if (g_upgrade_requested and !g_upgrade_failed) {
+            const result = upgrade.performUpgrade(&sessions, &clients, &listen_fd, socket_path, next_session_id, next_pane_id, allocator);
+            switch (result) {
+                .success => {
+                    // New daemon is running — exit immediately.
+                    // Skip defer cleanup: new daemon owns the socket and version file.
+                    // OS will close our fd copies; PTYs survive in new daemon process.
+                    std.process.exit(0);
+                },
+                .failed => {
+                    // Socket rebound by performUpgrade. Don't retry upgrade
+                    // this session — avoids infinite loop if binary is broken.
+                    g_upgrade_failed = true;
+                },
+            }
             g_upgrade_requested = false;
         }
 
