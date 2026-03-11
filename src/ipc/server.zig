@@ -40,10 +40,12 @@ pub fn start() !void {
             error.PathAlreadyExists => {},
             else => return err,
         };
-        // Restrict directory to owner-only (defense against permissive umask)
+        // Restrict directory to owner-only (defense against permissive umask).
+        // Use raw syscall to avoid Zig's fchmod wrapper which marks EBADF as
+        // unreachable — Snap/AppArmor sandboxes can return EBADF on fchmod.
         var state_dir = std.fs.openDirAbsolute(dir_path, .{}) catch null;
         if (state_dir) |*d| {
-            posix.fchmod(d.fd, 0o700) catch {};
+            _ = std.posix.system.fchmod(d.fd, 0o700);
             d.close();
         }
     }
