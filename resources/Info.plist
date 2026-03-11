@@ -26,5 +26,7 @@
     <true/>
     <key>SUFeedURL</key>
     <string>https://semos.sh/appcast-arm64.xml</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Attyx needs microphone access for voice input in terminal applications.</string>
 </dict>
 </plist>
