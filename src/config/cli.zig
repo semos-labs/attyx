@@ -189,8 +189,19 @@ pub fn parse(args: []const [:0]const u8) CliResult {
         } else if (std.mem.eql(u8, arg, "--cmd") or std.mem.eql(u8, arg, "--command") or
             std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "-c"))
         {
+            if (i + 1 >= args.len) {
+                fatal("--cmd/--command/-e/-c requires a command to execute");
+            }
             result.config.argv = @ptrCast(args[i + 1 ..]);
             break;
+        } else if (arg.len > 0 and arg[0] != '-') {
+            // Positional argument: treat the first positional as working directory for
+            // file manager compatibility (e.g. Rox-Filer invokes `attyx /path/to/directory`).
+            if (result.config.working_directory == null) {
+                result.config.working_directory = arg;
+            } else {
+                fatal("multiple positional arguments are not supported; use -d/--working-directory");
+            }
         } else {
             std.debug.print("unknown option: {s}\n", .{arg});
             fatal("use --help for usage");
@@ -325,8 +336,15 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         } else if (std.mem.eql(u8, arg, "--cmd") or std.mem.eql(u8, arg, "--command") or
             std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "-c"))
         {
-            config.argv = @ptrCast(args[i + 1 ..]);
+            if (i + 1 < args.len) {
+                config.argv = @ptrCast(args[i + 1 ..]);
+            }
             break;
+        } else if (arg.len > 0 and arg[0] != '-') {
+            // Positional argument: treat first positional as working directory
+            if (config.working_directory == null) {
+                config.working_directory = arg;
+            }
         } else if (std.mem.eql(u8, arg, "--config") or
             std.mem.eql(u8, arg, "--no-config") or
             std.mem.eql(u8, arg, "--print-config") or
@@ -424,4 +442,24 @@ pub fn printUsage() void {
         \\
     ;
     std.debug.print("{s}", .{usage});
+}
+
+test "positional arg treated as working directory" {
+    const args = [_][:0]const u8{ "attyx", "/tmp/some/dir" };
+    const result = parse(&args);
+    try std.testing.expectEqualStrings("/tmp/some/dir", result.config.working_directory.?);
+    try std.testing.expectEqual(Action.run, result.action);
+}
+
+test "-d flag sets working directory" {
+    const args = [_][:0]const u8{ "attyx", "-d", "/home/user" };
+    const result = parse(&args);
+    try std.testing.expectEqualStrings("/home/user", result.config.working_directory.?);
+}
+
+test "positional arg in applyCliOverrides" {
+    const args = [_][:0]const u8{ "attyx", "/tmp/rox" };
+    var cfg = AppConfig{};
+    applyCliOverrides(&args, &cfg);
+    try std.testing.expectEqualStrings("/tmp/rox", cfg.working_directory.?);
 }

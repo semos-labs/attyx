@@ -386,10 +386,11 @@ pub fn run(
         }
     }
 
-    // Resolve initial working directory: config > $HOME > process CWD > /
+    // Resolve initial working directory: config > process CWD > $HOME > /
+    // CWD before $HOME so file managers that `cd dir && terminal` work correctly.
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const initial_cwd: []const u8 = config.working_directory orelse
-        (std.posix.getenv("HOME") orelse (posix.getcwd(&cwd_buf) catch "/"));
+        (posix.getcwd(&cwd_buf) catch (std.posix.getenv("HOME") orelse "/"));
     const initial_shell: []const u8 = config.program orelse "";
 
     // In session mode: attach to last active session, or create a new one.
