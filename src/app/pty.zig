@@ -116,9 +116,7 @@ pub const Pty = struct {
             if (slave > 2) posix.close(slave);
 
             if (opts.cwd) |dir|
-                _ = chdir(dir)
-            else if (getenv("HOME")) |home|
-                _ = chdir(home);
+                _ = chdir(dir);
 
             _ = setenv("TERM", "xterm-256color", 1);
             _ = setenv("COLORTERM", "truecolor", 1);

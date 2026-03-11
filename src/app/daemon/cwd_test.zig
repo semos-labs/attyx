@@ -32,8 +32,12 @@ test "direct pty: explicit cwd sets child working directory" {
     );
 }
 
-test "direct pty: null cwd falls back to HOME" {
-    const home = std.posix.getenv("HOME") orelse return; // skip if no HOME
+test "direct pty: null cwd inherits parent working directory" {
+    // With null cwd, the child should inherit the parent process's CWD
+    // (not force-chdir to $HOME). This is critical for file managers that
+    // launch terminals with `cd /dir && terminal`.
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const parent_cwd = posix.getcwd(&cwd_buf) catch return; // skip if getcwd fails
     var pty = try Pty.spawn(.{
         .rows = 24,
         .cols = 80,
@@ -46,7 +50,11 @@ test "direct pty: null cwd falls back to HOME" {
 
     const output = try waitForOutput(&pty, 5000);
     const trimmed = std.mem.trim(u8, output, " \t\n\r");
-    try testing.expectEqualStrings(home, trimmed);
+    // macOS resolves some paths (e.g. /tmp → /private/tmp)
+    try testing.expect(
+        std.mem.eql(u8, trimmed, parent_cwd) or
+            std.mem.startsWith(u8, trimmed, "/private") and std.mem.endsWith(u8, trimmed, parent_cwd),
+    );
 }
 
 test "direct pty: cwd with spaces works" {
