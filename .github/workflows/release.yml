@@ -113,6 +113,7 @@ jobs:
         run: |
           codesign --force --options runtime \
             --sign "$APPLE_TEAM_ID" \
+            --entitlements resources/Attyx.entitlements \
             --timestamp \
             Attyx.app
 

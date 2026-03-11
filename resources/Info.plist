@@ -28,5 +28,17 @@
     <string>https://semos.sh/appcast-arm64.xml</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Attyx needs microphone access for voice input in terminal applications.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Attyx needs camera access for terminal applications that use the camera.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Attyx needs automation access for terminal applications that use AppleScript.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Attyx needs contacts access for terminal applications that read contacts.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Attyx needs calendar access for terminal applications that read calendars.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Attyx needs location access for terminal applications that use location services.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Attyx needs photo library access for terminal applications that access photos.</string>
 </dict>
 </plist>
