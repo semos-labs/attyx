@@ -139,9 +139,10 @@ pub const Pane = struct {
             std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
             resp_hdr[4] = 0xA2; // exit_code message type
             resp_hdr[5] = exit_code;
-            _ = posix.write(self.ipc_wait_fd, &resp_hdr) catch {};
+            const ipc_protocol = @import("../ipc/protocol.zig");
+            ipc_protocol.writeAll(self.ipc_wait_fd, &resp_hdr) catch {};
             if (stdout_data.len > 0) {
-                _ = posix.write(self.ipc_wait_fd, stdout_data) catch {};
+                ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
             }
             posix.close(self.ipc_wait_fd);
             self.ipc_wait_fd = -1;
