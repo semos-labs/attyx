@@ -388,9 +388,15 @@ pub fn run(
 
     // Resolve initial working directory: config > process CWD > $HOME > /
     // CWD before $HOME so file managers that `cd dir && terminal` work correctly.
+    // When launched from Finder/Spotlight/Dock, getcwd() returns "/" which is
+    // not useful — fall through to $HOME in that case.
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const process_cwd: ?[]const u8 = blk: {
+        const cwd = posix.getcwd(&cwd_buf) catch break :blk null;
+        break :blk if (std.mem.eql(u8, cwd, "/")) null else cwd;
+    };
     const initial_cwd: []const u8 = config.working_directory orelse
-        (posix.getcwd(&cwd_buf) catch (std.posix.getenv("HOME") orelse "/"));
+        (process_cwd orelse (std.posix.getenv("HOME") orelse "/"));
     const initial_shell: []const u8 = config.program orelse "";
 
     // In session mode: attach to last active session, or create a new one.
