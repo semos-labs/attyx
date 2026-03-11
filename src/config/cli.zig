@@ -191,6 +191,10 @@ pub fn parse(args: []const [:0]const u8) CliResult {
         {
             result.config.argv = @ptrCast(args[i + 1 ..]);
             break;
+        } else if (arg.len > 0 and arg[0] != '-') {
+            // Positional argument: treat as working directory for file manager compatibility
+            // (e.g. Rox-Filer invokes `attyx /path/to/directory`)
+            result.config.working_directory = arg;
         } else {
             std.debug.print("unknown option: {s}\n", .{arg});
             fatal("use --help for usage");
@@ -327,6 +331,9 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         {
             config.argv = @ptrCast(args[i + 1 ..]);
             break;
+        } else if (arg.len > 0 and arg[0] != '-') {
+            // Positional argument: treat as working directory for file manager compatibility
+            config.working_directory = arg;
         } else if (std.mem.eql(u8, arg, "--config") or
             std.mem.eql(u8, arg, "--no-config") or
             std.mem.eql(u8, arg, "--print-config") or
@@ -424,4 +431,24 @@ pub fn printUsage() void {
         \\
     ;
     std.debug.print("{s}", .{usage});
+}
+
+test "positional arg treated as working directory" {
+    const args = [_][:0]const u8{ "attyx", "/tmp/some/dir" };
+    const result = parse(&args);
+    try std.testing.expectEqualStrings("/tmp/some/dir", result.config.working_directory.?);
+    try std.testing.expectEqual(Action.run, result.action);
+}
+
+test "positional arg with -d flag" {
+    const args = [_][:0]const u8{ "attyx", "-d", "/home/user" };
+    const result = parse(&args);
+    try std.testing.expectEqualStrings("/home/user", result.config.working_directory.?);
+}
+
+test "positional arg overrides in applyCliOverrides" {
+    const args = [_][:0]const u8{ "attyx", "/tmp/rox" };
+    var cfg = AppConfig{};
+    applyCliOverrides(&args, &cfg);
+    try std.testing.expectEqualStrings("/tmp/rox", cfg.working_directory.?);
 }
