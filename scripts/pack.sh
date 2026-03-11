@@ -39,7 +39,7 @@ if [ -f images/Attyx.png ]; then
 fi
 
 # Ad-hoc sign (no Apple Developer account needed)
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign - --entitlements resources/Attyx.entitlements "$APP"
 
 echo ""
 echo "Done: $APP"
