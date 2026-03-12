@@ -174,12 +174,12 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             sendOk(cmd, "");
         },
         .send_keys_pane, .send_text_pane => {
-            if (cmd.payload_len < 3) {
+            if (cmd.payload_len < 5) {
                 sendError(cmd, "missing pane ID or text");
                 return;
             }
-            const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
-            const text = cmd.payload[2..cmd.payload_len];
+            const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+            const text = cmd.payload[4..cmd.payload_len];
             const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
                 sendError(cmd, "pane not found");
                 return;

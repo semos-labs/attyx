@@ -302,7 +302,7 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
         // Return the new pane's stable IPC ID
         var idx_buf: [16]u8 = undefined;
         var idx_stream = std.io.fixedBufferStream(&idx_buf);
-        const created_id: u16 = if (new_pane) |p| p.ipc_id else 0;
+        const created_id: u32 = if (new_pane) |p| p.ipc_id else 0;
         idx_stream.writer().print("{d}", .{created_id}) catch {};
         sendOk(cmd, idx_stream.getWritten());
     }
@@ -312,13 +312,13 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
 // Targeted pane/tab operations
 // ---------------------------------------------------------------------------
 
-/// Close a specific pane by IPC ID. Payload: [pane_id:u16 LE]
+/// Close a specific pane by IPC ID. Payload: [pane_id:u32 LE]
 pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 2) {
+    if (cmd.payload_len < 4) {
         sendError(cmd, "missing pane ID");
         return;
     }
-    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
     const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
@@ -336,6 +336,9 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         }
     } else ctx.tab_mgr.active;
 
+    // Remember the previously focused pane so we can restore focus after close
+    const prev_focused_id = if (found.layout.pool[found.layout.focused].pane) |fp| fp.ipc_id else 0;
+
     const result = found.layout.closePaneAt(found.pool_idx, ctx.allocator);
     if (result == .last_pane) {
         if (ctx.tab_mgr.count <= 1) {
@@ -345,6 +348,18 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         ctx.tab_mgr.closeTab(ti);
         publish.updateGridTopOffset(ctx);
     } else {
+        // Restore focus to the previously focused pane if it still exists
+        // (closePaneAt restructures the tree, shifting pool indices)
+        if (prev_focused_id != 0 and prev_focused_id != pane_id) {
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = found.layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.ipc_id == prev_focused_id) {
+                    found.layout.focused = leaf.index;
+                    break;
+                }
+            }
+        }
         const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
         found.layout.layout(pty_rows, ctx.grid_cols);
         split_actions.notifyPaneSizes(ctx, found.layout);
@@ -409,21 +424,26 @@ pub fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
     sendOk(cmd, "");
 }
 
-/// Toggle zoom on a specific pane by IPC ID. Payload: [pane_id:u16 LE]
+/// Toggle zoom on a specific pane by IPC ID. Payload: [pane_id:u32 LE]
 pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 2) {
+    if (cmd.payload_len < 4) {
         sendError(cmd, "missing pane ID");
         return;
     }
-    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
     const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
     };
 
-    // Focus the target pane before toggling zoom
+    // Focus the target pane before toggling zoom (zoom requires focus)
+    const prev_focused = found.layout.focused;
     found.layout.focused = found.pool_idx;
     found.layout.toggleZoom();
+    // Restore focus if we zoomed a non-focused pane (unzoom always keeps target)
+    if (!found.layout.isZoomed() and prev_focused != found.pool_idx) {
+        found.layout.focused = prev_focused;
+    }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     if (found.layout.isZoomed()) {
         found.layout.focusedPane().resize(pty_rows, ctx.grid_cols);
@@ -435,11 +455,11 @@ pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     sendOk(cmd, "");
 }
 
-/// Rotate panes in a tab containing the given pane. Payload: [pane_id:u16 LE]
-/// If no pane ID given (payload_len < 2), rotates the active tab.
+/// Rotate panes in a tab containing the given pane. Payload: [pane_id:u32 LE]
+/// If no pane ID given (payload_len < 4), rotates the active tab.
 pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const layout = if (cmd.payload_len >= 2) blk: {
-        const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const layout = if (cmd.payload_len >= 4) blk: {
+        const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
         const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
             sendError(cmd, "pane not found");
             return;

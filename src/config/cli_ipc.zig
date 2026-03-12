@@ -63,9 +63,9 @@ pub const IpcRequest = struct {
     height_pct: u8 = 80,
     border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
     /// Pane targeting by stable IPC ID. 0 = active/focused (default).
-    pane_id: u16 = 0,
+    pane_id: u32 = 0,
     /// Tab targeting by 0-based index. 0xFF = active (default).
-    pane_tab: u8 = 0xFF,
+    tab_idx: u8 = 0xFF,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -88,7 +88,7 @@ fn printHelp(comptime text: []const u8) void {
 
 /// Parse --pane/-p argument: a flat stable IPC ID (e.g. "5").
 fn parsePaneArg(arg: []const u8, result: *IpcRequest) void {
-    result.pane_id = std.fmt.parseInt(u16, arg, 10) catch fatal("--pane: invalid pane ID");
+    result.pane_id = std.fmt.parseInt(u32, arg, 10) catch fatal("--pane: invalid pane ID");
     if (result.pane_id == 0) fatal("--pane: pane ID must be >= 1");
 }
 
@@ -228,10 +228,10 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
     } else if (std.mem.eql(u8, action, "close") or std.mem.eql(u8, action, "kill")) {
         var result = IpcRequest{ .command = .tab_close, .target_pid = target_pid, .json_output = json_output };
         if (start + 2 < args.len) {
-            if (std.fmt.parseInt(u8, args[start + 2], 10)) |n| {
-                if (n < 1) fatal("tab number must be >= 1");
-                result.pane_tab = n - 1;
-            } else |_| {}
+            const tab_arg = args[start + 2];
+            const n = std.fmt.parseInt(u8, tab_arg, 10) catch fatal("tab number must be an integer");
+            if (n < 1) fatal("tab number must be >= 1");
+            result.tab_idx = n - 1;
         }
         return result;
     } else if (std.mem.eql(u8, action, "next")) {
@@ -263,7 +263,7 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
         if (start + 3 < args.len) {
             if (std.fmt.parseInt(u8, args[start + 2], 10)) |n| {
                 if (n < 1) fatal("tab number must be >= 1");
-                return .{ .command = .tab_rename, .pane_tab = n - 1, .text_arg = args[start + 3], .target_pid = target_pid, .json_output = json_output };
+                return .{ .command = .tab_rename, .tab_idx = n - 1, .text_arg = args[start + 3], .target_pid = target_pid, .json_output = json_output };
             } else |_| {}
         }
         return .{ .command = .tab_rename, .text_arg = args[start + 2], .target_pid = target_pid, .json_output = json_output };

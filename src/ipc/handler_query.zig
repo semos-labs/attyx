@@ -40,6 +40,8 @@ pub fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
         w.print("{d}\t{s}", .{ i + 1, title }) catch break;
         if (is_active) w.writeAll("\t*") catch break;
+        // Always show the focused pane's IPC ID on the tab line
+        w.print("\tpane:{d}", .{layout.focusedPane().ipc_id}) catch break;
         if (layout.pane_count > 1) {
             w.print("\t{d} panes", .{layout.pane_count}) catch break;
         }
@@ -123,11 +125,11 @@ pub fn buildGetText(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 }
 
 pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 2) {
+    if (cmd.payload_len < 4) {
         sendError(cmd, "missing pane ID");
         return;
     }
-    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
     const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
