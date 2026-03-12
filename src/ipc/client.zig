@@ -140,10 +140,19 @@ pub fn run(args: []const [:0]const u8) void {
 
     // Build the request message
     var req_buf: [protocol.header_size + 4096]u8 = undefined;
-    const request = buildRequest(&req_buf, parsed) catch {
+    var request = buildRequest(&req_buf, parsed) catch {
         writeStderr("error: failed to build request\n");
         std.process.exit(1);
     };
+
+    // Wrap in session envelope if targeting a specific session
+    var envelope_buf: [protocol.header_size + 5 + 4096]u8 = undefined;
+    if (parsed.target_session != 0) {
+        request = wrapSessionEnvelope(&envelope_buf, request, parsed.target_session) catch {
+            writeStderr("error: failed to build session envelope\n");
+            std.process.exit(1);
+        };
+    }
 
     // Discover socket
     var sock_buf: [256]u8 = undefined;
@@ -314,7 +323,26 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
             break :blk protocol.encodeMessage(buf, .popup, payload_buf[0 .. 3 + cmd_len]);
         },
         .session_list => protocol.encodeMessage(buf, .session_list, ""),
-        .session_create => protocol.encodeMessage(buf, .session_create, ""),
+        .session_create => blk: {
+            // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
+            // flags bit 0 = background (don't switch to new session)
+            // Reserve 5 bytes for session envelope so total stays within max_payload.
+            const queue_mod = @import("queue.zig");
+            const header_overhead: usize = 3; // flags + cwd_len
+            const envelope_overhead: usize = 5;
+            const effective_max: usize = queue_mod.max_payload - envelope_overhead;
+            var payload_buf: [queue_mod.max_payload]u8 = undefined;
+            payload_buf[0] = if (parsed.background) 0x01 else 0x00;
+            const max_cwd: usize = effective_max - header_overhead;
+            const cwd_len: u16 = @intCast(@min(parsed.cwd_arg.len, max_cwd));
+            std.mem.writeInt(u16, payload_buf[1..3], cwd_len, .little);
+            @memcpy(payload_buf[3 .. 3 + cwd_len], parsed.cwd_arg[0..cwd_len]);
+            const name_off: usize = header_overhead + cwd_len;
+            const name_max: usize = if (effective_max > name_off) effective_max - name_off else 0;
+            const name_len: usize = @min(parsed.text_arg.len, name_max);
+            @memcpy(payload_buf[name_off .. name_off + name_len], parsed.text_arg[0..name_len]);
+            break :blk protocol.encodeMessage(buf, .session_create, payload_buf[0 .. name_off + name_len]);
+        },
         .session_kill => blk: {
             var payload: [4]u8 = undefined;
             std.mem.writeInt(u32, &payload, parsed.session_id_arg, .little);
@@ -327,6 +355,25 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .session_rename => protocol.encodeSessionRename(buf, parsed.session_id_arg, parsed.text_arg),
     };
+}
+
+/// Wrap an already-encoded IPC message in a session_envelope.
+/// Extracts inner msg_type + payload and re-encodes as:
+///   session_envelope([session_id:u32 LE][inner_msg_type:u8][inner_payload...])
+fn wrapSessionEnvelope(buf: []u8, inner_msg: []const u8, session_id: u32) ![]u8 {
+    if (inner_msg.len < protocol.header_size) return error.BufferTooSmall;
+    const inner_type = inner_msg[4];
+    const inner_payload = inner_msg[protocol.header_size..];
+    const envelope_payload_len = 4 + 1 + inner_payload.len;
+    if (buf.len < protocol.header_size + envelope_payload_len) return error.BufferTooSmall;
+
+    protocol.encodeHeader(buf[0..protocol.header_size], .session_envelope, @intCast(envelope_payload_len));
+    std.mem.writeInt(u32, buf[protocol.header_size..][0..4], session_id, .little);
+    buf[protocol.header_size + 4] = inner_type;
+    if (inner_payload.len > 0) {
+        @memcpy(buf[protocol.header_size + 5 .. protocol.header_size + 5 + inner_payload.len], inner_payload);
+    }
+    return buf[0 .. protocol.header_size + envelope_payload_len];
 }
 
 /// Process C-style escape sequences in a send-keys string.

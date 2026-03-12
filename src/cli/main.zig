@@ -265,9 +265,25 @@ pub fn doUninstall() void {
     stdout.writeAll("\nAttyx data cleaned up. You can now run `brew uninstall attyx`.\n") catch {};
 }
 
-// ── Skill install/uninstall ──
+// ── Skill auto-update ──
 
 const skill_content = @import("skill_data").content;
+
+/// Silently update installed skills if they exist. Called on app launch.
+pub fn autoUpdateSkills() void {
+    const home = std.posix.getenv("HOME") orelse return;
+    var file_buf: [512]u8 = undefined;
+    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/attyx/SKILL.md", .{home}) catch return;
+
+    // Only update if already installed — don't create if user never ran `attyx skill install`
+    std.fs.accessAbsolute(file_path, .{}) catch return;
+
+    const file = std.fs.cwd().createFile(file_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(skill_content) catch {};
+}
+
+// ── Skill install/uninstall ──
 
 pub fn doSkill(args: []const [:0]const u8) void {
     const stdout = std.fs.File.stdout();

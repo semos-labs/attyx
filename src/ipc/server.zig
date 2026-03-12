@@ -145,6 +145,24 @@ fn handleClient(fd: posix.fd_t) void {
         };
     }
 
+    // Unwrap session envelope: extract session_id, then treat inner message normally
+    if (h.msg_type == .session_envelope) {
+        if (h.payload_len < 5) {
+            posix.close(response_fd);
+            var err_buf: [128]u8 = undefined;
+            const err_msg = protocol.encodeMessage(&err_buf, .err, "invalid session envelope") catch return;
+            _ = posix.write(fd, err_msg) catch {};
+            return;
+        }
+        cmd.session_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+        cmd.msg_type = cmd.payload[4];
+        const inner_len = h.payload_len - 5;
+        if (inner_len > 0) {
+            std.mem.copyForwards(u8, cmd.payload[0..inner_len], cmd.payload[5 .. 5 + inner_len]);
+        }
+        cmd.payload_len = @intCast(inner_len);
+    }
+
     // Enqueue for PTY thread
     if (!queue.enqueue(cmd)) {
         posix.close(response_fd);
