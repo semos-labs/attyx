@@ -896,19 +896,21 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     ctx.session_client = null;
     terminal.g_session_client = null;
 
-    // Attempt soft reconnect with backoff: 200ms, 400ms, 800ms, 1600ms
+    // Attempt soft reconnect with backoff.
+    // Use generous retry count — a hot-upgrade verification loop runs up to
+    // 10s, so we need to wait at least that long before giving up.
     var delay_ns: u64 = 200_000_000;
-    for (0..4) |_| {
+    for (0..20) |_| { // up to ~12s with capped backoff
         if (c.attyx_should_quit() != 0) return;
         posix.nanosleep(0, delay_ns);
 
         const heap_sc = ctx.allocator.create(SessionClient) catch {
-            delay_ns *= 2;
+            if (delay_ns < 800_000_000) delay_ns *= 2;
             continue;
         };
         heap_sc.* = SessionClient.connect(ctx.allocator) catch {
             ctx.allocator.destroy(heap_sc);
-            delay_ns *= 2;
+            if (delay_ns < 800_000_000) delay_ns *= 2; // cap at 800ms
             continue;
         };
 
@@ -923,7 +925,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
             heap_sc.attach(sid, pty_rows, ctx.grid_cols) catch {
                 heap_sc.deinit();
                 ctx.allocator.destroy(heap_sc);
-                delay_ns *= 2;
+                if (delay_ns < 800_000_000) delay_ns *= 2;
                 continue;
             };
 
@@ -970,7 +972,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
         // Session creation failed — clean up and retry
         heap_sc.deinit();
         ctx.allocator.destroy(heap_sc);
-        delay_ns *= 2;
+        if (delay_ns < 800_000_000) delay_ns *= 2;
         continue;
     }
 

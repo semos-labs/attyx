@@ -19,6 +19,22 @@ pub fn connectToSocket() !posix.fd_t {
         posix.close(fd);
     }
 
+    // If upgrade.bin exists, a hot-upgrade is in progress — do NOT start a
+    // competing daemon.  Wait for the new daemon to come up instead.
+    if (isUpgradeInProgress()) {
+        var delay_ns: u64 = 100_000_000;
+        for (0..100) |_| { // up to 10s
+            posix.nanosleep(0, delay_ns);
+            if (tryConnect(socket_path)) |fd| return fd;
+            if (delay_ns < 200_000_000) delay_ns *= 2;
+            // Check if upgrade finished (file deleted)
+            if (!isUpgradeInProgress()) break;
+        }
+        // Upgrade may have finished — try one more connect, then fall through
+        // to normal startup if the new daemon is up.
+        if (tryConnect(socket_path)) |fd| return fd;
+    }
+
     // Remove stale socket file before starting daemon.
     std.fs.deleteFileAbsolute(socket_path) catch {};
 
@@ -34,6 +50,14 @@ pub fn connectToSocket() !posix.fd_t {
     }
 
     return error.DaemonConnectFailed;
+}
+
+/// Check whether upgrade.bin exists, indicating a hot-upgrade is in progress.
+pub fn isUpgradeInProgress() bool {
+    var ubuf: [256]u8 = undefined;
+    const upath = statePath(&ubuf, "upgrade{s}.bin") orelse return false;
+    std.fs.accessAbsolute(upath, .{}) catch return false;
+    return true;
 }
 
 /// Build a path under the attyx state directory.

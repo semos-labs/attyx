@@ -187,7 +187,7 @@ pub fn deserialize(
     var restored: u8 = 0;
 
     for (0..session_count) |_| {
-        const s = deserializeSession(&r, ver, allocator) catch break;
+        const s = deserializeSession(&r, ver, allocator) catch continue;
         for (sessions) |*slot| {
             if (slot.* == null) {
                 slot.* = s;
@@ -206,6 +206,15 @@ fn deserializeSession(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !D
         .rows = 24,
         .cols = 80,
     };
+    // On error, free any ring buffers already allocated for restored panes.
+    errdefer {
+        for (&s.panes) |*pslot| {
+            if (pslot.*) |*p| {
+                p.replay.deinit();
+                pslot.* = null;
+            }
+        }
+    }
     s.name_len = try r.readByte();
     try r.readInto(s.name[0..s.name_len]);
     s.alive = (try r.readByte()) != 0;
