@@ -140,10 +140,19 @@ pub fn run(args: []const [:0]const u8) void {
 
     // Build the request message
     var req_buf: [protocol.header_size + 4096]u8 = undefined;
-    const request = buildRequest(&req_buf, parsed) catch {
+    var request = buildRequest(&req_buf, parsed) catch {
         writeStderr("error: failed to build request\n");
         std.process.exit(1);
     };
+
+    // Wrap in session envelope if targeting a specific session
+    var envelope_buf: [protocol.header_size + 5 + 4096]u8 = undefined;
+    if (parsed.target_session != 0) {
+        request = wrapSessionEnvelope(&envelope_buf, request, parsed.target_session) catch {
+            writeStderr("error: failed to build session envelope\n");
+            std.process.exit(1);
+        };
+    }
 
     // Discover socket
     var sock_buf: [256]u8 = undefined;
@@ -339,6 +348,25 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .session_rename => protocol.encodeSessionRename(buf, parsed.session_id_arg, parsed.text_arg),
     };
+}
+
+/// Wrap an already-encoded IPC message in a session_envelope.
+/// Extracts inner msg_type + payload and re-encodes as:
+///   session_envelope([session_id:u32 LE][inner_msg_type:u8][inner_payload...])
+fn wrapSessionEnvelope(buf: []u8, inner_msg: []const u8, session_id: u32) ![]u8 {
+    if (inner_msg.len < protocol.header_size) return error.BufferTooSmall;
+    const inner_type = inner_msg[4];
+    const inner_payload = inner_msg[protocol.header_size..];
+    const envelope_payload_len = 4 + 1 + inner_payload.len;
+    if (buf.len < protocol.header_size + envelope_payload_len) return error.BufferTooSmall;
+
+    protocol.encodeHeader(buf[0..protocol.header_size], .session_envelope, @intCast(envelope_payload_len));
+    std.mem.writeInt(u32, buf[protocol.header_size..][0..4], session_id, .little);
+    buf[protocol.header_size + 4] = inner_type;
+    if (inner_payload.len > 0) {
+        @memcpy(buf[protocol.header_size + 5 .. protocol.header_size + 5 + inner_payload.len], inner_payload);
+    }
+    return buf[0 .. protocol.header_size + envelope_payload_len];
 }
 
 /// Process C-style escape sequences in a send-keys string.

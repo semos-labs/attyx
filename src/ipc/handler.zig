@@ -24,6 +24,25 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         return;
     };
 
+    // Session targeting: if a specific session was requested, verify it
+    // matches the currently attached session.
+    if (cmd.session_id != 0) {
+        if (ctx.session_client) |sc| {
+            if (sc.attached_session_id) |aid| {
+                if (cmd.session_id != aid) {
+                    sendError(cmd, "session not attached (use 'attyx session switch' first)");
+                    return;
+                }
+            } else {
+                sendError(cmd, "no session attached");
+                return;
+            }
+        } else {
+            sendError(cmd, "sessions not enabled");
+            return;
+        }
+    }
+
     switch (msg_type) {
         // ── Tab commands → dispatch actions (silent success) ──
         .tab_create, .tab_create_wait => {
@@ -204,6 +223,9 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .session_kill => handler_query.handleSessionKill(cmd, ctx),
         .session_switch => handler_query.handleSessionSwitch(cmd, ctx),
         .session_rename => handler_query.handleSessionRename(cmd, ctx),
+
+        // ── Session envelope (already unwrapped by server — should never reach here) ──
+        .session_envelope => sendError(cmd, "unexpected session envelope"),
 
         // ── Responses (should not be received by server) ──
         .success, .err, .exit_code => {

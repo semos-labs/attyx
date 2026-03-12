@@ -11,7 +11,7 @@ pub const top_level =
     \\They are designed to be used by both humans and automated tools
     \\(AI agents, scripts, etc.). Use --json for machine-readable output.
     \\
-    \\Usage: attyx [--target <pid>] [--json] <command> [args...]
+    \\Usage: attyx [--target <pid>] [--session <id>] [--json] <command> [args...]
     \\
     \\Commands:
     \\  tab          Manage tabs (create, close, switch, move, rename)
@@ -29,9 +29,10 @@ pub const top_level =
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
     \\Global options:
-    \\  --target <pid>   Target a specific Attyx instance by PID
-    \\  --json           Output in JSON format (for scripts and agents)
-    \\  --help, -h       Show this help (works on every subcommand)
+    \\  --target <pid>       Target a specific Attyx instance by PID
+    \\  -s, --session <id>   Route command to a specific daemon session
+    \\  --json               Output in JSON format (for scripts and agents)
+    \\  --help, -h           Show this help (works on every subcommand)
     \\
     \\Examples:
     \\  attyx tab create                  Open a new shell tab

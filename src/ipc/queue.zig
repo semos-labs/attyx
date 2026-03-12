@@ -14,6 +14,7 @@ pub const IpcCommand = struct {
     payload: [max_payload]u8,
     payload_len: u16,
     response_fd: posix.fd_t, // handler owns this fd: writes response, then closes it
+    session_id: u32 = 0, // 0 = current/attached session
 };
 
 var ring: [max_queued]IpcCommand = undefined;

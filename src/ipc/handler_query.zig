@@ -213,7 +213,18 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             name = cmd.payload[cwd_end..cmd.payload_len];
         }
     }
-    if (name.len == 0) name = "new";
+    if (name.len == 0) {
+        if (cwd.len > 0) {
+            // Derive name from last path component: ~/Projects/glyph → "glyph"
+            const trimmed = std.mem.trimRight(u8, cwd, "/");
+            if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |i| {
+                name = trimmed[i + 1 ..];
+            } else {
+                name = trimmed;
+            }
+        }
+        if (name.len == 0) name = "new";
+    }
     const rows = ctx.grid_rows;
     const cols = ctx.grid_cols;
     const sid = sc.createSession(name, rows, cols, cwd, "") catch {

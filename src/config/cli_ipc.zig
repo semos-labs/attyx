@@ -61,6 +61,8 @@ pub const IpcRequest = struct {
     json_output: bool = false,
     wait: bool = false,
     background: bool = false,
+    /// Global session targeting. 0 = current/attached session (default).
+    target_session: u32 = 0,
     width_pct: u8 = 80,
     height_pct: u8 = 80,
     border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
@@ -132,13 +134,18 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
 
     var target_pid: ?u32 = null;
     var json_output: bool = false;
+    var target_session: u32 = 0;
     var start: usize = 1;
 
-    // Parse global flags (--target, --json) before subcommand
+    // Parse global flags (--target, --json, --session) before subcommand
     while (start < args.len) {
         if (std.mem.eql(u8, args[start], "--target")) {
             if (start + 1 >= args.len) fatal("--target requires a PID value");
             target_pid = std.fmt.parseInt(u32, args[start + 1], 10) catch fatal("invalid --target PID");
+            start += 2;
+        } else if (std.mem.eql(u8, args[start], "--session") or std.mem.eql(u8, args[start], "-s")) {
+            if (start + 1 >= args.len) fatal("--session requires a session ID");
+            target_session = std.fmt.parseInt(u32, args[start + 1], 10) catch fatal("invalid --session ID");
             start += 2;
         } else if (std.mem.eql(u8, args[start], "--json")) {
             json_output = true;
@@ -154,65 +161,76 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     const sub = args[start];
 
     if (isHelp(sub)) showHelp(help.top_level);
-    if (std.mem.eql(u8, sub, "tab")) return parseTab(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "split")) return parseSplit(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "focus")) return parseFocus(args, start, target_pid, json_output);
 
-    if (std.mem.eql(u8, sub, "send-keys")) {
-        if (hasHelp(args, start)) showHelp(help.send_keys);
-        return parseSendText(args, start, .send_keys, target_pid, json_output);
-    }
-    if (std.mem.eql(u8, sub, "send-text")) {
-        if (hasHelp(args, start)) showHelp(help.send_text);
-        return parseSendText(args, start, .send_text, target_pid, json_output);
-    }
-    if (std.mem.eql(u8, sub, "get-text")) {
-        if (hasHelp(args, start)) showHelp(help.get_text);
-        var gt_result = IpcRequest{ .command = .get_text, .target_pid = target_pid, .json_output = json_output };
-        var gi = start + 1;
-        while (gi < args.len) {
-            if (std.mem.eql(u8, args[gi], "--pane") or std.mem.eql(u8, args[gi], "-p")) {
-                if (gi + 1 >= args.len) fatal("--pane requires a pane ID");
+    const result: ?IpcRequest = blk: {
+        if (std.mem.eql(u8, sub, "tab")) break :blk parseTab(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "split")) break :blk parseSplit(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "focus")) break :blk parseFocus(args, start, target_pid, json_output);
+
+        if (std.mem.eql(u8, sub, "send-keys")) {
+            if (hasHelp(args, start)) showHelp(help.send_keys);
+            break :blk parseSendText(args, start, .send_keys, target_pid, json_output);
+        }
+        if (std.mem.eql(u8, sub, "send-text")) {
+            if (hasHelp(args, start)) showHelp(help.send_text);
+            break :blk parseSendText(args, start, .send_text, target_pid, json_output);
+        }
+        if (std.mem.eql(u8, sub, "get-text")) {
+            if (hasHelp(args, start)) showHelp(help.get_text);
+            var gt_result = IpcRequest{ .command = .get_text, .target_pid = target_pid, .json_output = json_output };
+            var gi = start + 1;
+            while (gi < args.len) {
+                if (std.mem.eql(u8, args[gi], "--pane") or std.mem.eql(u8, args[gi], "-p")) {
+                    if (gi + 1 >= args.len) fatal("--pane requires a pane ID");
+                    gi += 1;
+                    parsePaneArg(args[gi], &gt_result);
+                }
                 gi += 1;
-                parsePaneArg(args[gi], &gt_result);
             }
-            gi += 1;
+            break :blk gt_result;
         }
-        return gt_result;
-    }
-    if (std.mem.eql(u8, sub, "reload")) {
-        if (hasHelp(args, start)) showHelp(help.reload);
-        return .{ .command = .config_reload, .target_pid = target_pid, .json_output = json_output };
-    }
-    if (std.mem.eql(u8, sub, "theme")) {
-        if (hasHelp(args, start)) showHelp(help.theme);
-        if (start + 1 >= args.len) { printHelp(help.theme); return null; }
-        return .{ .command = .theme_set, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
-    }
-    if (std.mem.eql(u8, sub, "scroll-to")) return parseScrollTo(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "popup")) return parsePopup(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "list")) return parseList(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "session")) return parseSession(args, start, target_pid, json_output);
-    if (std.mem.eql(u8, sub, "run")) {
-        if (hasHelp(args, start)) showHelp(help.run);
-        if (start + 1 >= args.len) { printHelp(help.run); return null; }
-        var run_cmd: []const u8 = "";
-        var run_wait = false;
-        var ri = start + 1;
-        while (ri < args.len) {
-            if (std.mem.eql(u8, args[ri], "--wait") or std.mem.eql(u8, args[ri], "-w")) {
-                run_wait = true;
-            } else if (run_cmd.len == 0) {
-                run_cmd = args[ri];
+        if (std.mem.eql(u8, sub, "reload")) {
+            if (hasHelp(args, start)) showHelp(help.reload);
+            break :blk .{ .command = .config_reload, .target_pid = target_pid, .json_output = json_output };
+        }
+        if (std.mem.eql(u8, sub, "theme")) {
+            if (hasHelp(args, start)) showHelp(help.theme);
+            if (start + 1 >= args.len) { printHelp(help.theme); break :blk null; }
+            break :blk .{ .command = .theme_set, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
+        }
+        if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "popup")) break :blk parsePopup(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "list")) break :blk parseList(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "session")) break :blk parseSession(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "run")) {
+            if (hasHelp(args, start)) showHelp(help.run);
+            if (start + 1 >= args.len) { printHelp(help.run); break :blk null; }
+            var run_cmd: []const u8 = "";
+            var run_wait = false;
+            var ri = start + 1;
+            while (ri < args.len) {
+                if (std.mem.eql(u8, args[ri], "--wait") or std.mem.eql(u8, args[ri], "-w")) {
+                    run_wait = true;
+                } else if (run_cmd.len == 0) {
+                    run_cmd = args[ri];
+                }
+                ri += 1;
             }
-            ri += 1;
+            if (run_cmd.len == 0) { printHelp(help.run); break :blk null; }
+            break :blk .{ .command = .tab_create, .text_arg = run_cmd, .target_pid = target_pid, .json_output = json_output, .wait = run_wait };
         }
-        if (run_cmd.len == 0) { printHelp(help.run); return null; }
-        return .{ .command = .tab_create, .text_arg = run_cmd, .target_pid = target_pid, .json_output = json_output, .wait = run_wait };
-    }
 
-    std.debug.print("error: unknown command '{s}'\n\n", .{sub});
-    printUsage();
+        std.debug.print("error: unknown command '{s}'\n\n", .{sub});
+        printUsage();
+        break :blk null;
+    };
+
+    // Apply global session targeting to the parsed result
+    if (result) |r| {
+        var req = r;
+        req.target_session = target_session;
+        return req;
+    }
     return null;
 }
 
