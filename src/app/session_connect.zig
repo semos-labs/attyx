@@ -23,7 +23,7 @@ pub fn connectToSocket() !posix.fd_t {
     // competing daemon.  Wait for the new daemon to come up instead.
     if (isUpgradeInProgress()) {
         var delay_ns: u64 = 100_000_000;
-        for (0..100) |_| { // up to 10s
+        for (0..100) |_| { // up to ~20s total
             posix.nanosleep(0, delay_ns);
             if (tryConnect(socket_path)) |fd| return fd;
             if (delay_ns < 200_000_000) delay_ns *= 2;

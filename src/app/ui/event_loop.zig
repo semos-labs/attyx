@@ -186,6 +186,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // current window dimensions.  Without this, an IPC split arriving
         // in the same iteration as a pending resize would check stale
         // rects and incorrectly report "pane too small to split".
+        // Engine state is resized immediately for correct display, but
+        // TIOCSWINSZ is throttled to avoid flooding shells with SIGWINCH
+        // during continuous window resizing.
         resize_mod.handleResize(ctx, &buf);
         // Flush any debounced PTY resizes (SIGWINCH) across all panes.
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
@@ -197,6 +200,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     const pr = fleaf.pane.pending_pty_rows;
                     const pc = fleaf.pane.pending_pty_cols;
                     fleaf.pane.flushPtyResize();
+                    // Forward to daemon if this flush actually sent TIOCSWINSZ
                     if (was_pending and !fleaf.pane.pending_pty_resize) {
                         if (fleaf.pane.daemon_pane_id) |dpid| {
                             if (ctx.session_client) |sc| {
@@ -900,7 +904,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     // Use generous retry count — a hot-upgrade verification loop runs up to
     // 10s, so we need to wait at least that long before giving up.
     var delay_ns: u64 = 200_000_000;
-    for (0..20) |_| { // up to ~12s with capped backoff
+    for (0..20) |_| { // up to ~15s total wait with capped backoff
         if (c.attyx_should_quit() != 0) return;
         posix.nanosleep(0, delay_ns);
 

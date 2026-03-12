@@ -1103,13 +1103,7 @@ test "process survives multiple consecutive migrations" {
 }
 
 fn containsSubstring(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len > haystack.len) return false;
-    if (needle.len == 0) return true;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.mem.eql(u8, haystack[i..][0..needle.len], needle)) return true;
-    }
-    return false;
+    return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
 // ── Layout data preservation ──
