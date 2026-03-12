@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const skill_data_mod = b.createModule(.{
-        .root_source_file = b.path(".claude/skills/attyx/data.zig"),
+        .root_source_file = b.path("skills/claude/attyx/data.zig"),
     });
 
     const cli_commands_mod = b.createModule(.{
