@@ -5,8 +5,6 @@
 // PTY thread so they can return the new pane index in the response.
 
 const std = @import("std");
-const posix = std.posix;
-const protocol = @import("protocol.zig");
 const queue = @import("queue.zig");
 const terminal = @import("../app/terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
@@ -16,7 +14,6 @@ const actions = @import("../app/ui/actions.zig");
 const split_actions = @import("../app/ui/split_actions.zig");
 const statusbar = @import("../app/statusbar.zig");
 const popup_mod = @import("../app/popup.zig");
-const logging = @import("../logging/log.zig");
 
 const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
@@ -327,9 +324,18 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         return;
     });
 
+    // Validate that pane_idx is a valid leaf in this layout
+    if (pane_idx >= split_layout_mod.max_nodes or
+        layout.pool[pane_idx].tag != .leaf or
+        layout.pool[pane_idx].pane == null)
+    {
+        sendError(cmd, "pane not found");
+        return;
+    }
+
     // Notify daemon before closing
     if (ctx.session_client) |sc| {
-        if (ctx.tab_mgr.findPaneByIndex(tab_idx, pane_idx)) |pane| {
+        if (layout.pool[pane_idx].pane) |pane| {
             if (pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
         }
     }
@@ -342,14 +348,11 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         }
         ctx.tab_mgr.closeTab(ti);
         publish.updateGridTopOffset(ctx);
-    } else if (result == .closed) {
+    } else {
         const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
         layout.layout(pty_rows, ctx.grid_cols);
         split_actions.notifyPaneSizes(ctx, layout);
         actions.updateSplitActive(ctx);
-    } else {
-        sendError(cmd, "pane not found");
-        return;
     }
     actions.switchActiveTab(ctx);
     actions.saveSessionLayout(ctx);
@@ -375,7 +378,7 @@ pub fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     // Notify daemon for all panes in the tab
     if (ctx.session_client) |sc| {
         if (ctx.tab_mgr.tabs[ti]) |*layout| {
-            var leaves: [8]split_layout_mod.LeafEntry = undefined;
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = layout.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
                 if (leaf.pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
@@ -427,6 +430,15 @@ pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         sendError(cmd, "tab not found");
         return;
     });
+
+    // Validate that pane_idx is a valid leaf
+    if (pane_idx >= split_layout_mod.max_nodes or
+        layout.pool[pane_idx].tag != .leaf or
+        layout.pool[pane_idx].pane == null)
+    {
+        sendError(cmd, "pane not found");
+        return;
+    }
 
     // Focus the target pane before toggling zoom
     layout.focused = pane_idx;
