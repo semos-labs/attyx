@@ -200,13 +200,55 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         sendError(cmd, "sessions not enabled");
         return;
     };
-    const name = if (cmd.payload_len > 0) cmd.payload[0..cmd.payload_len] else "new";
+    // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
+    // flags bit 0 = background
+    var background: bool = false;
+    var cwd: []const u8 = "";
+    var name: []const u8 = "new";
+    const payload_len: usize = cmd.payload_len;
+    if (payload_len >= 3) {
+        const cwd_len: usize = std.mem.readInt(u16, cmd.payload[1..3], .little);
+        if (3 + cwd_len <= payload_len) {
+            // Valid new-format payload
+            background = (cmd.payload[0] & 0x01) != 0;
+            const cwd_end = 3 + cwd_len;
+            cwd = cmd.payload[3..cwd_end];
+            if (cwd_end < payload_len) {
+                name = cmd.payload[cwd_end..payload_len];
+            }
+        } else {
+            // Malformed: cwd_len exceeds payload, treat as legacy name-only
+            name = cmd.payload[0..payload_len];
+        }
+    } else if (payload_len > 0) {
+        // Too short for new format: legacy name-only
+        name = cmd.payload[0..payload_len];
+    }
+    if (name.len == 0) {
+        if (cwd.len > 0) {
+            // Derive name from last path component: ~/Projects/glyph → "glyph"
+            const trimmed = std.mem.trimRight(u8, cwd, "/");
+            if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |i| {
+                name = trimmed[i + 1 ..];
+            } else {
+                name = trimmed;
+            }
+        }
+        if (name.len == 0) name = "new";
+    }
     const rows = ctx.grid_rows;
     const cols = ctx.grid_cols;
-    const sid = sc.createSession(name, rows, cols, "", "") catch {
+    const sid = sc.createSession(name, rows, cols, cwd, "") catch {
         sendError(cmd, "failed to create session");
         return;
     };
+
+    // By default, switch to the new session (unless --background)
+    if (!background) {
+        sc.attach(sid, rows, cols) catch {
+            // Session was created but attach failed — report success with the ID anyway
+        };
+    }
 
     var buf: [64]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);

@@ -84,6 +84,9 @@ pub const MessageType = enum(u8) {
     tab_close_targeted = 0x4C,
     tab_rename_targeted = 0x4D,
 
+    // ── Session-targeted envelope ──
+    session_envelope = 0x50, // payload: [session_id:u32 LE][inner_msg_type:u8][inner_payload...]
+
     // ── Responses ──
     success = 0xA0,
     err = 0xA1,

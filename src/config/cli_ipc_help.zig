@@ -11,7 +11,7 @@ pub const top_level =
     \\They are designed to be used by both humans and automated tools
     \\(AI agents, scripts, etc.). Use --json for machine-readable output.
     \\
-    \\Usage: attyx [--target <pid>] [--json] <command> [args...]
+    \\Usage: attyx [--target <pid>] [--session <id>] [--json] <command> [args...]
     \\
     \\Commands:
     \\  tab          Manage tabs (create, close, switch, move, rename)
@@ -29,9 +29,10 @@ pub const top_level =
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
     \\Global options:
-    \\  --target <pid>   Target a specific Attyx instance by PID
-    \\  --json           Output in JSON format (for scripts and agents)
-    \\  --help, -h       Show this help (works on every subcommand)
+    \\  --target <pid>       Target a specific Attyx instance by PID
+    \\  -s, --session <id>   Verify command targets the given attached session
+    \\  --json               Output in JSON format (for scripts and agents)
+    \\  --help, -h           Show this help (works on every subcommand)
     \\
     \\Examples:
     \\  attyx tab create                  Open a new shell tab
@@ -248,7 +249,7 @@ pub const session =
     \\
     \\Commands:
     \\  list                       List all sessions (supports --json)
-    \\  create                     Create a new empty session
+    \\  create [cwd] [-b] [name]    Create a new session (switches to it by default)
     \\  kill <id>                  Kill a session and all its panes
     \\  switch <id>                Switch the window to a different session
     \\  rename [id] <name>         Rename a session (default: current)
@@ -256,10 +257,34 @@ pub const session =
     \\Examples:
     \\  attyx session list
     \\  attyx session create
+    \\  attyx session create ~/Projects/myapp -b "build"
     \\  attyx session switch 2
     \\  attyx session rename "dev server"
     \\  attyx session rename 1 "dev server"
     \\  attyx session kill 3
+    \\
+;
+
+pub const session_create =
+    \\Create a new session.
+    \\
+    \\Usage: attyx session create [cwd] [-b|--background] [name]
+    \\
+    \\By default, the window switches to the new session immediately.
+    \\Use -b/--background to create the session without switching to it.
+    \\
+    \\Options:
+    \\  -b, --background   Create in the background (don't switch)
+    \\
+    \\Arguments:
+    \\  cwd    Starting directory (optional)
+    \\  name   Session name (optional, default: "new")
+    \\
+    \\Examples:
+    \\  attyx session create
+    \\  attyx session create ~/Projects/myapp
+    \\  attyx session create ~/Projects/myapp "dev server"
+    \\  attyx session create ~/Projects/myapp -b "build"
     \\
 ;
 
