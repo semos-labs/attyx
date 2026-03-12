@@ -21,11 +21,18 @@ pub fn copySelection(is_block: bool) void {
     const total_lines = sb_count + grid_rows;
     if (total_lines <= 0) return;
 
-    // Read and normalize selection bounds (viewport-relative)
+    // Read and normalize selection bounds (viewport-relative).
+    // In split mode, coords are in global content-space — convert to pane-local.
     var sr: i32 = c.g_sel_start_row;
     var sc: i32 = c.g_sel_start_col;
     var er: i32 = c.g_sel_end_row;
     var ec: i32 = c.g_sel_end_col;
+    if (c.g_split_active != 0 and c.g_pane_rect_rows > 0) {
+        sr -= c.g_pane_rect_row;
+        er -= c.g_pane_rect_row;
+        sc -= c.g_pane_rect_col;
+        ec -= c.g_pane_rect_col;
+    }
     if (sr > er or (sr == er and sc > ec)) {
         const tr = sr;
         const tc = sc;

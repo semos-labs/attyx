@@ -736,6 +736,16 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             row -= g_grid_top_offset;
             if (row < 0) row = 0;
 
+            // Clamp to focused pane bounds when splits are active
+            if (g_split_active && g_pane_rect_rows > 0) {
+                int pr = g_pane_rect_row, pc = g_pane_rect_col;
+                int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+                if (row < pr) row = pr;
+                if (row >= pe) row = pe - 1;
+                if (col < pc) col = pc;
+                if (col >= pce) col = pce - 1;
+            }
+
             // Ctrl+click opens hyperlink
             if (mods & GLFW_MOD_CONTROL) {
                 int cols = g_cols, nrows = g_rows;
@@ -982,6 +992,17 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         mouseToCell(mx, my, &col, &row);
         row -= g_grid_top_offset;
         if (row < 0) row = 0;
+
+        // Clamp to focused pane bounds when splits are active
+        if (g_split_active && g_pane_rect_rows > 0) {
+            int pr = g_pane_rect_row, pc = g_pane_rect_col;
+            int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+            if (row < pr) row = pr;
+            if (row >= pe) row = pe - 1;
+            if (col < pc) col = pc;
+            if (col >= pce) col = pce - 1;
+        }
+
         if (col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (g_click_count >= 3) {
