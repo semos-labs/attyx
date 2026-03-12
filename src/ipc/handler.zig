@@ -184,7 +184,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             sendOk(cmd, "");
         },
 
-        // ── Text / IO ──
+        // ── Text / IO ── (send_text is a deprecated alias, kept for wire compat)
         .send_keys, .send_text => {
             if (cmd.payload_len > 0) {
                 const text = cmd.payload[0..cmd.payload_len];
@@ -192,7 +192,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             }
             sendOk(cmd, "");
         },
-        .send_keys_pane, .send_text_pane => {
+        .send_keys_pane, .send_text_pane => { // send_text_pane is deprecated alias
             if (cmd.payload_len < 5) {
                 sendError(cmd, "missing pane ID or text");
                 return;

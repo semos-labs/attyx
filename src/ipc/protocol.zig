@@ -37,7 +37,7 @@ pub const MessageType = enum(u8) {
 
     // ── Text / IO ──
     send_keys = 0x31,
-    send_text = 0x32,
+    send_text = 0x32, // Deprecated alias for send_keys — kept for wire compat with older clients
     get_text = 0x33,
 
     // ── Config ──
@@ -72,7 +72,7 @@ pub const MessageType = enum(u8) {
 
     // ── Pane-targeted variants (payload: [pane_id:u32 LE][data...]) ──
     send_keys_pane = 0x46,
-    send_text_pane = 0x47,
+    send_text_pane = 0x47, // Deprecated alias for send_keys_pane — kept for wire compat
     get_text_pane = 0x48,
 
     // ── Targeted operations ──

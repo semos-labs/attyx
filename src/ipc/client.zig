@@ -7,6 +7,7 @@
 const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
+const keys = @import("keys.zig");
 const session_connect = @import("../app/session_connect.zig");
 
 const max_response = 65536;
@@ -138,6 +139,19 @@ pub fn run(args: []const [:0]const u8) void {
         std.process.exit(1);
     };
 
+    // Discover socket early — needed for both paths
+    var sock_buf: [256]u8 = undefined;
+    const socket_path = discoverSocket(&sock_buf, parsed.target_pid) orelse {
+        writeStderr("error: no running Attyx instance found\n");
+        std.process.exit(1);
+    };
+
+    // For send_keys: use token-based sending with inter-key delays
+    if (parsed.command == .send_keys) {
+        sendKeysTokenized(socket_path, parsed);
+        return;
+    }
+
     // Build the request message
     var req_buf: [protocol.header_size + 4096]u8 = undefined;
     var request = buildRequest(&req_buf, parsed) catch {
@@ -153,13 +167,6 @@ pub fn run(args: []const [:0]const u8) void {
             std.process.exit(1);
         };
     }
-
-    // Discover socket
-    var sock_buf: [256]u8 = undefined;
-    const socket_path = discoverSocket(&sock_buf, parsed.target_pid) orelse {
-        writeStderr("error: no running Attyx instance found\n");
-        std.process.exit(1);
-    };
 
     // Send and receive
     var resp_buf: [max_response]u8 = undefined;
@@ -219,6 +226,80 @@ pub fn run(args: []const [:0]const u8) void {
     }
 }
 
+/// Send keys using the token iterator. Inserts a 30ms pause after each named
+/// key token to let the target TUI process the input and redraw. This prevents
+/// race conditions like {Down}{Enter} selecting the wrong menu item.
+fn sendKeysTokenized(socket_path: []const u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) void {
+    const inter_key_delay_ns: u64 = 30_000_000; // 30ms
+
+    var iter = keys.KeyTokenIter{ .input = parsed.text_arg };
+    var tok_buf: [4096]u8 = undefined;
+    var sent_any = false;
+
+    while (iter.next(&tok_buf)) |token| {
+        const payload = tok_buf[0..token.len];
+
+        // Build and send the IPC message for this token
+        var req_buf: [protocol.header_size + 4200]u8 = undefined;
+        const request = buildSendKeysRequest(&req_buf, payload, parsed.pane_id, parsed.target_session) catch continue;
+
+        var resp_buf: [max_response]u8 = undefined;
+        const resp = sendCommand(socket_path, request, &resp_buf) catch continue;
+        if (resp.msg_type == .err) {
+            writeStderr("error: ");
+            std.fs.File.stderr().writeAll(resp.payload) catch {};
+            std.fs.File.stderr().writeAll("\n") catch {};
+            std.process.exit(1);
+        }
+
+        // Pause after named keys to let the TUI process and redraw
+        if (token.is_named_key and sent_any) {
+            // We delayed *before* this send via the previous iteration's delay,
+            // but we also need to delay *after* this named key for the next token.
+        }
+        if (token.is_named_key) {
+            std.posix.nanosleep(0, inter_key_delay_ns);
+        }
+        sent_any = true;
+    }
+
+    // Handle --wait-stable after all tokens sent
+    if (parsed.wait_stable_ms > 0) {
+        const stdout = std.fs.File.stdout();
+        const stable_text = waitStable(
+            socket_path,
+            parsed.wait_stable_ms,
+            parsed.pane_id,
+            parsed.target_session,
+        );
+        if (stable_text.len > 0) {
+            stdout.writeAll(stable_text) catch {};
+            if (stable_text[stable_text.len - 1] != '\n') {
+                stdout.writeAll("\n") catch {};
+            }
+        }
+    }
+}
+
+/// Build a send_keys (or send_keys_pane) request for a single chunk of processed bytes.
+fn buildSendKeysRequest(buf: []u8, payload: []const u8, pane_id: u32, target_session: u32) ![]u8 {
+    var inner_buf: [protocol.header_size + 4200]u8 = undefined;
+    const inner = if (pane_id != 0) blk: {
+        var pane_payload: [4100]u8 = undefined;
+        std.mem.writeInt(u32, pane_payload[0..4], pane_id, .little);
+        const plen = @min(payload.len, pane_payload.len - 4);
+        @memcpy(pane_payload[4 .. 4 + plen], payload[0..plen]);
+        break :blk try protocol.encodeMessage(&inner_buf, .send_keys_pane, pane_payload[0 .. 4 + plen]);
+    } else try protocol.encodeMessage(&inner_buf, .send_keys, payload);
+
+    if (target_session != 0) {
+        return wrapSessionEnvelope(buf, inner, target_session);
+    }
+
+    @memcpy(buf[0..inner.len], inner);
+    return buf[0..inner.len];
+}
+
 fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
     return switch (parsed.command) {
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
@@ -273,24 +354,21 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .focus_down => protocol.encodeMessage(buf, .focus_down, ""),
         .focus_left => protocol.encodeMessage(buf, .focus_left, ""),
         .focus_right => protocol.encodeMessage(buf, .focus_right, ""),
-        .send_keys, .send_text => |cmd| blk: {
+        .send_keys => blk: {
             // Process C-style escape sequences: \n \t \x03 \\ etc.
             var esc_buf: [4096]u8 = undefined;
             const processed = unescapeKeys(parsed.text_arg, &esc_buf);
-            const is_keys = (cmd == .send_keys);
 
             // Pane-targeted variant: prepend [pane_id:u32 LE] to payload
             if (parsed.pane_id != 0) {
-                const msg_type: protocol.MessageType = if (is_keys) .send_keys_pane else .send_text_pane;
                 var payload_buf: [4100]u8 = undefined;
                 std.mem.writeInt(u32, payload_buf[0..4], parsed.pane_id, .little);
                 const plen = @min(processed.len, payload_buf.len - 4);
                 @memcpy(payload_buf[4 .. 4 + plen], processed[0..plen]);
-                break :blk protocol.encodeMessage(buf, msg_type, payload_buf[0 .. 4 + plen]);
+                break :blk protocol.encodeMessage(buf, .send_keys_pane, payload_buf[0 .. 4 + plen]);
             }
 
-            const msg_type: protocol.MessageType = if (is_keys) .send_keys else .send_text;
-            break :blk protocol.encodeMessage(buf, msg_type, processed);
+            break :blk protocol.encodeMessage(buf, .send_keys, processed);
         },
         .get_text => blk: {
             if (parsed.pane_id != 0) {
@@ -376,110 +454,87 @@ fn wrapSessionEnvelope(buf: []u8, inner_msg: []const u8, session_id: u32) ![]u8 
     return buf[0 .. protocol.header_size + envelope_payload_len];
 }
 
-/// Process C-style escape sequences in a send-keys string.
-/// Supports: \n \t \r \\ \' \" \0 \a \b \e (ESC) \xHH
-fn unescapeKeys(input: []const u8, out: []u8) []const u8 {
-    var i: usize = 0;
-    var o: usize = 0;
-    while (i < input.len and o < out.len) {
-        if (input[i] != '\\' or i + 1 >= input.len) {
-            out[o] = input[i];
-            o += 1;
-            i += 1;
-            continue;
+/// Delegate to keys.zig for escape processing + named key resolution.
+const unescapeKeys = keys.unescapeKeys;
+
+/// Poll get-text until screen content stabilizes for `stable_ms` milliseconds.
+/// Returns the final screen text. Hard timeout at 30 seconds.
+fn waitStable(socket_path: []const u8, stable_ms: u32, pane_id: u32, target_session: u32) []const u8 {
+    const poll_interval_ms: u64 = 50;
+    const hard_timeout_ms: u64 = 30_000;
+    var elapsed_ms: u64 = 0;
+    var stable_since_ms: u64 = 0;
+    var prev_hash: u64 = 0;
+    var has_prev: bool = false;
+
+    // Static buffers for get-text request and response
+    var gt_req_buf: [protocol.header_size + 4096]u8 = undefined;
+    var gt_resp_buf: [max_response]u8 = undefined;
+    var last_payload: [max_response]u8 = undefined;
+    var last_payload_len: usize = 0;
+
+    // Build the get-text request once
+    const gt_request = buildGetTextRequest(&gt_req_buf, pane_id, target_session) catch return "";
+
+    while (elapsed_ms < hard_timeout_ms) {
+        std.posix.nanosleep(0, @intCast(poll_interval_ms * 1_000_000));
+        elapsed_ms += poll_interval_ms;
+
+        const gt_resp = sendCommand(socket_path, gt_request, &gt_resp_buf) catch continue;
+        if (gt_resp.msg_type != .success) continue;
+
+        const hash = std.hash.Wyhash.hash(0, gt_resp.payload);
+
+        if (has_prev and hash == prev_hash) {
+            stable_since_ms += poll_interval_ms;
+            if (stable_since_ms >= stable_ms) {
+                // Content stable — return it
+                @memcpy(last_payload[0..gt_resp.payload.len], gt_resp.payload);
+                last_payload_len = gt_resp.payload.len;
+                return last_payload[0..last_payload_len];
+            }
+        } else {
+            stable_since_ms = 0;
+            prev_hash = hash;
+            has_prev = true;
         }
-        // Escape sequence
-        i += 1; // skip backslash
-        switch (input[i]) {
-            'n' => {
-                out[o] = '\n';
-                o += 1;
-                i += 1;
-            },
-            't' => {
-                out[o] = '\t';
-                o += 1;
-                i += 1;
-            },
-            'r' => {
-                out[o] = '\r';
-                o += 1;
-                i += 1;
-            },
-            '\\' => {
-                out[o] = '\\';
-                o += 1;
-                i += 1;
-            },
-            '\'' => {
-                out[o] = '\'';
-                o += 1;
-                i += 1;
-            },
-            '"' => {
-                out[o] = '"';
-                o += 1;
-                i += 1;
-            },
-            '0' => {
-                out[o] = 0;
-                o += 1;
-                i += 1;
-            },
-            'a' => {
-                out[o] = 0x07; // BEL
-                o += 1;
-                i += 1;
-            },
-            'b' => {
-                out[o] = 0x08; // BS
-                o += 1;
-                i += 1;
-            },
-            'e' => {
-                out[o] = 0x1b; // ESC
-                o += 1;
-                i += 1;
-            },
-            'x' => {
-                // \xHH — two hex digits
-                i += 1;
-                if (i + 1 < input.len) {
-                    if (std.fmt.parseInt(u8, input[i .. i + 2], 16)) |byte| {
-                        out[o] = byte;
-                        o += 1;
-                        i += 2;
-                    } else |_| {
-                        // Invalid hex — emit literal \x
-                        out[o] = '\\';
-                        o += 1;
-                        if (o < out.len) {
-                            out[o] = 'x';
-                            o += 1;
-                        }
-                    }
-                } else {
-                    out[o] = '\\';
-                    o += 1;
-                    if (o < out.len) {
-                        out[o] = 'x';
-                        o += 1;
-                    }
-                }
-            },
-            else => {
-                // Unknown escape — emit literal backslash + char
-                out[o] = '\\';
-                o += 1;
-                if (o < out.len) {
-                    out[o] = input[i];
-                    o += 1;
-                }
-                i += 1;
-            },
-        }
+
+        // Always save last payload
+        @memcpy(last_payload[0..gt_resp.payload.len], gt_resp.payload);
+        last_payload_len = gt_resp.payload.len;
     }
-    return out[0..o];
+
+    // Hard timeout — return what we have + warning
+    writeStderr("warning: --wait-stable timed out after 30s\n");
+    return last_payload[0..last_payload_len];
+}
+
+/// Build a get-text IPC request, optionally wrapped in a session envelope.
+fn buildGetTextRequest(buf: []u8, pane_id: u32, target_session: u32) ![]u8 {
+    var inner_buf: [protocol.header_size + 8]u8 = undefined;
+    const inner = if (pane_id != 0) blk: {
+        var payload: [4]u8 = undefined;
+        std.mem.writeInt(u32, &payload, pane_id, .little);
+        break :blk try protocol.encodeMessage(&inner_buf, .get_text_pane, &payload);
+    } else try protocol.encodeMessage(&inner_buf, .get_text, "");
+
+    if (target_session != 0) {
+        // Wrap in session envelope
+        const inner_type = inner[4];
+        const inner_payload = inner[protocol.header_size..];
+        const envelope_payload_len = 4 + 1 + inner_payload.len;
+        if (buf.len < protocol.header_size + envelope_payload_len) return error.BufferTooSmall;
+        protocol.encodeHeader(buf[0..protocol.header_size], .session_envelope, @intCast(envelope_payload_len));
+        std.mem.writeInt(u32, buf[protocol.header_size..][0..4], target_session, .little);
+        buf[protocol.header_size + 4] = inner_type;
+        if (inner_payload.len > 0) {
+            @memcpy(buf[protocol.header_size + 5 .. protocol.header_size + 5 + inner_payload.len], inner_payload);
+        }
+        return buf[0 .. protocol.header_size + envelope_payload_len];
+    }
+
+    @memcpy(buf[0..inner.len], inner);
+    return buf[0..inner.len];
 }
 
 fn writeStderr(msg: []const u8) void {

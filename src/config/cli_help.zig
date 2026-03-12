@@ -70,7 +70,7 @@ const ipc_header =
 
 const ipc_tabs =
     "  " ++ d ++ "Tabs" ++ r ++ "\n" ++
-    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab (returns index)") ++
+    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab (returns pane ID)") ++
     cmd("tab close [<N>]                      ", "Close tab N (default: active)") ++
     cmd("tab next" ++ r ++ " / " ++ c ++ "tab prev                  ", "Switch tabs") ++
     cmd("tab select <1-9>                     ", "Switch to tab by number") ++
@@ -94,9 +94,8 @@ const ipc_focus =
 
 const ipc_io =
     "  " ++ d ++ "Input / Output" ++ r ++ "\n" ++
-    cmd("send-keys [-p <id>] <keys>      ", "Send keystrokes to a pane") ++
-    cont("                                " ++ d ++ "Escapes: \\n \\t \\x03 \\x04 \\x1b \\x7f \\x1b[A/B/C/D" ++ r) ++
-    cmd("send-text [-p <id>] <text>      ", "Send raw text (same escape support)") ++
+    cmd("send-keys [-p <id>] [--wait-stable] <keys>   ", "Send keystrokes to a pane") ++
+    cont("                                " ++ d ++ "Named: {Enter} {Up} {Down} {Tab} {Ctrl-c} ... or \\n \\xHH" ++ r) ++
     cmd("get-text [-p <id>] [--json]     ", "Read visible screen text from a pane") ++
     "\n";
 
@@ -113,7 +112,7 @@ const ipc_misc =
 const ipc_sessions =
     "  " ++ d ++ "Sessions" ++ r ++ "\n" ++
     cmd("session list           ", "List all daemon sessions") ++
-    cmd("session create         ", "Create a new empty session") ++
+    cmd("session create [cwd] [-b] [name]   ", "Create a session (returns ID)") ++
     cmd("session switch <id>    ", "Switch to a session by ID") ++
     cmd("session rename [id] <name>   ", "Rename a session") ++
     cmd("session kill <id>      ", "Kill a session and all its panes") ++
@@ -123,7 +122,7 @@ const agent_workflow =
     b ++ "AGENT WORKFLOW" ++ r ++ "\n" ++
     ex("id=$(attyx split v --cmd \"tool\")    " ++ r ++ d ++ "# open pane, capture ID") ++
     ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read its output") ++
-    ex("attyx send-keys -p \"$id\" \"input\\n\" " ++ r ++ d ++ "# type into it") ++
+    ex("attyx send-keys -p \"$id\" \"input{Enter}\" " ++ r ++ d ++ "# type into it") ++
     ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read the result") ++
     ex("attyx split close -p \"$id\"          " ++ r ++ d ++ "# clean up by ID") ++
     "\n";

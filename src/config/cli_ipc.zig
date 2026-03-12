@@ -32,7 +32,6 @@ pub const IpcCommand = enum {
     focus_left,
     focus_right,
     send_keys,
-    send_text,
     get_text,
     config_reload,
     theme_set,
@@ -60,6 +59,7 @@ pub const IpcRequest = struct {
     target_pid: ?u32 = null,
     json_output: bool = false,
     wait: bool = false,
+    wait_stable_ms: u32 = 0,
     background: bool = false,
     /// Global session targeting. 0 = current/attached session (default).
     target_session: u32 = 0,
@@ -175,13 +175,9 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         if (std.mem.eql(u8, sub, "split")) break :blk parseSplit(args, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "focus")) break :blk parseFocus(args, start, target_pid, json_output);
 
-        if (std.mem.eql(u8, sub, "send-keys")) {
+        if (std.mem.eql(u8, sub, "send-keys") or std.mem.eql(u8, sub, "send-text")) {
             if (hasHelp(args, start)) showHelp(help.send_keys);
-            break :blk parseSendText(args, start, .send_keys, target_pid, json_output);
-        }
-        if (std.mem.eql(u8, sub, "send-text")) {
-            if (hasHelp(args, start)) showHelp(help.send_text);
-            break :blk parseSendText(args, start, .send_text, target_pid, json_output);
+            break :blk parseSendText(args, start, target_pid, json_output);
         }
         if (std.mem.eql(u8, sub, "get-text")) {
             if (hasHelp(args, start)) showHelp(help.get_text);
@@ -426,9 +422,9 @@ fn parseFocus(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
 // Send text / keys
 // ---------------------------------------------------------------------------
 
-fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, target_pid: ?u32, json_output: bool) ?IpcRequest {
+fn parseSendText(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
     var result = IpcRequest{
-        .command = cmd,
+        .command = .send_keys,
         .target_pid = target_pid,
         .json_output = json_output,
     };
@@ -440,6 +436,18 @@ fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, targ
             if (i + 1 >= args.len) fatal("--pane requires a pane ID");
             i += 1;
             parsePaneArg(args[i], &result);
+        } else if (std.mem.eql(u8, arg, "--wait-stable")) {
+            // Optional ms argument (default 300ms)
+            if (i + 1 < args.len) {
+                if (std.fmt.parseInt(u32, args[i + 1], 10)) |ms| {
+                    result.wait_stable_ms = ms;
+                    i += 1;
+                } else |_| {
+                    result.wait_stable_ms = 300;
+                }
+            } else {
+                result.wait_stable_ms = 300;
+            }
         } else if (result.text_arg.len == 0) {
             result.text_arg = arg;
         }
@@ -447,11 +455,7 @@ fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, targ
     }
 
     if (result.text_arg.len == 0) {
-        if (cmd == .send_keys) {
-            printHelp(help.send_keys);
-        } else {
-            printHelp(help.send_text);
-        }
+        printHelp(help.send_keys);
         return null;
     }
     return result;
