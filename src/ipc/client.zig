@@ -233,10 +233,29 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
             // Process C-style escape sequences: \n \t \x03 \\ etc.
             var esc_buf: [4096]u8 = undefined;
             const processed = unescapeKeys(parsed.text_arg, &esc_buf);
-            const msg_type: protocol.MessageType = if (cmd == .send_keys) .send_keys else .send_text;
+            const is_keys = (cmd == .send_keys);
+
+            // Pane-targeted variant: prepend [tab_idx:u8][pane_idx:u8] to payload
+            if (parsed.pane_idx != 0xFF) {
+                const msg_type: protocol.MessageType = if (is_keys) .send_keys_pane else .send_text_pane;
+                var payload_buf: [4098]u8 = undefined;
+                payload_buf[0] = parsed.pane_tab;
+                payload_buf[1] = parsed.pane_idx;
+                const plen = @min(processed.len, payload_buf.len - 2);
+                @memcpy(payload_buf[2 .. 2 + plen], processed[0..plen]);
+                break :blk protocol.encodeMessage(buf, msg_type, payload_buf[0 .. 2 + plen]);
+            }
+
+            const msg_type: protocol.MessageType = if (is_keys) .send_keys else .send_text;
             break :blk protocol.encodeMessage(buf, msg_type, processed);
         },
-        .get_text => protocol.encodeMessage(buf, .get_text, ""),
+        .get_text => blk: {
+            if (parsed.pane_idx != 0xFF) {
+                var payload: [2]u8 = .{ parsed.pane_tab, parsed.pane_idx };
+                break :blk protocol.encodeMessage(buf, .get_text_pane, &payload);
+            }
+            break :blk protocol.encodeMessage(buf, .get_text, "");
+        },
         .config_reload => protocol.encodeMessage(buf, .config_reload, ""),
         .theme_set => protocol.encodeMessage(buf, .theme_set, parsed.text_arg),
         .scroll_to_top => protocol.encodeMessage(buf, .scroll_to_top, ""),

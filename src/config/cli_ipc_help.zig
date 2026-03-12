@@ -18,9 +18,9 @@ pub const top_level =
     \\  split        Manage pane splits (create, close, rotate, zoom)
     \\  focus        Move focus between panes (up, down, left, right)
     \\  session      Manage daemon sessions (list, create, kill, switch, rename)
-    \\  send-keys    Send keystrokes to the active pane (supports escape sequences)
-    \\  send-text    Send raw text to the active pane (no escape processing)
-    \\  get-text     Read visible text from the active pane
+    \\  send-keys    Send keystrokes to a pane (supports escape sequences)
+    \\  send-text    Send raw text to a pane (no escape processing)
+    \\  get-text     Read visible text from a pane
     \\  reload       Reload configuration from disk
     \\  theme        Switch to a named theme
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
@@ -39,16 +39,24 @@ pub const top_level =
     \\  attyx split vertical --cmd claude Open a vertical split running claude
     \\  attyx focus right                 Move focus to the right pane
     \\  attyx send-keys "ls -la\n"        Type "ls -la" and press Enter
+    \\  attyx send-keys -p 1.0 "ls\n"    Send to tab 1, pane 0 (no focus needed)
     \\  attyx send-text "hello"           Write "hello" to PTY (no newline)
     \\  attyx get-text                    Read what's on screen
+    \\  attyx get-text --pane 2.1         Read from tab 2, pane 1
     \\  attyx list --json                 Get structured tab/pane info
     \\  attyx reload                      Hot-reload config from disk
     \\
+    \\Pane targeting:
+    \\  send-keys, send-text, and get-text accept --pane (-p) to target a
+    \\  specific pane without changing focus. Format: <tab>.<pane> (e.g. 1.0)
+    \\  or just <pane> for the active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\  Use 'attyx list' to see available pane indices.
+    \\
     \\Typical agent workflow:
     \\  1. attyx split vertical --cmd "your-tool"   # open a pane
-    \\  2. attyx get-text                            # read its output
-    \\  3. attyx send-keys "some input\n"            # interact with it
-    \\  4. attyx get-text                            # read the result
+    \\  2. attyx get-text --pane 1                   # read its output by index
+    \\  3. attyx send-keys -p 1 "some input\n"      # send input without focus
+    \\  4. attyx get-text --pane 1                   # read the result
     \\  5. attyx split close                         # clean up when done
     \\
     \\Run 'attyx <command> --help' for details on a specific command.
@@ -210,7 +218,8 @@ pub const focus =
     \\  left     Focus the pane to the left
     \\  right    Focus the pane to the right
     \\
-    \\Focus determines which pane receives keystrokes from send-keys/send-text.
+    \\Focus determines which pane receives keystrokes by default.
+    \\Use --pane on send-keys/send-text to target any pane without changing focus.
     \\
     \\Examples:
     \\  attyx focus right
@@ -286,12 +295,18 @@ pub const session_rename =
 // ── Standalone commands ──────────────────────────────────────────────────
 
 pub const send_keys =
-    \\Send keystrokes to the active pane.
+    \\Send keystrokes to a pane.
     \\
-    \\Usage: attyx send-keys <keys>
+    \\Usage: attyx send-keys [--pane <target>] <keys>
     \\
     \\The key string supports C-style escape sequences. This is the primary
     \\way for agents to type into a terminal pane.
+    \\
+    \\Options:
+    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
+    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
+    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\                        Use 'attyx list' to see pane indices.
     \\
     \\Escape sequences:
     \\  \n           Enter / newline
@@ -307,37 +322,49 @@ pub const send_keys =
     \\  \x7f         Backspace
     \\
     \\Examples:
-    \\  attyx send-keys "ls -la\n"        Type ls -la and press Enter
-    \\  attyx send-keys "\x03"            Send Ctrl-C to interrupt
-    \\  attyx send-keys "\x1b"            Send Escape
-    \\  attyx send-keys "y\n"             Confirm a prompt
-    \\  attyx send-keys "\x1b[A\n"        Arrow up then Enter (rerun last cmd)
-    \\  attyx send-keys "q"               Press q (e.g. to quit less/man)
+    \\  attyx send-keys "ls -la\n"              Type ls -la and press Enter
+    \\  attyx send-keys --pane 1.0 "ls\n"       Send to tab 1, pane 0
+    \\  attyx send-keys --pane 1 "\x03"         Send Ctrl-C to pane 1 in active tab
+    \\  attyx send-keys "\x1b[A\n"              Arrow up then Enter (rerun last cmd)
+    \\  attyx send-keys "q"                     Press q (e.g. to quit less/man)
     \\
 ;
 
 pub const send_text =
-    \\Send text to the active pane.
+    \\Send text to a pane.
     \\
-    \\Usage: attyx send-text <text>
+    \\Usage: attyx send-text [--pane <target>] <text>
     \\
     \\The text is written to the pane's PTY. Supports the same C-style
     \\escape sequences as send-keys (\n, \t, \x03, etc.).
     \\
+    \\Options:
+    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
+    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
+    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\                        Use 'attyx list' to see pane indices.
+    \\
     \\Examples:
-    \\  attyx send-text "hello"           Write "hello" (no newline)
-    \\  attyx send-text "echo hello\n"    Write "echo hello" + Enter
-    \\  attyx send-text "yes\n"           Confirm a prompt
+    \\  attyx send-text "hello"                 Write "hello" (no newline)
+    \\  attyx send-text --pane 1.0 "hello"      Write to tab 1, pane 0
+    \\  attyx send-text --pane 1 "echo hi\n"    Write to pane 1 in active tab
     \\
 ;
 
 pub const get_text =
-    \\Read visible text from the active pane.
+    \\Read visible text from a pane.
     \\
-    \\Usage: attyx get-text [--json]
+    \\Usage: attyx get-text [--pane <target>] [--json]
     \\
-    \\Returns the current screen content of the focused pane. This is what
-    \\an agent uses to "see" what's on screen.
+    \\Returns the current screen content of the specified pane (or the
+    \\focused pane if --pane is not given). This is what an agent uses
+    \\to "see" what's on screen.
+    \\
+    \\Options:
+    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
+    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
+    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\                        Use 'attyx list' to see pane indices.
     \\
     \\Output format (plain text):
     \\  One line per screen row. Trailing whitespace is trimmed per row.
@@ -347,8 +374,9 @@ pub const get_text =
     \\  { "lines": ["row1", "row2", ...] }
     \\
     \\Examples:
-    \\  attyx get-text                    Print screen content
-    \\  attyx get-text --json             Get as JSON (for parsing)
+    \\  attyx get-text                         Print screen content
+    \\  attyx get-text --pane 1.0              Read from tab 1, pane 0
+    \\  attyx get-text --pane 1 --json         Pane 1 in active tab as JSON
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.
