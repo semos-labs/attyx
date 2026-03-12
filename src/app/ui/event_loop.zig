@@ -182,6 +182,32 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             actions.doReloadConfig(ctx);
         }
 
+        // Handle resize BEFORE IPC commands so that layout rects reflect
+        // current window dimensions.  Without this, an IPC split arriving
+        // in the same iteration as a pending resize would check stale
+        // rects and incorrectly report "pane too small to split".
+        resize_mod.handleResize(ctx, &buf);
+        // Flush any debounced PTY resizes (SIGWINCH) across all panes.
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var flush_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const flush_lc = lay.collectLeaves(&flush_leaves);
+                for (flush_leaves[0..flush_lc]) |fleaf| {
+                    const was_pending = fleaf.pane.pending_pty_resize;
+                    const pr = fleaf.pane.pending_pty_rows;
+                    const pc = fleaf.pane.pending_pty_cols;
+                    fleaf.pane.flushPtyResize();
+                    if (was_pending and !fleaf.pane.pending_pty_resize) {
+                        if (fleaf.pane.daemon_pane_id) |dpid| {
+                            if (ctx.session_client) |sc| {
+                                sc.sendPaneResize(dpid, pr, pc) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Drain IPC command queue
         while (ipc_queue.dequeue()) |cmd| {
             ipc_handler.handle(cmd, ctx);
@@ -466,31 +492,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        resize_mod.handleResize(ctx, &buf);
-        // Flush any debounced PTY resizes (SIGWINCH) across all panes.
-        // Engine state is resized immediately for correct display, but
-        // TIOCSWINSZ is throttled to avoid flooding shells with SIGWINCH
-        // during continuous window resizing.
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                var flush_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const flush_lc = lay.collectLeaves(&flush_leaves);
-                for (flush_leaves[0..flush_lc]) |fleaf| {
-                    const was_pending = fleaf.pane.pending_pty_resize;
-                    const pr = fleaf.pane.pending_pty_rows;
-                    const pc = fleaf.pane.pending_pty_cols;
-                    fleaf.pane.flushPtyResize();
-                    // Forward to daemon if this flush actually sent TIOCSWINSZ
-                    if (was_pending and !fleaf.pane.pending_pty_resize) {
-                        if (fleaf.pane.daemon_pane_id) |dpid| {
-                            if (ctx.session_client) |sc| {
-                                sc.sendPaneResize(dpid, pr, pc) catch {};
-                            }
-                        }
-                    }
-                }
-            }
-        }
         // Update viewport tracking after potential resize
         if (ctx.tab_mgr.count > 0) {
             if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
