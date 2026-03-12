@@ -48,13 +48,13 @@ pub fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
         // If multiple panes, list them indented
         if (layout.pane_count > 1) {
-            var leaves: [8]split_layout_mod.LeafEntry = undefined;
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = layout.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
                 var pane_name_buf: [256]u8 = undefined;
                 const pane_title = resolveTitle(leaf.pane, &pane_name_buf);
                 const focused = (leaf.index == layout.focused);
-                w.print("  {d}.{d}\t{s}", .{ i + 1, leaf.index, pane_title }) catch break;
+                w.print("  {d}\t{s}", .{ leaf.pane.ipc_id, pane_title }) catch break;
                 if (focused) w.writeAll("\t*") catch break;
                 w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
                 w.writeAll("\n") catch break;
@@ -101,14 +101,14 @@ pub fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         return;
     });
 
-    var leaves: [8]split_layout_mod.LeafEntry = undefined;
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
     const lc = layout.collectLeaves(&leaves);
     for (leaves[0..lc]) |leaf| {
         var name_buf: [256]u8 = undefined;
         const title = resolveTitle(leaf.pane, &name_buf);
         const focused = (leaf.index == layout.focused);
 
-        w.print("{d}\t{s}", .{ leaf.index, title }) catch break;
+        w.print("{d}\t{s}", .{ leaf.pane.ipc_id, title }) catch break;
         if (focused) w.writeAll("\t*") catch break;
         w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
         w.writeAll("\n") catch break;
@@ -124,12 +124,11 @@ pub fn buildGetText(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
 pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     if (cmd.payload_len < 2) {
-        sendError(cmd, "missing pane target");
+        sendError(cmd, "missing pane ID");
         return;
     }
-    const tab_idx = cmd.payload[0];
-    const pane_idx = cmd.payload[1];
-    const pane = ctx.tab_mgr.findPaneByIndex(tab_idx, pane_idx) orelse {
+    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
     };

@@ -70,10 +70,19 @@ pub const MessageType = enum(u8) {
     session_switch = 0x3E,
     session_rename = 0x3F,
 
-    // ── Pane-targeted variants (payload: [tab_idx:u8][pane_idx:u8][data...]) ──
+    // ── Pane-targeted variants (payload: [pane_id:u16 LE][data...]) ──
     send_keys_pane = 0x46,
     send_text_pane = 0x47,
     get_text_pane = 0x48,
+
+    // ── Targeted operations ──
+    // Pane-targeted (payload: [pane_id:u16 LE])
+    pane_close_targeted = 0x49,
+    pane_zoom_targeted = 0x4A,
+    pane_rotate_targeted = 0x4B,
+    // Tab-targeted (payload: [tab_idx:u8][data...])
+    tab_close_targeted = 0x4C,
+    tab_rename_targeted = 0x4D,
 
     // ── Responses ──
     success = 0xA0,

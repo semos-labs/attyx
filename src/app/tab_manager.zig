@@ -21,12 +21,21 @@ pub const TabManager = struct {
     allocator: Allocator,
     split_gap_h: u16 = 1,
     split_gap_v: u16 = 1,
+    /// Monotonically increasing counter for stable pane IPC IDs.
+    next_ipc_id: u16 = 1,
+
+    /// Assign the next unique IPC ID to a pane.
+    pub fn assignIpcId(self: *TabManager, pane: *Pane) void {
+        pane.ipc_id = self.next_ipc_id;
+        self.next_ipc_id +|= 1;
+    }
 
     /// Create a TabManager with an initial pane at index 0.
     pub fn init(allocator: Allocator, initial_pane: *Pane) TabManager {
         var mgr = TabManager{
             .allocator = allocator,
         };
+        mgr.assignIpcId(initial_pane);
         var sl = SplitLayout.init(initial_pane);
         // Set initial rects from the pane's engine dimensions so splitPane()
         // can read correct rects even before the first window resize event.
@@ -61,22 +70,28 @@ pub const TabManager = struct {
         return &(self.tabs[self.active].?);
     }
 
-    /// Look up a pane by tab index and leaf index within that tab.
-    /// tab_idx 0xFF = active tab. pane_idx = leaf index (from `list` output).
-    pub fn findPaneByIndex(self: *TabManager, tab_idx: u8, pane_idx: u8) ?*Pane {
-        const ti: u8 = if (tab_idx == 0xFF) self.active else tab_idx;
-        if (ti >= self.count) return null;
-        const layout = &(self.tabs[ti] orelse return null);
-
-        // If only one pane in tab, pane_idx 0 or 0xFF both work
-        if (layout.pane_count == 1) {
-            return layout.focusedPane();
+    /// Look up a pane by its stable IPC ID. Scans all tabs.
+    pub fn findPaneById(self: *TabManager, ipc_id: u16) ?*Pane {
+        for (0..self.count) |i| {
+            const layout = &(self.tabs[i] orelse continue);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.ipc_id == ipc_id) return leaf.pane;
+            }
         }
+        return null;
+    }
 
-        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-        const lc = layout.collectLeaves(&leaves);
-        for (leaves[0..lc]) |leaf| {
-            if (leaf.index == pane_idx) return leaf.pane;
+    /// Look up a pane by IPC ID and also return its pool index within its tab's layout.
+    pub fn findPaneWithLayout(self: *TabManager, ipc_id: u16) ?struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 } {
+        for (0..self.count) |i| {
+            const layout = &(self.tabs[i] orelse continue);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.ipc_id == ipc_id) return .{ .pane = leaf.pane, .layout = layout, .pool_idx = leaf.index };
+            }
         }
         return null;
     }
@@ -130,6 +145,8 @@ pub const TabManager = struct {
     }
 
     fn insertTab(self: *TabManager, pane: *Pane, rows: u16, cols: u16) void {
+        // Assign stable IPC ID if not already set (e.g. from init())
+        if (pane.ipc_id == 0) self.assignIpcId(pane);
         // Append new tab at the end
         const insert_at: u8 = self.count;
         var layout = SplitLayout.init(pane);
@@ -362,8 +379,11 @@ pub const TabManager = struct {
                             p.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
                             p.daemon_pane_id = node.pane_id;
                             p.needs_engine_reinit = true;
+                            self.assignIpcId(p);
                             break :blk p;
                         };
+                        // Ensure reused panes also have an IPC ID
+                        if (pane.ipc_id == 0) self.assignIpcId(pane);
                         sl.pool[ni] = .{ .tag = .leaf, .pane = pane };
                         pane_count += 1;
                     },
@@ -508,6 +528,7 @@ pub const TabManager = struct {
                         errdefer self.allocator.destroy(pane);
                         pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
                         pane.daemon_pane_id = node.pane_id;
+                        self.assignIpcId(pane);
                         sl.pool[ni] = .{ .tag = .leaf, .pane = pane };
                         pane_count += 1;
                     },

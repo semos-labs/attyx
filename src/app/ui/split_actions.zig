@@ -58,6 +58,7 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
             return;
         };
         new_pane.daemon_pane_id = pane_id;
+        ctx.tab_mgr.assignIpcId(new_pane);
         layout.splitPaneWith(dir, new_pane) catch {
             new_pane.deinit();
             ctx.allocator.destroy(new_pane);
@@ -73,9 +74,10 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
         layout.splitPaneResolved(dir, ctx.allocator, resolved.cwd, ctx.applied_scrollback_lines) catch return;
     }
 
-    // Set theme colors on the newly created pane's engine.
+    // Set theme colors and assign IPC ID on the newly created pane.
     if (layout.focused != 0xFF) {
         if (layout.pool[layout.focused].pane) |pane| {
+            if (pane.ipc_id == 0) ctx.tab_mgr.assignIpcId(pane);
             pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
         }
     }

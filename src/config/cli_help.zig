@@ -70,21 +70,21 @@ const ipc_header =
 
 const ipc_tabs =
     "  " ++ d ++ "Tabs" ++ r ++ "\n" ++
-    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab") ++
-    cmd("tab close                            ", "Close the active tab") ++
+    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab (returns index)") ++
+    cmd("tab close [<N>]                      ", "Close tab N (default: active)") ++
     cmd("tab next" ++ r ++ " / " ++ c ++ "tab prev                  ", "Switch tabs") ++
     cmd("tab select <1-9>                     ", "Switch to tab by number") ++
     cmd("tab move <left|right>                ", "Reorder the active tab") ++
-    cmd("tab rename <name>                    ", "Set a custom tab title") ++
+    cmd("tab rename [<N>] <name>              ", "Set tab title (default: active)") ++
     "\n";
 
 const ipc_splits =
     "  " ++ d ++ "Panes" ++ r ++ "\n" ++
     cmd("split vertical [--cmd <cmd>] [--wait]   ", "New pane to the right " ++ d ++ "(alias: v)" ++ r) ++
     cmd("split horizontal [--cmd <cmd>] [--wait]  ", "New pane below " ++ d ++ "(alias: h)" ++ r) ++
-    cmd("split close                              ", "Close the active pane") ++
-    cmd("split rotate                             ", "Rotate the split layout") ++
-    cmd("split zoom                               ", "Toggle zoom on active pane") ++
+    cmd("split close [-p <id>]                    ", "Close a pane (default: focused)") ++
+    cmd("split rotate [-p <id>]                   ", "Rotate splits (default: active tab)") ++
+    cmd("split zoom [-p <id>]                     ", "Toggle zoom (default: focused)") ++
     "\n";
 
 const ipc_focus =
@@ -94,10 +94,10 @@ const ipc_focus =
 
 const ipc_io =
     "  " ++ d ++ "Input / Output" ++ r ++ "\n" ++
-    cmd("send-keys <keys>       ", "Send keystrokes to the active pane") ++
-    cont("                       " ++ d ++ "Escapes: \\n \\t \\x03 \\x04 \\x1b \\x7f \\x1b[A/B/C/D" ++ r) ++
-    cmd("send-text <text>       ", "Send raw text (same escape support)") ++
-    cmd("get-text [--json]      ", "Read visible screen text from the active pane") ++
+    cmd("send-keys [-p <id>] <keys>      ", "Send keystrokes to a pane") ++
+    cont("                                " ++ d ++ "Escapes: \\n \\t \\x03 \\x04 \\x1b \\x7f \\x1b[A/B/C/D" ++ r) ++
+    cmd("send-text [-p <id>] <text>      ", "Send raw text (same escape support)") ++
+    cmd("get-text [-p <id>] [--json]     ", "Read visible screen text from a pane") ++
     "\n";
 
 const ipc_misc =
@@ -121,12 +121,11 @@ const ipc_sessions =
 
 const agent_workflow =
     b ++ "AGENT WORKFLOW" ++ r ++ "\n" ++
-    ex("attyx split v --cmd \"your-tool\"    " ++ r ++ d ++ "# open a side pane") ++
-    ex("attyx get-text                     " ++ r ++ d ++ "# read its output") ++
-    ex("attyx send-keys \"some input\\n\"     " ++ r ++ d ++ "# type into it") ++
-    ex("attyx get-text                     " ++ r ++ d ++ "# read the result") ++
-    ex("attyx focus left                   " ++ r ++ d ++ "# go back to your pane") ++
-    ex("attyx split close                  " ++ r ++ d ++ "# clean up when done") ++
+    ex("id=$(attyx split v --cmd \"tool\")    " ++ r ++ d ++ "# open pane, capture ID") ++
+    ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read its output") ++
+    ex("attyx send-keys -p \"$id\" \"input\\n\" " ++ r ++ d ++ "# type into it") ++
+    ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read the result") ++
+    ex("attyx split close -p \"$id\"          " ++ r ++ d ++ "# clean up by ID") ++
     "\n";
 
 const options =
