@@ -586,17 +586,20 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
             }
             i += 1;
         }
-        // Disambiguate: if first positional is a directory, it's cwd;
-        // otherwise treat it as session name (no cwd).
+        // Disambiguate cwd vs session name.
+        // Two positionals: pos1 is always cwd, pos2 is name (validate cwd).
+        // One positional: directory → cwd, otherwise → name.
         var cwd: []const u8 = "";
         var name: []const u8 = "";
         if (pos1.len > 0) {
-            if (isDirectory(pos1)) {
+            if (pos2.len > 0) {
+                if (!isDirectory(pos1)) fatal("first positional must be an existing directory when two arguments are given");
                 cwd = pos1;
                 name = pos2;
+            } else if (isDirectory(pos1)) {
+                cwd = pos1;
             } else {
                 name = pos1;
-                if (pos2.len > 0) fatal("unexpected argument — did you mean to pass a directory as cwd?");
             }
         }
         return .{ .command = .session_create, .text_arg = name, .cwd_arg = cwd, .background = bg, .target_pid = target_pid, .json_output = json_output };

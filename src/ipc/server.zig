@@ -149,6 +149,9 @@ fn handleClient(fd: posix.fd_t) void {
     if (h.msg_type == .session_envelope) {
         if (h.payload_len < 5) {
             posix.close(response_fd);
+            var err_buf: [128]u8 = undefined;
+            const err_msg = protocol.encodeMessage(&err_buf, .err, "invalid session envelope") catch return;
+            _ = posix.write(fd, err_msg) catch {};
             return;
         }
         cmd.session_id = std.mem.readInt(u32, cmd.payload[0..4], .little);

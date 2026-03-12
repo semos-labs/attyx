@@ -206,11 +206,12 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     var cwd: []const u8 = "";
     var name: []const u8 = "new";
     if (cmd.payload_len >= 3) {
-        const cwd_len = std.mem.readInt(u16, cmd.payload[1..3], .little);
-        const cwd_end = @min(@as(usize, 3) + cwd_len, cmd.payload_len);
+        const cwd_len: usize = std.mem.readInt(u16, cmd.payload[1..3], .little);
+        const payload_len: usize = cmd.payload_len;
+        const cwd_end = @min(3 + cwd_len, payload_len);
         cwd = cmd.payload[3..cwd_end];
-        if (cwd_end < cmd.payload_len) {
-            name = cmd.payload[cwd_end..cmd.payload_len];
+        if (cwd_end < payload_len) {
+            name = cmd.payload[cwd_end..payload_len];
         }
     }
     if (name.len == 0) {

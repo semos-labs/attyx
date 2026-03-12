@@ -326,13 +326,20 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .session_create => blk: {
             // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
             // flags bit 0 = background (don't switch to new session)
-            var payload_buf: [4480]u8 = undefined;
+            // Reserve 5 bytes for session envelope so total stays within max_payload.
+            const queue_mod = @import("queue.zig");
+            const header_overhead: usize = 3; // flags + cwd_len
+            const envelope_overhead: usize = 5;
+            const effective_max: usize = queue_mod.max_payload - envelope_overhead;
+            var payload_buf: [queue_mod.max_payload]u8 = undefined;
             payload_buf[0] = if (parsed.background) 0x01 else 0x00;
-            const cwd_len: u16 = @intCast(@min(parsed.cwd_arg.len, 4096));
+            const max_cwd: usize = effective_max - header_overhead;
+            const cwd_len: u16 = @intCast(@min(parsed.cwd_arg.len, max_cwd));
             std.mem.writeInt(u16, payload_buf[1..3], cwd_len, .little);
             @memcpy(payload_buf[3 .. 3 + cwd_len], parsed.cwd_arg[0..cwd_len]);
-            const name_off = 3 + cwd_len;
-            const name_len = @min(parsed.text_arg.len, payload_buf.len - name_off);
+            const name_off: usize = header_overhead + cwd_len;
+            const name_max: usize = if (effective_max > name_off) effective_max - name_off else 0;
+            const name_len: usize = @min(parsed.text_arg.len, name_max);
             @memcpy(payload_buf[name_off .. name_off + name_len], parsed.text_arg[0..name_len]);
             break :blk protocol.encodeMessage(buf, .session_create, payload_buf[0 .. name_off + name_len]);
         },
