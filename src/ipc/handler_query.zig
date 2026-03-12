@@ -202,17 +202,27 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     };
     // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
     // flags bit 0 = background
-    const background = cmd.payload_len > 0 and (cmd.payload[0] & 0x01) != 0;
+    var background: bool = false;
     var cwd: []const u8 = "";
     var name: []const u8 = "new";
-    if (cmd.payload_len >= 3) {
+    const payload_len: usize = cmd.payload_len;
+    if (payload_len >= 3) {
         const cwd_len: usize = std.mem.readInt(u16, cmd.payload[1..3], .little);
-        const payload_len: usize = cmd.payload_len;
-        const cwd_end = @min(3 + cwd_len, payload_len);
-        cwd = cmd.payload[3..cwd_end];
-        if (cwd_end < payload_len) {
-            name = cmd.payload[cwd_end..payload_len];
+        if (3 + cwd_len <= payload_len) {
+            // Valid new-format payload
+            background = (cmd.payload[0] & 0x01) != 0;
+            const cwd_end = 3 + cwd_len;
+            cwd = cmd.payload[3..cwd_end];
+            if (cwd_end < payload_len) {
+                name = cmd.payload[cwd_end..payload_len];
+            }
+        } else {
+            // Malformed: cwd_len exceeds payload, treat as legacy name-only
+            name = cmd.payload[0..payload_len];
         }
+    } else if (payload_len > 0) {
+        // Too short for new format: legacy name-only
+        name = cmd.payload[0..payload_len];
     }
     if (name.len == 0) {
         if (cwd.len > 0) {

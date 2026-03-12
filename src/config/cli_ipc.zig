@@ -72,6 +72,14 @@ pub const IpcRequest = struct {
     tab_idx: u8 = 0xFF,
 };
 
+/// Returns true if the string looks like a filesystem path rather than a plain name.
+/// Matches: contains '/', starts with '.', '~', or is absolute.
+fn looksLikePath(s: []const u8) bool {
+    if (s.len == 0) return false;
+    if (s[0] == '/' or s[0] == '~' or s[0] == '.') return true;
+    return std.mem.indexOfScalar(u8, s, '/') != null;
+}
+
 fn isDirectory(path: []const u8) bool {
     // Handle ~ expansion for home directory
     if (path.len > 0 and path[0] == '~') {
@@ -588,7 +596,10 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
         }
         // Disambiguate cwd vs session name.
         // Two positionals: pos1 is always cwd, pos2 is name (validate cwd).
-        // One positional: directory → cwd, otherwise → name.
+        // One positional: only treat as cwd if it looks like a path (contains
+        // '/', starts with '.' or '~') AND is an existing directory. Plain
+        // words like "myproject" are always treated as a session name, even
+        // if a same-named directory happens to exist in the cwd.
         var cwd: []const u8 = "";
         var name: []const u8 = "";
         if (pos1.len > 0) {
@@ -596,7 +607,7 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
                 if (!isDirectory(pos1)) fatal("first positional must be an existing directory when two arguments are given");
                 cwd = pos1;
                 name = pos2;
-            } else if (isDirectory(pos1)) {
+            } else if (looksLikePath(pos1) and isDirectory(pos1)) {
                 cwd = pos1;
             } else {
                 name = pos1;

@@ -30,7 +30,7 @@ pub const top_level =
     \\
     \\Global options:
     \\  --target <pid>       Target a specific Attyx instance by PID
-    \\  -s, --session <id>   Route command to a specific daemon session
+    \\  -s, --session <id>   Verify command targets the given attached session
     \\  --json               Output in JSON format (for scripts and agents)
     \\  --help, -h           Show this help (works on every subcommand)
     \\
