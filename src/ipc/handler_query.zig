@@ -200,13 +200,22 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         sendError(cmd, "sessions not enabled");
         return;
     };
-    const name = if (cmd.payload_len > 0) cmd.payload[0..cmd.payload_len] else "new";
+    // Payload: [flags:u8][name...]  (flags bit 0 = background)
+    const background = cmd.payload_len > 0 and (cmd.payload[0] & 0x01) != 0;
+    const name = if (cmd.payload_len > 1) cmd.payload[1..cmd.payload_len] else "new";
     const rows = ctx.grid_rows;
     const cols = ctx.grid_cols;
     const sid = sc.createSession(name, rows, cols, "", "") catch {
         sendError(cmd, "failed to create session");
         return;
     };
+
+    // By default, switch to the new session (unless --background)
+    if (!background) {
+        sc.attach(sid, rows, cols) catch {
+            // Session was created but attach failed — report success with the ID anyway
+        };
+    }
 
     var buf: [64]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);

@@ -314,7 +314,15 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
             break :blk protocol.encodeMessage(buf, .popup, payload_buf[0 .. 3 + cmd_len]);
         },
         .session_list => protocol.encodeMessage(buf, .session_list, ""),
-        .session_create => protocol.encodeMessage(buf, .session_create, ""),
+        .session_create => blk: {
+            // Payload: [flags:u8][name...]
+            // flags bit 0 = background (don't switch to new session)
+            var payload_buf: [256]u8 = undefined;
+            payload_buf[0] = if (parsed.background) 0x01 else 0x00;
+            const name_len = @min(parsed.text_arg.len, payload_buf.len - 1);
+            @memcpy(payload_buf[1 .. 1 + name_len], parsed.text_arg[0..name_len]);
+            break :blk protocol.encodeMessage(buf, .session_create, payload_buf[0 .. 1 + name_len]);
+        },
         .session_kill => blk: {
             var payload: [4]u8 = undefined;
             std.mem.writeInt(u32, &payload, parsed.session_id_arg, .little);

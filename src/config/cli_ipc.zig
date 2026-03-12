@@ -59,6 +59,7 @@ pub const IpcRequest = struct {
     target_pid: ?u32 = null,
     json_output: bool = false,
     wait: bool = false,
+    background: bool = false,
     width_pct: u8 = 80,
     height_pct: u8 = 80,
     border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
@@ -534,7 +535,19 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
     if (std.mem.eql(u8, action, "list")) {
         return .{ .command = .session_list, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "create")) {
-        return .{ .command = .session_create, .target_pid = target_pid, .json_output = json_output };
+        if (hasHelp(args, start + 1)) showHelp(help.session_create);
+        var bg = false;
+        var name: []const u8 = "";
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "-b") or std.mem.eql(u8, args[i], "--background")) {
+                bg = true;
+            } else if (name.len == 0) {
+                name = args[i];
+            }
+            i += 1;
+        }
+        return .{ .command = .session_create, .text_arg = name, .background = bg, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "kill")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_kill);
         if (start + 2 >= args.len) { printHelp(help.session_kill); return null; }
