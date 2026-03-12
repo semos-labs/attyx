@@ -62,6 +62,9 @@ pub const IpcRequest = struct {
     width_pct: u8 = 80,
     height_pct: u8 = 80,
     border_style: u8 = 2, // 0=single, 1=double, 2=rounded, 3=heavy, 4=none
+    /// Pane targeting: 0xFF = active/focused (default). Otherwise 0-based index.
+    pane_tab: u8 = 0xFF,
+    pane_idx: u8 = 0xFF,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -80,6 +83,24 @@ fn showHelp(comptime text: []const u8) noreturn {
 
 fn printHelp(comptime text: []const u8) void {
     std.fs.File.stderr().writeAll(text) catch {};
+}
+
+/// Parse --pane argument: "1.0" (tab.pane) or "0" (pane in active tab).
+/// Tab is 1-indexed (matching `list` output), pane is 0-indexed.
+fn parsePaneArg(arg: []const u8, result: *IpcRequest) void {
+    if (std.mem.indexOfScalar(u8, arg, '.')) |dot| {
+        // tab.pane format
+        const tab_str = arg[0..dot];
+        const pane_str = arg[dot + 1 ..];
+        const tab = std.fmt.parseInt(u8, tab_str, 10) catch fatal("--pane: invalid tab index");
+        if (tab < 1) fatal("--pane: tab index must be >= 1");
+        result.pane_tab = tab - 1; // convert to 0-based
+        result.pane_idx = std.fmt.parseInt(u8, pane_str, 10) catch fatal("--pane: invalid pane index");
+    } else {
+        // Just pane index in active tab
+        result.pane_tab = 0xFF; // active tab
+        result.pane_idx = std.fmt.parseInt(u8, arg, 10) catch fatal("--pane: invalid pane index");
+    }
 }
 
 /// Check if any arg after `start` is --help / -h.
@@ -139,7 +160,17 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     }
     if (std.mem.eql(u8, sub, "get-text")) {
         if (hasHelp(args, start)) showHelp(help.get_text);
-        return .{ .command = .get_text, .target_pid = target_pid, .json_output = json_output };
+        var gt_result = IpcRequest{ .command = .get_text, .target_pid = target_pid, .json_output = json_output };
+        var gi = start + 1;
+        while (gi < args.len) {
+            if (std.mem.eql(u8, args[gi], "--pane") or std.mem.eql(u8, args[gi], "-p")) {
+                if (gi + 1 >= args.len) fatal("--pane requires a value (e.g. 1.0 or 0)");
+                gi += 1;
+                parsePaneArg(args[gi], &gt_result);
+            }
+            gi += 1;
+        }
+        return gt_result;
     }
     if (std.mem.eql(u8, sub, "reload")) {
         if (hasHelp(args, start)) showHelp(help.reload);
@@ -321,7 +352,26 @@ fn parseFocus(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
 // ---------------------------------------------------------------------------
 
 fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, target_pid: ?u32, json_output: bool) ?IpcRequest {
-    if (start + 1 >= args.len) {
+    var result = IpcRequest{
+        .command = cmd,
+        .target_pid = target_pid,
+        .json_output = json_output,
+    };
+
+    var i = start + 1;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+            if (i + 1 >= args.len) fatal("--pane requires a value (e.g. 1.0 or 0)");
+            i += 1;
+            parsePaneArg(args[i], &result);
+        } else if (result.text_arg.len == 0) {
+            result.text_arg = arg;
+        }
+        i += 1;
+    }
+
+    if (result.text_arg.len == 0) {
         if (cmd == .send_keys) {
             printHelp(help.send_keys);
         } else {
@@ -329,7 +379,7 @@ fn parseSendText(args: []const [:0]const u8, start: usize, cmd: IpcCommand, targ
         }
         return null;
     }
-    return .{ .command = cmd, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
+    return result;
 }
 
 // ---------------------------------------------------------------------------

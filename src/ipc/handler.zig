@@ -171,7 +171,23 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             }
             sendOk(cmd, "");
         },
+        .send_keys_pane, .send_text_pane => {
+            if (cmd.payload_len < 3) {
+                sendError(cmd, "missing pane target or text");
+                return;
+            }
+            const tab_idx = cmd.payload[0];
+            const pane_idx = cmd.payload[1];
+            const text = cmd.payload[2..cmd.payload_len];
+            const pane = ctx.tab_mgr.findPaneByIndex(tab_idx, pane_idx) orelse {
+                sendError(cmd, "pane not found");
+                return;
+            };
+            sendInputToPane(pane, text, ctx);
+            sendOk(cmd, "");
+        },
         .get_text => handler_query.buildGetText(cmd, ctx),
+        .get_text_pane => handler_query.buildGetTextPane(cmd, ctx),
 
         // ── Popup ──
         .popup => handler_cmd.handlePopup(cmd, ctx),
@@ -213,6 +229,36 @@ extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
 
 fn sendInputToActivePty(text: []const u8) void {
     attyx_send_input(text.ptr, @intCast(text.len));
+}
+
+// ---------------------------------------------------------------------------
+// Send input to a specific pane's PTY (by-passes focus requirement)
+// ---------------------------------------------------------------------------
+
+const Pane = @import("../app/pane.zig").Pane;
+
+fn sendInputToPane(pane: *Pane, text: []const u8, ctx: *PtyThreadCtx) void {
+    // Session mode: route through daemon using pane's daemon_pane_id
+    if (ctx.session_client) |sc| {
+        if (pane.daemon_pane_id) |dpid| {
+            sc.sendPaneInput(dpid, text) catch {};
+            return;
+        }
+    }
+    // Local mode: write directly to the pane's PTY master fd
+    const fd = pane.pty.master;
+    if (fd < 0) return;
+    var offset: usize = 0;
+    while (offset < text.len) {
+        const n = posix.write(fd, text[offset..]) catch |err| {
+            if (err == error.WouldBlock) {
+                posix.nanosleep(0, 1_000_000);
+                continue;
+            }
+            return;
+        };
+        offset += n;
+    }
 }
 
 // ---------------------------------------------------------------------------

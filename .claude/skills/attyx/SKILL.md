@@ -54,8 +54,19 @@ echo "$curr"
 
 For quick commands (ls, cat, etc.) a simple `sleep 1` is fine. Use polling for anything interactive or slow (builds, AI responses, installs).
 
-### Focus Management
-`send-keys` and `get-text` operate on the ACTIVE pane. To interact with a specific pane:
+### Pane Targeting (Preferred)
+Use `--pane` (`-p`) to target any pane without changing focus:
+```bash
+attyx send-keys --pane 1.0 "ls -la\r"    # tab 1, pane 0
+attyx send-keys -p 1 "echo hi\r"          # pane 1 in active tab
+attyx get-text --pane 1.0                  # read from tab 1, pane 0
+attyx get-text -p 1                        # read from pane 1 in active tab
+```
+Format: `<tab>.<pane>` (tab is 1-indexed, pane is 0-indexed) or just `<pane>` for active tab.
+Use `attyx list` to see pane indices. This avoids focus juggling and is the recommended approach.
+
+### Focus Management (Legacy)
+Without `--pane`, `send-keys` and `get-text` operate on the focused pane:
 1. `attyx focus <direction>` to switch to it
 2. Do your `send-keys` / `get-text`
 3. Focus back if needed
@@ -64,8 +75,8 @@ For quick commands (ls, cat, etc.) a simple `sleep 1` is fine. Use polling for a
 
 If the user provides arguments, interpret them as a natural language instruction:
 - `/attyx open a split with htop` → `attyx split v --cmd htop`
-- `/attyx send "hello" to the other pane` → focus + send-keys
+- `/attyx send "hello" to the other pane` → `attyx send-keys -p <idx> "hello"`
 - `/attyx close the other pane` → focus + close (carefully!)
-- `/attyx what's on screen in the right pane` → focus + get-text
+- `/attyx what's on screen in the right pane` → `attyx get-text -p <idx>`
 
 If no arguments, ask the user what they'd like to do with the terminal.

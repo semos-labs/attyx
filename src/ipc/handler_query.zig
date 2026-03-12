@@ -119,6 +119,24 @@ pub fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
 pub fn buildGetText(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     const pane = ctx.tab_mgr.activePane();
+    writeScreenText(cmd, pane);
+}
+
+pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 2) {
+        sendError(cmd, "missing pane target");
+        return;
+    }
+    const tab_idx = cmd.payload[0];
+    const pane_idx = cmd.payload[1];
+    const pane = ctx.tab_mgr.findPaneByIndex(tab_idx, pane_idx) orelse {
+        sendError(cmd, "pane not found");
+        return;
+    };
+    writeScreenText(cmd, pane);
+}
+
+fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype) void {
     const ring = &pane.engine.state.ring;
     const rows = ring.screen_rows;
     const cols = ring.cols;
