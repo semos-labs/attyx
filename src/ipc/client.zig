@@ -214,8 +214,8 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
     return switch (parsed.command) {
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => blk: {
-            if (parsed.pane_tab != 0xFF) {
-                break :blk protocol.encodeMessage(buf, .tab_close_targeted, &.{parsed.pane_tab});
+            if (parsed.tab_idx != 0xFF) {
+                break :blk protocol.encodeMessage(buf, .tab_close_targeted, &.{parsed.tab_idx});
             }
             break :blk protocol.encodeMessage(buf, .tab_close, "");
         },
@@ -225,9 +225,9 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .tab_move_left => protocol.encodeMessage(buf, .tab_move_left, ""),
         .tab_move_right => protocol.encodeMessage(buf, .tab_move_right, ""),
         .tab_rename => blk: {
-            if (parsed.pane_tab != 0xFF) {
+            if (parsed.tab_idx != 0xFF) {
                 var payload_buf: [258]u8 = undefined;
-                payload_buf[0] = parsed.pane_tab;
+                payload_buf[0] = parsed.tab_idx;
                 const nlen = @min(parsed.text_arg.len, payload_buf.len - 1);
                 @memcpy(payload_buf[1 .. 1 + nlen], parsed.text_arg[0..nlen]);
                 break :blk protocol.encodeMessage(buf, .tab_rename_targeted, payload_buf[0 .. 1 + nlen]);
@@ -238,24 +238,24 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .split_horizontal => protocol.encodeMessage(buf, if (parsed.wait) .split_horizontal_wait else .split_horizontal, parsed.text_arg),
         .split_close => blk: {
             if (parsed.pane_id != 0) {
-                var payload: [2]u8 = undefined;
-                std.mem.writeInt(u16, &payload, parsed.pane_id, .little);
+                var payload: [4]u8 = undefined;
+                std.mem.writeInt(u32, &payload, parsed.pane_id, .little);
                 break :blk protocol.encodeMessage(buf, .pane_close_targeted, &payload);
             }
             break :blk protocol.encodeMessage(buf, .pane_close, "");
         },
         .split_rotate => blk: {
             if (parsed.pane_id != 0) {
-                var payload: [2]u8 = undefined;
-                std.mem.writeInt(u16, &payload, parsed.pane_id, .little);
+                var payload: [4]u8 = undefined;
+                std.mem.writeInt(u32, &payload, parsed.pane_id, .little);
                 break :blk protocol.encodeMessage(buf, .pane_rotate_targeted, &payload);
             }
             break :blk protocol.encodeMessage(buf, .pane_rotate, "");
         },
         .split_zoom => blk: {
             if (parsed.pane_id != 0) {
-                var payload: [2]u8 = undefined;
-                std.mem.writeInt(u16, &payload, parsed.pane_id, .little);
+                var payload: [4]u8 = undefined;
+                std.mem.writeInt(u32, &payload, parsed.pane_id, .little);
                 break :blk protocol.encodeMessage(buf, .pane_zoom_targeted, &payload);
             }
             break :blk protocol.encodeMessage(buf, .pane_zoom_toggle, "");
@@ -270,14 +270,14 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
             const processed = unescapeKeys(parsed.text_arg, &esc_buf);
             const is_keys = (cmd == .send_keys);
 
-            // Pane-targeted variant: prepend [pane_id:u16 LE] to payload
+            // Pane-targeted variant: prepend [pane_id:u32 LE] to payload
             if (parsed.pane_id != 0) {
                 const msg_type: protocol.MessageType = if (is_keys) .send_keys_pane else .send_text_pane;
-                var payload_buf: [4098]u8 = undefined;
-                std.mem.writeInt(u16, payload_buf[0..2], parsed.pane_id, .little);
-                const plen = @min(processed.len, payload_buf.len - 2);
-                @memcpy(payload_buf[2 .. 2 + plen], processed[0..plen]);
-                break :blk protocol.encodeMessage(buf, msg_type, payload_buf[0 .. 2 + plen]);
+                var payload_buf: [4100]u8 = undefined;
+                std.mem.writeInt(u32, payload_buf[0..4], parsed.pane_id, .little);
+                const plen = @min(processed.len, payload_buf.len - 4);
+                @memcpy(payload_buf[4 .. 4 + plen], processed[0..plen]);
+                break :blk protocol.encodeMessage(buf, msg_type, payload_buf[0 .. 4 + plen]);
             }
 
             const msg_type: protocol.MessageType = if (is_keys) .send_keys else .send_text;
@@ -285,8 +285,8 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .get_text => blk: {
             if (parsed.pane_id != 0) {
-                var payload: [2]u8 = undefined;
-                std.mem.writeInt(u16, &payload, parsed.pane_id, .little);
+                var payload: [4]u8 = undefined;
+                std.mem.writeInt(u32, &payload, parsed.pane_id, .little);
                 break :blk protocol.encodeMessage(buf, .get_text_pane, &payload);
             }
             break :blk protocol.encodeMessage(buf, .get_text, "");

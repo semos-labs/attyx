@@ -22,12 +22,13 @@ pub const TabManager = struct {
     split_gap_h: u16 = 1,
     split_gap_v: u16 = 1,
     /// Monotonically increasing counter for stable pane IPC IDs.
-    next_ipc_id: u16 = 1,
+    next_ipc_id: u32 = 1,
 
     /// Assign the next unique IPC ID to a pane.
     pub fn assignIpcId(self: *TabManager, pane: *Pane) void {
         pane.ipc_id = self.next_ipc_id;
-        self.next_ipc_id +|= 1;
+        self.next_ipc_id +%= 1;
+        if (self.next_ipc_id == 0) self.next_ipc_id = 1; // skip 0 (sentinel)
     }
 
     /// Create a TabManager with an initial pane at index 0.
@@ -71,7 +72,7 @@ pub const TabManager = struct {
     }
 
     /// Look up a pane by its stable IPC ID. Scans all tabs.
-    pub fn findPaneById(self: *TabManager, ipc_id: u16) ?*Pane {
+    pub fn findPaneById(self: *TabManager, ipc_id: u32) ?*Pane {
         for (0..self.count) |i| {
             const layout = &(self.tabs[i] orelse continue);
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
@@ -84,7 +85,7 @@ pub const TabManager = struct {
     }
 
     /// Look up a pane by IPC ID and also return its pool index within its tab's layout.
-    pub fn findPaneWithLayout(self: *TabManager, ipc_id: u16) ?struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 } {
+    pub fn findPaneWithLayout(self: *TabManager, ipc_id: u32) ?struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 } {
         for (0..self.count) |i| {
             const layout = &(self.tabs[i] orelse continue);
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
