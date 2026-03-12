@@ -103,12 +103,14 @@ pub const SessionClient = struct {
         posix.close(self.socket_fd);
         self.socket_fd = -1;
 
-        // Poll for new daemon socket (don't auto-start — upgrade is in progress).
-        // The daemon takes up to 5s to verify the new process, so we poll for 6s.
+        // Poll for new daemon socket. The daemon verification loop runs up
+        // to 10s, so we poll for 15s.  Do NOT call connectToSocket() on
+        // timeout — that can auto-start a competing daemon that steals the
+        // socket from the legitimate upgrade daemon.
         var socket_buf: [256]u8 = undefined;
         const socket_path = conn.getSocketPath(&socket_buf) orelse return;
 
-        for (0..60) |_| {
+        for (0..150) |_| { // 15s
             posix.nanosleep(0, 100_000_000); // 100ms
             if (conn.tryConnect(socket_path)) |fd| {
                 self.socket_fd = fd;
@@ -117,7 +119,8 @@ pub const SessionClient = struct {
             }
         }
 
-        // Upgrade likely failed or timed out — fall back to full connect flow
+        // Upgrade timed out. Use connectToSocket which now checks for
+        // upgrade.bin before starting a daemon — safe to call here.
         self.socket_fd = conn.connectToSocket() catch return;
         conn.setNonBlocking(self.socket_fd);
     }

@@ -182,6 +182,36 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             actions.doReloadConfig(ctx);
         }
 
+        // Handle resize BEFORE IPC commands so that layout rects reflect
+        // current window dimensions.  Without this, an IPC split arriving
+        // in the same iteration as a pending resize would check stale
+        // rects and incorrectly report "pane too small to split".
+        // Engine state is resized immediately for correct display, but
+        // TIOCSWINSZ is throttled to avoid flooding shells with SIGWINCH
+        // during continuous window resizing.
+        resize_mod.handleResize(ctx, &buf);
+        // Flush any debounced PTY resizes (SIGWINCH) across all panes.
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var flush_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const flush_lc = lay.collectLeaves(&flush_leaves);
+                for (flush_leaves[0..flush_lc]) |fleaf| {
+                    const was_pending = fleaf.pane.pending_pty_resize;
+                    const pr = fleaf.pane.pending_pty_rows;
+                    const pc = fleaf.pane.pending_pty_cols;
+                    fleaf.pane.flushPtyResize();
+                    // Forward to daemon if this flush actually sent TIOCSWINSZ
+                    if (was_pending and !fleaf.pane.pending_pty_resize) {
+                        if (fleaf.pane.daemon_pane_id) |dpid| {
+                            if (ctx.session_client) |sc| {
+                                sc.sendPaneResize(dpid, pr, pc) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Drain IPC command queue
         while (ipc_queue.dequeue()) |cmd| {
             ipc_handler.handle(cmd, ctx);
@@ -466,31 +496,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        resize_mod.handleResize(ctx, &buf);
-        // Flush any debounced PTY resizes (SIGWINCH) across all panes.
-        // Engine state is resized immediately for correct display, but
-        // TIOCSWINSZ is throttled to avoid flooding shells with SIGWINCH
-        // during continuous window resizing.
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                var flush_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const flush_lc = lay.collectLeaves(&flush_leaves);
-                for (flush_leaves[0..flush_lc]) |fleaf| {
-                    const was_pending = fleaf.pane.pending_pty_resize;
-                    const pr = fleaf.pane.pending_pty_rows;
-                    const pc = fleaf.pane.pending_pty_cols;
-                    fleaf.pane.flushPtyResize();
-                    // Forward to daemon if this flush actually sent TIOCSWINSZ
-                    if (was_pending and !fleaf.pane.pending_pty_resize) {
-                        if (fleaf.pane.daemon_pane_id) |dpid| {
-                            if (ctx.session_client) |sc| {
-                                sc.sendPaneResize(dpid, pr, pc) catch {};
-                            }
-                        }
-                    }
-                }
-            }
-        }
         // Update viewport tracking after potential resize
         if (ctx.tab_mgr.count > 0) {
             if (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp) {
@@ -895,19 +900,21 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
     ctx.session_client = null;
     terminal.g_session_client = null;
 
-    // Attempt soft reconnect with backoff: 200ms, 400ms, 800ms, 1600ms
+    // Attempt soft reconnect with backoff.
+    // Use generous retry count — a hot-upgrade verification loop runs up to
+    // 10s, so we need to wait at least that long before giving up.
     var delay_ns: u64 = 200_000_000;
-    for (0..4) |_| {
+    for (0..20) |_| { // up to ~15s total wait with capped backoff
         if (c.attyx_should_quit() != 0) return;
         posix.nanosleep(0, delay_ns);
 
         const heap_sc = ctx.allocator.create(SessionClient) catch {
-            delay_ns *= 2;
+            if (delay_ns < 800_000_000) delay_ns *= 2;
             continue;
         };
         heap_sc.* = SessionClient.connect(ctx.allocator) catch {
             ctx.allocator.destroy(heap_sc);
-            delay_ns *= 2;
+            if (delay_ns < 800_000_000) delay_ns *= 2; // cap at 800ms
             continue;
         };
 
@@ -922,7 +929,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
             heap_sc.attach(sid, pty_rows, ctx.grid_cols) catch {
                 heap_sc.deinit();
                 ctx.allocator.destroy(heap_sc);
-                delay_ns *= 2;
+                if (delay_ns < 800_000_000) delay_ns *= 2;
                 continue;
             };
 
@@ -969,7 +976,7 @@ fn handleDaemonDeath(ctx: *PtyThreadCtx) void {
         // Session creation failed — clean up and retry
         heap_sc.deinit();
         ctx.allocator.destroy(heap_sc);
-        delay_ns *= 2;
+        if (delay_ns < 800_000_000) delay_ns *= 2;
         continue;
     }
 
