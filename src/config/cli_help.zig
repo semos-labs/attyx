@@ -70,7 +70,7 @@ const ipc_header =
 
 const ipc_tabs =
     "  " ++ d ++ "Tabs" ++ r ++ "\n" ++
-    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab (returns index)") ++
+    cmd("tab create [--cmd <cmd>] [--wait]   ", "Create a new tab (returns pane ID)") ++
     cmd("tab close [<N>]                      ", "Close tab N (default: active)") ++
     cmd("tab next" ++ r ++ " / " ++ c ++ "tab prev                  ", "Switch tabs") ++
     cmd("tab select <1-9>                     ", "Switch to tab by number") ++
@@ -113,7 +113,7 @@ const ipc_misc =
 const ipc_sessions =
     "  " ++ d ++ "Sessions" ++ r ++ "\n" ++
     cmd("session list           ", "List all daemon sessions") ++
-    cmd("session create         ", "Create a new empty session") ++
+    cmd("session create [cwd] [-b] [name]   ", "Create a session (returns ID)") ++
     cmd("session switch <id>    ", "Switch to a session by ID") ++
     cmd("session rename [id] <name>   ", "Rename a session") ++
     cmd("session kill <id>      ", "Kill a session and all its panes") ++

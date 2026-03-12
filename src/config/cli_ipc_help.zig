@@ -19,7 +19,7 @@ pub const top_level =
     \\  focus        Move focus between panes (up, down, left, right)
     \\  session      Manage daemon sessions (list, create, kill, switch, rename)
     \\  send-keys    Send keystrokes to a pane (supports escape sequences)
-    \\  send-text    Send raw text to a pane (no escape processing)
+    \\  send-text    Send text to a pane (same escape support as send-keys)
     \\  get-text     Read visible text from a pane
     \\  reload       Reload configuration from disk
     \\  theme        Switch to a named theme

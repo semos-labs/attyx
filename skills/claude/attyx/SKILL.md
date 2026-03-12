@@ -9,10 +9,6 @@ argument-hint: [action] [args...]
 
 You are running inside Attyx, a terminal emulator with a full IPC interface. You can control it programmatically.
 
-## Available IPC Commands
-
-!`attyx --help 2>&1 | sed -n '/^IPC commands/,/^$/p'`
-
 ## Identifying Panes — Stable IPC IDs
 
 Every pane has a **stable numeric ID** that never changes once assigned, even when other panes are closed. IDs are monotonically increasing integers (1, 2, 3, ...).
@@ -45,6 +41,17 @@ id=$(attyx split v --cmd python3)   # returns e.g. "7"
 ```bash
 attyx send-keys -p "$id" "print('hello')\r"
 attyx get-text -p "$id"
+```
+
+### Waiting for Commands (`--wait`)
+`tab create` and `split` support `--wait` to block until the spawned command exits (requires `--cmd`):
+```bash
+attyx tab create --cmd "make test" --wait    # blocks, returns exit code + stdout
+attyx split v --cmd "cargo build" --wait     # same for splits
+```
+The response is the process exit code (first byte) followed by captured stdout. Useful for scripting:
+```bash
+attyx run "make test" --wait && echo "Tests passed"
 ```
 
 ### Don't confuse titles with identity
