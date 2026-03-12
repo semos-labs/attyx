@@ -94,9 +94,8 @@ const ipc_focus =
 
 const ipc_io =
     "  " ++ d ++ "Input / Output" ++ r ++ "\n" ++
-    cmd("send-keys [-p <id>] <keys>      ", "Send keystrokes to a pane") ++
-    cont("                                " ++ d ++ "Escapes: \\n \\t \\x03 \\x04 \\x1b \\x7f \\x1b[A/B/C/D" ++ r) ++
-    cmd("send-text [-p <id>] <text>      ", "Send raw text (same escape support)") ++
+    cmd("send-keys [-p <id>] [--wait-stable] <keys>   ", "Send keystrokes to a pane") ++
+    cont("                                " ++ d ++ "Named: {Enter} {Up} {Down} {Tab} {Ctrl-c} ... or \\n \\xHH" ++ r) ++
     cmd("get-text [-p <id>] [--json]     ", "Read visible screen text from a pane") ++
     "\n";
 
@@ -123,7 +122,7 @@ const agent_workflow =
     b ++ "AGENT WORKFLOW" ++ r ++ "\n" ++
     ex("id=$(attyx split v --cmd \"tool\")    " ++ r ++ d ++ "# open pane, capture ID") ++
     ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read its output") ++
-    ex("attyx send-keys -p \"$id\" \"input\\n\" " ++ r ++ d ++ "# type into it") ++
+    ex("attyx send-keys -p \"$id\" \"input{Enter}\" " ++ r ++ d ++ "# type into it") ++
     ex("attyx get-text -p \"$id\"             " ++ r ++ d ++ "# read the result") ++
     ex("attyx split close -p \"$id\"          " ++ r ++ d ++ "# clean up by ID") ++
     "\n";

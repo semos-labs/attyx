@@ -19,7 +19,7 @@ pub const top_level =
     \\  focus        Move focus between panes (up, down, left, right)
     \\  session      Manage daemon sessions (list, create, kill, switch, rename)
     \\  send-keys    Send keystrokes to a pane (supports escape sequences)
-    \\  send-text    Send text to a pane (same escape support as send-keys)
+    \\               Alias: send-text
     \\  get-text     Read visible text from a pane
     \\  reload       Reload configuration from disk
     \\  theme        Switch to a named theme
@@ -39,9 +39,9 @@ pub const top_level =
     \\  attyx tab create --cmd htop       Open a tab running htop
     \\  attyx split vertical --cmd claude Open a vertical split running claude
     \\  attyx focus right                 Move focus to the right pane
-    \\  attyx send-keys "ls -la\n"        Type "ls -la" and press Enter
-    \\  attyx send-keys -p 3 "ls\n"      Send to pane 3 (no focus change)
-    \\  attyx send-text "hello"           Write "hello" to PTY (no newline)
+    \\  attyx send-keys "ls -la{Enter}"    Type "ls -la" and press Enter
+    \\  attyx send-keys -p 3 "ls{Enter}"  Send to pane 3 (no focus change)
+    \\  attyx send-keys --wait-stable "ls{Enter}"  Send and wait for output
     \\  attyx get-text                    Read what's on screen
     \\  attyx get-text --pane 5           Read from pane 5
     \\  attyx list --json                 Get structured tab/pane info
@@ -57,7 +57,7 @@ pub const top_level =
     \\Typical agent workflow:
     \\  1. id=$(attyx split v --cmd "your-tool")     # open pane, capture stable ID
     \\  2. attyx get-text -p "$id"                   # read its output
-    \\  3. attyx send-keys -p "$id" "input\n"        # send input without focus
+    \\  3. attyx send-keys -p "$id" "input{Enter}"     # send input without focus
     \\  4. attyx get-text -p "$id"                   # read the result
     \\  5. attyx split close -p "$id"                # clean up by ID
     \\
@@ -229,7 +229,7 @@ pub const focus =
     \\  right    Focus the pane to the right
     \\
     \\Focus determines which pane receives keystrokes by default.
-    \\Use --pane on send-keys/send-text to target any pane without changing focus.
+    \\Use --pane on send-keys to target any pane without changing focus.
     \\
     \\Examples:
     \\  attyx focus right
@@ -331,57 +331,60 @@ pub const session_rename =
 pub const send_keys =
     \\Send keystrokes to a pane.
     \\
-    \\Usage: attyx send-keys [--pane <target>] <keys>
+    \\Usage: attyx send-keys [--pane <target>] [--wait-stable [ms]] <keys>
     \\
     \\The key string supports C-style escape sequences. This is the primary
     \\way for agents to type into a terminal pane.
     \\
+    \\Aliases: send-text (identical behavior)
+    \\
     \\Options:
     \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
     \\                        the focused one. Pane IDs are shown in 'attyx list'
     \\                        output and returned by creation commands.
+    \\  --wait-stable [ms]    After sending, poll screen content and wait until it
+    \\                        stabilizes, then print the final screen text to stdout.
+    \\                        Default: 300ms. Max timeout: 30s.
+    \\                        Replaces manual sleep + get-text polling loops.
     \\
-    \\Escape sequences:
-    \\  \n           Enter / newline
-    \\  \t           Tab
-    \\  \x03         Ctrl-C (interrupt)
-    \\  \x04         Ctrl-D (EOF)
-    \\  \x1a         Ctrl-Z (suspend)
-    \\  \x1b         Escape
-    \\  \x1b[A       Arrow up
-    \\  \x1b[B       Arrow down
-    \\  \x1b[C       Arrow right
-    \\  \x1b[D       Arrow left
-    \\  \x7f         Backspace
+    \\Named keys (case-insensitive, inside braces):
+    \\  {Enter}      Carriage return         {Tab}        Tab
+    \\  {Space}      Space                   {Escape}     Escape
+    \\  {Backspace}  Backspace (0x7f)        {Delete}     Delete
+    \\  {Up}         Arrow up                {Down}       Arrow down
+    \\  {Left}       Arrow left              {Right}      Arrow right
+    \\  {Home}       Home                    {End}        End
+    \\  {PgUp}       Page Up                 {PgDn}       Page Down
+    \\  {Insert}     Insert
+    \\  {F1}-{F12}   Function keys
+    \\  {Ctrl-a}     Ctrl+A (works for a-z, e.g. {Ctrl-c} = interrupt)
+    \\
+    \\Modifier combos (prefix with Ctrl-, Shift-, Alt-, combinable):
+    \\  {Ctrl-Up}          Ctrl+Arrow (word jump in shells)
+    \\  {Ctrl-Shift-Up}    Ctrl+Shift+Arrow
+    \\  {Alt-a}            Alt+A (ESC prefix)
+    \\  {Shift-Tab}        Backtab (reverse tab)
+    \\  {Shift-F5}         Shift+F5
+    \\  {Ctrl-Shift-p}     Ctrl+Shift+P (CSI u encoding)
+    \\
+    \\C-style escape sequences (also supported):
+    \\  \n  \t  \r  \e  \xHH  \\  \'  \"  \0  \a  \b
     \\
     \\Examples:
-    \\  attyx send-keys "ls -la\n"              Type ls -la and press Enter
-    \\  attyx send-keys --pane 3 "ls\n"         Send to pane 3 (no focus change)
-    \\  attyx send-keys --pane 5 "\x03"         Send Ctrl-C to pane 5
-    \\  attyx send-keys "\x1b[A\n"              Arrow up then Enter (rerun last cmd)
-    \\  attyx send-keys "q"                     Press q (e.g. to quit less/man)
+    \\  attyx send-keys "ls -la{Enter}"         Type ls -la and press Enter
+    \\  attyx send-keys -p 3 "ls{Enter}"        Send to pane 3 (no focus change)
+    \\  attyx send-keys -p 5 "{Ctrl-c}"         Send Ctrl-C to pane 5
+    \\  attyx send-keys "{Up}{Enter}"            Arrow up then Enter (rerun last)
+    \\  attyx send-keys "q"                      Press q (e.g. to quit less/man)
+    \\  attyx send-keys "{Down}{Down}{Enter}"    Navigate a menu: down twice, select
+    \\  attyx send-keys "{Tab}{Tab}{Enter}"      Tab through options, then confirm
+    \\  attyx send-keys --wait-stable "ls{Enter}"   Send, wait for output, print it
+    \\  attyx send-keys --wait-stable 500 "make{Enter}"  500ms stable window
+    \\  attyx send-keys "{Escape}:wq{Enter}"     Vim: exit with save
     \\
 ;
 
-pub const send_text =
-    \\Send text to a pane.
-    \\
-    \\Usage: attyx send-text [--pane <target>] <text>
-    \\
-    \\The text is written to the pane's PTY. Supports the same C-style
-    \\escape sequences as send-keys (\n, \t, \x03, etc.).
-    \\
-    \\Options:
-    \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
-    \\                        the focused one. Pane IDs are shown in 'attyx list'
-    \\                        output and returned by creation commands.
-    \\
-    \\Examples:
-    \\  attyx send-text "hello"                 Write "hello" (no newline)
-    \\  attyx send-text --pane 3 "hello"        Write to pane 3
-    \\  attyx send-text --pane 5 "echo hi\n"    Write to pane 5
-    \\
-;
+// send_text removed — send-text is now an alias for send-keys (same help)
 
 pub const get_text =
     \\Read visible text from a pane.

@@ -267,13 +267,25 @@ pub fn doUninstall() void {
 
 // ── Skill auto-update ──
 
-const skill_content = @import("skill_data").content;
+const skill_content_raw = @import("skill_data").content;
+const is_dev = @import("builtin").mode == .Debug;
+const skill_name = if (is_dev) "attyx-dev" else "attyx";
+/// In dev builds, rewrite the frontmatter name so the skill registers as /attyx-dev.
+const skill_content = if (is_dev) replaceSkillName() else skill_content_raw;
+
+fn replaceSkillName() []const u8 {
+    @setEvalBranchQuota(skill_content_raw.len * 2);
+    const needle = "name: attyx\n";
+    const replacement = "name: attyx-dev\n";
+    const idx = std.mem.indexOf(u8, skill_content_raw, needle) orelse return skill_content_raw;
+    return skill_content_raw[0..idx] ++ replacement ++ skill_content_raw[idx + needle.len ..];
+}
 
 /// Silently update installed skills if they exist. Called on app launch.
 pub fn autoUpdateSkills() void {
     const home = std.posix.getenv("HOME") orelse return;
     var file_buf: [512]u8 = undefined;
-    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/attyx/SKILL.md", .{home}) catch return;
+    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/{s}/SKILL.md", .{ home, skill_name }) catch return;
 
     // Only update if already installed — don't create if user never ran `attyx skill install`
     std.fs.accessAbsolute(file_path, .{}) catch return;
@@ -306,15 +318,15 @@ fn doSkillInstall(stdout: std.fs.File) void {
         return;
     };
 
-    // Build path: ~/.claude/skills/attyx/SKILL.md
+    // Build path: ~/.claude/skills/{skill_name}/SKILL.md
     var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/attyx", .{home}) catch {
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/{s}", .{ home, skill_name }) catch {
         stdout.writeAll("error: path too long\n") catch {};
         return;
     };
 
     var file_buf: [512]u8 = undefined;
-    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/attyx/SKILL.md", .{home}) catch {
+    const file_path = std.fmt.bufPrint(&file_buf, "{s}/SKILL.md", .{dir_path}) catch {
         stdout.writeAll("error: path too long\n") catch {};
         return;
     };
@@ -340,8 +352,9 @@ fn doSkillInstall(stdout: std.fs.File) void {
         return;
     };
 
-    stdout.writeAll("Installed Claude Code skill to ~/.claude/skills/attyx/\n") catch {};
-    stdout.writeAll("Use /attyx in Claude Code to control the terminal.\n") catch {};
+    var msg_buf: [256]u8 = undefined;
+    const install_msg = std.fmt.bufPrint(&msg_buf, "Installed Claude Code skill to ~/.claude/skills/{s}/\nUse /{s} in Claude Code to control the terminal.\n", .{ skill_name, skill_name }) catch return;
+    stdout.writeAll(install_msg) catch {};
 }
 
 fn doSkillUninstall(stdout: std.fs.File) void {
@@ -351,7 +364,7 @@ fn doSkillUninstall(stdout: std.fs.File) void {
     };
 
     var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/attyx", .{home}) catch {
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/{s}", .{ home, skill_name }) catch {
         stdout.writeAll("error: path too long\n") catch {};
         return;
     };
@@ -367,7 +380,9 @@ fn doSkillUninstall(stdout: std.fs.File) void {
         return;
     };
 
-    stdout.writeAll("Removed Claude Code skill from ~/.claude/skills/attyx/\n") catch {};
+    var msg_buf: [256]u8 = undefined;
+    const rm_msg = std.fmt.bufPrint(&msg_buf, "Removed Claude Code skill from ~/.claude/skills/{s}/\n", .{skill_name}) catch return;
+    stdout.writeAll(rm_msg) catch {};
 }
 
 const skill_help =
