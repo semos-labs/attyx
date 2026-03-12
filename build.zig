@@ -87,10 +87,15 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("themes/themes.zig"),
     });
 
+    const skill_data_mod = b.createModule(.{
+        .root_source_file = b.path(".claude/skills/attyx/data.zig"),
+    });
+
     const cli_commands_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/main.zig"),
         .imports = &.{
             .{ .name = "attyx", .module = mod },
+            .{ .name = "skill_data", .module = skill_data_mod },
         },
     });
 

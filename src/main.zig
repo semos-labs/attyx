@@ -59,6 +59,10 @@ pub fn main() !void {
             cli_commands.doUninstall();
             return;
         },
+        .skill => {
+            cli_commands.doSkill(args);
+            return;
+        },
         .daemon => {
             daemon.run(allocator, null) catch |err| {
                 var buf: [256]u8 = undefined;
