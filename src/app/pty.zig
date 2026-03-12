@@ -26,6 +26,7 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn chdir(path: [*:0]const u8) c_int;
 extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
+extern "c" fn kill(pid: c_int, sig: c_int) c_int;
 extern "c" fn tcgetpgrp(fd: c_int) posix.pid_t;
 extern "c" fn getuid() c_uint;
 extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
@@ -262,16 +263,20 @@ pub const Pty = struct {
     pub fn childExited(self: *Pty) bool {
         if (self.exit_status != null) return true; // already reaped
         // Raw C waitpid: returns pid if reaped, 0 if still running, -1 on error.
-        // ECHILD (-1) means already reaped — treat as exited.
         var status: c_int = undefined;
         const result = waitpid(self.pid, &status, 1); // 1 = WNOHANG
-        if (result != 0) {
-            // Store exit status only on successful reap (result > 0).
-            // ECHILD (result < 0) means already reaped — no status available.
-            if (result > 0) self.exit_status = status;
+        if (result > 0) {
+            self.exit_status = status;
             return true;
         }
-        return false;
+        if (result == 0) return false; // still running
+        // result < 0: ECHILD — we're not the parent of this process.
+        // This happens after hot-upgrade: the new daemon inherits PTY fds
+        // but the shell processes were forked by the old daemon and got
+        // reparented to PID 1. Use kill(pid, 0) to check if the process
+        // is actually still alive.
+        if (kill(self.pid, 0) == 0) return false; // process exists
+        return true; // process is gone
     }
 
     /// Extract the process exit code (0-255), or 1 if killed by signal.
@@ -288,3 +293,66 @@ pub const Pty = struct {
     }
 
 };
+
+// ── Tests ──
+
+test "childExited returns false for non-child process that is still alive" {
+    // Simulates the hot-upgrade scenario: the new daemon process inherits
+    // PTY fds but the shell processes are NOT its children (they were forked
+    // by the old daemon and reparented to PID 1 on its exit).
+    //
+    // We create a grandchild: fork → child forks grandchild → child exits →
+    // grandchild is reparented to init. Our process can't waitpid on the
+    // grandchild (ECHILD), but it's still alive.
+
+    // Use a pipe to communicate the grandchild PID back to us.
+    const pipe_fds = try posix.pipe();
+
+    const child = try posix.fork();
+    if (child == 0) {
+        // ── child ──
+        posix.close(pipe_fds[0]); // close read end
+        const grandchild = posix.fork() catch posix.abort();
+        if (grandchild == 0) {
+            // ── grandchild: sleep for a while ──
+            posix.close(pipe_fds[1]);
+            posix.nanosleep(5, 0);
+            posix.abort();
+        }
+        // Write grandchild PID to pipe, then exit immediately.
+        // This reparents grandchild to PID 1.
+        const gc_pid: i32 = grandchild;
+        _ = posix.write(pipe_fds[1], std.mem.asBytes(&gc_pid)) catch {};
+        posix.close(pipe_fds[1]);
+        std.process.exit(0);
+    }
+
+    // ── parent (test process) ──
+    posix.close(pipe_fds[1]); // close write end
+
+    // Reap our direct child
+    _ = waitpid(child, null, 0);
+
+    // Read grandchild PID from pipe
+    var gc_pid_bytes: [@sizeOf(i32)]u8 = undefined;
+    const n = posix.read(pipe_fds[0], &gc_pid_bytes) catch 0;
+    posix.close(pipe_fds[0]);
+    if (n != @sizeOf(i32)) return error.TestFailed;
+
+    const gc_pid = std.mem.bytesToValue(i32, &gc_pid_bytes);
+
+    // Now gc_pid is alive but NOT our child — waitpid would return ECHILD.
+    // This is exactly what happens after hot-upgrade.
+    var pty = Pty.fromExisting(-1, gc_pid); // fd doesn't matter for this test
+
+    // The bug: old code would return true here (ECHILD treated as exited).
+    // The fix: kill(pid, 0) checks the process is alive → returns false.
+    try std.testing.expect(!pty.childExited());
+
+    // Clean up: kill the grandchild
+    _ = kill(gc_pid, 9); // SIGKILL
+
+    // After kill, childExited should eventually return true
+    posix.nanosleep(0, 50_000_000); // 50ms for signal delivery
+    try std.testing.expect(pty.childExited());
+}
