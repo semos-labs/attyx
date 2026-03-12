@@ -70,6 +70,11 @@ pub const MessageType = enum(u8) {
     session_switch = 0x3E,
     session_rename = 0x3F,
 
+    // ── Pane-targeted variants (payload: [tab_idx:u8][pane_idx:u8][data...]) ──
+    send_keys_pane = 0x46,
+    send_text_pane = 0x47,
+    get_text_pane = 0x48,
+
     // ── Responses ──
     success = 0xA0,
     err = 0xA1,

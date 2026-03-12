@@ -61,6 +61,26 @@ pub const TabManager = struct {
         return &(self.tabs[self.active].?);
     }
 
+    /// Look up a pane by tab index and leaf index within that tab.
+    /// tab_idx 0xFF = active tab. pane_idx = leaf index (from `list` output).
+    pub fn findPaneByIndex(self: *TabManager, tab_idx: u8, pane_idx: u8) ?*Pane {
+        const ti: u8 = if (tab_idx == 0xFF) self.active else tab_idx;
+        if (ti >= self.count) return null;
+        const layout = &(self.tabs[ti] orelse return null);
+
+        // If only one pane in tab, pane_idx 0 or 0xFF both work
+        if (layout.pane_count == 1) {
+            return layout.focusedPane();
+        }
+
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = layout.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            if (leaf.index == pane_idx) return leaf.pane;
+        }
+        return null;
+    }
+
     /// Spawn a new tab. Inserts after the active tab.
     /// argv=null spawns the default shell.
     pub fn addTab(
