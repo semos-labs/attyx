@@ -315,13 +315,17 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .session_list => protocol.encodeMessage(buf, .session_list, ""),
         .session_create => blk: {
-            // Payload: [flags:u8][name...]
+            // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
             // flags bit 0 = background (don't switch to new session)
-            var payload_buf: [256]u8 = undefined;
+            var payload_buf: [4480]u8 = undefined;
             payload_buf[0] = if (parsed.background) 0x01 else 0x00;
-            const name_len = @min(parsed.text_arg.len, payload_buf.len - 1);
-            @memcpy(payload_buf[1 .. 1 + name_len], parsed.text_arg[0..name_len]);
-            break :blk protocol.encodeMessage(buf, .session_create, payload_buf[0 .. 1 + name_len]);
+            const cwd_len: u16 = @intCast(@min(parsed.cwd_arg.len, 4096));
+            std.mem.writeInt(u16, payload_buf[1..3], cwd_len, .little);
+            @memcpy(payload_buf[3 .. 3 + cwd_len], parsed.cwd_arg[0..cwd_len]);
+            const name_off = 3 + cwd_len;
+            const name_len = @min(parsed.text_arg.len, payload_buf.len - name_off);
+            @memcpy(payload_buf[name_off .. name_off + name_len], parsed.text_arg[0..name_len]);
+            break :blk protocol.encodeMessage(buf, .session_create, payload_buf[0 .. name_off + name_len]);
         },
         .session_kill => blk: {
             var payload: [4]u8 = undefined;

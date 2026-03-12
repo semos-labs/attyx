@@ -248,7 +248,7 @@ pub const session =
     \\
     \\Commands:
     \\  list                       List all sessions (supports --json)
-    \\  create [-b] [name]          Create a new session (switches to it by default)
+    \\  create [cwd] [-b] [name]    Create a new session (switches to it by default)
     \\  kill <id>                  Kill a session and all its panes
     \\  switch <id>                Switch the window to a different session
     \\  rename [id] <name>         Rename a session (default: current)
@@ -256,7 +256,7 @@ pub const session =
     \\Examples:
     \\  attyx session list
     \\  attyx session create
-    \\  attyx session create -b "build"
+    \\  attyx session create ~/Projects/myapp -b "build"
     \\  attyx session switch 2
     \\  attyx session rename "dev server"
     \\  attyx session rename 1 "dev server"
@@ -267,7 +267,7 @@ pub const session =
 pub const session_create =
     \\Create a new session.
     \\
-    \\Usage: attyx session create [name] [-b|--background]
+    \\Usage: attyx session create [cwd] [-b|--background] [name]
     \\
     \\By default, the window switches to the new session immediately.
     \\Use -b/--background to create the session without switching to it.
@@ -276,12 +276,14 @@ pub const session_create =
     \\  -b, --background   Create in the background (don't switch)
     \\
     \\Arguments:
-    \\  name   Optional session name (default: "new")
+    \\  cwd    Starting directory (optional)
+    \\  name   Session name (optional, default: "new")
     \\
     \\Examples:
     \\  attyx session create
-    \\  attyx session create "dev server"
-    \\  attyx session create -b "build"
+    \\  attyx session create ~/Projects/myapp
+    \\  attyx session create ~/Projects/myapp "dev server"
+    \\  attyx session create ~/Projects/myapp -b "build"
     \\
 ;
 

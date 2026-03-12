@@ -200,12 +200,23 @@ pub fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         sendError(cmd, "sessions not enabled");
         return;
     };
-    // Payload: [flags:u8][name...]  (flags bit 0 = background)
+    // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
+    // flags bit 0 = background
     const background = cmd.payload_len > 0 and (cmd.payload[0] & 0x01) != 0;
-    const name = if (cmd.payload_len > 1) cmd.payload[1..cmd.payload_len] else "new";
+    var cwd: []const u8 = "";
+    var name: []const u8 = "new";
+    if (cmd.payload_len >= 3) {
+        const cwd_len = std.mem.readInt(u16, cmd.payload[1..3], .little);
+        const cwd_end = @min(@as(usize, 3) + cwd_len, cmd.payload_len);
+        cwd = cmd.payload[3..cwd_end];
+        if (cwd_end < cmd.payload_len) {
+            name = cmd.payload[cwd_end..cmd.payload_len];
+        }
+    }
+    if (name.len == 0) name = "new";
     const rows = ctx.grid_rows;
     const cols = ctx.grid_cols;
-    const sid = sc.createSession(name, rows, cols, "", "") catch {
+    const sid = sc.createSession(name, rows, cols, cwd, "") catch {
         sendError(cmd, "failed to create session");
         return;
     };

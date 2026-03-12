@@ -54,6 +54,7 @@ pub const IpcCommand = enum {
 pub const IpcRequest = struct {
     command: IpcCommand,
     text_arg: []const u8 = "",
+    cwd_arg: []const u8 = "",
     index_arg: u8 = 0,
     session_id_arg: u32 = 0,
     target_pid: ?u32 = null,
@@ -68,6 +69,23 @@ pub const IpcRequest = struct {
     /// Tab targeting by 0-based index. 0xFF = active (default).
     tab_idx: u8 = 0xFF,
 };
+
+fn isDirectory(path: []const u8) bool {
+    // Handle ~ expansion for home directory
+    if (path.len > 0 and path[0] == '~') {
+        const home = std.posix.getenv("HOME") orelse return false;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const rest = if (path.len > 1) path[1..] else "";
+        if (home.len + rest.len >= buf.len) return false;
+        @memcpy(buf[0..home.len], home);
+        @memcpy(buf[home.len .. home.len + rest.len], rest);
+        const full = buf[0 .. home.len + rest.len];
+        const stat = std.fs.cwd().statFile(full) catch return false;
+        return stat.kind == .directory;
+    }
+    const stat = std.fs.cwd().statFile(path) catch return false;
+    return stat.kind == .directory;
+}
 
 fn fatal(msg: []const u8) noreturn {
     std.debug.print("error: {s}\n", .{msg});
@@ -537,17 +555,33 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
     } else if (std.mem.eql(u8, action, "create")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_create);
         var bg = false;
-        var name: []const u8 = "";
+        var pos1: []const u8 = "";
+        var pos2: []const u8 = "";
         var i = start + 2;
         while (i < args.len) {
             if (std.mem.eql(u8, args[i], "-b") or std.mem.eql(u8, args[i], "--background")) {
                 bg = true;
-            } else if (name.len == 0) {
-                name = args[i];
+            } else if (pos1.len == 0) {
+                pos1 = args[i];
+            } else if (pos2.len == 0) {
+                pos2 = args[i];
             }
             i += 1;
         }
-        return .{ .command = .session_create, .text_arg = name, .background = bg, .target_pid = target_pid, .json_output = json_output };
+        // Disambiguate: if first positional is a directory, it's cwd;
+        // otherwise treat it as session name (no cwd).
+        var cwd: []const u8 = "";
+        var name: []const u8 = "";
+        if (pos1.len > 0) {
+            if (isDirectory(pos1)) {
+                cwd = pos1;
+                name = pos2;
+            } else {
+                name = pos1;
+                if (pos2.len > 0) fatal("unexpected argument — did you mean to pass a directory as cwd?");
+            }
+        }
+        return .{ .command = .session_create, .text_arg = name, .cwd_arg = cwd, .background = bg, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "kill")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_kill);
         if (start + 2 >= args.len) { printHelp(help.session_kill); return null; }
