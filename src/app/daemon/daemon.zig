@@ -64,8 +64,17 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
 
     ensureDir(socket_path);
 
-    // Handle stale socket: try connect, if fails → unlink + rebind
-    cleanStaleSocket(socket_path);
+    // Handle stale socket: try connect, if fails → unlink + rebind.
+    // Skip this check when restoring from hot-upgrade — the old daemon
+    // already unlinked the socket. If a rogue daemon raced and bound it,
+    // we must NOT exit(0) here: we are the legitimate daemon with session
+    // state.  Instead, try to unlink and rebind.
+    if (restore_path != null) {
+        // Force-claim the socket: unlink whatever is there and proceed.
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+    } else {
+        cleanStaleSocket(socket_path);
+    }
 
     // Bind Unix socket
     var listen_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
@@ -352,6 +361,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                     // Socket rebound by performUpgrade. Don't retry upgrade
                     // this session — avoids infinite loop if binary is broken.
                     g_upgrade_failed = true;
+                    // Restore our version file — the new (failed) daemon may
+                    // have overwritten it with its version before crashing.
+                    writeVersionFile();
                 },
                 .fatal => {
                     // Socket could not be rebound — daemon is unreachable.
