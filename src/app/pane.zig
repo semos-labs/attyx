@@ -25,7 +25,7 @@ pub const Pane = struct {
     allocator: Allocator,
     /// Stable IPC identifier. Assigned by TabManager on creation, monotonically
     /// increasing, never reused within a session. Used by all IPC targeting.
-    ipc_id: u16 = 0,
+    ipc_id: u32 = 0,
     /// Daemon pane ID. When set, this pane is backed by a daemon PTY and
     /// the local PTY is idle — I/O goes through the shared session socket.
     daemon_pane_id: ?u32 = null,
