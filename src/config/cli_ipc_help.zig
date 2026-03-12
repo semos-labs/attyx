@@ -39,26 +39,26 @@ pub const top_level =
     \\  attyx split vertical --cmd claude Open a vertical split running claude
     \\  attyx focus right                 Move focus to the right pane
     \\  attyx send-keys "ls -la\n"        Type "ls -la" and press Enter
-    \\  attyx send-keys -p 1.0 "ls\n"    Send to tab 1, pane 0 (no focus needed)
+    \\  attyx send-keys -p 3 "ls\n"      Send to pane 3 (no focus change)
     \\  attyx send-text "hello"           Write "hello" to PTY (no newline)
     \\  attyx get-text                    Read what's on screen
-    \\  attyx get-text --pane 2.1         Read from tab 2, pane 1
+    \\  attyx get-text --pane 5           Read from pane 5
     \\  attyx list --json                 Get structured tab/pane info
     \\  attyx reload                      Hot-reload config from disk
     \\
     \\Pane targeting:
     \\  Most commands accept --pane (-p) to target a specific pane/tab without
-    \\  changing focus. Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
-    \\  the active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\  changing focus. Format: a flat pane ID (e.g. 5). Pane IDs are stable — they don't change when
+    \\  other panes are closed. Creation commands return the new pane's ID.
     \\  Tab commands (close, rename) accept a positional tab number instead.
-    \\  Use 'attyx list' to see available pane indices.
+    \\  Use 'attyx list' to see pane IDs.
     \\
     \\Typical agent workflow:
-    \\  1. idx=$(attyx split v --cmd "your-tool")    # open a pane, capture index
-    \\  2. attyx get-text -p "$idx"                  # read its output
-    \\  3. attyx send-keys -p "$idx" "input\n"       # send input without focus
-    \\  4. attyx get-text -p "$idx"                   # read the result
-    \\  5. attyx split close -p "$idx"               # clean up by index
+    \\  1. id=$(attyx split v --cmd "your-tool")     # open pane, capture stable ID
+    \\  2. attyx get-text -p "$id"                   # read its output
+    \\  3. attyx send-keys -p "$id" "input\n"        # send input without focus
+    \\  4. attyx get-text -p "$id"                   # read the result
+    \\  5. attyx split close -p "$id"                # clean up by ID
     \\
     \\Run 'attyx <command> --help' for details on a specific command.
     \\
@@ -72,7 +72,7 @@ pub const tab =
     \\Usage: attyx tab <command> [args...]
     \\
     \\Commands:
-    \\  create [--cmd <command>]   Create a new tab (returns tab.pane index)
+    \\  create [--cmd <command>]   Create a new tab (returns pane ID)
     \\  close [<N>]                Close tab N (default: active tab)
     \\  next                       Switch to the next tab
     \\  prev                       Switch to the previous tab
@@ -163,8 +163,8 @@ pub const split =
     \\Usage: attyx split <command> [args...]
     \\
     \\Commands:
-    \\  vertical [--cmd <cmd>]     Split vertically (returns tab.pane index)
-    \\  horizontal [--cmd <cmd>]   Split horizontally (returns tab.pane index)
+    \\  vertical [--cmd <cmd>]     Split vertically (returns pane ID)
+    \\  horizontal [--cmd <cmd>]   Split horizontally (returns pane ID)
     \\  close [-p <target>]        Close a pane (default: focused pane)
     \\  rotate [-p <target>]       Rotate splits in a tab (default: active tab)
     \\  zoom [-p <target>]         Toggle zoom on a pane (default: focused pane)
@@ -182,11 +182,10 @@ pub const split =
     \\  attyx split h --cmd htop              Monitoring pane below
     \\  attyx split v --cmd claude            Claude in a side pane
     \\  attyx split zoom                      Toggle zoom on focused pane
-    \\  attyx split zoom -p 1.2              Toggle zoom on pane 2 in tab 1
+    \\  attyx split zoom -p 5                Toggle zoom on pane 5
     \\  attyx split close                     Close focused pane
-    \\  attyx split close -p 2               Close pane 2 in active tab
-    \\  attyx split close -p 1.2             Close pane 2 in tab 1
-    \\  attyx split rotate -p 2.0            Rotate splits in tab 2
+    \\  attyx split close -p 3               Close pane 3
+    \\  attyx split rotate -p 2              Rotate splits in pane 2's tab
     \\
 ;
 
@@ -313,10 +312,9 @@ pub const send_keys =
     \\way for agents to type into a terminal pane.
     \\
     \\Options:
-    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
-    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
-    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
-    \\                        Use 'attyx list' to see pane indices.
+    \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
+    \\                        the focused one. Pane IDs are shown in 'attyx list'
+    \\                        output and returned by creation commands.
     \\
     \\Escape sequences:
     \\  \n           Enter / newline
@@ -333,8 +331,8 @@ pub const send_keys =
     \\
     \\Examples:
     \\  attyx send-keys "ls -la\n"              Type ls -la and press Enter
-    \\  attyx send-keys --pane 1.0 "ls\n"       Send to tab 1, pane 0
-    \\  attyx send-keys --pane 1 "\x03"         Send Ctrl-C to pane 1 in active tab
+    \\  attyx send-keys --pane 3 "ls\n"         Send to pane 3 (no focus change)
+    \\  attyx send-keys --pane 5 "\x03"         Send Ctrl-C to pane 5
     \\  attyx send-keys "\x1b[A\n"              Arrow up then Enter (rerun last cmd)
     \\  attyx send-keys "q"                     Press q (e.g. to quit less/man)
     \\
@@ -349,15 +347,14 @@ pub const send_text =
     \\escape sequences as send-keys (\n, \t, \x03, etc.).
     \\
     \\Options:
-    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
-    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
-    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
-    \\                        Use 'attyx list' to see pane indices.
+    \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
+    \\                        the focused one. Pane IDs are shown in 'attyx list'
+    \\                        output and returned by creation commands.
     \\
     \\Examples:
     \\  attyx send-text "hello"                 Write "hello" (no newline)
-    \\  attyx send-text --pane 1.0 "hello"      Write to tab 1, pane 0
-    \\  attyx send-text --pane 1 "echo hi\n"    Write to pane 1 in active tab
+    \\  attyx send-text --pane 3 "hello"        Write to pane 3
+    \\  attyx send-text --pane 5 "echo hi\n"    Write to pane 5
     \\
 ;
 
@@ -371,10 +368,9 @@ pub const get_text =
     \\to "see" what's on screen.
     \\
     \\Options:
-    \\  --pane, -p <target>   Target a specific pane instead of the focused one.
-    \\                        Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
-    \\                        active tab. Tab is 1-indexed, pane is 0-indexed.
-    \\                        Use 'attyx list' to see pane indices.
+    \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
+    \\                        the focused one. Pane IDs are shown in 'attyx list'
+    \\                        output and returned by creation commands.
     \\
     \\Output format (plain text):
     \\  One line per screen row. Trailing whitespace is trimmed per row.
@@ -385,8 +381,8 @@ pub const get_text =
     \\
     \\Examples:
     \\  attyx get-text                         Print screen content
-    \\  attyx get-text --pane 1.0              Read from tab 1, pane 0
-    \\  attyx get-text --pane 1 --json         Pane 1 in active tab as JSON
+    \\  attyx get-text --pane 3                Read from pane 3
+    \\  attyx get-text --pane 5 --json         Pane 5 as JSON
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.

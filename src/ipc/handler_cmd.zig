@@ -106,10 +106,10 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: 
         new_pane.ipc_wait_fd = cmd.response_fd;
         cmd.response_fd = -1; // prevent sendOk/sendError from closing it
     } else {
-        // Return the new tab.pane index so callers can target it with --pane
+        // Return the new pane's stable IPC ID
         var idx_buf: [16]u8 = undefined;
         var idx_stream = std.io.fixedBufferStream(&idx_buf);
-        idx_stream.writer().print("{d}.0", .{@as(u16, ctx.tab_mgr.active) + 1}) catch {};
+        idx_stream.writer().print("{d}", .{new_pane.ipc_id}) catch {};
         sendOk(cmd, idx_stream.getWritten());
     }
 }
@@ -152,13 +152,14 @@ pub fn handleTabCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     }
 
     publish.updateGridTopOffset(ctx);
-    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    const new_pane = ctx.tab_mgr.activePane();
+    new_pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     actions.switchActiveTab(ctx);
     actions.saveSessionLayout(ctx);
 
     var idx_buf: [16]u8 = undefined;
     var idx_stream = std.io.fixedBufferStream(&idx_buf);
-    idx_stream.writer().print("{d}.0", .{@as(u16, ctx.tab_mgr.active) + 1}) catch {};
+    idx_stream.writer().print("{d}", .{new_pane.ipc_id}) catch {};
     sendOk(cmd, idx_stream.getWritten());
 }
 
@@ -174,9 +175,11 @@ pub fn handleSplit(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout
         return;
     }
 
+    // Return the new pane's stable IPC ID
+    const new_pane = layout.focusedPane();
     var idx_buf: [16]u8 = undefined;
     var idx_stream = std.io.fixedBufferStream(&idx_buf);
-    idx_stream.writer().print("{d}.{d}", .{ @as(u16, ctx.tab_mgr.active) + 1, layout.focused }) catch {};
+    idx_stream.writer().print("{d}", .{new_pane.ipc_id}) catch {};
     sendOk(cmd, idx_stream.getWritten());
 }
 
@@ -228,6 +231,7 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
             return;
         };
         new_pane.daemon_pane_id = pane_id;
+        ctx.tab_mgr.assignIpcId(new_pane);
         layout.splitPaneWith(dir, new_pane) catch {
             new_pane.deinit();
             ctx.allocator.destroy(new_pane);
@@ -258,6 +262,7 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
                 return;
             };
             new_split_pane.captured_stdout = initCapturedStdout(ctx.allocator);
+            ctx.tab_mgr.assignIpcId(new_split_pane);
             layout.splitPaneWith(dir, new_split_pane) catch {
                 new_split_pane.deinit();
                 ctx.allocator.destroy(new_split_pane);
@@ -272,9 +277,10 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
         }
     }
 
-    // Set theme colors on newly created pane
+    // Set theme colors and assign IPC ID on newly created pane
     const new_pane = if (layout.pool[layout.focused].pane) |pane| pane else null;
     if (new_pane) |pane| {
+        if (pane.ipc_id == 0) ctx.tab_mgr.assignIpcId(pane);
         pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
@@ -293,11 +299,11 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
             sendOk(cmd, "");
         }
     } else {
-        // Return the new tab.pane index so callers can target it with --pane
-        const active_layout = ctx.tab_mgr.activeLayout();
+        // Return the new pane's stable IPC ID
         var idx_buf: [16]u8 = undefined;
         var idx_stream = std.io.fixedBufferStream(&idx_buf);
-        idx_stream.writer().print("{d}.{d}", .{ @as(u16, ctx.tab_mgr.active) + 1, active_layout.focused }) catch {};
+        const created_id: u16 = if (new_pane) |p| p.ipc_id else 0;
+        idx_stream.writer().print("{d}", .{created_id}) catch {};
         sendOk(cmd, idx_stream.getWritten());
     }
 }
@@ -306,41 +312,31 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
 // Targeted pane/tab operations
 // ---------------------------------------------------------------------------
 
-/// Close a specific pane by tab.pane index. Payload: [tab_idx:u8][pane_idx:u8]
+/// Close a specific pane by IPC ID. Payload: [pane_id:u16 LE]
 pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     if (cmd.payload_len < 2) {
-        sendError(cmd, "missing pane target");
+        sendError(cmd, "missing pane ID");
         return;
     }
-    const tab_idx = cmd.payload[0];
-    const pane_idx = cmd.payload[1];
-    const ti: u8 = if (tab_idx == 0xFF) ctx.tab_mgr.active else tab_idx;
-    if (ti >= ctx.tab_mgr.count) {
-        sendError(cmd, "tab not found");
-        return;
-    }
-    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
-        sendError(cmd, "tab not found");
-        return;
-    });
-
-    // Validate that pane_idx is a valid leaf in this layout
-    if (pane_idx >= split_layout_mod.max_nodes or
-        layout.pool[pane_idx].tag != .leaf or
-        layout.pool[pane_idx].pane == null)
-    {
+    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
-    }
+    };
 
     // Notify daemon before closing
     if (ctx.session_client) |sc| {
-        if (layout.pool[pane_idx].pane) |pane| {
-            if (pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
-        }
+        if (found.pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
     }
 
-    const result = layout.closePaneAt(pane_idx, ctx.allocator);
+    // Find which tab this layout belongs to
+    const ti = for (0..ctx.tab_mgr.count) |i| {
+        if (ctx.tab_mgr.tabs[i]) |*tab_layout| {
+            if (tab_layout == found.layout) break @as(u8, @intCast(i));
+        }
+    } else ctx.tab_mgr.active;
+
+    const result = found.layout.closePaneAt(found.pool_idx, ctx.allocator);
     if (result == .last_pane) {
         if (ctx.tab_mgr.count <= 1) {
             sendError(cmd, "cannot close last pane");
@@ -350,8 +346,8 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         publish.updateGridTopOffset(ctx);
     } else {
         const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-        layout.layout(pty_rows, ctx.grid_cols);
-        split_actions.notifyPaneSizes(ctx, layout);
+        found.layout.layout(pty_rows, ctx.grid_cols);
+        split_actions.notifyPaneSizes(ctx, found.layout);
         actions.updateSplitActive(ctx);
     }
     actions.switchActiveTab(ctx);
@@ -413,62 +409,44 @@ pub fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
     sendOk(cmd, "");
 }
 
-/// Toggle zoom on a specific pane. Payload: [tab_idx:u8][pane_idx:u8]
+/// Toggle zoom on a specific pane by IPC ID. Payload: [pane_id:u16 LE]
 pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     if (cmd.payload_len < 2) {
-        sendError(cmd, "missing pane target");
+        sendError(cmd, "missing pane ID");
         return;
     }
-    const tab_idx = cmd.payload[0];
-    const pane_idx = cmd.payload[1];
-    const ti: u8 = if (tab_idx == 0xFF) ctx.tab_mgr.active else tab_idx;
-    if (ti >= ctx.tab_mgr.count) {
-        sendError(cmd, "tab not found");
-        return;
-    }
-    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
-        sendError(cmd, "tab not found");
-        return;
-    });
-
-    // Validate that pane_idx is a valid leaf
-    if (pane_idx >= split_layout_mod.max_nodes or
-        layout.pool[pane_idx].tag != .leaf or
-        layout.pool[pane_idx].pane == null)
-    {
+    const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+    const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
-    }
+    };
 
     // Focus the target pane before toggling zoom
-    layout.focused = pane_idx;
-    layout.toggleZoom();
+    found.layout.focused = found.pool_idx;
+    found.layout.toggleZoom();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    if (layout.isZoomed()) {
-        layout.focusedPane().resize(pty_rows, ctx.grid_cols);
+    if (found.layout.isZoomed()) {
+        found.layout.focusedPane().resize(pty_rows, ctx.grid_cols);
     } else {
-        layout.layout(pty_rows, ctx.grid_cols);
+        found.layout.layout(pty_rows, ctx.grid_cols);
     }
-    split_actions.notifyPaneSizes(ctx, layout);
+    split_actions.notifyPaneSizes(ctx, found.layout);
     actions.switchActiveTab(ctx);
     sendOk(cmd, "");
 }
 
-/// Rotate panes in a specific tab. Payload: [tab_idx:u8]
+/// Rotate panes in a tab containing the given pane. Payload: [pane_id:u16 LE]
+/// If no pane ID given (payload_len < 2), rotates the active tab.
 pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 1) {
-        sendError(cmd, "missing tab index");
-        return;
-    }
-    const ti = cmd.payload[0];
-    if (ti >= ctx.tab_mgr.count) {
-        sendError(cmd, "tab not found");
-        return;
-    }
-    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
-        sendError(cmd, "tab not found");
-        return;
-    });
+    const layout = if (cmd.payload_len >= 2) blk: {
+        const pane_id = std.mem.readInt(u16, cmd.payload[0..2], .little);
+        const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
+            sendError(cmd, "pane not found");
+            return;
+        };
+        break :blk found.layout;
+    } else ctx.tab_mgr.activeLayout();
+
     layout.rotatePanes();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     layout.layout(pty_rows, ctx.grid_cols);
