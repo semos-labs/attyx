@@ -104,6 +104,9 @@ pub fn main() !void {
         .run => {},
     }
 
+    // Silently update installed skills (e.g. Claude Code /attyx) to match this build
+    cli_commands.autoUpdateSkills();
+
     var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
     defer merged.deinit();
 
