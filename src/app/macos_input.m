@@ -372,6 +372,16 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     row -= g_grid_top_offset;
     if (row < 0) row = 0;
 
+    // Clamp to focused pane bounds when splits are active
+    if (g_split_active && g_pane_rect_rows > 0) {
+        int pr = g_pane_rect_row, pc = g_pane_rect_col;
+        int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+        if (row < pr) row = pr;
+        if (row >= pe) row = pe - 1;
+        if (col < pc) col = pc;
+        if (col >= pce) col = pce - 1;
+    }
+
     if (event.modifierFlags & NSEventModifierFlagCommand) {
         int cols = g_cols, rows_n = g_rows;
         if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
@@ -664,6 +674,17 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         mouseCell0(event, self, &col, &row);
         row -= g_grid_top_offset;
         if (row < 0) row = 0;
+
+        // Clamp to focused pane bounds when splits are active
+        if (g_split_active && g_pane_rect_rows > 0) {
+            int pr = g_pane_rect_row, pc = g_pane_rect_col;
+            int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+            if (row < pr) row = pr;
+            if (row >= pe) row = pe - 1;
+            if (col < pc) col = pc;
+            if (col >= pce) col = pce - 1;
+        }
+
         if (col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (_clickCount >= 3) {

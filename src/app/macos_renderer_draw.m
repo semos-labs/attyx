@@ -9,8 +9,8 @@
 
 static BOOL cellIsSelected(int row, int col) {
     if (!g_sel_active) return NO;
-    // In copy mode with splits, clip selection to focused pane rect
-    if (g_copy_mode && g_pane_rect_rows > 0) {
+    // With splits, clip selection to focused pane rect
+    if ((g_copy_mode || g_split_active) && g_pane_rect_rows > 0) {
         int pr = g_pane_rect_row, pc = g_pane_rect_col;
         int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
         if (row < pr || row >= pe || col < pc || col >= pce) return NO;
