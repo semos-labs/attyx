@@ -75,6 +75,13 @@ pub const MessageType = enum(u8) {
     send_text_pane = 0x47,
     get_text_pane = 0x48,
 
+    // ── Targeted close/zoom/rotate/rename (payload: [tab_idx:u8][pane_idx:u8] or [tab_idx:u8][data...]) ──
+    pane_close_targeted = 0x49,
+    pane_zoom_targeted = 0x4A,
+    pane_rotate_targeted = 0x4B,
+    tab_close_targeted = 0x4C,
+    tab_rename_targeted = 0x4D,
+
     // ── Responses ──
     success = 0xA0,
     err = 0xA1,

@@ -47,17 +47,18 @@ pub const top_level =
     \\  attyx reload                      Hot-reload config from disk
     \\
     \\Pane targeting:
-    \\  send-keys, send-text, and get-text accept --pane (-p) to target a
-    \\  specific pane without changing focus. Format: <tab>.<pane> (e.g. 1.0)
-    \\  or just <pane> for the active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\  Most commands accept --pane (-p) to target a specific pane/tab without
+    \\  changing focus. Format: <tab>.<pane> (e.g. 1.0) or just <pane> for
+    \\  the active tab. Tab is 1-indexed, pane is 0-indexed.
+    \\  Tab commands (close, rename) accept a positional tab number instead.
     \\  Use 'attyx list' to see available pane indices.
     \\
     \\Typical agent workflow:
-    \\  1. attyx split vertical --cmd "your-tool"   # open a pane
-    \\  2. attyx get-text --pane 1                   # read its output by index
-    \\  3. attyx send-keys -p 1 "some input\n"      # send input without focus
-    \\  4. attyx get-text --pane 1                   # read the result
-    \\  5. attyx split close                         # clean up when done
+    \\  1. idx=$(attyx split v --cmd "your-tool")    # open a pane, capture index
+    \\  2. attyx get-text -p "$idx"                  # read its output
+    \\  3. attyx send-keys -p "$idx" "input\n"       # send input without focus
+    \\  4. attyx get-text -p "$idx"                   # read the result
+    \\  5. attyx split close -p "$idx"               # clean up by index
     \\
     \\Run 'attyx <command> --help' for details on a specific command.
     \\
@@ -71,13 +72,13 @@ pub const tab =
     \\Usage: attyx tab <command> [args...]
     \\
     \\Commands:
-    \\  create [--cmd <command>]   Create a new tab
-    \\  close                      Close the active tab
+    \\  create [--cmd <command>]   Create a new tab (returns tab.pane index)
+    \\  close [<N>]                Close tab N (default: active tab)
     \\  next                       Switch to the next tab
     \\  prev                       Switch to the previous tab
     \\  select <1-9>               Switch to tab by number (1-indexed)
     \\  move <left|right>          Reorder the active tab in the tab bar
-    \\  rename <name>              Set a custom tab title
+    \\  rename [<N>] <name>        Set tab title (default: active tab)
     \\
     \\Examples:
     \\  attyx tab create                         New shell tab
@@ -85,8 +86,10 @@ pub const tab =
     \\  attyx tab create --cmd "tail -f app.log" New tab tailing a log
     \\  attyx tab select 3                       Jump to tab 3
     \\  attyx tab move left                      Move current tab left
-    \\  attyx tab rename "build logs"            Set tab title
-    \\  attyx tab close                          Close current tab
+    \\  attyx tab rename "build logs"            Set active tab title
+    \\  attyx tab rename 2 "build logs"          Set tab 2 title
+    \\  attyx tab close                          Close active tab
+    \\  attyx tab close 3                        Close tab 3
     \\
 ;
 
@@ -137,15 +140,18 @@ pub const tab_move =
 ;
 
 pub const tab_rename =
-    \\Rename the active tab.
+    \\Rename a tab.
     \\
-    \\Usage: attyx tab rename <name>
+    \\Usage: attyx tab rename [<N>] <name>
     \\
-    \\The name is displayed in the tab bar. Use quotes for names with spaces.
+    \\Arguments:
+    \\  N      Tab number (1-indexed, optional — defaults to active tab)
+    \\  name   New tab title. Use quotes for names with spaces.
     \\
     \\Examples:
     \\  attyx tab rename server
     \\  attyx tab rename "build logs"
+    \\  attyx tab rename 2 "build logs"
     \\
 ;
 
@@ -157,11 +163,11 @@ pub const split =
     \\Usage: attyx split <command> [args...]
     \\
     \\Commands:
-    \\  vertical [--cmd <cmd>]     Split vertically (new pane to the right)
-    \\  horizontal [--cmd <cmd>]   Split horizontally (new pane below)
-    \\  close                      Close the active pane (focus moves to neighbor)
-    \\  rotate                     Rotate the split layout
-    \\  zoom                       Toggle zoom on the active pane
+    \\  vertical [--cmd <cmd>]     Split vertically (returns tab.pane index)
+    \\  horizontal [--cmd <cmd>]   Split horizontally (returns tab.pane index)
+    \\  close [-p <target>]        Close a pane (default: focused pane)
+    \\  rotate [-p <target>]       Rotate splits in a tab (default: active tab)
+    \\  zoom [-p <target>]         Toggle zoom on a pane (default: focused pane)
     \\
     \\Aliases:
     \\  v   Same as vertical
@@ -175,8 +181,12 @@ pub const split =
     \\  attyx split vertical                  New shell pane on the right
     \\  attyx split h --cmd htop              Monitoring pane below
     \\  attyx split v --cmd claude            Claude in a side pane
-    \\  attyx split zoom                      Toggle pane zoom
+    \\  attyx split zoom                      Toggle zoom on focused pane
+    \\  attyx split zoom -p 1.2              Toggle zoom on pane 2 in tab 1
     \\  attyx split close                     Close focused pane
+    \\  attyx split close -p 2               Close pane 2 in active tab
+    \\  attyx split close -p 1.2             Close pane 2 in tab 1
+    \\  attyx split rotate -p 2.0            Rotate splits in tab 2
     \\
 ;
 

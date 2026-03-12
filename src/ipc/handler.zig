@@ -32,14 +32,15 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             } else if (msg_type == .tab_create_wait) {
                 sendError(cmd, "--wait requires --cmd");
             } else {
-                dispatchAction(.tab_new);
-                sendOk(cmd, "");
+                handler_cmd.handleTabCreate(cmd, ctx);
             }
         },
         .tab_close => {
             dispatchAction(.tab_close);
             sendOk(cmd, "");
         },
+        .tab_close_targeted => handler_cmd.handleTabCloseTargeted(cmd, ctx),
+        .tab_rename_targeted => handler_cmd.handleTabRenameTargeted(cmd, ctx),
         .tab_next => {
             dispatchAction(.tab_next);
             sendOk(cmd, "");
@@ -83,8 +84,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             } else if (wait) {
                 sendError(cmd, "--wait requires --cmd");
             } else {
-                dispatchAction(.split_vertical);
-                sendOk(cmd, "");
+                handler_cmd.handleSplit(cmd, ctx, .vertical);
             }
         },
         .split_horizontal, .split_horizontal_wait => {
@@ -94,22 +94,24 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             } else if (wait) {
                 sendError(cmd, "--wait requires --cmd");
             } else {
-                dispatchAction(.split_horizontal);
-                sendOk(cmd, "");
+                handler_cmd.handleSplit(cmd, ctx, .horizontal);
             }
         },
         .pane_close => {
             dispatchAction(.pane_close);
             sendOk(cmd, "");
         },
+        .pane_close_targeted => handler_cmd.handlePaneCloseTargeted(cmd, ctx),
         .pane_rotate => {
             dispatchAction(.pane_rotate);
             sendOk(cmd, "");
         },
+        .pane_rotate_targeted => handler_cmd.handlePaneRotateTargeted(cmd, ctx),
         .pane_zoom_toggle => {
             dispatchAction(.pane_zoom_toggle);
             sendOk(cmd, "");
         },
+        .pane_zoom_targeted => handler_cmd.handlePaneZoomTargeted(cmd, ctx),
 
         // ── Focus commands (silent success) ──
         .focus_up => {

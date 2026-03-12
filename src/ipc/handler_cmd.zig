@@ -1,6 +1,8 @@
-// Attyx — IPC command handler: --cmd support for tab/split creation
+// Attyx — IPC command handler: tab/split creation (both --cmd and plain)
 //
-// Handles `tab create --cmd`, `run`, and `split --cmd` in both local and session modes.
+// Handles `tab create`, `split v/h`, and their `--cmd` variants
+// in both local and session modes. All handlers run synchronously on the
+// PTY thread so they can return the new pane index in the response.
 
 const std = @import("std");
 const posix = std.posix;
@@ -11,8 +13,10 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const split_layout_mod = @import("../app/split_layout.zig");
 const publish = @import("../app/ui/publish.zig");
 const actions = @import("../app/ui/actions.zig");
+const split_actions = @import("../app/ui/split_actions.zig");
 const statusbar = @import("../app/statusbar.zig");
 const popup_mod = @import("../app/popup.zig");
+const logging = @import("../logging/log.zig");
 
 const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
@@ -105,8 +109,78 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: 
         new_pane.ipc_wait_fd = cmd.response_fd;
         cmd.response_fd = -1; // prevent sendOk/sendError from closing it
     } else {
-        sendOk(cmd, "");
+        // Return the new tab.pane index so callers can target it with --pane
+        var idx_buf: [16]u8 = undefined;
+        var idx_stream = std.io.fixedBufferStream(&idx_buf);
+        idx_stream.writer().print("{d}.0", .{@as(u16, ctx.tab_mgr.active) + 1}) catch {};
+        sendOk(cmd, idx_stream.getWritten());
     }
+}
+
+/// Plain `tab create` (no --cmd) — synchronous so we can return the index.
+/// Mirrors the .tab_new action logic from actions.zig.
+pub fn handleTabCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const cols: u16 = ctx.grid_cols;
+
+    var osc7_buf: [statusbar.max_output_len]u8 = undefined;
+    const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
+    defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+
+    if (ctx.sessions_enabled) {
+        const sc = ctx.session_client orelse {
+            sendError(cmd, "sessions not available");
+            return;
+        };
+        sc.sendCreatePane(rows, cols, resolved.cwd orelse "") catch {
+            sendError(cmd, "failed to send create_pane");
+            return;
+        };
+        const pane_id = sc.waitForPaneCreated(5000) catch {
+            sendError(cmd, "daemon pane creation failed");
+            return;
+        };
+        const new_pane = ctx.tab_mgr.addDaemonTab(rows, cols, ctx.applied_scrollback_lines) catch {
+            sendError(cmd, "failed to create tab");
+            return;
+        };
+        new_pane.daemon_pane_id = pane_id;
+    } else {
+        const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+        defer if (cwd_z) |z| ctx.allocator.free(z);
+        ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch {
+            sendError(cmd, "failed to create tab");
+            return;
+        };
+    }
+
+    publish.updateGridTopOffset(ctx);
+    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+    actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
+
+    var idx_buf: [16]u8 = undefined;
+    var idx_stream = std.io.fixedBufferStream(&idx_buf);
+    idx_stream.writer().print("{d}.0", .{@as(u16, ctx.tab_mgr.active) + 1}) catch {};
+    sendOk(cmd, idx_stream.getWritten());
+}
+
+/// Plain `split v/h` (no --cmd) — synchronous so we can return the index.
+/// Mirrors the doSplit logic from split_actions.zig.
+pub fn handleSplit(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction) void {
+    const layout = ctx.tab_mgr.activeLayout();
+    const before = layout.pane_count;
+    split_actions.doSplit(ctx, layout, dir);
+
+    if (layout.pane_count == before) {
+        sendError(cmd, "failed to create split");
+        return;
+    }
+
+    var idx_buf: [16]u8 = undefined;
+    var idx_stream = std.io.fixedBufferStream(&idx_buf);
+    idx_stream.writer().print("{d}.{d}", .{ @as(u16, ctx.tab_mgr.active) + 1, layout.focused }) catch {};
+    sendOk(cmd, idx_stream.getWritten());
 }
 
 pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split_layout_mod.Direction, wait: bool) void {
@@ -209,7 +283,6 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     layout.layout(pty_rows, ctx.grid_cols);
 
-    const split_actions = @import("../app/ui/split_actions.zig");
     split_actions.notifyPaneSizes(ctx, layout);
     actions.updateSplitActive(ctx);
     actions.switchActiveTab(ctx);
@@ -223,8 +296,173 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
             sendOk(cmd, "");
         }
     } else {
-        sendOk(cmd, "");
+        // Return the new tab.pane index so callers can target it with --pane
+        const active_layout = ctx.tab_mgr.activeLayout();
+        var idx_buf: [16]u8 = undefined;
+        var idx_stream = std.io.fixedBufferStream(&idx_buf);
+        idx_stream.writer().print("{d}.{d}", .{ @as(u16, ctx.tab_mgr.active) + 1, active_layout.focused }) catch {};
+        sendOk(cmd, idx_stream.getWritten());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Targeted pane/tab operations
+// ---------------------------------------------------------------------------
+
+/// Close a specific pane by tab.pane index. Payload: [tab_idx:u8][pane_idx:u8]
+pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 2) {
+        sendError(cmd, "missing pane target");
+        return;
+    }
+    const tab_idx = cmd.payload[0];
+    const pane_idx = cmd.payload[1];
+    const ti: u8 = if (tab_idx == 0xFF) ctx.tab_mgr.active else tab_idx;
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
+        sendError(cmd, "tab not found");
+        return;
+    });
+
+    // Notify daemon before closing
+    if (ctx.session_client) |sc| {
+        if (ctx.tab_mgr.findPaneByIndex(tab_idx, pane_idx)) |pane| {
+            if (pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
+        }
+    }
+
+    const result = layout.closePaneAt(pane_idx, ctx.allocator);
+    if (result == .last_pane) {
+        if (ctx.tab_mgr.count <= 1) {
+            sendError(cmd, "cannot close last pane");
+            return;
+        }
+        ctx.tab_mgr.closeTab(ti);
+        publish.updateGridTopOffset(ctx);
+    } else if (result == .closed) {
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+        layout.layout(pty_rows, ctx.grid_cols);
+        split_actions.notifyPaneSizes(ctx, layout);
+        actions.updateSplitActive(ctx);
+    } else {
+        sendError(cmd, "pane not found");
+        return;
+    }
+    actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
+    sendOk(cmd, "");
+}
+
+/// Close a specific tab by index. Payload: [tab_idx:u8] (0-based)
+pub fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 1) {
+        sendError(cmd, "missing tab index");
+        return;
+    }
+    const ti = cmd.payload[0];
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    if (ctx.tab_mgr.count <= 1) {
+        sendError(cmd, "cannot close last tab");
+        return;
+    }
+
+    // Notify daemon for all panes in the tab
+    if (ctx.session_client) |sc| {
+        if (ctx.tab_mgr.tabs[ti]) |*layout| {
+            var leaves: [8]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id) |dpid| sc.sendClosePane(dpid) catch {};
+            }
+        }
+    }
+
+    ctx.tab_mgr.closeTab(ti);
+    publish.updateGridTopOffset(ctx);
+    actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
+    sendOk(cmd, "");
+}
+
+/// Rename a specific tab's focused pane. Payload: [tab_idx:u8][name...]
+pub fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 2) {
+        sendError(cmd, "missing tab index or name");
+        return;
+    }
+    const ti = cmd.payload[0];
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
+        sendError(cmd, "tab not found");
+        return;
+    });
+    const name = cmd.payload[1..cmd.payload_len];
+    layout.focusedPane().setCustomTitle(name);
+    sendOk(cmd, "");
+}
+
+/// Toggle zoom on a specific pane. Payload: [tab_idx:u8][pane_idx:u8]
+pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 2) {
+        sendError(cmd, "missing pane target");
+        return;
+    }
+    const tab_idx = cmd.payload[0];
+    const pane_idx = cmd.payload[1];
+    const ti: u8 = if (tab_idx == 0xFF) ctx.tab_mgr.active else tab_idx;
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
+        sendError(cmd, "tab not found");
+        return;
+    });
+
+    // Focus the target pane before toggling zoom
+    layout.focused = pane_idx;
+    layout.toggleZoom();
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    if (layout.isZoomed()) {
+        layout.focusedPane().resize(pty_rows, ctx.grid_cols);
+    } else {
+        layout.layout(pty_rows, ctx.grid_cols);
+    }
+    split_actions.notifyPaneSizes(ctx, layout);
+    actions.switchActiveTab(ctx);
+    sendOk(cmd, "");
+}
+
+/// Rotate panes in a specific tab. Payload: [tab_idx:u8]
+pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 1) {
+        sendError(cmd, "missing tab index");
+        return;
+    }
+    const ti = cmd.payload[0];
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
+        sendError(cmd, "tab not found");
+        return;
+    });
+    layout.rotatePanes();
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    layout.layout(pty_rows, ctx.grid_cols);
+    split_actions.notifyPaneSizes(ctx, layout);
+    actions.switchActiveTab(ctx);
+    sendOk(cmd, "");
 }
 
 /// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.

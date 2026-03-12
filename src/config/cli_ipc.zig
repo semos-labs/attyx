@@ -237,7 +237,14 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
         }
         return .{ .command = .tab_create, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output, .wait = wait };
     } else if (std.mem.eql(u8, action, "close") or std.mem.eql(u8, action, "kill")) {
-        return .{ .command = .tab_close, .target_pid = target_pid, .json_output = json_output };
+        var result = IpcRequest{ .command = .tab_close, .target_pid = target_pid, .json_output = json_output };
+        if (start + 2 < args.len) {
+            if (std.fmt.parseInt(u8, args[start + 2], 10)) |n| {
+                if (n < 1) fatal("tab number must be >= 1");
+                result.pane_tab = n - 1;
+            } else |_| {}
+        }
+        return result;
     } else if (std.mem.eql(u8, action, "next")) {
         return .{ .command = .tab_next, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "prev")) {
@@ -263,6 +270,13 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
     } else if (std.mem.eql(u8, action, "rename")) {
         if (hasHelp(args, start + 1)) showHelp(help.tab_rename);
         if (start + 2 >= args.len) { printHelp(help.tab_rename); return null; }
+        // Try: tab rename <N> <name>  or  tab rename <name>
+        if (start + 3 < args.len) {
+            if (std.fmt.parseInt(u8, args[start + 2], 10)) |n| {
+                if (n < 1) fatal("tab number must be >= 1");
+                return .{ .command = .tab_rename, .pane_tab = n - 1, .text_arg = args[start + 3], .target_pid = target_pid, .json_output = json_output };
+            } else |_| {}
+        }
         return .{ .command = .tab_rename, .text_arg = args[start + 2], .target_pid = target_pid, .json_output = json_output };
     }
     std.debug.print("error: unknown tab command '{s}'\n\n", .{action});
@@ -316,11 +330,38 @@ fn parseSplit(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
         }
         return .{ .command = .split_horizontal, .text_arg = cmd, .target_pid = target_pid, .json_output = json_output, .wait = wait };
     } else if (std.mem.eql(u8, action, "close") or std.mem.eql(u8, action, "kill")) {
-        return .{ .command = .split_close, .target_pid = target_pid, .json_output = json_output };
+        var result = IpcRequest{ .command = .split_close, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) {
+            if ((std.mem.eql(u8, args[i], "--pane") or std.mem.eql(u8, args[i], "-p")) and i + 1 < args.len) {
+                i += 1;
+                parsePaneArg(args[i], &result);
+            }
+            i += 1;
+        }
+        return result;
     } else if (std.mem.eql(u8, action, "rotate")) {
-        return .{ .command = .split_rotate, .target_pid = target_pid, .json_output = json_output };
+        var result = IpcRequest{ .command = .split_rotate, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) {
+            if ((std.mem.eql(u8, args[i], "--pane") or std.mem.eql(u8, args[i], "-p")) and i + 1 < args.len) {
+                i += 1;
+                parsePaneArg(args[i], &result);
+            }
+            i += 1;
+        }
+        return result;
     } else if (std.mem.eql(u8, action, "zoom")) {
-        return .{ .command = .split_zoom, .target_pid = target_pid, .json_output = json_output };
+        var result = IpcRequest{ .command = .split_zoom, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) {
+            if ((std.mem.eql(u8, args[i], "--pane") or std.mem.eql(u8, args[i], "-p")) and i + 1 < args.len) {
+                i += 1;
+                parsePaneArg(args[i], &result);
+            }
+            i += 1;
+        }
+        return result;
     }
     std.debug.print("error: unknown split command '{s}'\n\n", .{action});
     printHelp(help.split);
