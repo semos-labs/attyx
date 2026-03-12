@@ -475,6 +475,7 @@ pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void
     sendOk(cmd, "");
 }
 
+
 /// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.
 pub fn buildShellArgv(ctx: *PtyThreadCtx, command: []const u8) ?[3][:0]const u8 {
     const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
