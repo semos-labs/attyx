@@ -265,6 +265,109 @@ pub fn doUninstall() void {
     stdout.writeAll("\nAttyx data cleaned up. You can now run `brew uninstall attyx`.\n") catch {};
 }
 
+// ── Skill install/uninstall ──
+
+const skill_content = @import("skill_data").content;
+
+pub fn doSkill(args: []const [:0]const u8) void {
+    const stdout = std.fs.File.stdout();
+
+    // Parse sub-subcommand: attyx skill <install|uninstall>
+    const sub = if (args.len > 2) args[2] else "";
+
+    if (std.mem.eql(u8, sub, "install")) {
+        doSkillInstall(stdout);
+    } else if (std.mem.eql(u8, sub, "uninstall")) {
+        doSkillUninstall(stdout);
+    } else {
+        stdout.writeAll(skill_help) catch {};
+    }
+}
+
+fn doSkillInstall(stdout: std.fs.File) void {
+    const home = std.posix.getenv("HOME") orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+
+    // Build path: ~/.claude/skills/attyx/SKILL.md
+    var dir_buf: [512]u8 = undefined;
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/attyx", .{home}) catch {
+        stdout.writeAll("error: path too long\n") catch {};
+        return;
+    };
+
+    var file_buf: [512]u8 = undefined;
+    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/attyx/SKILL.md", .{home}) catch {
+        stdout.writeAll("error: path too long\n") catch {};
+        return;
+    };
+
+    // Create directory tree
+    std.fs.cwd().makePath(dir_path) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error: could not create {s}: {s}\n", .{ dir_path, @errorName(err) }) catch "error: could not create skill directory\n";
+        stdout.writeAll(msg) catch {};
+        return;
+    };
+
+    // Write SKILL.md
+    const file = std.fs.cwd().createFile(file_path, .{}) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error: could not write {s}: {s}\n", .{ file_path, @errorName(err) }) catch "error: could not write skill file\n";
+        stdout.writeAll(msg) catch {};
+        return;
+    };
+    defer file.close();
+    file.writeAll(skill_content) catch {
+        stdout.writeAll("error: failed to write skill content\n") catch {};
+        return;
+    };
+
+    stdout.writeAll("Installed Claude Code skill to ~/.claude/skills/attyx/\n") catch {};
+    stdout.writeAll("Use /attyx in Claude Code to control the terminal.\n") catch {};
+}
+
+fn doSkillUninstall(stdout: std.fs.File) void {
+    const home = std.posix.getenv("HOME") orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+
+    var dir_buf: [512]u8 = undefined;
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/attyx", .{home}) catch {
+        stdout.writeAll("error: path too long\n") catch {};
+        return;
+    };
+
+    std.fs.cwd().deleteTree(dir_path) catch |err| {
+        if (err == error.FileNotFound) {
+            stdout.writeAll("Skill not installed.\n") catch {};
+            return;
+        }
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error: could not remove {s}: {s}\n", .{ dir_path, @errorName(err) }) catch "error: could not remove skill\n";
+        stdout.writeAll(msg) catch {};
+        return;
+    };
+
+    stdout.writeAll("Removed Claude Code skill from ~/.claude/skills/attyx/\n") catch {};
+}
+
+const skill_help =
+    \\Install or remove the Attyx skill for Claude Code.
+    \\
+    \\Usage: attyx skill <command>
+    \\
+    \\Commands:
+    \\  install      Install the /attyx skill to ~/.claude/skills/attyx/
+    \\  uninstall    Remove the /attyx skill
+    \\
+    \\The skill lets Claude Code control Attyx via IPC — manage splits,
+    \\send input, read output, and orchestrate panes.
+    \\
+;
+
 pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) void {
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ label, value }) catch return;
