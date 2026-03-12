@@ -19,6 +19,7 @@ pub const Action = enum {
     login,
     device,
     uninstall,
+    skill,
     daemon,
     daemon_restore,
     kill_daemon,
@@ -55,6 +56,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "uninstall")) {
             result.action = .uninstall;
+            return result;
+        } else if (std.mem.eql(u8, first, "skill")) {
+            result.action = .skill;
             return result;
         } else if (std.mem.eql(u8, first, "daemon")) {
             // Check for --restore <path> arg
@@ -373,76 +377,7 @@ fn isIpcSubcommand(arg: []const u8) bool {
     return false;
 }
 
-pub fn printUsage() void {
-    const usage =
-        \\Attyx — GPU-accelerated VT-compatible terminal emulator
-        \\
-        \\Usage:
-        \\  attyx [options]            Launch terminal (GPU-accelerated)
-        \\  attyx <command>            Run a subcommand
-        \\
-        \\Commands:
-        \\  login                      Authenticate with Attyx AI services
-        \\  device                     Show device and account info
-        \\  uninstall                  Remove config, auth tokens, and desktop entry
-        \\  daemon                     Run the session daemon
-        \\  kill-daemon                Kill the session daemon and remove socket
-        \\
-        \\IPC commands (control a running instance, usable by agents/scripts):
-        \\  tab          Manage tabs (create, close, switch, move, rename)
-        \\  split        Manage pane splits (create, close, rotate, zoom)
-        \\  focus        Move focus between panes (up, down, left, right)
-        \\  session      Manage sessions (list, create, kill, switch, rename)
-        \\  send-keys    Send keystrokes with escape sequences (\n, \x03, etc.)
-        \\  send-text    Send raw text (no escape processing)
-        \\  get-text     Read visible text from the active pane
-        \\  reload       Reload configuration from disk
-        \\  theme        Switch to a named theme
-        \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
-        \\  list         Query tabs, panes, sessions (supports --json)
-        \\  popup        Open a popup terminal overlay
-        \\  run          Open a new tab with a command
-        \\
-        \\Options:
-        \\  --rows N                   Terminal rows (default: 24)
-        \\  --cols N                   Terminal cols (default: 80)
-        \\  -e, -c, --cmd <command...> Override shell command
-        \\  --config <path>            Load config from a specific file
-        \\  --no-config                Skip reading config from disk
-        \\  --font-family <string>     Font family (default: "JetBrains Mono")
-        \\  --font-size <int>          Font size in points (default: 14)
-        \\  --cell-width <value>       Cell width: points (e.g. 10) or percent (e.g. "110%")
-        \\  --cell-height <value>      Cell height: points (e.g. 20) or percent (e.g. "115%")
-        \\  --theme <string>           Theme name (default: "default")
-        \\  --scrollback-lines <int>   Scrollback buffer lines (default: 20000)
-        \\  --reflow / --no-reflow     Enable/disable reflow on resize
-        \\  --cursor-shape <shape>     Cursor shape: block, beam, underline
-        \\  --cursor-blink / --no-cursor-blink
-        \\                             Enable/disable cursor blinking
-        \\  --cursor-trail / --no-cursor-trail
-        \\                             Enable/disable cursor trail effect
-        \\  --font-ligatures / --no-font-ligatures
-        \\                             Enable/disable font ligatures (default: on)
-        \\  --shell <path>             Shell program (default: $SHELL or /bin/sh)
-        \\  -d, --working-directory <path>
-        \\                             Initial working directory (default: ~)
-        \\  --background-opacity <f>   Background opacity 0.0-1.0 (default: 1.0)
-        \\  --background-blur <int>    Background blur radius when opacity < 1 (default: 30)
-        \\  --decorations / --no-decorations
-        \\                             Show/hide window title bar (default: shown)
-        \\  --padding <int>            Window padding on all sides (logical pixels)
-        \\  --padding-x <int>         Left + right padding
-        \\  --padding-y <int>         Top + bottom padding
-        \\  --padding-left/right/top/bottom <int>
-        \\                             Per-side padding
-        \\  --log-level <level>        Log level: err, warn, info, debug, trace (default: info)
-        \\  --log-file <path>          Append logs to file (default: stderr only)
-        \\  --print-config             Print merged config and exit
-        \\  --help, -h                 Show this help
-        \\
-    ;
-    std.debug.print("{s}", .{usage});
-}
+pub const printUsage = @import("cli_help.zig").printUsage;
 
 test "positional arg treated as working directory" {
     const args = [_][:0]const u8{ "attyx", "/tmp/some/dir" };
