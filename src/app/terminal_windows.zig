@@ -122,7 +122,7 @@ pub fn run(
 
     // Statusbar
     var statusbar: ?statusbar_mod.Statusbar = if (config.statusbar) |sb_cfg| blk: {
-        var sb = statusbar_mod.Statusbar.init(allocator, sb_cfg);
+        const sb = statusbar_mod.Statusbar.init(allocator, sb_cfg);
         break :blk sb;
     } else null;
     defer if (statusbar) |*sb| sb.deinit();
