@@ -115,7 +115,8 @@
             // Text glyph (skip spaces and control chars)
             if (cell.character > 32 && ti + 6 <= OVERLAY_MAX_TEXT_VERTS) {
                 uint32_t ch = cell.character;
-                bool hasCombining = (cell.combining[0] != 0);
+                bool hasCombining = (cell.combining[0] != 0
+                                     && cell.combining[0] != 0xFE0F);
                 uint32_t key = hasCombining ? combiningKey(ch, cell.combining[0], cell.combining[1]) : ch;
 
                 int rawSlot = glyphCacheLookup(&_glyphCache, key);

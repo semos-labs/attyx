@@ -650,7 +650,10 @@ int drawFrame(void) {
             uint8_t fl = cell->flags;
             if (fl & 0x01) key |= GLYPH_BOLD_BIT;
             if (fl & 0x10) key |= GLYPH_ITALIC_BIT;
-            bool hasCombining = (cell->combining[0] != 0);
+            // VS16 (U+FE0F) in combining[0] signals emoji presentation —
+            // render the base character as an emoji glyph, not combined.
+            bool hasCombining = (cell->combining[0] != 0
+                                 && cell->combining[0] != 0xFE0F);
             if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
 
             int rawSlot = glyphCacheLookup(&g_gc, key);

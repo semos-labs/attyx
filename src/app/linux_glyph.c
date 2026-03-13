@@ -58,6 +58,16 @@ static bool canBeWide(uint32_t cp) {
     if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
     if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
     if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    // SMP emoji below the main ranges
+    if (cp == 0x1F004) return true;                          // 🀄 Mahjong Red Dragon
+    if (cp == 0x1F0CF) return true;                          // 🃏 Joker
+    if (cp == 0x1F18E) return true;                          // 🆎 AB button
+    if (cp >= 0x1F191 && cp <= 0x1F19A) return true;        // 🆑-🆚 squared symbols
+    if (cp == 0x1F201 || cp == 0x1F202) return true;        // 🈁🈂
+    if (cp == 0x1F21A) return true;                          // 🈚
+    if (cp == 0x1F22F) return true;                          // 🈯
+    if (cp >= 0x1F232 && cp <= 0x1F23A) return true;        // 🈲-🈺
+    if (cp >= 0x1F250 && cp <= 0x1F251) return true;        // 🉐🉑
     // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
     if (cp == 0x231A || cp == 0x231B) return true;
     if (cp >= 0x23E9 && cp <= 0x23F3) return true;
@@ -66,6 +76,9 @@ static bool canBeWide(uint32_t cp) {
     if (cp == 0x2614 || cp == 0x2615) return true;
     if (cp >= 0x2648 && cp <= 0x2653) return true;
     if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
+    if (cp >= 0x26AA && cp <= 0x26AB) return true;           // ⚪⚫
+    if (cp >= 0x26BD && cp <= 0x26BE) return true;           // ⚽⚾
+    if (cp >= 0x26C4 && cp <= 0x26C5) return true;           // ⛄⛅
     if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
     if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
     if (cp == 0x26FA || cp == 0x26FD) return true;

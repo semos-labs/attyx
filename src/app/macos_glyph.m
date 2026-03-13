@@ -40,22 +40,35 @@ static bool canBeWide(uint32_t cp) {
     if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
     if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
     if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
+    // SMP emoji below the main ranges
+    if (cp == 0x1F004) return true;                          // 🀄 Mahjong Red Dragon
+    if (cp == 0x1F0CF) return true;                          // 🃏 Joker
+    if (cp == 0x1F18E) return true;                          // 🆎 AB button
+    if (cp >= 0x1F191 && cp <= 0x1F19A) return true;        // 🆑-🆚 squared symbols
+    if (cp == 0x1F201 || cp == 0x1F202) return true;        // 🈁🈂
+    if (cp == 0x1F21A) return true;                          // 🈚
+    if (cp == 0x1F22F) return true;                          // 🈯
+    if (cp >= 0x1F232 && cp <= 0x1F23A) return true;        // 🈲-🈺
+    if (cp >= 0x1F250 && cp <= 0x1F251) return true;        // 🉐🉑
     // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
     if (cp == 0x231A || cp == 0x231B) return true;
     if (cp >= 0x23E9 && cp <= 0x23F3) return true;
-    if (cp >= 0x25FD && cp <= 0x25FE) return true;
+    if (cp >= 0x23F8 && cp <= 0x23FA) return true;           // ⏸⏹⏺
+    if (cp >= 0x25FB && cp <= 0x25FE) return true;
     if (cp == 0x2614 || cp == 0x2615) return true;
     if (cp >= 0x2648 && cp <= 0x2653) return true;
     if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
+    if (cp >= 0x26AA && cp <= 0x26AB) return true;           // ⚪⚫
+    if (cp >= 0x26BD && cp <= 0x26BE) return true;           // ⚽⚾
+    if (cp >= 0x26C4 && cp <= 0x26C5) return true;           // ⛄⛅
     if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
     if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
     if (cp == 0x26FA || cp == 0x26FD) return true;
     if (cp == 0x2702 || cp == 0x2705) return true;
-    if (cp == 0x2708) return true;                           // ✈ airplane
-    if (cp >= 0x270A && cp <= 0x270B) return true;          // ✊✋ fists
-    if (cp == 0x270D) return true;                           // ✍ writing hand
-    if (cp == 0x2728) return true;
-    if (cp == 0x2744 || cp == 0x2747) return true;
+    if (cp >= 0x2708 && cp <= 0x270D) return true;           // ✈-✍
+    if (cp == 0x270F || cp == 0x2712 || cp == 0x2714 || cp == 0x2716) return true;
+    if (cp == 0x271D || cp == 0x2721 || cp == 0x2728) return true;
+    if (cp == 0x2733 || cp == 0x2734 || cp == 0x2744 || cp == 0x2747) return true;
     if (cp == 0x274C || cp == 0x274E) return true;
     if (cp >= 0x2753 && cp <= 0x2755) return true;
     if (cp == 0x2757) return true;
@@ -137,6 +150,17 @@ void glyphCacheGrow(GlyphCache* gc) {
     gc->max_slots = newMaxSlots;
 }
 
+/// Returns true if the codepoint belongs to a Unicode range commonly occupied
+/// by emoji.  Used to prefer Apple Color Emoji over monochrome fallbacks.
+static bool isEmojiRange(uint32_t cp) {
+    if (cp >= 0x1F000 && cp <= 0x1FAFF) return true;
+    if (cp >= 0x2600 && cp <= 0x27BF)   return true;  // Misc Symbols, Dingbats
+    if (cp >= 0x2300 && cp <= 0x23FF)   return true;  // Misc Technical
+    if (cp >= 0x2B00 && cp <= 0x2BFF)   return true;  // Misc Symbols & Arrows
+    if (cp >= 0x2900 && cp <= 0x297F)   return true;  // Supplemental Arrows-B
+    return false;
+}
+
 int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int gw = (int)gc->glyph_w;
     int gh = (int)gc->glyph_h;
@@ -160,6 +184,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     }
 
     // 2. Select styled font, then glyph lookup: styled font → primary → fallbacks
+    //    For emoji codepoints, prefer Apple Color Emoji over monochrome fonts.
     CTFontRef styledFont = gc->font;
     if (styleBold && styleItalic)      styledFont = gc->font_bold_italic;
     else if (styleBold)                styledFont = gc->font_bold;
@@ -168,6 +193,32 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     CGGlyph glyph = 0;
     bool haveGlyph = CTFontGetGlyphsForCharacters(styledFont, utf16, &glyph, utf16Len)
                   && glyph != 0;
+
+    // For emoji codepoints: if the primary font has a glyph, check whether it's
+    // actually Apple Color Emoji.  If not, try Apple Color Emoji explicitly so
+    // that emoji always render in full colour rather than monochrome outlines.
+    if (haveGlyph && isEmojiRange(baseCp)) {
+        CFStringRef familyName = CTFontCopyFamilyName(drawFont);
+        bool isColor = (CFStringCompare(familyName, CFSTR("Apple Color Emoji"), 0)
+                        == kCFCompareEqualTo);
+        CFRelease(familyName);
+        if (!isColor) {
+            CGFloat fontSize = CTFontGetSize(gc->font);
+            CTFontRef colorFont = CTFontCreateWithName(CFSTR("Apple Color Emoji"),
+                                                        fontSize, NULL);
+            if (colorFont) {
+                CGGlyph colorGlyph = 0;
+                if (CTFontGetGlyphsForCharacters(colorFont, utf16, &colorGlyph, utf16Len)
+                    && colorGlyph != 0) {
+                    drawFont = colorFont;
+                    glyph = colorGlyph;
+                } else {
+                    CFRelease(colorFont);
+                }
+            }
+        }
+    }
+
     if (!haveGlyph) {
         CGFloat fontSize = CTFontGetSize(gc->font);
         CTFontRef found = NULL;
@@ -274,16 +325,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
                 rgbCS, kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst);
             CGColorSpaceRelease(rgbCS);
 
-            NSString* str = [[NSString alloc] initWithCharacters:utf16 length:utf16Len];
-            NSDictionary* attrs = @{(NSString*)kCTFontAttributeName: (__bridge id)drawFont};
-            NSAttributedString* attrStr = [[NSAttributedString alloc]
-                initWithString:str attributes:attrs];
-            CTLineRef line = CTLineCreateWithAttributedString(
-                (__bridge CFAttributedStringRef)attrStr);
-            float posX = wide ? 0.0f : (float)gc->x_offset;
-            CGContextSetTextPosition(ctx, (CGFloat)posX, (CGFloat)gc->baseline_y);
-            CTLineDraw(line, ctx);
-            CFRelease(line);
+            // Use CTFontDrawGlyphs (not CTLineDraw) — more reliable for color
+            // emoji rendering; CTLineDraw can produce blank output in some contexts.
+            CGPoint pos = CGPointMake(wide ? 0.0 : (CGFloat)gc->x_offset,
+                                     (CGFloat)gc->baseline_y);
+            CTFontDrawGlyphs(drawFont, &glyph, &pos, 1, ctx);
             CGContextRelease(ctx);
 
             [gc->color_texture
