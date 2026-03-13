@@ -23,6 +23,11 @@
 #include <stdbool.h>
 #include <math.h>
 
+#include <d3d11.h>
+#include <dxgi.h>
+#include <dwrite.h>
+#include <d2d1.h>
+
 #include "bridge.h"
 
 // ---------------------------------------------------------------------------
@@ -142,6 +147,191 @@ static inline int dirtyBitTest(const uint64_t dirty[4], int row) {
 static inline int dirtyAny(const uint64_t dirty[4]) {
     return (dirty[0] | dirty[1] | dirty[2] | dirty[3]) != 0;
 }
+
+// ---------------------------------------------------------------------------
+// Vertex layout (matches HLSL shader input)
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    float px, py;       // position in pixels
+    float u, v;         // texture coordinates
+    float r, g, b, a;   // vertex color
+} WinVertex;
+
+// ---------------------------------------------------------------------------
+// GlyphCache (DirectWrite + D3D11 atlas)
+// ---------------------------------------------------------------------------
+
+#define GLYPH_CACHE_CAP  4096
+#define GLYPH_WIDE_BIT   (1 << 30)
+#define GLYPH_COLOR_BIT  (1 << 29)
+#define GLYPH_BOLD_BIT   (1 << 21)
+#define GLYPH_ITALIC_BIT (1 << 22)
+
+typedef struct {
+    uint32_t codepoint;
+    int slot;
+} GlyphEntry;
+
+typedef struct GlyphCache {
+    ID3D11Texture2D*          texture;        // R8 — grayscale glyphs
+    ID3D11ShaderResourceView* texture_srv;
+    ID3D11Texture2D*          color_texture;  // BGRA8 — color emoji (lazy)
+    ID3D11ShaderResourceView* color_srv;
+
+    IDWriteFactory*           dw_factory;
+    IDWriteTextFormat*        dw_format;       // regular
+    IDWriteTextFormat*        dw_format_bold;
+    IDWriteTextFormat*        dw_format_italic;
+    IDWriteTextFormat*        dw_format_bold_italic;
+    IDWriteFontFace*          dw_face;         // regular face (for glyph index)
+    IDWriteFontFace*          dw_face_bold;
+    IDWriteFontFace*          dw_face_italic;
+    IDWriteFontFace*          dw_face_bold_italic;
+
+    ID2D1Factory*             d2d_factory;
+    ID2D1RenderTarget*        d2d_rt;          // WIC bitmap render target
+    ID2D1SolidColorBrush*     d2d_brush;
+    IWICBitmap*               wic_bitmap;      // off-screen rasterization target
+    IWICImagingFactory*       wic_factory;
+
+    float      glyph_w;
+    float      glyph_h;
+    int        font_size;      // em-size in pixels
+    float      scale;          // DPI scale
+    float      ascender;
+    float      baseline_y_offset;
+    float      x_offset;
+    int        atlas_cols;
+    int        atlas_w;
+    int        atlas_h;
+    int        next_slot;
+    int        max_slots;
+
+    ID3D11Device*        d3d_device;
+
+    GlyphEntry map[GLYPH_CACHE_CAP];
+} GlyphCache;
+
+// Glyph cache (owned by windows_renderer.c)
+extern GlyphCache g_gc;
+
+// ---------------------------------------------------------------------------
+// Font functions (windows_font.c)
+// ---------------------------------------------------------------------------
+
+int  windows_font_init(GlyphCache* gc, ID3D11Device* device, float scale);
+void windows_font_cleanup(GlyphCache* gc);
+
+// ---------------------------------------------------------------------------
+// Glyph rasterization (windows_glyph.c)
+// ---------------------------------------------------------------------------
+
+int  glyphCacheLookup(GlyphCache* gc, uint32_t cp);
+void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot);
+void glyphCacheGrow(GlyphCache* gc);
+int  glyphCacheRasterize(GlyphCache* gc, uint32_t cp);
+uint32_t combiningKey(uint32_t base, uint32_t c1, uint32_t c2);
+int  glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint32_t c2);
+
+// ---------------------------------------------------------------------------
+// Box-drawing (windows_boxdraw.c)
+// ---------------------------------------------------------------------------
+
+int renderBoxDraw(uint8_t* pixels, int stride, uint32_t cp,
+                  int gw, int gh, float scale);
+
+// ---------------------------------------------------------------------------
+// Render utility functions (windows_render_util.c)
+// ---------------------------------------------------------------------------
+
+// HLSL shader sources
+extern const char* kHlslVertSrc;
+extern const char* kHlslPixelSolidSrc;
+extern const char* kHlslPixelTextSrc;
+
+// Vertex emit helpers
+int winEmitRect(WinVertex* v, int i, float x, float y, float w, float h,
+                float r, float g, float b, float a);
+int winEmitQuad(WinVertex* v, int i,
+                float x0, float y0, float x1, float y1,
+                float u0, float v0, float u1, float v1,
+                float r, float g, float b, float a);
+
+// Selection helpers
+int winCellIsSelected(int row, int col);
+
+// Grid-to-screen coordinate helpers
+float winGridToScreenX(float offX, float gw, int col);
+float winGridToScreenY(float offY, float gh, int row);
+
+// Color conversion
+void winCellBgColor(const AttyxCell* cell, int row, int col,
+                    float* r, float* g, float* b, float* a);
+void winCellFgColor(const AttyxCell* cell, int row, int col,
+                    int drawCursor, int curRow, int curCol, int curShape,
+                    float* r, float* g, float* b);
+void winCursorColor(float* r, float* g, float* b);
+
+// ---------------------------------------------------------------------------
+// Renderer draw state (windows_renderer_draw.c)
+// ---------------------------------------------------------------------------
+
+extern WinVertex*   g_win_bg_verts;
+extern WinVertex*   g_win_text_verts;
+extern int          g_win_total_text_verts;
+extern AttyxCell*   g_win_cell_snapshot;
+extern int          g_win_cell_snapshot_cap;
+extern int          g_win_alloc_rows;
+extern int          g_win_alloc_cols;
+extern int          g_win_bg_vert_cap;
+extern int          g_win_prev_cursor_row;
+extern int          g_win_prev_cursor_col;
+extern int          g_win_prev_cursor_shape;
+extern int          g_win_prev_cursor_vis;
+extern int          g_win_blink_on;
+
+// Build all BG/cursor/decoration vertices for a frame. Returns vertex count.
+int winBuildFrameVerts(AttyxCell* cells, const uint64_t dirty[4],
+                       int rows, int cols, int total,
+                       int curRow, int curCol, int curShape, int curVis,
+                       float offX, float baseOffY, float offY,
+                       float gw, float gh,
+                       int visibleRows, int visibleTotal);
+
+// ---------------------------------------------------------------------------
+// Renderer D3D11 state (shared with overlay/popup renderers)
+// ---------------------------------------------------------------------------
+
+// D3D11 device/context — owned by windows_renderer.c, used by overlay/popup
+extern ID3D11Device*           g_d3d_device;
+extern ID3D11DeviceContext*    g_d3d_context;
+extern ID3D11InputLayout*      g_d3d_input_layout;
+extern ID3D11VertexShader*     g_d3d_vs;
+extern ID3D11PixelShader*      g_d3d_ps_solid;
+extern ID3D11PixelShader*      g_d3d_ps_text;
+extern ID3D11BlendState*       g_d3d_blend_alpha;
+extern ID3D11SamplerState*     g_d3d_sampler;
+extern ID3D11Buffer*           g_d3d_cbuffer;
+
+// ---------------------------------------------------------------------------
+// Ligature support (windows_ligature.c)
+// ---------------------------------------------------------------------------
+
+#define MAX_LIGA_LEN       16
+#define LIGA_RESULT_CAP    512
+
+typedef struct {
+    uint32_t key;              // ligatureKey hash (0 = empty slot)
+    int8_t   count;            // number of codepoints in the sequence
+    bool     hasAlternates;    // true if shaping produced different glyphs
+    int      slots[MAX_LIGA_LEN]; // atlas slots (-1 = not yet rasterized)
+} LigaResult;
+
+uint32_t          ligatureKey(const uint32_t* cps, int count);
+bool              isLigaTrigger(uint32_t ch);
+const LigaResult* shapeLigatureRun(GlyphCache* gc, const uint32_t* cps, int count, int style);
+void              ligatureCacheClear(void);
 
 // ---------------------------------------------------------------------------
 // Input handling (windows_input.c)

@@ -186,10 +186,13 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/platform_windows.c"),   .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_input.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_clipboard.c"),  .flags = win_flags });
-        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer.c"),   .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer_draw.c"), .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_overlay.c"),    .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_popup.c"),      .flags = win_flags });
-        exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),     .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),       .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_render_util.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_ligature.c"),  .flags = win_flags });
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
