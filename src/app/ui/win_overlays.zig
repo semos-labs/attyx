@@ -21,7 +21,7 @@ const keybinds = @import("../../config/keybinds.zig");
 const platform = @import("../../platform/platform.zig");
 const toml_edit = @import("../../config/toml_edit.zig");
 // Note: can't import actions.zig (depends on terminal.zig/POSIX).
-// Use c.g_full_redraw and c.attyx_mark_all_dirty() directly instead.
+// Use c.attyx_mark_all_dirty() directly for force-redraw instead.
 
 // ── Pure state machines + renderers (cross-platform) ─────────────────
 const palette_state_mod = attyx.overlay_command_palette;
@@ -273,7 +273,6 @@ fn processPickerAction(ctx: *WinCtx, state: *const ThemePickerState, action: pic
                 ctx.theme.* = orig;
                 publish.publishTheme(ctx.theme);
                 publishThemeToEngines(ctx);
-                c.g_full_redraw = 1;
                 c.attyx_mark_all_dirty();
                 generateStatusbar(ctx);
                 generateTabBar(ctx);
@@ -302,7 +301,6 @@ fn applyThemePreview(ctx: *WinCtx, state: *const ThemePickerState, idx: u8) void
         ctx.theme.* = theme;
         publish.publishTheme(ctx.theme);
         publishThemeToEngines(ctx);
-        c.g_full_redraw = 1;
         c.attyx_mark_all_dirty();
         generateStatusbar(ctx);
         generateTabBar(ctx);
@@ -505,7 +503,6 @@ pub fn processOverlayDismiss(ctx: *WinCtx) void {
             ctx.theme.* = orig;
             publish.publishTheme(ctx.theme);
             publishThemeToEngines(ctx);
-            c.g_full_redraw = 1;
             c.attyx_mark_all_dirty();
             generateStatusbar(ctx);
             generateTabBar(ctx);
@@ -544,7 +541,6 @@ pub fn processToggles(ctx: *WinCtx) void {
                 ctx.theme.* = orig;
                 publish.publishTheme(ctx.theme);
                 publishThemeToEngines(ctx);
-                c.g_full_redraw = 1;
                 c.attyx_mark_all_dirty();
                 generateStatusbar(ctx);
                 generateTabBar(ctx);
