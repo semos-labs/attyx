@@ -2,7 +2,8 @@
 // normally exports on macOS/Linux. On Windows, terminal.zig is not imported
 // because it depends deeply on POSIX (Unix sockets, signals, fork/exec).
 // These stubs let the Windows C platform layer link without errors.
-// Phase 2+: replace with real Windows implementations.
+// Note: daemon/IPC now has real Windows implementations (daemon_windows.zig).
+// These stubs cover the UI/rendering bridge only.
 
 export fn attyx_send_input(_: [*]const u8, _: c_int) void {}
 export fn attyx_clear_screen() void {}

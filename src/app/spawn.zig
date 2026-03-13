@@ -73,14 +73,100 @@ pub fn spawnpEnv(
     }
 }
 
-/// Windows process spawn via CreateProcessW.
-/// Phase 0 stub — returns failure. Full implementation in Phase 1+.
+/// Windows process spawn via CreateProcessW with DETACHED_PROCESS.
 fn spawnWindows(
-    _: [*:0]const u8,
+    file: [*:0]const u8,
     _: [*:null]const ?[*:0]const u8,
 ) SpawnResult {
-    // TODO(windows): implement CreateProcessW spawn
-    return .{ .pid = 0, .ok = false };
+    if (comptime !is_windows) return .{ .pid = 0, .ok = false };
+
+    const win = struct {
+        const HANDLE = std.os.windows.HANDLE;
+        const DWORD = std.os.windows.DWORD;
+        const BOOL = std.os.windows.BOOL;
+        const LPCWSTR = [*:0]const u16;
+        const LPVOID = std.os.windows.LPVOID;
+        const WORD = u16;
+        const BYTE = u8;
+
+        const DETACHED_PROCESS: DWORD = 0x00000008;
+
+        const STARTUPINFOW = extern struct {
+            cb: DWORD,
+            lpReserved: ?LPCWSTR,
+            lpDesktop: ?LPCWSTR,
+            lpTitle: ?LPCWSTR,
+            dwX: DWORD,
+            dwY: DWORD,
+            dwXSize: DWORD,
+            dwYSize: DWORD,
+            dwXCountChars: DWORD,
+            dwYCountChars: DWORD,
+            dwFillAttribute: DWORD,
+            dwFlags: DWORD,
+            wShowWindow: WORD,
+            cbReserved2: WORD,
+            lpReserved2: ?*BYTE,
+            hStdInput: ?HANDLE,
+            hStdOutput: ?HANDLE,
+            hStdError: ?HANDLE,
+        };
+
+        const PROCESS_INFORMATION = extern struct {
+            hProcess: HANDLE,
+            hThread: HANDLE,
+            dwProcessId: DWORD,
+            dwThreadId: DWORD,
+        };
+
+        extern "kernel32" fn CreateProcessW(
+            lpApplicationName: ?LPCWSTR,
+            lpCommandLine: ?[*:0]u16,
+            lpProcessAttributes: ?*const anyopaque,
+            lpThreadAttributes: ?*const anyopaque,
+            bInheritHandles: BOOL,
+            dwCreationFlags: DWORD,
+            lpEnvironment: ?LPVOID,
+            lpCurrentDirectory: ?LPCWSTR,
+            lpStartupInfo: *STARTUPINFOW,
+            lpProcessInformation: *PROCESS_INFORMATION,
+        ) callconv(.winapi) BOOL;
+        extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+    };
+
+    // Build command line: "exe_path daemon"
+    const file_slice = std.mem.sliceTo(file, 0);
+    var cmd_buf: [2048]u16 = undefined;
+    // Quote the executable path and append " daemon"
+    cmd_buf[0] = '"';
+    const exe_len = std.unicode.utf8ToUtf16Le(cmd_buf[1..], file_slice) catch return .{ .pid = 0, .ok = false };
+    cmd_buf[1 + exe_len] = '"';
+    cmd_buf[2 + exe_len] = ' ';
+    const daemon_str = "daemon";
+    for (daemon_str, 0..) |c, i| cmd_buf[3 + exe_len + i] = c;
+    cmd_buf[3 + exe_len + daemon_str.len] = 0;
+
+    var si = std.mem.zeroes(win.STARTUPINFOW);
+    si.cb = @sizeOf(win.STARTUPINFOW);
+
+    var pi: win.PROCESS_INFORMATION = undefined;
+    if (win.CreateProcessW(
+        null,
+        @ptrCast(&cmd_buf),
+        null,
+        null,
+        0, // don't inherit handles
+        win.DETACHED_PROCESS,
+        null,
+        null,
+        &si,
+        &pi,
+    ) == 0) return .{ .pid = 0, .ok = false };
+
+    // Close handles — the daemon runs independently.
+    _ = win.CloseHandle(pi.hProcess);
+    _ = win.CloseHandle(pi.hThread);
+    return .{ .pid = pi.dwProcessId, .ok = true };
 }
 
 /// Spawn a detached thread that waits for `pid` to exit, preventing zombies.

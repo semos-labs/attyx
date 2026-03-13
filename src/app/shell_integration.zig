@@ -84,6 +84,73 @@ pub fn setup() ArgvOverride {
 }
 
 // ---------------------------------------------------------------------------
+// Windows shell integration — script content generation
+// ---------------------------------------------------------------------------
+
+/// PowerShell integration script content. Emits OSC 7337 (PATH) and OSC 7 (CWD)
+/// on every prompt via the prompt function override.
+pub const powershell_script =
+    \\# Attyx shell integration (PowerShell)
+    \\# Prepend attyx bin dir to PATH
+    \\if ($env:__ATTYX_BIN_DIR -and ($env:PATH -notlike "*$env:__ATTYX_BIN_DIR*")) {
+    \\    $env:PATH = "$env:__ATTYX_BIN_DIR;$env:PATH"
+    \\}
+    \\Remove-Item Env:__ATTYX_BIN_DIR -ErrorAction SilentlyContinue
+    \\# Save the original prompt function
+    \\if (Test-Path Function:\prompt) {
+    \\    $global:__attyx_orig_prompt = Get-Content Function:\prompt
+    \\}
+    \\function global:prompt {
+    \\    # OSC 7: report CWD
+    \\    $cwd = (Get-Location).Path
+    \\    [Console]::Error.Write("`e]7;file://$($env:COMPUTERNAME)/$($cwd -replace '\\','/')`a")
+    \\    # OSC 7337: report PATH for popup commands
+    \\    [Console]::Error.Write("`e]7337;set-path;$($env:PATH)`a")
+    \\    # Execute startup command on first prompt
+    \\    if ($env:__ATTYX_STARTUP_CMD) {
+    \\        $cmd = $env:__ATTYX_STARTUP_CMD
+    \\        Remove-Item Env:__ATTYX_STARTUP_CMD -ErrorAction SilentlyContinue
+    \\        Invoke-Expression $cmd
+    \\    }
+    \\    # Call original prompt
+    \\    if ($global:__attyx_orig_prompt) {
+    \\        & ([scriptblock]::Create($global:__attyx_orig_prompt))
+    \\    } else {
+    \\        "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+    \\    }
+    \\}
+    \\
+;
+
+/// Generate the cmd.exe PROMPT string that emits OSC 7 for CWD reporting.
+/// cmd.exe doesn't support OSC 7337 easily, so we only report CWD.
+/// The PROMPT var uses $e for ESC and $p for current directory.
+pub const cmd_prompt_string = "$e]7;file://$h/$p$e\\$e]7337;set-path;%PATH%$e\\$p$g";
+
+/// Get the PowerShell script content for writing to a config file.
+pub fn getPowerShellScript() []const u8 {
+    return powershell_script;
+}
+
+/// Get the cmd.exe PROMPT string for setting in the environment.
+pub fn getCmdPromptString() []const u8 {
+    return cmd_prompt_string;
+}
+
+/// Generate the integration script path for a given shell on Windows.
+/// Writes into the provided buffer. Returns the slice or null on failure.
+pub fn windowsScriptPath(buf: []u8, shell: Shell) ?[]const u8 {
+    // Use %LOCALAPPDATA%\attyx\shell-integration\ as base
+    const base = "shell-integration";
+    const suffix: []const u8 = switch (shell) {
+        .powershell => "powershell\\attyx.ps1",
+        .cmd => "cmd\\attyx_prompt.cmd",
+        else => return null,
+    };
+    return std.fmt.bufPrint(buf, "{s}\\{s}", .{ base, suffix }) catch null;
+}
+
+// ---------------------------------------------------------------------------
 // Per-shell setup (POSIX only — guarded at call site)
 // ---------------------------------------------------------------------------
 
@@ -443,4 +510,64 @@ test "detectShell" {
     try testing.expectEqual(Shell.cmd, detectShell("cmd.exe"));
     try testing.expectEqual(Shell.cmd, detectShell("cmd"));
     try testing.expectEqual(Shell.cmd, detectShell("C:\\Windows\\System32\\cmd.exe"));
+}
+
+test "detectShell — Git Bash uses bash integration" {
+    const testing = std.testing;
+    // Git Bash on Windows uses /usr/bin/bash or /bin/bash inside MSYS2
+    try testing.expectEqual(Shell.bash, detectShell("/usr/bin/bash"));
+    try testing.expectEqual(Shell.bash, detectShell("/bin/bash"));
+    try testing.expectEqual(Shell.bash, detectShell("bash"));
+    // Git Bash accessed via Windows path
+    try testing.expectEqual(Shell.bash, detectShell("bash"));
+}
+
+test "PowerShell script contains OSC sequences" {
+    const testing = std.testing;
+    const script = getPowerShellScript();
+    // Must contain OSC 7337 for PATH reporting
+    try testing.expect(std.mem.indexOf(u8, script, "7337;set-path;") != null);
+    // Must contain OSC 7 for CWD reporting
+    try testing.expect(std.mem.indexOf(u8, script, "]7;file://") != null);
+    // Must handle __ATTYX_BIN_DIR
+    try testing.expect(std.mem.indexOf(u8, script, "__ATTYX_BIN_DIR") != null);
+    // Must handle startup command
+    try testing.expect(std.mem.indexOf(u8, script, "__ATTYX_STARTUP_CMD") != null);
+}
+
+test "cmd.exe PROMPT string contains OSC 7" {
+    const testing = std.testing;
+    const prompt = getCmdPromptString();
+    // Must contain OSC 7 escape for CWD
+    try testing.expect(std.mem.indexOf(u8, prompt, "$e]7;file://") != null);
+    // Must contain $p for current directory
+    try testing.expect(std.mem.indexOf(u8, prompt, "$p") != null);
+    // Must contain PATH reporting via OSC 7337
+    try testing.expect(std.mem.indexOf(u8, prompt, "7337;set-path;") != null);
+}
+
+test "windowsScriptPath generates correct paths" {
+    const testing = std.testing;
+    var buf: [256]u8 = undefined;
+
+    const ps_path = windowsScriptPath(&buf, .powershell);
+    try testing.expect(ps_path != null);
+    try testing.expect(std.mem.endsWith(u8, ps_path.?, "attyx.ps1"));
+    try testing.expect(std.mem.indexOf(u8, ps_path.?, "powershell") != null);
+
+    const cmd_path = windowsScriptPath(&buf, .cmd);
+    try testing.expect(cmd_path != null);
+    try testing.expect(std.mem.endsWith(u8, cmd_path.?, "attyx_prompt.cmd"));
+
+    // Non-Windows shells return null
+    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .zsh));
+    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .bash));
+    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .fish));
+}
+
+test "PowerShell script uses semicolons for PATH separator" {
+    const testing = std.testing;
+    const script = getPowerShellScript();
+    // Windows PATH uses semicolons, not colons
+    try testing.expect(std.mem.indexOf(u8, script, "$env:__ATTYX_BIN_DIR;$env:PATH") != null);
 }

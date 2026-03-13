@@ -208,6 +208,11 @@ int attyx_check_resize(int* out_rows, int* out_cols) {
     return 1;
 }
 
+// Forward declarations for helpers defined below WndProc
+static float win_get_dpi_scale(HWND hwnd);
+static void  win_apply_dark_mode(HWND hwnd);
+static void  win_apply_transparency(HWND hwnd);
+
 // ---------------------------------------------------------------------------
 // Platform callbacks
 // ---------------------------------------------------------------------------
@@ -242,6 +247,9 @@ void attyx_apply_window_update(void) {
     SetWindowPos(g_hwnd, NULL, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
+    // Re-apply transparency (handles opacity changes at runtime)
+    win_apply_transparency(g_hwnd);
+
     // Recalculate grid size from current client area
     RECT rc;
     GetClientRect(g_hwnd, &rc);
@@ -270,6 +278,63 @@ void windows_renderer_present(void);
 void windows_renderer_cleanup(void);
 
 // ---------------------------------------------------------------------------
+// DPI helpers
+// ---------------------------------------------------------------------------
+
+typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+static PFN_GetDpiForWindow s_GetDpiForWindow = NULL;
+
+static float win_get_dpi_scale(HWND hwnd) {
+    // Try per-monitor DPI (Win10 1607+)
+    if (!s_GetDpiForWindow) {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32)
+            s_GetDpiForWindow = (PFN_GetDpiForWindow)GetProcAddress(user32, "GetDpiForWindow");
+    }
+    if (s_GetDpiForWindow && hwnd) {
+        UINT dpi = s_GetDpiForWindow(hwnd);
+        if (dpi > 0) return (float)dpi / 96.0f;
+    }
+    // Fallback: system DPI
+    HDC hdc = GetDC(NULL);
+    float scale = (float)GetDeviceCaps(hdc, LOGPIXELSX) / 96.0f;
+    ReleaseDC(NULL, hdc);
+    return scale;
+}
+
+// ---------------------------------------------------------------------------
+// Transparency / dark mode helpers
+// ---------------------------------------------------------------------------
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+static void win_apply_dark_mode(HWND hwnd) {
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+}
+
+static void win_apply_transparency(HWND hwnd) {
+    float opacity = g_background_opacity;
+    if (opacity >= 1.0f) return;
+
+    // Method 1: DWM frame extension (glass/acrylic effect)
+    // Extending margins to -1 makes the entire client area render through DWM
+    MARGINS margins = { -1, -1, -1, -1 };
+    HRESULT hr = DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    if (FAILED(hr)) {
+        // Fallback: layered window for basic transparency
+        LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+        BYTE alpha = (BYTE)(opacity * 255.0f);
+        if (alpha < 1) alpha = 1;
+        SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Window procedure
 // ---------------------------------------------------------------------------
 
@@ -293,6 +358,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             attyx_mark_all_dirty();
         }
         return 0;
+
+    case WM_DPICHANGED: {
+        float newScale = (float)HIWORD(wParam) / 96.0f;
+        g_content_scale = newScale;
+
+        // Recalculate cell pixel dimensions from point sizes
+        g_cell_px_w = g_cell_w_pts * newScale;
+        g_cell_px_h = g_cell_h_pts * newScale;
+
+        // Trigger font rebuild at new DPI
+        g_needs_font_rebuild = 1;
+
+        // Windows provides the suggested new window rect in lParam
+        RECT* suggested = (RECT*)lParam;
+        SetWindowPos(hwnd, NULL,
+                     suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+
+        g_full_redraw = 1;
+        attyx_mark_all_dirty();
+        return 0;
+    }
 
     case WM_CLOSE:
         g_should_quit = 1;
@@ -325,10 +414,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     HINSTANCE hInstance = GetModuleHandleW(NULL);
 
-    // Get DPI scaling
-    HDC hdc = GetDC(NULL);
-    g_content_scale = (float)GetDeviceCaps(hdc, LOGPIXELSX) / 96.0f;
-    ReleaseDC(NULL, hdc);
+    // Get DPI scaling (system-level; per-monitor updated in WM_DPICHANGED)
+    g_content_scale = win_get_dpi_scale(NULL);
 
     // TODO Phase 2: Initialize DWrite font + glyph cache here.
     // For now, use placeholder cell dimensions.
@@ -346,7 +433,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance      = hInstance;
-    wc.hCursor       = LoadCursorW(NULL, IDC_IBEAM);
+    wc.hCursor       = LoadCursorW(NULL, MAKEINTRESOURCEW(32513));
     wc.lpszClassName  = L"AttyxWindow";
     RegisterClassExW(&wc);
 
@@ -367,6 +454,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     );
 
     if (!g_hwnd) return;
+
+    // Apply dark mode title bar
+    win_apply_dark_mode(g_hwnd);
+
+    // Apply transparency if opacity < 1.0
+    win_apply_transparency(g_hwnd);
 
     // Initialize D3D11 renderer
     if (!windows_renderer_init(g_hwnd)) {

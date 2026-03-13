@@ -22,11 +22,7 @@ const terminal = if (!is_windows) @import("app/terminal.zig") else struct {
 comptime {
     if (is_windows) _ = @import("app/windows_stubs.zig");
 }
-const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else struct {
-    pub fn run(_: anytype, _: anytype) !void {
-        return error.UnsupportedPlatform;
-    }
-};
+const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else @import("app/daemon/daemon_windows.zig");
 const ipc_client = if (!is_windows) @import("ipc/client.zig") else struct {
     pub fn run(_: anytype) void {}
 };

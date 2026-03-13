@@ -1,8 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const posix = std.posix;
 const Pty = @import("../pty.zig").Pty;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
+
+const win32_sleep = if (is_windows) struct {
+    extern "kernel32" fn Sleep(dwMilliseconds: std.os.windows.DWORD) callconv(.winapi) void;
+} else struct {};
 
 
 /// A daemon-managed pane wrapping a PTY process and replay buffer.
@@ -41,7 +47,10 @@ pub const DaemonPane = struct {
     theme_cursor_set: bool = false,
 
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
-    pub fn fromRestored(
+    /// POSIX only — hot-upgrade restore is not supported on Windows.
+    pub const fromRestored = if (!is_windows) fromRestoredImpl else @compileError("fromRestored not available on Windows");
+
+    fn fromRestoredImpl(
         allocator: std.mem.Allocator,
         id: u32,
         pty_fd: posix.fd_t,
@@ -100,16 +109,17 @@ pub const DaemonPane = struct {
 
         const startup_cmd: ?[*:0]const u8 = if (cmd) |c| c else null;
 
+        const pty_opts = Pty.SpawnOpts{
+            .rows = rows,
+            .cols = cols,
+            .cwd = cwd,
+            .argv = argv,
+            .startup_cmd = startup_cmd,
+            .capture_stdout = capture_stdout,
+        };
         var pane = DaemonPane{
             .id = id,
-            .pty = try Pty.spawn(.{
-                .rows = rows,
-                .cols = cols,
-                .cwd = cwd,
-                .argv = argv,
-                .startup_cmd = startup_cmd,
-                .capture_stdout = capture_stdout,
-            }),
+            .pty = if (comptime is_windows) try Pty.spawn(allocator, pty_opts) else try Pty.spawn(pty_opts),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,
@@ -249,7 +259,11 @@ pub const DaemonPane = struct {
                 if (err == error.WouldBlock) {
                     retries += 1;
                     if (retries >= max_retries) return; // give up, don't stall daemon
-                    posix.nanosleep(0, 1_000_000); // 1ms
+                    if (comptime is_windows) {
+                        win32_sleep.Sleep(1); // 1ms
+                    } else {
+                        posix.nanosleep(0, 1_000_000); // 1ms
+                    }
                     continue;
                 }
                 return err;
@@ -292,6 +306,7 @@ pub const DaemonPane = struct {
 
     /// Check if the foreground process name changed. Returns the new name if changed, null otherwise.
     pub fn checkProcNameChanged(self: *DaemonPane) ?[]const u8 {
+        if (comptime is_windows) return null; // No PTY fg process name on Windows yet
         var buf: [256]u8 = undefined;
         const name = platform.getForegroundProcessName(self.pty.master, &buf) orelse return null;
         const len: u8 = @intCast(@min(name.len, 64));
@@ -576,12 +591,13 @@ pub const DaemonPane = struct {
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
     pub fn drainCapturedStdout(self: *DaemonPane) void {
+        if (comptime is_windows) return; // stdout capture not supported on Windows yet
         const cs = self.captured_stdout orelse return;
         const alloc = self.stdout_allocator orelse return;
         if (self.pty.stdout_read_fd == -1) return;
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = posix.read(self.pty.stdout_read_fd, &buf) catch break;
+            const n = std.posix.read(self.pty.stdout_read_fd, &buf) catch break;
             if (n == 0) break;
             cs.appendSlice(alloc, buf[0..n]) catch break;
         }

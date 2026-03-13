@@ -2,7 +2,7 @@
 /// Extracted from session_client.zig to reduce file size.
 ///
 /// On POSIX: uses Unix domain sockets.
-/// On Windows: uses named pipes (Phase 1+ — stubs for now).
+/// On Windows: uses named pipes.
 const std = @import("std");
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
@@ -10,6 +10,65 @@ const is_posix = !is_windows;
 const protocol = @import("daemon/protocol.zig");
 const platform = @import("../platform/platform.zig");
 const spawn = @import("spawn.zig");
+
+// Windows API imports — only resolved when targeting Windows.
+const win32 = if (is_windows) struct {
+    const windows = std.os.windows;
+    const HANDLE = windows.HANDLE;
+    const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
+    const DWORD = windows.DWORD;
+    const BOOL = windows.BOOL;
+    const LPCWSTR = [*:0]const u16;
+
+    const GENERIC_READ: DWORD = 0x80000000;
+    const GENERIC_WRITE: DWORD = 0x40000000;
+    const OPEN_EXISTING: DWORD = 3;
+    const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
+    const ERROR_PIPE_BUSY: DWORD = 231;
+
+    extern "kernel32" fn CreateFileW(
+        lpFileName: LPCWSTR,
+        dwDesiredAccess: DWORD,
+        dwShareMode: DWORD,
+        lpSecurityAttributes: ?*const anyopaque,
+        dwCreationDisposition: DWORD,
+        dwFlagsAndAttributes: DWORD,
+        hTemplateFile: ?HANDLE,
+    ) callconv(.winapi) HANDLE;
+    extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetModuleFileNameW(hModule: ?HANDLE, lpFilename: [*]u16, nSize: DWORD) callconv(.winapi) DWORD;
+    extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+    extern "kernel32" fn ReadFile(
+        hFile: HANDLE,
+        lpBuffer: [*]u8,
+        nNumberOfBytesToRead: DWORD,
+        lpNumberOfBytesRead: ?*DWORD,
+        lpOverlapped: ?*anyopaque,
+    ) callconv(.winapi) BOOL;
+    extern "kernel32" fn WriteFile(
+        hFile: HANDLE,
+        lpBuffer: [*]const u8,
+        nNumberOfBytesToWrite: DWORD,
+        lpNumberOfBytesWritten: ?*DWORD,
+        lpOverlapped: ?*anyopaque,
+    ) callconv(.winapi) BOOL;
+    extern "kernel32" fn PeekNamedPipe(
+        hNamedPipe: HANDLE,
+        lpBuffer: ?[*]u8,
+        nBufferSize: DWORD,
+        lpBytesRead: ?*DWORD,
+        lpTotalBytesAvail: ?*DWORD,
+        lpBytesLeftThisMessage: ?*DWORD,
+    ) callconv(.winapi) BOOL;
+
+    fn toWide(comptime s: []const u8) [s.len:0]u16 {
+        comptime {
+            var result: [s.len:0]u16 = undefined;
+            for (s, 0..) |c, i| result[i] = c;
+            return result;
+        }
+    }
+} else struct {};
 
 // POSIX-only extern declarations.
 const posix_ffi = if (is_posix) struct {
@@ -40,7 +99,7 @@ fn getEnv(key: []const u8) ?[]const u8 {
 }
 
 pub fn connectToSocket() !std.posix.fd_t {
-    if (comptime is_windows) return error.DaemonConnectFailed; // TODO(windows): named pipes
+    if (comptime is_windows) return connectToSocketWindows();
 
     const posix = std.posix;
     var path_buf: [256]u8 = undefined;
@@ -83,6 +142,87 @@ pub fn connectToSocket() !std.posix.fd_t {
     }
 
     return error.DaemonConnectFailed;
+}
+
+// ── Windows named pipe connection ──
+
+fn connectToSocketWindows() !std.posix.fd_t {
+    if (comptime !is_windows) unreachable;
+
+    var path_buf: [256]u8 = undefined;
+    const pipe_path = getSocketPath(&path_buf) orelse return error.NoHome;
+
+    // First attempt
+    if (tryConnectWindows(pipe_path)) |h| {
+        if (probeAliveWindows(h)) return h;
+        _ = win32.CloseHandle(h);
+    }
+
+    if (isUpgradeInProgress()) {
+        var delay_ms: u32 = 100;
+        for (0..100) |_| {
+            win32.Sleep(delay_ms);
+            if (tryConnectWindows(pipe_path)) |h| return h;
+            if (delay_ms < 200) delay_ms *= 2;
+            if (!isUpgradeInProgress()) break;
+        }
+        if (tryConnectWindows(pipe_path)) |h| return h;
+    }
+
+    try startDaemon();
+
+    var delay_ms: u32 = 100;
+    for (0..5) |_| {
+        win32.Sleep(delay_ms);
+        if (tryConnectWindows(pipe_path)) |h| return h;
+        delay_ms *= 2;
+    }
+
+    return error.DaemonConnectFailed;
+}
+
+fn tryConnectWindows(path: []const u8) ?std.posix.fd_t {
+    if (comptime !is_windows) return null;
+    var wide_buf: [256]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, path) catch return null;
+    wide_buf[wlen] = 0;
+    const wide: win32.LPCWSTR = @ptrCast(wide_buf[0..wlen :0]);
+    const h = win32.CreateFileW(
+        wide,
+        win32.GENERIC_READ | win32.GENERIC_WRITE,
+        0,
+        null,
+        win32.OPEN_EXISTING,
+        win32.FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+    if (h == win32.INVALID_HANDLE_VALUE) return null;
+    return h;
+}
+
+fn probeAliveWindows(handle: std.posix.fd_t) bool {
+    if (comptime !is_windows) return false;
+    var buf: [protocol.header_size]u8 = undefined;
+    protocol.encodeHeader(&buf, .list, 0);
+    var written: win32.DWORD = 0;
+    if (win32.WriteFile(handle, &buf, protocol.header_size, &written, null) == 0) return false;
+    // Wait up to 500ms for a response
+    for (0..50) |_| {
+        var avail: win32.DWORD = 0;
+        if (win32.PeekNamedPipe(handle, null, 0, null, &avail, null) == 0) return false;
+        if (avail > 0) return true;
+        win32.Sleep(10);
+    }
+    return false;
+}
+
+/// Close a daemon connection handle (cross-platform).
+pub fn closeHandle(fd: std.posix.fd_t) void {
+    if (comptime is_windows) {
+        _ = win32.CloseHandle(fd);
+    } else {
+        std.posix.close(fd);
+    }
 }
 
 /// Check whether upgrade.bin exists, indicating a hot-upgrade is in progress.
@@ -180,8 +320,11 @@ pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
             return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
         }
     } else if (comptime is_windows) {
-        // Windows: use GetModuleFileNameW (Phase 1+)
-        return null;
+        var wide_buf: [512]u16 = undefined;
+        const len = win32.GetModuleFileNameW(null, &wide_buf, wide_buf.len);
+        if (len == 0 or len >= wide_buf.len) return null;
+        const utf8_len = std.unicode.utf16LeToUtf8(buf, wide_buf[0..len]) catch return null;
+        return buf[0..utf8_len];
     } else {
         const n = posix_ffi.readlink("/proc/self/exe", buf, buf.len);
         if (n > 0) return buf[0..@intCast(n)];

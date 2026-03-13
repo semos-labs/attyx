@@ -71,7 +71,7 @@ extern "kernel32" fn CreatePipe(
     hWritePipe: *HANDLE,
     lpPipeAttributes: ?*const SECURITY_ATTRIBUTES,
     nSize: DWORD,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn CreatePseudoConsole(
     size: COORD,
@@ -79,21 +79,21 @@ extern "kernel32" fn CreatePseudoConsole(
     hOutput: HANDLE,
     dwFlags: DWORD,
     phPC: *HPCON,
-) callconv(.C) c_long;
+) callconv(.winapi) c_long;
 
 extern "kernel32" fn ResizePseudoConsole(
     hPC: HPCON,
     size: COORD,
-) callconv(.C) c_long;
+) callconv(.winapi) c_long;
 
-extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.C) void;
+extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 
 extern "kernel32" fn InitializeProcThreadAttributeList(
     lpAttributeList: ?LPPROC_THREAD_ATTRIBUTE_LIST,
     dwAttributeCount: DWORD,
     dwFlags: DWORD,
     lpSize: *usize,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn UpdateProcThreadAttribute(
     lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,
@@ -103,11 +103,11 @@ extern "kernel32" fn UpdateProcThreadAttribute(
     cbSize: usize,
     lpPreviousValue: ?LPVOID,
     lpReturnSize: ?*usize,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn DeleteProcThreadAttributeList(
     lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,
-) callconv(.C) void;
+) callconv(.winapi) void;
 
 extern "kernel32" fn CreateProcessW(
     lpApplicationName: ?LPCWSTR,
@@ -120,7 +120,7 @@ extern "kernel32" fn CreateProcessW(
     lpCurrentDirectory: ?LPCWSTR,
     lpStartupInfo: *STARTUPINFOEXW,
     lpProcessInformation: *PROCESS_INFORMATION,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn ReadFile(
     hFile: HANDLE,
@@ -128,7 +128,7 @@ extern "kernel32" fn ReadFile(
     nNumberOfBytesToRead: DWORD,
     lpNumberOfBytesRead: ?*DWORD,
     lpOverlapped: ?LPVOID,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn WriteFile(
     hFile: HANDLE,
@@ -136,24 +136,24 @@ extern "kernel32" fn WriteFile(
     nNumberOfBytesToWrite: DWORD,
     lpNumberOfBytesWritten: ?*DWORD,
     lpOverlapped: ?LPVOID,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 extern "kernel32" fn WaitForSingleObject(
     hHandle: HANDLE,
     dwMilliseconds: DWORD,
-) callconv(.C) DWORD;
+) callconv(.winapi) DWORD;
 
 extern "kernel32" fn GetExitCodeProcess(
     hProcess: HANDLE,
     lpExitCode: *DWORD,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
-extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.C) BOOL;
+extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 
 extern "kernel32" fn SetEnvironmentVariableW(
     lpName: LPCWSTR,
     lpValue: ?LPCWSTR,
-) callconv(.C) BOOL;
+) callconv(.winapi) BOOL;
 
 // ── Pty ──
 
@@ -220,7 +220,7 @@ pub const Pty = struct {
         // Build the proc thread attribute list.
         var attr_list_size: usize = 0;
         _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_list_size);
-        const attr_buf = try allocator.alignedAlloc(u8, 8, attr_list_size);
+        const attr_buf = try allocator.alignedAlloc(u8, .@"8", attr_list_size);
         errdefer allocator.free(attr_buf);
 
         const attr_list: LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(attr_buf.ptr);

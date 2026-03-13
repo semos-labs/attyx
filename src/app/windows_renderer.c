@@ -37,6 +37,8 @@ ID3D11BlendState*       g_d3d_blend_alpha  = NULL;
 ID3D11SamplerState*     g_d3d_sampler      = NULL;
 ID3D11Buffer*           g_d3d_cbuffer      = NULL;
 
+GlyphCache g_gc = {0};
+
 static IDXGISwapChain*         s_swap_chain   = NULL;
 static ID3D11RenderTargetView* s_rtv          = NULL;
 static ID3D11Buffer*           s_vbo          = NULL;

@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
@@ -123,7 +125,7 @@ fn handleCreate(
     session_count.* += 1;
     // Set non-blocking on initial pane's PTY master
     if (sessions[slot_idx].?.firstPane()) |pane| {
-        setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
     }
     cl.sendCreated(id);
 }
@@ -244,8 +246,10 @@ fn handleCreatePane(
     };
     // Set non-blocking on new pane's PTY (and stdout capture pipe if present)
     if (session.findPane(pane_id)) |pane| {
-        setNonBlocking(pane.pty.master);
-        if (pane.pty.stdout_read_fd != -1) setNonBlocking(pane.pty.stdout_read_fd);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) {
+            if (pane.pty.stdout_read_fd != -1) setNonBlocking(pane.pty.stdout_read_fd);
+        }
     }
     cl.sendPaneCreated(pane_id);
 }
@@ -406,7 +410,7 @@ fn reviveSession(
                 new_ids[i] = pane_id;
                 _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch continue;
                 if (session.findPane(pane_id)) |pane| {
-                    setNonBlocking(pane.pty.master);
+                    if (comptime !is_windows) setNonBlocking(pane.pty.master);
                 }
                 spawned += 1;
             }
@@ -428,7 +432,7 @@ fn reviveSession(
     next_pane_id.* += 1;
     _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch return;
     if (session.findPane(pane_id)) |pane| {
-        setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
     }
     session.alive = true;
 }
@@ -456,6 +460,7 @@ fn findSession(sessions: *[max_sessions]?DaemonSession, id: u32) ?*DaemonSession
 }
 
 fn setNonBlocking(fd: std.posix.fd_t) void {
+    if (comptime is_windows) return; // Windows handles don't use fcntl
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const platform = @import("../../platform/platform.zig");
