@@ -53,7 +53,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .scroll_to_top, .name = "scroll_to_top", .description = "Scroll to top", .scope = .global, .mac_hotkey = "shift+home", .linux_hotkey = "shift+home" },
     .{ .action = .scroll_to_bottom, .name = "scroll_to_bottom", .description = "Scroll to bottom", .scope = .global, .mac_hotkey = "shift+end", .linux_hotkey = "shift+end" },
     .{ .action = .config_reload, .name = "config_reload", .description = "Reload configuration", .scope = .global, .mac_hotkey = "ctrl+shift+r", .linux_hotkey = "ctrl+shift+r" },
-    .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+d" },
+    .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+f12" },
     .{ .action = .anchor_demo_toggle, .name = "anchor_demo_toggle", .description = "Toggle anchor demo", .scope = .global, .mac_hotkey = "ctrl+shift+a", .linux_hotkey = "ctrl+shift+a" },
     .{ .action = .new_window, .name = "new_window", .description = "Open new window", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = "ctrl+shift+w" },

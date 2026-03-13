@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const attyx = @import("attyx");
+const logging = @import("../../logging/log.zig");
 const publish = @import("publish.zig");
 const c = publish.c;
 const ws = @import("../windows_stubs.zig");
@@ -26,14 +27,19 @@ pub fn processSplitActions(ctx: *WinCtx) void {
     switch (action) {
         .split_vertical, .split_horizontal => {
             const dir: split_layout_mod.Direction = if (action == .split_vertical) .vertical else .horizontal;
+            logging.info("split", "split request: dir={s} pty_rows={d} cols={d}", .{
+                if (dir == .vertical) "vertical" else "horizontal", pty_rows, ctx.grid_cols,
+            });
             const new_pane = ctx.allocator.create(Pane) catch return;
-            new_pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch {
+            new_pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch |err| {
+                logging.err("split", "Pane.spawn failed: {}", .{err});
                 ctx.allocator.destroy(new_pane);
                 return;
             };
             ctx.tab_mgr.assignIpcId(new_pane);
             new_pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
-            layout.splitPaneWith(dir, new_pane) catch {
+            layout.splitPaneWith(dir, new_pane) catch |err| {
+                logging.err("split", "splitPaneWith failed: {}", .{err});
                 new_pane.deinit();
                 ctx.allocator.destroy(new_pane);
                 return;
