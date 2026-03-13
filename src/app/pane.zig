@@ -101,7 +101,7 @@ pub const Pane = struct {
         var engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         errdefer engine.deinit();
 
-        const pty = try Pty.spawn(.{
+        const spawn_opts: Pty.SpawnOpts = .{
             .rows = rows,
             .cols = cols,
             .argv = argv,
@@ -109,7 +109,11 @@ pub const Pane = struct {
             .capture_stdout = opts.capture_stdout,
             .preserve_tmux = opts.preserve_tmux,
             .skip_shell_integration = opts.skip_shell_integration,
-        });
+        };
+        const pty = if (builtin.os.tag == .windows)
+            try Pty.spawn(allocator, spawn_opts)
+        else
+            try Pty.spawn(spawn_opts);
 
         return .{
             .engine = engine,
