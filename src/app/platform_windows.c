@@ -413,6 +413,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_COMMAND:
+        if (windows_menu_handle_command(wParam))
+            return 0;
+        break;
+
     case WM_CLOSE:
         g_should_quit = 1;
         DestroyWindow(hwnd);
@@ -467,10 +472,13 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     wc.lpszClassName  = L"AttyxWindow";
     RegisterClassExW(&wc);
 
-    // Compute window rect from desired client area
+    // Build system menu bar
+    HMENU hmenu = windows_menu_create();
+
+    // Compute window rect from desired client area (TRUE = has menu)
     DWORD style = WS_OVERLAPPEDWINDOW;
     RECT rect = { 0, 0, winW, winH };
-    AdjustWindowRect(&rect, style, FALSE);
+    AdjustWindowRect(&rect, style, TRUE);
 
     g_hwnd = CreateWindowExW(
         0,
@@ -480,7 +488,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         CW_USEDEFAULT, CW_USEDEFAULT,
         rect.right - rect.left,
         rect.bottom - rect.top,
-        NULL, NULL, hInstance, NULL
+        NULL, hmenu, hInstance, NULL
     );
 
     if (!g_hwnd) return;
@@ -508,7 +516,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         int newW = (int)(cols * g_cell_w_pts) + g_padding_left + g_padding_right;
         int newH = (int)(rows * g_cell_h_pts) + g_padding_top + g_padding_bottom;
         RECT newRect = { 0, 0, newW, newH };
-        AdjustWindowRect(&newRect, style, FALSE);
+        AdjustWindowRect(&newRect, style, TRUE);
         SetWindowPos(g_hwnd, NULL, 0, 0,
                      newRect.right - newRect.left,
                      newRect.bottom - newRect.top,
@@ -562,7 +570,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                 int newH = (int)(g_rows * g_cell_h_pts) + g_padding_top + g_padding_bottom;
                 RECT fontRect = { 0, 0, newW, newH };
                 DWORD ws = (DWORD)GetWindowLongW(g_hwnd, GWL_STYLE);
-                AdjustWindowRect(&fontRect, ws, FALSE);
+                AdjustWindowRect(&fontRect, ws, TRUE);
                 SetWindowPos(g_hwnd, NULL, 0, 0,
                              fontRect.right - fontRect.left,
                              fontRect.bottom - fontRect.top,

@@ -346,6 +346,13 @@ void              ligatureCacheClear(void);
 LRESULT windows_handle_input(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // ---------------------------------------------------------------------------
+// Menu bar (windows_menu.c)
+// ---------------------------------------------------------------------------
+
+HMENU windows_menu_create(void);
+int   windows_menu_handle_command(WPARAM wParam);
+
+// ---------------------------------------------------------------------------
 // Clipboard (windows_clipboard.c)
 // ---------------------------------------------------------------------------
 
