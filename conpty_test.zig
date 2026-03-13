@@ -10,7 +10,7 @@ const WORD = u16;
 const BYTE = u8;
 const LPCWSTR = [*:0]const u16;
 
-const HPCON = *opaque {};
+const HPCON = HANDLE;  // HPCON is just a HANDLE (void*)
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const S_OK: c_long = 0;
@@ -72,7 +72,7 @@ pub fn main() !void {
         pr("CreatePseudoConsole FAILED: hr=0x{x}\n", .{@as(u32, @bitCast(hr))});
         return error.ConPTYFailed;
     }
-    pr("ConPTY created OK\n", .{});
+    pr("ConPTY created OK, hpc={d}\n", .{@intFromPtr(hpc)});
 
     var attr_size: usize = 0;
     _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
@@ -104,16 +104,15 @@ pub fn main() !void {
     }
     pr("Process created: pid={d}\n", .{pi.dwProcessId});
 
-    _ = CloseHandle(in_r);
-    _ = CloseHandle(out_w);
+    // Don't close in_r and out_w yet — test if ConPTY needs them open
     _ = CloseHandle(pi.hThread);
 
     var code: DWORD = 0;
     _ = GetExitCodeProcess(pi.hProcess, &code);
     pr("Exit code: {d} (259=alive)\n", .{code});
 
-    pr("Waiting 1s for output...\n", .{});
-    Sleep(1000);
+    pr("Waiting 3s for output...\n", .{});
+    Sleep(3000);
 
     var avail: DWORD = 0;
     const peek_ok = PeekNamedPipe(out_r, null, 0, null, &avail, null);
