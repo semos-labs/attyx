@@ -166,6 +166,18 @@ extern "kernel32" fn SetEnvironmentVariableW(
     lpValue: ?LPCWSTR,
 ) callconv(.winapi) BOOL;
 
+extern "kernel32" fn GetModuleFileNameW(
+    hModule: ?HANDLE,
+    lpFilename: [*]u16,
+    nSize: DWORD,
+) callconv(.winapi) DWORD;
+
+extern "kernel32" fn GetEnvironmentVariableW(
+    lpName: LPCWSTR,
+    lpBuffer: ?[*]u16,
+    nSize: DWORD,
+) callconv(.winapi) DWORD;
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -292,6 +304,9 @@ pub const Pty = struct {
             _ = SetEnvironmentVariableW(&env_name, pid_buf[0..ascii.len :0]);
         }
 
+        // Inject attyx executable directory into PATH so child shells can use `attyx` CLI.
+        injectExeDirIntoPath();
+
         // Set up STARTUPINFOEXW.
         var si = std.mem.zeroes(STARTUPINFOEXW);
         si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
@@ -415,6 +430,41 @@ fn toUtf16Literal(comptime s: []const u8) [s.len:0]u16 {
         }
         return result;
     }
+}
+
+/// Prepend the directory containing attyx.exe to the PATH environment variable.
+fn injectExeDirIntoPath() void {
+    // Get path to current executable.
+    var exe_path: [std.fs.max_path_bytes]u16 = undefined;
+    const exe_len = GetModuleFileNameW(null, &exe_path, @intCast(exe_path.len));
+    if (exe_len == 0) return;
+
+    // Find last backslash to extract directory.
+    var dir_len: usize = 0;
+    for (0..exe_len) |i| {
+        if (exe_path[i] == '\\') dir_len = i;
+    }
+    if (dir_len == 0) return;
+
+    // Get current PATH.
+    const path_name = comptime toUtf16Literal("PATH");
+    var old_path: [32768]u16 = undefined;
+    const old_len = GetEnvironmentVariableW(&path_name, &old_path, @intCast(old_path.len));
+
+    // Build new PATH: exe_dir + ";" + old_path.
+    var new_path: [32768]u16 = undefined;
+    var pos: usize = 0;
+    @memcpy(new_path[0..dir_len], exe_path[0..dir_len]);
+    pos = dir_len;
+    if (old_len > 0) {
+        new_path[pos] = ';';
+        pos += 1;
+        const copy_len = @min(old_len, new_path.len - pos - 1);
+        @memcpy(new_path[pos..pos + copy_len], old_path[0..copy_len]);
+        pos += copy_len;
+    }
+    new_path[pos] = 0;
+    _ = SetEnvironmentVariableW(&path_name, new_path[0..pos :0]);
 }
 
 fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
