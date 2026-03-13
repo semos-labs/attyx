@@ -5,13 +5,19 @@
 /// 2. Emits OSC 7337;set-path on every prompt so popups get the full PATH
 /// 3. Reports CWD via OSC 7
 ///
-/// Called from the fork child in pty.zig before execvp.
+/// On POSIX: called from the fork child in pty_posix.zig before execvp.
+/// On Windows: shell integration is handled differently (Phase 1+).
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
-extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+// POSIX-only extern declarations — guarded so they don't resolve on Windows.
+const posix_ffi = if (!is_windows) struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+    extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+} else struct {};
 
 pub const Shell = enum {
     zsh,
@@ -19,6 +25,8 @@ pub const Shell = enum {
     fish,
     nushell,
     posix_sh,
+    powershell,
+    cmd,
 };
 
 /// Extra argv entries to insert after argv[0] for shells that need them.
@@ -33,25 +41,37 @@ pub fn detectShell(shell_path: []const u8) Shell {
     if (std.mem.endsWith(u8, shell_path, "/bash") or std.mem.eql(u8, shell_path, "bash")) return .bash;
     if (std.mem.endsWith(u8, shell_path, "/fish") or std.mem.eql(u8, shell_path, "fish")) return .fish;
     if (std.mem.endsWith(u8, shell_path, "/nu") or std.mem.eql(u8, shell_path, "nu")) return .nushell;
+    // Windows shells
+    if (std.mem.endsWith(u8, shell_path, "\\pwsh.exe") or
+        std.mem.endsWith(u8, shell_path, "\\powershell.exe") or
+        std.mem.eql(u8, shell_path, "pwsh.exe") or
+        std.mem.eql(u8, shell_path, "powershell.exe") or
+        std.mem.eql(u8, shell_path, "pwsh")) return .powershell;
+    if (std.mem.endsWith(u8, shell_path, "\\cmd.exe") or
+        std.mem.eql(u8, shell_path, "cmd.exe") or
+        std.mem.eql(u8, shell_path, "cmd")) return .cmd;
     return .posix_sh;
 }
 
 /// Set up shell integration for the current fork child.
 /// Returns an ArgvOverride with extra args to insert after argv[0] (e.g. --rcfile for bash).
 /// All string pointers are backed by static buffers valid until execvp.
+/// On Windows, this is a no-op — shell integration will be handled via ConPTY env vars.
 pub fn setup() ArgvOverride {
+    if (comptime is_windows) return .{};
+
     var exe_buf: [1024]u8 = undefined;
     const exe_dir = getExeDir(&exe_buf) orelse return .{};
 
     // Set __ATTYX_BIN_DIR for integration scripts
     var dir_buf: [1024]u8 = undefined;
     const dir_z = std.fmt.bufPrintZ(&dir_buf, "{s}", .{exe_dir}) catch return .{};
-    _ = setenv("__ATTYX_BIN_DIR", dir_z, 1);
+    _ = posix_ffi.setenv("__ATTYX_BIN_DIR", dir_z, 1);
 
-    const shell = std.mem.sliceTo(getenv("SHELL") orelse "/bin/sh", 0);
+    const shell = std.mem.sliceTo(posix_ffi.getenv("SHELL") orelse "/bin/sh", 0);
     const shell_type = detectShell(shell);
 
-    const home = std.mem.sliceTo(getenv("HOME") orelse return .{}, 0);
+    const home = std.mem.sliceTo(posix_ffi.getenv("HOME") orelse return .{}, 0);
 
     return switch (shell_type) {
         .zsh => setupZsh(home),
@@ -59,11 +79,12 @@ pub fn setup() ArgvOverride {
         .fish => setupFish(home),
         .nushell => setupNushell(home),
         .posix_sh => setupPosixSh(home, exe_dir),
+        .powershell, .cmd => .{},
     };
 }
 
 // ---------------------------------------------------------------------------
-// Per-shell setup
+// Per-shell setup (POSIX only — guarded at call site)
 // ---------------------------------------------------------------------------
 
 fn setupZsh(home: []const u8) ArgvOverride {
@@ -85,13 +106,13 @@ fn setupZsh(home: []const u8) ArgvOverride {
     writeScript(zshenv_path, zsh_script);
 
     // Save and override ZDOTDIR
-    const orig_zdotdir = getenv("ZDOTDIR");
+    const orig_zdotdir = posix_ffi.getenv("ZDOTDIR");
     if (orig_zdotdir) |zd| {
-        _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", zd, 1);
+        _ = posix_ffi.setenv("__ATTYX_ORIGINAL_ZDOTDIR", zd, 1);
     } else {
-        _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", "", 1);
+        _ = posix_ffi.setenv("__ATTYX_ORIGINAL_ZDOTDIR", "", 1);
     }
-    _ = setenv("ZDOTDIR", integ_dir, 1);
+    _ = posix_ffi.setenv("ZDOTDIR", integ_dir, 1);
 
     return .{};
 }
@@ -115,7 +136,7 @@ fn setupBash(home: []const u8) ArgvOverride {
     writeScript(rcfile_path, bash_script);
 
     // Also set BASH_ENV for non-interactive subshells
-    _ = setenv("BASH_ENV", rcfile_path, 1);
+    _ = posix_ffi.setenv("BASH_ENV", rcfile_path, 1);
 
     return .{
         .extra = .{ @ptrCast(bash_rcfile_flag.ptr), @ptrCast(rcfile_path.ptr), null, null },
@@ -149,10 +170,10 @@ fn setupFish(home: []const u8) ArgvOverride {
     writeScript(script_path, fish_script);
 
     // Prepend our dir to XDG_DATA_DIRS so fish finds vendor_conf.d
-    const existing_xdg = std.mem.sliceTo(getenv("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share", 0);
+    const existing_xdg = std.mem.sliceTo(posix_ffi.getenv("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share", 0);
     var xdg_buf: [4096]u8 = undefined;
     const new_xdg = std.fmt.bufPrintZ(&xdg_buf, "{s}:{s}", .{ integ_dir, existing_xdg }) catch return .{};
-    _ = setenv("XDG_DATA_DIRS", new_xdg, 1);
+    _ = posix_ffi.setenv("XDG_DATA_DIRS", new_xdg, 1);
 
     return .{};
 }
@@ -328,13 +349,13 @@ var nu_env_buf: [600]u8 = undefined;
 const nu_env_config_flag: [:0]const u8 = "--env-config";
 
 fn appendExeDirToPath(exe_dir: []const u8) void {
-    const existing = std.mem.sliceTo(getenv("PATH") orelse "/usr/bin:/bin", 0);
+    const existing = std.mem.sliceTo(posix_ffi.getenv("PATH") orelse "/usr/bin:/bin", 0);
     if (std.mem.indexOf(u8, existing, exe_dir) != null) return;
     var path_buf: [4096]u8 = undefined;
     const new_path = std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{
         exe_dir, existing,
     }) catch return;
-    _ = setenv("PATH", new_path, 1);
+    _ = posix_ffi.setenv("PATH", new_path, 1);
 }
 
 fn writeScript(path: [*:0]const u8, content: []const u8) void {
@@ -378,13 +399,16 @@ fn getExeDir(buf: *[1024]u8) ?[]const u8 {
 }
 
 fn getExePath(buf: *[1024]u8) ?[]const u8 {
-    if (comptime @import("builtin").os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos) {
         var size: u32 = buf.len;
-        if (_NSGetExecutablePath(buf, &size) == 0) {
+        if (posix_ffi._NSGetExecutablePath(buf, &size) == 0) {
             return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
         }
+    } else if (comptime is_windows) {
+        // Windows exe path resolution (Phase 1+)
+        return null;
     } else {
-        const n = readlink("/proc/self/exe", buf, buf.len);
+        const n = posix_ffi.readlink("/proc/self/exe", buf, buf.len);
         if (n > 0) {
             return buf[0..@intCast(n)];
         }
@@ -411,4 +435,12 @@ test "detectShell" {
     try testing.expectEqual(Shell.posix_sh, detectShell("/bin/sh"));
     try testing.expectEqual(Shell.posix_sh, detectShell("/bin/dash"));
     try testing.expectEqual(Shell.posix_sh, detectShell("/usr/bin/unknown"));
+    // Windows shells
+    try testing.expectEqual(Shell.powershell, detectShell("pwsh.exe"));
+    try testing.expectEqual(Shell.powershell, detectShell("powershell.exe"));
+    try testing.expectEqual(Shell.powershell, detectShell("pwsh"));
+    try testing.expectEqual(Shell.powershell, detectShell("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"));
+    try testing.expectEqual(Shell.cmd, detectShell("cmd.exe"));
+    try testing.expectEqual(Shell.cmd, detectShell("cmd"));
+    try testing.expectEqual(Shell.cmd, detectShell("C:\\Windows\\System32\\cmd.exe"));
 }

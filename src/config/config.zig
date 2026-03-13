@@ -324,7 +324,7 @@ pub const AppConfig = struct {
             if (self.reflow_enabled) "true" else "false",
             self.cursor_shape.toString(),
             if (self.cursor_blink) "true" else "false",
-            self.program orelse std.posix.getenv("SHELL") orelse "/bin/sh",
+            self.program orelse if (comptime @import("builtin").os.tag == .windows) "cmd.exe" else (std.posix.getenv("SHELL") orelse "/bin/sh"),
         });
     }
 };

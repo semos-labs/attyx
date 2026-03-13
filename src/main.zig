@@ -1,13 +1,30 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const attyx = @import("attyx");
 const cli = @import("config/cli.zig");
 const config_mod = @import("config/config.zig");
-const terminal = @import("app/terminal.zig");
 const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
-const daemon = @import("app/daemon/daemon.zig");
 const session_connect = @import("app/session_connect.zig");
-const ipc_client = @import("ipc/client.zig");
+
+const is_windows = builtin.os.tag == .windows;
+
+// These modules are deeply POSIX (Unix sockets, signals, poll, fork/exec).
+// On Windows they'll need complete rewrites (Phase 1+), so avoid importing
+// them at all to prevent type-checking failures on POSIX-only types.
+const terminal = if (!is_windows) @import("app/terminal.zig") else struct {
+    pub fn run(_: anytype, _: anytype, _: anytype, _: anytype) !void {
+        return error.UnsupportedPlatform;
+    }
+};
+const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else struct {
+    pub fn run(_: anytype, _: anytype) !void {
+        return error.UnsupportedPlatform;
+    }
+};
+const ipc_client = if (!is_windows) @import("ipc/client.zig") else struct {
+    pub fn run(_: anytype) void {}
+};
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
     "https://app.semos.sh"
@@ -156,12 +173,18 @@ fn fatal(msg: []const u8) noreturn {
 }
 
 test {
-    _ = terminal;
+    if (!is_windows) {
+        _ = @import("app/terminal.zig");
+    }
     _ = @import("config/config.zig");
-    _ = @import("app/daemon/session_test.zig");
+    if (!is_windows) {
+        _ = @import("app/daemon/session_test.zig");
+    }
 }
 
 test "AttyxCell struct layout matches C" {
+    // bridge.h requires the platform C layer — skip on Windows where it doesn't exist yet.
+    if (comptime is_windows) return;
     const c = @cImport(@cInclude("bridge.h"));
     try @import("std").testing.expectEqual(@as(usize, 24), @sizeOf(c.AttyxCell));
     try @import("std").testing.expectEqual(@as(usize, 20), @offsetOf(c.AttyxCell, "link_id"));

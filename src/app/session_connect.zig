@@ -1,15 +1,48 @@
 /// Connection helpers for the session daemon client.
 /// Extracted from session_client.zig to reduce file size.
+///
+/// On POSIX: uses Unix domain sockets.
+/// On Windows: uses named pipes (Phase 1+ — stubs for now).
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const is_posix = !is_windows;
 const protocol = @import("daemon/protocol.zig");
 const platform = @import("../platform/platform.zig");
 const spawn = @import("spawn.zig");
 
-extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
-extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
+// POSIX-only extern declarations.
+const posix_ffi = if (is_posix) struct {
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+    extern "c" fn readlink(path: [*:0]const u8, b: [*]u8, bufsiz: usize) isize;
+} else struct {};
 
-pub fn connectToSocket() !posix.fd_t {
+/// Cross-platform getenv — returns a slice or null.
+fn getEnv(key: []const u8) ?[]const u8 {
+    if (comptime is_windows) {
+        // On Windows, std.posix.getenv is a @compileError.
+        // Use a static buffer for the result. Not thread-safe but matches
+        // POSIX getenv semantics (returns pointer to internal storage).
+        const S = struct {
+            var buf: [4096]u8 = undefined;
+        };
+        const val = std.process.getEnvVarOwned(std.heap.page_allocator, key) catch return null;
+        if (val.len >= S.buf.len) {
+            std.heap.page_allocator.free(val);
+            return null;
+        }
+        @memcpy(S.buf[0..val.len], val);
+        std.heap.page_allocator.free(val);
+        return S.buf[0..val.len];
+    } else {
+        return std.posix.getenv(key);
+    }
+}
+
+pub fn connectToSocket() !std.posix.fd_t {
+    if (comptime is_windows) return error.DaemonConnectFailed; // TODO(windows): named pipes
+
+    const posix = std.posix;
     var path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&path_buf) orelse return error.NoHome;
 
@@ -61,34 +94,48 @@ pub fn isUpgradeInProgress() bool {
 }
 
 /// Build a path under the attyx state directory.
-/// Uses XDG_STATE_HOME if set, otherwise ~/.local/state/attyx.
+/// POSIX: XDG_STATE_HOME or ~/.local/state/attyx.
+/// Windows: %LOCALAPPDATA%\attyx (Phase 1+).
 /// `name` must contain one `{s}` placeholder for the dev-mode suffix.
 pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
-    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
+    if (comptime is_windows) {
+        const appdata = getEnv("LOCALAPPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\attyx\\" ++ name, .{ appdata, suffix }) catch null;
+    }
+    if (getEnv("XDG_STATE_HOME")) |sh| {
         if (sh.len > 0)
             return std.fmt.bufPrint(buf, "{s}/attyx/" ++ name, .{ sh, suffix }) catch null;
     }
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = getEnv("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/" ++ name, .{ home, suffix }) catch null;
 }
 
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
+    if (comptime is_windows) {
+        // Windows named pipe path (Phase 1+)
+        const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
+    }
     return statePath(buf, "sessions{s}.sock");
 }
 
-/// Return the attyx state directory path (with trailing slash).
-/// Uses XDG_STATE_HOME if set, otherwise ~/.local/state/attyx/.
+/// Return the attyx state directory path (with trailing slash/backslash).
 pub fn stateDir(buf: []u8) ?[]const u8 {
-    if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
+    if (comptime is_windows) {
+        const appdata = getEnv("LOCALAPPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\attyx\\", .{appdata}) catch null;
+    }
+    if (getEnv("XDG_STATE_HOME")) |sh| {
         if (sh.len > 0)
             return std.fmt.bufPrint(buf, "{s}/attyx/", .{sh}) catch null;
     }
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = getEnv("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/", .{home}) catch null;
 }
 
-fn probeAlive(fd: posix.fd_t) bool {
+fn probeAlive(fd: std.posix.fd_t) bool {
+    const posix = std.posix;
     var buf: [protocol.header_size]u8 = undefined;
     protocol.encodeHeader(&buf, .list, 0);
     _ = posix.write(fd, &buf) catch return false;
@@ -99,7 +146,8 @@ fn probeAlive(fd: posix.fd_t) bool {
     return false;
 }
 
-pub fn tryConnect(path: []const u8) ?posix.fd_t {
+pub fn tryConnect(path: []const u8) ?std.posix.fd_t {
+    const posix = std.posix;
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
     const addr = std.net.Address.initUnix(path) catch {
         posix.close(fd);
@@ -114,7 +162,7 @@ pub fn tryConnect(path: []const u8) ?posix.fd_t {
 
 fn startDaemon() !void {
     var exe_buf: [1024]u8 = undefined;
-    const exe = getExePath(&exe_buf) orelse "/usr/local/bin/attyx";
+    const exe = getExePath(&exe_buf) orelse if (comptime is_windows) "attyx.exe" else "/usr/local/bin/attyx";
     var exe_z_buf: [1024]u8 = undefined;
     const exe_z: [*:0]const u8 = std.fmt.bufPrintZ(&exe_z_buf, "{s}", .{exe}) catch return error.SpawnFailed;
 
@@ -126,13 +174,16 @@ fn startDaemon() !void {
 }
 
 pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
-    if (comptime @import("builtin").os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos) {
         var size: u32 = buf.len;
-        if (_NSGetExecutablePath(buf, &size) == 0) {
+        if (posix_ffi._NSGetExecutablePath(buf, &size) == 0) {
             return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
         }
+    } else if (comptime is_windows) {
+        // Windows: use GetModuleFileNameW (Phase 1+)
+        return null;
     } else {
-        const n = readlink("/proc/self/exe", buf, buf.len);
+        const n = posix_ffi.readlink("/proc/self/exe", buf, buf.len);
         if (n > 0) return buf[0..@intCast(n)];
     }
     return null;
@@ -167,7 +218,9 @@ pub fn loadLastSession() ?u32 {
 
 /// Migrate runtime files from ~/.config/attyx/ to the XDG state directory.
 /// Idempotent — silently skips files that don't exist or already moved.
+/// No-op on Windows (no legacy paths to migrate).
 pub fn migrateToStateDir() void {
+    if (comptime is_windows) return;
     // Only release builds migrate — dev builds must not move files
     // that the production app still expects in the old location.
     if (comptime @import("builtin").mode == .Debug) return;
@@ -227,7 +280,9 @@ fn moveFile(old_dir: []const u8, new_dir: []const u8, name: []const u8) void {
     std.fs.renameAbsolute(src, dst) catch {};
 }
 
-pub fn setNonBlocking(fd: posix.fd_t) void {
+/// Set a file descriptor to non-blocking mode. POSIX only.
+pub fn setNonBlocking(fd: std.posix.fd_t) void {
+    if (comptime is_windows) return; // Windows handles don't use fcntl
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;

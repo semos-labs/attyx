@@ -1,5 +1,28 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ai_auth = @import("attyx").overlay_ai_auth;
+const is_windows = builtin.os.tag == .windows;
+
+/// Cross-platform getenv — std.posix.getenv is unavailable on Windows.
+fn getHomeDir() ?[]const u8 {
+    if (comptime is_windows) {
+        // On Windows, USERPROFILE is the HOME equivalent.
+        // Use a static buffer since we can't allocate here.
+        const S = struct {
+            var buf: [512]u8 = undefined;
+        };
+        const val = std.process.getEnvVarOwned(std.heap.page_allocator, "USERPROFILE") catch return null;
+        if (val.len >= S.buf.len) {
+            std.heap.page_allocator.free(val);
+            return null;
+        }
+        @memcpy(S.buf[0..val.len], val);
+        std.heap.page_allocator.free(val);
+        return S.buf[0..val.len];
+    } else {
+        return std.posix.getenv("HOME");
+    }
+}
 
 pub fn doLogin(allocator: std.mem.Allocator, base_url: []const u8) !void {
     const stdout = std.fs.File.stdout();
@@ -157,6 +180,15 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
 }
 
 pub fn doKillDaemon() void {
+    if (comptime is_windows) {
+        // TODO(windows): implement daemon kill via named pipe or TerminateProcess
+        std.fs.File.stdout().writeAll("Daemon management not yet supported on Windows.\n") catch {};
+        return;
+    }
+    doKillDaemonPosix();
+}
+
+fn doKillDaemonPosix() void {
     const stdout = std.fs.File.stdout();
     var path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&path_buf) orelse {
@@ -199,13 +231,13 @@ pub fn doKillDaemon() void {
 }
 
 fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
-    if (comptime @import("builtin").os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos) {
         // macOS: SOL_LOCAL=0, LOCAL_PEERPID=2
         var pid: c_int = 0;
         var len: std.posix.socklen_t = @sizeOf(c_int);
         const rc = std.c.getsockopt(fd, 0, 2, @ptrCast(&pid), &len);
         if (rc == 0 and pid > 0) return @intCast(pid);
-    } else if (comptime @import("builtin").os.tag == .linux) {
+    } else if (comptime builtin.os.tag == .linux) {
         // Linux: SOL_SOCKET=1, SO_PEERCRED=17
         const Ucred = extern struct { pid: c_int, uid: c_uint, gid: c_uint };
         var cred: Ucred = undefined;
@@ -218,7 +250,7 @@ fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
 
 pub fn doUninstall() void {
     const stdout = std.fs.File.stdout();
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -283,7 +315,7 @@ fn replaceSkillName() []const u8 {
 
 /// Silently update installed skills if they exist. Called on app launch.
 pub fn autoUpdateSkills() void {
-    const home = std.posix.getenv("HOME") orelse return;
+    const home = getHomeDir() orelse return;
     var file_buf: [512]u8 = undefined;
     const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/{s}/SKILL.md", .{ home, skill_name }) catch return;
 
@@ -313,7 +345,7 @@ pub fn doSkill(args: []const [:0]const u8) void {
 }
 
 fn doSkillInstall(stdout: std.fs.File) void {
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -358,7 +390,7 @@ fn doSkillInstall(stdout: std.fs.File) void {
 }
 
 fn doSkillUninstall(stdout: std.fs.File) void {
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -409,11 +441,14 @@ pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) voi
 
 fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    if (comptime is_windows) {
+        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
+    }
     if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
         if (sh.len > 0)
             return std.fmt.bufPrint(buf, "{s}/attyx/sessions{s}.sock", .{ sh, suffix }) catch null;
     }
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = getHomeDir() orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
 }
 

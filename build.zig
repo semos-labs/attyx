@@ -55,7 +55,10 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/vendor/jebp_impl.c"), .flags = &.{} });
     mod.addIncludePath(b.path("src/vendor"));
     mod.linkSystemLibrary("c", .{});
-    mod.linkSystemLibrary("z", .{}); // zlib for Kitty graphics o=z compression
+    // zlib for Kitty graphics o=z compression — not available on Windows cross-compile yet.
+    if (target.result.os.tag != .windows) {
+        mod.linkSystemLibrary("z", .{});
+    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -176,6 +179,23 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("libpng", .{});
     }
 
+    // Windows (Direct3D 11 renderer) — no C source files yet (Phase 1+),
+    // but link the system libraries the renderer and platform layer will need.
+    if (target.result.os.tag == .windows) {
+        exe.root_module.addIncludePath(b.path("src/app"));
+        // C/Win32 sources will be added in Phase 1 (platform_windows.c, etc.)
+        exe.root_module.linkSystemLibrary("kernel32", .{});
+        exe.root_module.linkSystemLibrary("user32", .{});
+        exe.root_module.linkSystemLibrary("gdi32", .{});
+        exe.root_module.linkSystemLibrary("d3d11", .{});
+        exe.root_module.linkSystemLibrary("dxgi", .{});
+        exe.root_module.linkSystemLibrary("d2d1", .{});
+        exe.root_module.linkSystemLibrary("dwrite", .{});
+        exe.root_module.linkSystemLibrary("imm32", .{});
+        exe.root_module.linkSystemLibrary("dwmapi", .{});
+        exe.root_module.linkSystemLibrary("shell32", .{});
+    }
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
@@ -283,9 +303,9 @@ pub fn build(b: *std.Build) void {
 
     // exe_tests links the platform layer (Metal on macOS, GLFW/GL/FreeType on
     // Linux) which requires GUI libraries. On macOS those frameworks are always
-    // present; on Linux they may be missing (headless CI). Skip exe_tests on
-    // Linux — all terminal engine tests are in mod_tests above.
-    if (target.result.os.tag != .linux) {
+    // present; on Linux they may be missing (headless CI); Windows C platform
+    // files don't exist yet. Skip exe_tests on Linux and Windows.
+    if (target.result.os.tag == .macos) {
         const exe_tests = b.addTest(.{
             .root_module = exe.root_module,
         });

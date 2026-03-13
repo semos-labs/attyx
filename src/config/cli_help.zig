@@ -170,8 +170,7 @@ pub const help_text_plain = stripAnsi(help_text);
 
 pub fn printUsage() void {
     // Use styled output when stderr is a terminal, plain otherwise.
-    const stderr = std.posix.STDERR_FILENO;
-    const is_tty = std.posix.isatty(stderr);
+    const is_tty = std.fs.File.stderr().isTty();
     const text = if (is_tty) help_text else help_text_plain;
     std.debug.print("{s}", .{text});
 }

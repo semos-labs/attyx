@@ -1,14 +1,16 @@
 /// Cross-platform process spawning, safe in multithreaded programs.
 ///
-/// fork() from a background thread corrupts os_once_t on macOS (SIGTRAP
-/// in _notify_fork_child). This module uses posix_spawnp which avoids
-/// running atfork handlers in the child process.
+/// On POSIX: uses posix_spawnp to avoid fork() atfork handler issues.
+/// On Windows: uses CreateProcessW (Phase 1+, currently stubs).
 const std = @import("std");
 const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+
+// ── POSIX implementation ──
 
 // On Linux, Zig std doesn't expose posix_spawn, so we declare it here.
 // On macOS, we use std.c.posix_spawnp (declared in std/c/darwin.zig).
-const linux_ffi = if (!builtin.os.tag.isDarwin()) struct {
+const linux_ffi = if (!is_windows and !builtin.os.tag.isDarwin()) struct {
     extern "c" fn posix_spawnp(
         pid: *std.c.pid_t,
         file: [*:0]const u8,
@@ -19,37 +21,42 @@ const linux_ffi = if (!builtin.os.tag.isDarwin()) struct {
     ) c_int;
 } else struct {};
 
+pub const PidType = if (is_windows) u32 else std.c.pid_t;
+
 pub const SpawnResult = struct {
-    pid: std.c.pid_t,
+    pid: PidType,
     ok: bool,
 };
 
-/// Spawn a process using posix_spawnp. Returns the child PID on success.
-/// If `setsid` is true, the child gets its own session (on platforms that
-/// support POSIX_SPAWN_SETSID; the daemon also calls setsid() itself as
-/// a fallback for platforms that don't).
+/// Spawn a process using posix_spawnp (POSIX) or CreateProcessW (Windows).
+/// Returns the child PID on success.
+/// If `setsid` is true, the child gets its own session (POSIX only).
 pub fn spawnp(
     file: [*:0]const u8,
     argv: [*:null]const ?[*:0]const u8,
-    setsid: bool,
+    setsid_flag: bool,
 ) SpawnResult {
-    return spawnpEnv(file, argv, setsid, std.c.environ);
+    if (comptime is_windows) {
+        return spawnWindows(file, argv);
+    }
+    return spawnpEnv(file, argv, setsid_flag, std.c.environ);
 }
 
-/// Like spawnp but with a custom environment.
+/// Like spawnp but with a custom environment. POSIX only.
 pub fn spawnpEnv(
     file: [*:0]const u8,
     argv: [*:null]const ?[*:0]const u8,
-    setsid: bool,
+    setsid_flag: bool,
     envp: [*:null]const ?[*:0]const u8,
 ) SpawnResult {
+    if (comptime is_windows) return spawnWindows(file, argv);
     if (comptime builtin.os.tag.isDarwin()) {
         const c = std.c;
         var attr: c.posix_spawnattr_t = undefined;
         if (c.posix_spawnattr_init(&attr) != 0) return .{ .pid = 0, .ok = false };
         defer _ = c.posix_spawnattr_destroy(&attr);
 
-        if (setsid) {
+        if (setsid_flag) {
             if (c.posix_spawnattr_setflags(&attr, c.POSIX_SPAWN.SETSID) != 0)
                 return .{ .pid = 0, .ok = false };
         }
@@ -66,8 +73,20 @@ pub fn spawnpEnv(
     }
 }
 
+/// Windows process spawn via CreateProcessW.
+/// Phase 0 stub — returns failure. Full implementation in Phase 1+.
+fn spawnWindows(
+    _: [*:0]const u8,
+    _: [*:null]const ?[*:0]const u8,
+) SpawnResult {
+    // TODO(windows): implement CreateProcessW spawn
+    return .{ .pid = 0, .ok = false };
+}
+
 /// Spawn a detached thread that waits for `pid` to exit, preventing zombies.
-pub fn reapAsync(pid: std.c.pid_t) void {
+/// On Windows, process handles are closed by the caller; this is a no-op.
+pub fn reapAsync(pid: PidType) void {
+    if (comptime is_windows) return;
     _ = std.Thread.spawn(.{}, reapChild, .{pid}) catch {};
 }
 
@@ -75,23 +94,27 @@ fn reapChild(pid: std.c.pid_t) void {
     _ = std.c.waitpid(pid, null, 0);
 }
 
-// ── Environment helpers ──
+// ── Environment helpers (POSIX only) ──
 
-extern "c" fn getuid() c_uint;
-extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+const posix_env = if (!is_windows) struct {
+    extern "c" fn getuid() c_uint;
+    extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+    extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+} else struct {};
 
 /// Build a copy of environ with TMUX auto-detected and injected.
 /// Returns null if TMUX is already set or detection fails.
-/// Caller must free with `freeEnvp`.
+/// Caller must free with `freeEnvp`. POSIX only — always returns null on Windows.
 pub fn buildEnvWithTmux(allocator: std.mem.Allocator) ?[*:null]const ?[*:0]const u8 {
-    if (getenv("TMUX") != null) return null;
+    if (comptime is_windows) return null;
 
-    const uid = getuid();
-    const base = getenv("TMUX_TMPDIR") orelse "/tmp";
+    if (posix_env.getenv("TMUX") != null) return null;
+
+    const uid = posix_env.getuid();
+    const base = posix_env.getenv("TMUX_TMPDIR") orelse "/tmp";
     var socket_buf: [256]u8 = undefined;
     const sp = std.fmt.bufPrintZ(&socket_buf, "{s}/tmux-{d}/default", .{ base, uid }) catch return null;
-    if (access(sp, 0) != 0) return null;
+    if (posix_env.access(sp, 0) != 0) return null;
 
     var tmux_env_buf: [512]u8 = undefined;
     const tmux_val = std.fmt.bufPrintZ(&tmux_env_buf, "TMUX={s},0,0", .{sp}) catch return null;
@@ -114,6 +137,7 @@ pub fn buildEnvWithTmux(allocator: std.mem.Allocator) ?[*:null]const ?[*:0]const
 
 /// Free an envp allocated by `buildEnvWithTmux`.
 pub fn freeEnvp(allocator: std.mem.Allocator, envp: [*:null]const ?[*:0]const u8) void {
+    if (comptime is_windows) return;
     var count: usize = 0;
     while (envp[count] != null) : (count += 1) {}
     if (count > 0) {
