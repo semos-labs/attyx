@@ -61,7 +61,7 @@ fn utf16(comptime s: []const u8) [s.len:0]u16 {
 }
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().writer();
 
     try stdout.print("Creating pipes...\n", .{});
     var in_r: HANDLE = INVALID_HANDLE;
