@@ -269,7 +269,7 @@ fn sendKeysTokenized(socket_path: []const u8, parsed: @import("../config/cli_ipc
             // but we also need to delay *after* this named key for the next token.
         }
         if (token.is_named_key) {
-            std.time.sleep(inter_key_delay_ns);
+            std.Thread.sleep(inter_key_delay_ns);
         }
         sent_any = true;
     }
@@ -488,7 +488,7 @@ fn waitStable(socket_path: []const u8, stable_ms: u32, pane_id: u32, target_sess
     const gt_request = buildGetTextRequest(&gt_req_buf, pane_id, target_session) catch return "";
 
     while (elapsed_ms < hard_timeout_ms) {
-        std.time.sleep(poll_interval_ms * 1_000_000);
+        std.Thread.sleep(poll_interval_ms * 1_000_000);
         elapsed_ms += poll_interval_ms;
 
         const gt_resp = sendCommand(socket_path, gt_request, &gt_resp_buf) catch continue;
