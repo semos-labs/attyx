@@ -398,6 +398,8 @@ fn publishThemeToEngines(ctx: *WinCtx) void {
         const lc = lay.collectLeaves(&leaves);
         for (leaves[0..lc]) |leaf| {
             leaf.pane.engine.state.theme_colors = theme_colors;
+            // Mark all rows dirty so fillCells re-resolves colors with new theme
+            leaf.pane.engine.state.dirty.markAll(leaf.pane.engine.state.ring.screen_rows);
         }
     }
 }
