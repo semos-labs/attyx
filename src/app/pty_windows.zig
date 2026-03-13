@@ -12,6 +12,7 @@ const BYTE = u8;
 
 const HPCON = *opaque {};
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
+const CREATE_NO_WINDOW: DWORD = 0x08000000;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const S_OK: c_long = 0;
 const INFINITE: DWORD = 0xFFFFFFFF;
@@ -281,7 +282,7 @@ pub const Pty = struct {
             null,
             null,
             0, // don't inherit handles
-            EXTENDED_STARTUPINFO_PRESENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
             null,
             cwd_wide,
             &si,
