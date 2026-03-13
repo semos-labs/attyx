@@ -54,13 +54,18 @@ pub const DirWalker = struct {
     root_path: []const u8, // allocated copy
 
     pub fn init(allocator: std.mem.Allocator, root: []const u8, max_depth: u8, show_hidden: bool) !DirWalker {
-        // Expand ~ to $HOME
+        // Expand ~ to $HOME (POSIX) or %USERPROFILE% (Windows)
         const resolved = if (root.len > 0 and root[0] == '~') blk: {
-            const home = std.posix.getenv("HOME") orelse "/";
+            const home = if (comptime @import("builtin").os.tag == .windows)
+                (std.process.getEnvVarOwned(allocator, "USERPROFILE") catch null)
+            else
+                @as(?[]const u8, if (std.posix.getenv("HOME")) |h| allocator.dupe(u8, h) catch null else null);
+            defer if (home) |h| allocator.free(h);
+            const home_str = home orelse if (comptime @import("builtin").os.tag == .windows) "C:\\" else "/";
             if (root.len == 1) {
-                break :blk try allocator.dupe(u8, home);
+                break :blk try allocator.dupe(u8, home_str);
             } else {
-                break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ home, root[1..] });
+                break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ home_str, root[1..] });
             }
         } else try allocator.dupe(u8, root);
 

@@ -5,9 +5,9 @@ const stb = @cImport({
     @cInclude("stb_image.h");
 });
 
-const zlib = @cImport({
+const zlib = if (@import("builtin").os.tag != .windows) @cImport({
     @cInclude("zlib.h");
-});
+}) else struct {};
 
 const jebp = @cImport({
     @cInclude("jebp.h");
@@ -99,6 +99,9 @@ fn decodeBase64(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
 }
 
 fn decompressZlib(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    if (comptime @import("builtin").os.tag == .windows)
+        return error.InvalidCharacter;
+
     // Start with 4x the input size as initial estimate, grow if needed.
     var out_len: usize = data.len * 4;
     const max_out: usize = 256 * 1024 * 1024; // 256 MB safety limit
