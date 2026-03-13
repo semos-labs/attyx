@@ -173,6 +173,9 @@ test {
     if (!is_windows) {
         _ = @import("app/terminal.zig");
     }
+    if (is_windows) {
+        _ = @import("app/pty_windows.zig");
+    }
     _ = @import("config/config.zig");
     if (!is_windows) {
         _ = @import("app/daemon/session_test.zig");
