@@ -203,6 +203,128 @@ static int build_decorations(WinVertex* verts, int bgVertCount, int vertCap,
 }
 
 // ---------------------------------------------------------------------------
+// Build text vertices (glyph atlas quads)
+// ---------------------------------------------------------------------------
+
+static int build_text_verts(WinVertex* verts, AttyxCell* cells,
+                             int visibleRows, int cols,
+                             float offX, float offY, float gw, float gh,
+                             int curRow, int curCol, int curShape, int curVis) {
+    if (!g_gc.texture || !g_gc.texture_srv) return 0;
+
+    int visibleTotal = visibleRows * cols;
+    int atlasCols = g_gc.atlas_cols;
+    float glyphW = g_gc.glyph_w;
+    float glyphH = g_gc.glyph_h;
+    float atlasW = (float)g_gc.atlas_w;
+
+    int drawCursor = curVis && g_win_blink_on
+                     && curRow >= g_grid_top_offset
+                     && curRow < (g_grid_top_offset + visibleRows)
+                     && curCol >= 0 && curCol < cols;
+
+    int ti = 0;
+    for (int i = 0; i < visibleTotal; ) {
+        const AttyxCell* cell = &cells[i];
+        uint32_t ch = cell->character;
+        if (ch <= 32 || ch == 0x10EEEE) { i++; continue; }
+
+        int row = i / cols, col = i % cols;
+
+        // --- Ligature detection ---
+        if (g_font_ligatures && isLigaTrigger(ch) && !cell->combining[0]) {
+            int maxRun = cols - col;
+            if (maxRun > MAX_LIGA_LEN) maxRun = MAX_LIGA_LEN;
+            int runLen = 1;
+            while (runLen < maxRun) {
+                const AttyxCell* next = &cells[i + runLen];
+                if (!isLigaTrigger(next->character)) break;
+                if (next->combining[0]) break;
+                if (next->fg_r != cell->fg_r || next->fg_g != cell->fg_g
+                    || next->fg_b != cell->fg_b) break;
+                if ((next->flags & 0x11) != (cell->flags & 0x11)) break;
+                runLen++;
+            }
+            if (runLen >= 2) {
+                uint32_t cps[MAX_LIGA_LEN];
+                for (int k = 0; k < runLen; k++) cps[k] = cells[i+k].character;
+                int ligaStyle = ((cell->flags & 0x01) ? 1 : 0)
+                              | ((cell->flags & 0x10) ? 2 : 0);
+                const LigaResult* lr = shapeLigatureRun(&g_gc, cps, runLen, ligaStyle);
+                atlasW = (float)g_gc.atlas_w;
+                if (lr && lr->hasAlternates) {
+                    for (int k = 0; k < runLen; k++) {
+                        int sSlot = lr->slots[k];
+                        if (sSlot < 0) continue;
+                        int sac = sSlot % atlasCols;
+                        int sar = sSlot / atlasCols;
+                        float atlasH = (float)g_gc.atlas_h;
+                        float su0 = sac       * glyphW / atlasW;
+                        float sv0 = sar       * glyphH / atlasH;
+                        float su1 = (sac + 1) * glyphW / atlasW;
+                        float sv1 = (sar + 1) * glyphH / atlasH;
+                        float lx0 = offX + (col + k) * gw;
+                        float ly0 = offY + row * gh;
+                        float lx1 = lx0 + gw;
+                        float ly1 = ly0 + gh;
+                        float fr, fg, fb;
+                        winCellFgColor(cell, row, col + k, drawCursor,
+                                       curRow - g_grid_top_offset, curCol, curShape,
+                                       &fr, &fg, &fb);
+                        ti = winEmitQuad(verts, ti, lx0, ly0, lx1, ly1,
+                                         su0, sv0, su1, sv1, fr, fg, fb, 1);
+                    }
+                    i += runLen;
+                    continue;
+                }
+            }
+        }
+
+        // --- Normal per-cell rendering ---
+        float x0 = offX + col * gw, y0 = offY + row * gh;
+        float x1 = x0 + gw, y1 = y0 + gh;
+
+        uint32_t key = ch;
+        uint8_t fl = cell->flags;
+        if (fl & 0x01) key |= GLYPH_BOLD_BIT;
+        if (fl & 0x10) key |= GLYPH_ITALIC_BIT;
+        bool hasCombining = (cell->combining[0] != 0);
+        if (hasCombining) key = combiningKey(ch, cell->combining[0], cell->combining[1]);
+
+        int rawSlot = glyphCacheLookup(&g_gc, key);
+        if (rawSlot < 0) {
+            rawSlot = hasCombining
+                ? glyphCacheRasterizeCombined(&g_gc, ch, cell->combining[0], cell->combining[1])
+                : glyphCacheRasterize(&g_gc, key);
+            atlasW = (float)g_gc.atlas_w;
+        }
+
+        int wide = (rawSlot & GLYPH_WIDE_BIT) ? 1 : 0;
+        int slot = rawSlot & ~(GLYPH_WIDE_BIT | GLYPH_COLOR_BIT);
+
+        int ac = slot % atlasCols;
+        int ar = slot / atlasCols;
+        float atlasH = (float)g_gc.atlas_h;
+        float au0 = ac              * glyphW / atlasW;
+        float av0 = ar              * glyphH / atlasH;
+        float au1 = (ac + 1 + wide) * glyphW / atlasW;
+        float av1 = (ar + 1)        * glyphH / atlasH;
+
+        float x1w = wide ? x0 + 2.0f * gw : x1;
+
+        float fr, fg, fb;
+        winCellFgColor(cell, row, col, drawCursor,
+                       curRow - g_grid_top_offset, curCol, curShape,
+                       &fr, &fg, &fb);
+
+        ti = winEmitQuad(verts, ti, x0, y0, x1w, y1,
+                         au0, av0, au1, av1, fr, fg, fb, 1);
+        i++;
+    }
+    return ti;
+}
+
+// ---------------------------------------------------------------------------
 // Public: build all vertices for the frame
 // ---------------------------------------------------------------------------
 
@@ -231,6 +353,12 @@ int winBuildFrameVerts(AttyxCell* cells, const uint64_t dirty[4],
 
     bgVertCount = build_decorations(g_win_bg_verts, bgVertCount, g_win_bg_vert_cap,
                                      cells, visibleTotal, cols, offX, offY, gw, gh);
+
+    // Build text vertices
+    g_win_total_text_verts = build_text_verts(g_win_text_verts, cells,
+                                              visibleRows, cols,
+                                              offX, offY, gw, gh,
+                                              curRow, curCol, curShape, curVis);
 
     return bgVertCount;
 }

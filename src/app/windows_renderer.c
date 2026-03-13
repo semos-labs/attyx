@@ -1,5 +1,5 @@
 // Attyx — Windows renderer (Direct3D 11)
-// Phase 2: D3D11 pipeline — init, cleanup, resize, draw, present.
+// D3D11 pipeline — init, cleanup, resize, draw, present.
 // Vertex generation lives in windows_renderer_draw.c.
 
 #ifdef _WIN32
@@ -471,7 +471,13 @@ int windows_renderer_draw_frame(void) {
         upload_and_draw(g_win_bg_verts, bgVertCount);
     }
 
-    // Text pass (Phase 3: g_d3d_ps_text + glyph atlas)
+    // Text pass (grayscale glyphs from atlas)
+    if (g_win_total_text_verts > 0 && g_gc.texture_srv) {
+        ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_text, NULL, 0);
+        ID3D11DeviceContext_PSSetShaderResources(g_d3d_context, 0, 1, &g_gc.texture_srv);
+        ID3D11DeviceContext_PSSetSamplers(g_d3d_context, 0, 1, &g_d3d_sampler);
+        upload_and_draw(g_win_text_verts, g_win_total_text_verts);
+    }
 
     drawOverlays(offX, baseOffY, gw, gh, (int)vpW, (int)vpH);
     lastOvGen = g_overlay_gen;

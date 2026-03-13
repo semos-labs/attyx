@@ -1,12 +1,9 @@
 // Attyx — Windows ligature support (stub — DirectWrite shaping planned)
 //
-// DirectWrite can perform OpenType calt substitution via IDWriteTextAnalyzer,
-// but the Windows renderer is still in early phase (D3D11 clear only).
+// DirectWrite can perform OpenType calt substitution via IDWriteTextAnalyzer.
 // This file provides the ligature interface used by the renderer. Currently
 // returns NULL for all sequences — same as the Linux stub.
-//
-// When the glyph atlas and text rendering are implemented (Phase 4+),
-// this can be upgraded to use IDWriteTextAnalyzer with DWRITE_FONT_FEATURE
+// Can be upgraded to use IDWriteTextAnalyzer with DWRITE_FONT_FEATURE
 // for full calt/liga shaping.
 
 #ifdef _WIN32
@@ -43,7 +40,7 @@ bool isLigaTrigger(uint32_t ch) {
 }
 
 // ---------------------------------------------------------------------------
-// Stub: no DirectWrite shaping yet — renderer is still Phase 1.
+// Stub: no DirectWrite shaping yet — returns NULL for all runs.
 // ---------------------------------------------------------------------------
 
 void ligatureCacheClear(void) {

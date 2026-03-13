@@ -447,8 +447,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Get DPI scaling (system-level; per-monitor updated in WM_DPICHANGED)
     g_content_scale = win_get_dpi_scale(NULL);
 
-    // TODO Phase 2: Initialize DWrite font + glyph cache here.
-    // For now, use placeholder cell dimensions.
+    // Placeholder cell dimensions for initial window sizing.
+    // Real metrics are computed by windows_font_init() after D3D init.
     g_cell_px_w = 8.0f * g_content_scale;
     g_cell_px_h = 16.0f * g_content_scale;
     g_cell_w_pts = 8.0f;
@@ -497,6 +497,24 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         return;
     }
 
+    // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
+    if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
+        g_cell_px_w = g_gc.glyph_w;
+        g_cell_px_h = g_gc.glyph_h;
+        g_cell_w_pts = g_gc.glyph_w / g_content_scale;
+        g_cell_h_pts = g_gc.glyph_h / g_content_scale;
+
+        // Resize window to fit real cell metrics
+        int newW = (int)(cols * g_cell_w_pts) + g_padding_left + g_padding_right;
+        int newH = (int)(rows * g_cell_h_pts) + g_padding_top + g_padding_bottom;
+        RECT newRect = { 0, 0, newW, newH };
+        AdjustWindowRect(&newRect, style, FALSE);
+        SetWindowPos(g_hwnd, NULL, 0, 0,
+                     newRect.right - newRect.left,
+                     newRect.bottom - newRect.top,
+                     SWP_NOMOVE | SWP_NOZORDER);
+    }
+
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
@@ -531,7 +549,28 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         // Check font rebuild
         if (g_needs_font_rebuild) {
             g_needs_font_rebuild = 0;
-            // TODO Phase 2: rebuild DWrite glyph cache
+            windows_font_cleanup(&g_gc);
+            if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
+                ligatureCacheClear();
+                g_cell_px_w = g_gc.glyph_w;
+                g_cell_px_h = g_gc.glyph_h;
+                g_cell_w_pts = g_gc.glyph_w / g_content_scale;
+                g_cell_h_pts = g_gc.glyph_h / g_content_scale;
+
+                // Resize window to fit new cell metrics
+                int newW = (int)(g_cols * g_cell_w_pts) + g_padding_left + g_padding_right;
+                int newH = (int)(g_rows * g_cell_h_pts) + g_padding_top + g_padding_bottom;
+                RECT fontRect = { 0, 0, newW, newH };
+                DWORD ws = (DWORD)GetWindowLongW(g_hwnd, GWL_STYLE);
+                AdjustWindowRect(&fontRect, ws, FALSE);
+                SetWindowPos(g_hwnd, NULL, 0, 0,
+                             fontRect.right - fontRect.left,
+                             fontRect.bottom - fontRect.top,
+                             SWP_NOMOVE | SWP_NOZORDER);
+
+                g_full_redraw = 1;
+                attyx_mark_all_dirty();
+            }
         }
 
         // Check window property updates
@@ -566,50 +605,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     }
 
     // Cleanup
+    windows_font_cleanup(&g_gc);
     windows_renderer_cleanup();
     DestroyWindow(g_hwnd);
     g_hwnd = NULL;
 }
 
-// ---------------------------------------------------------------------------
-// URL detection stub (Phase 2: full regex-based detection)
-// ---------------------------------------------------------------------------
-
-int detectUrlAtCell(int row, int col, int cols,
-                    int *outStart, int *outEnd,
-                    char *outUrl, int urlBufSize, int *outUrlLen) {
-    (void)row; (void)col; (void)cols;
-    (void)outStart; (void)outEnd;
-    (void)outUrl; (void)urlBufSize; (void)outUrlLen;
-    return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Word boundary helper (shared with mouse/input)
-// ---------------------------------------------------------------------------
-
-static int isWordCharPlatform(uint32_t ch) {
-    if (ch == 0 || ch == ' ') return 0;
-    if (ch == '_' || ch == '-') return 1;
-    if (ch > 127) return 1;
-    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-        (ch >= '0' && ch <= '9')) return 1;
-    return 0;
-}
-
-void findWordBounds(int row, int col, int cols, int *outStart, int *outEnd) {
-    if (!g_cells || cols <= 0) { *outStart = col; *outEnd = col; return; }
-    int base = row * cols;
-    uint32_t ch = g_cells[base + col].character;
-    int target = isWordCharPlatform(ch);
-    int start = col;
-    while (start > 0 && isWordCharPlatform(g_cells[base + start - 1].character) == target)
-        start--;
-    int end = col;
-    while (end < cols - 1 && isWordCharPlatform(g_cells[base + end + 1].character) == target)
-        end++;
-    *outStart = start;
-    *outEnd = end;
-}
+// URL detection and word bounds are in windows_text_util.c
 
 #endif // _WIN32

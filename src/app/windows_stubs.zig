@@ -16,6 +16,10 @@ const c = @cImport({
     @cInclude("bridge.h");
 });
 
+const HANDLE = std.os.windows.HANDLE;
+const BOOL = std.os.windows.BOOL;
+extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+
 // ---------------------------------------------------------------------------
 // Windows PTY handles (set by event loop before attyx_run)
 // ---------------------------------------------------------------------------
@@ -80,7 +84,18 @@ export fn attyx_trigger_config_reload() void {
     @atomicStore(i32, &g_needs_reload_config, 1, .seq_cst);
 }
 
-export fn attyx_cleanup() void {}
+export fn attyx_cleanup() void {
+    if (g_pty_handle) |h| {
+        _ = CloseHandle(h);
+        g_pty_handle = null;
+    }
+    if (g_popup_pty_handle) |h| {
+        _ = CloseHandle(h);
+        g_popup_pty_handle = null;
+    }
+    g_engine = null;
+    g_popup_engine = null;
+}
 
 export fn attyx_log(level: c_int, scope: [*:0]const u8, msg: [*:0]const u8) void {
     const l: logging.Level = switch (level) {
