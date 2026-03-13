@@ -157,6 +157,7 @@ fn ptyReaderThread(
     cols: u16,
     grid_top_offset: i32,
 ) void {
+    logging.info("pty", "reader thread started", .{});
     var buf: [16384]u8 = undefined;
     while (true) {
         var bytes_read: DWORD = 0;
@@ -167,7 +168,12 @@ fn ptyReaderThread(
             &bytes_read,
             null,
         );
-        if (ok == 0 or bytes_read == 0) break;
+        if (ok == 0 or bytes_read == 0) {
+            logging.info("pty", "reader exiting: ok={d} bytes={d}", .{ ok, bytes_read });
+            break;
+        }
+
+        logging.info("pty", "read {d} bytes from ConPTY", .{bytes_read});
 
         // Feed data to engine
         engine.feed(buf[0..bytes_read]);
