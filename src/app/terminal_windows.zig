@@ -25,6 +25,22 @@ const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
 const HANDLE = std.os.windows.HANDLE;
 const DWORD = std.os.windows.DWORD;
+const BOOL = std.os.windows.BOOL;
+
+extern "kernel32" fn ReadFile(
+    hFile: HANDLE,
+    lpBuffer: [*]u8,
+    nNumberOfBytesToRead: DWORD,
+    lpNumberOfBytesRead: ?*DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn GetExitCodeProcess(
+    hProcess: HANDLE,
+    lpExitCode: *DWORD,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 
 pub fn run(
     config: AppConfig,
@@ -158,18 +174,31 @@ fn ptyReaderThread(
     grid_top_offset: i32,
 ) void {
     logging.info("pty", "reader thread started", .{});
+
+    // Check if the child process is still alive
+    var exit_code: DWORD = 0;
+    const exit_ok = GetExitCodeProcess(read_handle, &exit_code);
+    _ = exit_ok;
+    // Note: read_handle is the pipe, not the process — we can't check here.
+    // Just proceed with reading.
+
     var buf: [16384]u8 = undefined;
     while (true) {
         var bytes_read: DWORD = 0;
-        const ok = std.os.windows.kernel32.ReadFile(
+        const rc = ReadFile(
             read_handle,
-            &buf,
-            buf.len,
+            @ptrCast(&buf),
+            @as(DWORD, buf.len),
             &bytes_read,
             null,
         );
-        if (ok == 0 or bytes_read == 0) {
-            logging.info("pty", "reader exiting: ok={d} bytes={d}", .{ ok, bytes_read });
+        if (rc == 0) {
+            const err = GetLastError();
+            logging.info("pty", "ReadFile failed: error={d}", .{err});
+            break;
+        }
+        if (bytes_read == 0) {
+            logging.info("pty", "ReadFile returned 0 bytes", .{});
             break;
         }
 
