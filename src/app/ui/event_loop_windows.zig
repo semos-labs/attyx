@@ -118,6 +118,12 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_overlays.processOverlayDismiss(ctx);
         win_overlays.processToggles(ctx);
 
+        // ── Command palette / theme picker input ──
+        const overlay_input_changed = win_overlays.processInput(ctx);
+
+        // Guard: an overlay action (e.g. close window) may have killed all tabs
+        if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+
         // ── IPC commands ──
         while (ipc_queue.dequeue()) |cmd| {
             ipc_handler.handle(cmd, ctx);
@@ -142,6 +148,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Pane exit detection ──
         checkPaneExits(ctx);
+        if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
@@ -182,9 +189,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 }
             }
         }
-
-        // ── Command palette / theme picker input ──
-        const overlay_input_changed = win_overlays.processInput(ctx);
 
         // ── Search ──
         const search_input_changed = win_search.consumeSearchInput();
