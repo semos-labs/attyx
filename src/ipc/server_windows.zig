@@ -64,8 +64,6 @@ pub fn isStarted() bool {
 pub fn start() !void {
     const suffix = if (comptime builtin.mode == .Debug) "-dev" else "";
     const pid = GetCurrentProcessId();
-    const name = std.fmt.comptimePrint("\\\\.\\pipe\\attyx-ctl-{s}{d}", .{ suffix, "{d}" });
-    _ = name;
 
     // Build the pipe name as UTF-16
     var ascii_buf: [128]u8 = undefined;
