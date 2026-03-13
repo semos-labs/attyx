@@ -24,8 +24,10 @@ const tab_bar_mod = @import("../tab_bar.zig");
 const statusbar_mod = @import("../statusbar.zig");
 const win_split = @import("win_split_actions.zig");
 const overlay_mod = attyx.overlay_mod;
+const OverlayManager = overlay_mod.OverlayManager;
 const StyledCell = overlay_mod.StyledCell;
 const Rgb = overlay_mod.Rgb;
+const win_search = @import("win_search.zig");
 
 const HANDLE = std.os.windows.HANDLE;
 const DWORD = std.os.windows.DWORD;
@@ -47,6 +49,7 @@ pub const WinCtx = struct {
     args: []const [:0]const u8,
     applied_scrollback_lines: u32,
     statusbar: ?*statusbar_mod.Statusbar = null,
+    overlay_mgr: ?*OverlayManager = null,
     split_resize_step: u16 = 4,
 };
 
@@ -56,6 +59,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
     const min_frame_ns: i128 = 16 * std.time.ns_per_ms;
+
+    // Initialize search state
+    win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
     // Startup drain: give shell time to produce initial prompt.
     for (0..20) |_| {
@@ -104,6 +110,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Split drag ──
         win_split.processSplitDrag(ctx);
+
+        // ── Overlay dismiss (Esc) ──
+        win_search.processOverlayDismiss(ctx);
 
         // ── Clear screen ──
         if (@atomicRmw(i32, &ws.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
@@ -164,11 +173,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             }
         }
 
+        // ── Search ──
+        const search_input_changed = win_search.consumeSearchInput();
+        win_search.processSearch(&ctx.tab_mgr.activePane().engine.state);
+
+        if (search_input_changed or got_data or @as(i32, @bitCast(c.g_search_active)) != 0) {
+            win_search.generateSearchBar(ctx);
+        }
+
         // ── Throttle & publish ──
         const eng = &ctx.tab_mgr.activePane().engine;
         const viewport_offset = eng.state.viewport_offset;
-        const viewport_changed = (viewport_offset != last_published_vp);
-        const need_update = got_data or viewport_changed;
+        const search_vp_changed = (viewport_offset != last_published_vp);
+        const viewport_changed = search_vp_changed;
+        const need_update = got_data or viewport_changed or search_input_changed;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
@@ -218,6 +236,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
             generateTabBar(ctx);
             generateStatusbar(ctx);
+            win_search.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publishState(eng);
 
@@ -292,7 +311,7 @@ fn publishState(eng: *Engine) void {
     }
 }
 
-fn generateTabBar(ctx: *WinCtx) void {
+pub fn generateTabBar(ctx: *WinCtx) void {
     if (ws.g_grid_top_offset <= 0) return;
     if (ws.g_tab_bar_visible == 0) return;
     if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
@@ -323,7 +342,7 @@ fn generateTabBar(ctx: *WinCtx) void {
     copyStyledToCells(ctx.cells[0..result.width], styled[0..result.width]);
 }
 
-fn generateStatusbar(ctx: *WinCtx) void {
+pub fn generateStatusbar(ctx: *WinCtx) void {
     if (ws.g_statusbar_visible == 0) return;
     const sb = ctx.statusbar orelse return;
     if (!sb.config.enabled) return;
@@ -455,6 +474,7 @@ fn handleResize(ctx: *WinCtx) void {
     c.attyx_set_grid_size(rc, rr);
     generateTabBar(ctx);
     generateStatusbar(ctx);
+    win_search.publishOverlays(ctx);
     c.attyx_end_cell_update();
     publishState(eng);
 }

@@ -114,10 +114,10 @@ export fn attyx_log(level: c_int, scope: [*:0]const u8, msg: [*:0]const u8) void
 
 export var g_overlay_has_actions: i32 = 0;
 
-var overlay_dismiss: i32 = 0;
-var overlay_cycle_focus: i32 = 0;
-var overlay_cycle_focus_rev: i32 = 0;
-var overlay_activate: i32 = 0;
+pub var overlay_dismiss: i32 = 0;
+pub var overlay_cycle_focus: i32 = 0;
+pub var overlay_cycle_focus_rev: i32 = 0;
+pub var overlay_activate: i32 = 0;
 
 export fn attyx_overlay_esc() void {
     @atomicStore(i32, &overlay_dismiss, 1, .seq_cst);
@@ -162,13 +162,13 @@ export fn attyx_overlay_scroll(col: c_int, row: c_int, delta: c_int) c_int {
 // Search — ring buffers for char/cmd input
 // ---------------------------------------------------------------------------
 
-var search_char_ring: [32]u32 = .{0} ** 32;
-export var g_search_char_write: u32 = 0;
-export var g_search_char_read: u32 = 0;
+pub var search_char_ring: [32]u32 = .{0} ** 32;
+pub export var g_search_char_write: u32 = 0;
+pub export var g_search_char_read: u32 = 0;
 
-var search_cmd_ring: [16]i32 = .{0} ** 16;
-export var g_search_cmd_write: u32 = 0;
-export var g_search_cmd_read: u32 = 0;
+pub var search_cmd_ring: [16]i32 = .{0} ** 16;
+pub export var g_search_cmd_write: u32 = 0;
+pub export var g_search_cmd_read: u32 = 0;
 
 export fn attyx_search_insert_char(codepoint: u32) void {
     const w = @atomicLoad(u32, &g_search_char_write, .seq_cst);

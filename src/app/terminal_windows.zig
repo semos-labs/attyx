@@ -6,6 +6,8 @@
 
 const std = @import("std");
 const attyx = @import("attyx");
+const overlay_mod = attyx.overlay_mod;
+const OverlayManager = overlay_mod.OverlayManager;
 const AppConfig = @import("../config/config.zig").AppConfig;
 const config_mod = @import("../config/config.zig");
 const logging = @import("../logging/log.zig");
@@ -127,6 +129,10 @@ pub fn run(
     } else null;
     defer if (statusbar) |*sb| sb.deinit();
 
+    // Overlay manager (used for search bar, debug overlay, etc.)
+    var overlay_mgr = OverlayManager.init(allocator);
+    defer overlay_mgr.deinit();
+
     // Build event loop context
     var ctx = WinCtx{
         .tab_mgr = &tab_mgr,
@@ -141,6 +147,7 @@ pub fn run(
         .args = args,
         .applied_scrollback_lines = config.scrollback_lines,
         .statusbar = if (statusbar) |*sb| sb else null,
+        .overlay_mgr = &overlay_mgr,
         .split_resize_step = config.split_resize_step,
     };
 

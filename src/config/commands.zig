@@ -56,7 +56,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+f12" },
     .{ .action = .anchor_demo_toggle, .name = "anchor_demo_toggle", .description = "Toggle anchor demo", .scope = .global, .mac_hotkey = "ctrl+shift+a", .linux_hotkey = "ctrl+shift+a" },
     .{ .action = .new_window, .name = "new_window", .description = "Open new window", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
-    .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = "ctrl+shift+w" },
+    .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = null },
     .{ .action = .ai_demo_toggle, .name = "ai_demo_toggle", .description = "Toggle AI edit prompt", .scope = .global, .mac_hotkey = "ctrl+shift+i", .linux_hotkey = "ctrl+shift+i" },
     .{ .action = .tab_new, .name = "tab_new", .description = "Open new tab", .scope = .global, .mac_hotkey = "cmd+t", .linux_hotkey = "ctrl+shift+t" },
     .{ .action = .tab_close, .name = "tab_close", .description = "Close tab", .scope = .global, .mac_hotkey = "cmd+w", .linux_hotkey = "ctrl+shift+w" },
