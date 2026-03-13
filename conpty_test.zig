@@ -52,18 +52,18 @@ extern "kernel32" fn GetExitCodeProcess(h: HANDLE, code: *DWORD) callconv(.winap
 extern "kernel32" fn PeekNamedPipe(h: HANDLE, buf: ?[*]u8, n: DWORD, r: ?*DWORD, avail: ?*DWORD, left: ?*DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 
+const p = std.debug.print;
+
 fn utf16(comptime s: []const u8) [s.len:0]u16 {
     comptime {
         var r: [s.len:0]u16 = undefined;
-        for (s, 0..) |c, i| r[i] = c;
+        for (s, 0..) |ch, i| r[i] = ch;
         return r;
     }
 }
 
 pub fn main() !void {
-    const stdout = std.fs.File.stdout().writer();
-
-    try stdout.print("Creating pipes...\n", .{});
+    p("Creating pipes...\n", .{});
     var in_r: HANDLE = INVALID_HANDLE;
     var in_w: HANDLE = INVALID_HANDLE;
     var out_r: HANDLE = INVALID_HANDLE;
@@ -72,33 +72,33 @@ pub fn main() !void {
     if (CreatePipe(&in_r, &in_w, null, 0) == 0) return error.PipeFailed;
     if (CreatePipe(&out_r, &out_w, null, 0) == 0) return error.PipeFailed;
 
-    try stdout.print("Creating pseudo console...\n", .{});
+    p("Creating pseudo console...\n", .{});
     const size = COORD{ .x = 80, .y = 24 };
     var hpc: HPCON = undefined;
     const hr = CreatePseudoConsole(size, in_r, out_w, 0, &hpc);
     if (hr != S_OK) {
-        try stdout.print("CreatePseudoConsole FAILED: hr=0x{x}\n", .{@as(u32, @bitCast(hr))});
+        p("CreatePseudoConsole FAILED: hr=0x{x}\n", .{@as(u32, @bitCast(hr))});
         return error.ConPTYFailed;
     }
-    try stdout.print("ConPTY created OK\n", .{});
+    p("ConPTY created OK\n", .{});
 
     // Attribute list
     var attr_size: usize = 0;
     _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
-    try stdout.print("Attr list size: {d}\n", .{attr_size});
+    p("Attr list size: {d}\n", .{attr_size});
 
     var attr_buf: [256]u8 align(8) = undefined;
     const attr_list: LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(&attr_buf);
     if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size) == 0) {
-        try stdout.print("InitializeProcThreadAttributeList FAILED: {d}\n", .{GetLastError()});
+        p("InitializeProcThreadAttributeList FAILED: {d}\n", .{GetLastError()});
         return error.AttrListFailed;
     }
 
     if (UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(&hpc), @sizeOf(HPCON), null, null) == 0) {
-        try stdout.print("UpdateProcThreadAttribute FAILED: {d}\n", .{GetLastError()});
+        p("UpdateProcThreadAttribute FAILED: {d}\n", .{GetLastError()});
         return error.AttrUpdateFailed;
     }
-    try stdout.print("Attribute list OK\n", .{});
+    p("Attribute list OK\n", .{});
 
     // Create process
     var cmd_buf = utf16("cmd.exe");
@@ -108,10 +108,10 @@ pub fn main() !void {
 
     var pi: PROCESS_INFORMATION = undefined;
     if (CreateProcessW(null, &cmd_buf, null, null, 0, EXTENDED_STARTUPINFO_PRESENT, null, null, &si, &pi) == 0) {
-        try stdout.print("CreateProcessW FAILED: {d}\n", .{GetLastError()});
+        p("CreateProcessW FAILED: {d}\n", .{GetLastError()});
         return error.CreateProcessFailed;
     }
-    try stdout.print("Process created: pid={d}\n", .{pi.dwProcessId});
+    p("Process created: pid={d}\n", .{pi.dwProcessId});
 
     // Close ConPTY-side pipe ends
     _ = CloseHandle(in_r);
@@ -121,36 +121,36 @@ pub fn main() !void {
     // Check process
     var code: DWORD = 0;
     _ = GetExitCodeProcess(pi.hProcess, &code);
-    try stdout.print("Exit code: {d} (259=alive)\n", .{code});
+    p("Exit code: {d} (259=alive)\n", .{code});
 
     // Wait and peek
-    try stdout.print("Waiting 1s for output...\n", .{});
+    p("Waiting 1s for output...\n", .{});
     std.time.sleep(1 * std.time.ns_per_s);
 
     var avail: DWORD = 0;
     const peek_ok = PeekNamedPipe(out_r, null, 0, null, &avail, null);
-    try stdout.print("PeekNamedPipe: ok={d} avail={d} lastErr={d}\n", .{ peek_ok, avail, GetLastError() });
+    p("PeekNamedPipe: ok={d} avail={d} lastErr={d}\n", .{ peek_ok, avail, GetLastError() });
 
     if (avail > 0) {
         var buf: [4096]u8 = undefined;
         var bytes_read: DWORD = 0;
         _ = ReadFile(out_r, &buf, 4096, &bytes_read, null);
-        try stdout.print("Read {d} bytes:\n{s}\n", .{ bytes_read, buf[0..bytes_read] });
+        p("Read {d} bytes:\n{s}\n", .{ bytes_read, buf[0..bytes_read] });
     } else {
-        try stdout.print("No data available. Trying to write to input...\n", .{});
+        p("No data available. Trying to write to input...\n", .{});
         var written: DWORD = 0;
         _ = windows.kernel32.WriteFile(in_w, "dir\r\n", 5, &written, null);
-        try stdout.print("Wrote {d} bytes\n", .{written});
+        p("Wrote {d} bytes\n", .{written});
 
         std.time.sleep(1 * std.time.ns_per_s);
         _ = PeekNamedPipe(out_r, null, 0, null, &avail, null);
-        try stdout.print("After write - avail={d}\n", .{avail});
+        p("After write - avail={d}\n", .{avail});
 
         if (avail > 0) {
             var buf2: [4096]u8 = undefined;
             var br2: DWORD = 0;
             _ = ReadFile(out_r, &buf2, 4096, &br2, null);
-            try stdout.print("Read {d} bytes:\n{s}\n", .{ br2, buf2[0..br2] });
+            p("Read {d} bytes:\n{s}\n", .{ br2, buf2[0..br2] });
         }
     }
 
@@ -159,5 +159,5 @@ pub fn main() !void {
     _ = CloseHandle(pi.hProcess);
     _ = CloseHandle(in_w);
     _ = CloseHandle(out_r);
-    try stdout.print("Done.\n", .{});
+    p("Done.\n", .{});
 }
