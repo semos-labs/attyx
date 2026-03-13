@@ -132,11 +132,6 @@ extern "kernel32" fn PeekNamedPipe(
     lpBytesLeftThisMessage: ?*DWORD,
 ) callconv(.winapi) BOOL;
 
-extern "kernel32" fn GetExitCodeProcess(
-    hProcess: HANDLE,
-    lpExitCode: *DWORD,
-) callconv(.winapi) BOOL;
-
 extern "kernel32" fn ReadFile(
     hFile: HANDLE,
     lpBuffer: [*]u8,
