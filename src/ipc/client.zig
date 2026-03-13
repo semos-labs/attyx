@@ -5,10 +5,13 @@
 // like `attyx tab create`, `attyx focus left`, etc.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 const keys = @import("keys.zig");
 const session_connect = @import("../app/session_connect.zig");
+const client_win = @import("client_windows.zig");
 
 const max_response = 65536;
 
@@ -26,6 +29,10 @@ pub const ClientError = error{
 /// and vice versa.
 /// If `target_pid` is set, look for that specific PID's socket.
 pub fn discoverSocket(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
+    if (comptime is_windows) {
+        return client_win.discoverPipe(buf, target_pid);
+    }
+
     var dir_buf: [256]u8 = undefined;
     const dir_path = session_connect.stateDir(&dir_buf) orelse return null;
 
@@ -87,8 +94,8 @@ pub fn sendCommand(
     response_buf: []u8,
 ) !struct { msg_type: protocol.MessageType, payload: []const u8 } {
     // Connect
-    const fd = try connectUnix(socket_path);
-    defer posix.close(fd);
+    const fd = try connectToSocket(socket_path);
+    defer protocol.closeFd(fd);
 
     // Send request
     protocol.writeAll(fd, request) catch return error.SocketError;
@@ -111,19 +118,23 @@ pub fn sendCommand(
     };
 }
 
+fn connectToSocket(path: []const u8) !posix.fd_t {
+    if (comptime is_windows) {
+        return client_win.connectPipe(path);
+    } else {
+        return connectUnix(path);
+    }
+}
+
 fn connectUnix(path: []const u8) !posix.fd_t {
+    if (comptime is_windows) unreachable;
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
     errdefer posix.close(fd);
 
     const addr = std.net.Address.initUnix(path) catch return error.NameTooLong;
 
     posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
-        error.ConnectionRefused => {
-            // Connection refused — do not unlink the socket here to avoid
-            // accidentally deleting a live instance's control socket during
-            // transient failures (startup race, backlog, etc.).
-            return error.ConnectionRefused;
-        },
+        error.ConnectionRefused => return error.ConnectionRefused,
         else => return err,
     };
 
@@ -258,7 +269,7 @@ fn sendKeysTokenized(socket_path: []const u8, parsed: @import("../config/cli_ipc
             // but we also need to delay *after* this named key for the next token.
         }
         if (token.is_named_key) {
-            std.posix.nanosleep(0, inter_key_delay_ns);
+            std.time.sleep(inter_key_delay_ns);
         }
         sent_any = true;
     }
@@ -477,7 +488,7 @@ fn waitStable(socket_path: []const u8, stable_ms: u32, pane_id: u32, target_sess
     const gt_request = buildGetTextRequest(&gt_req_buf, pane_id, target_session) catch return "";
 
     while (elapsed_ms < hard_timeout_ms) {
-        std.posix.nanosleep(0, @intCast(poll_interval_ms * 1_000_000));
+        std.time.sleep(poll_interval_ms * 1_000_000);
         elapsed_ms += poll_interval_ms;
 
         const gt_resp = sendCommand(socket_path, gt_request, &gt_resp_buf) catch continue;

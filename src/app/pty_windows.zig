@@ -159,6 +159,7 @@ extern "kernel32" fn GetExitCodeProcess(
 ) callconv(.winapi) BOOL;
 
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
 
 extern "kernel32" fn SetEnvironmentVariableW(
     lpName: LPCWSTR,
@@ -278,6 +279,18 @@ pub const Pty = struct {
             buf[len] = 0;
             break :blk @as(LPCWSTR, buf[0..len :0]);
         } else null;
+
+        // Set ATTYX_PID so child shells can discover the IPC control pipe.
+        {
+            const pid = GetCurrentProcessId();
+            var pid_buf: [16]u16 = undefined;
+            var ascii_buf: [16]u8 = undefined;
+            const ascii = std.fmt.bufPrint(&ascii_buf, "{d}", .{pid}) catch "";
+            for (ascii, 0..) |ch, i| pid_buf[i] = ch;
+            pid_buf[ascii.len] = 0;
+            const env_name = comptime toUtf16Literal("ATTYX_PID");
+            _ = SetEnvironmentVariableW(&env_name, pid_buf[0..ascii.len :0]);
+        }
 
         // Set up STARTUPINFOEXW.
         var si = std.mem.zeroes(STARTUPINFOEXW);

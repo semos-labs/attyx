@@ -28,6 +28,8 @@ const OverlayManager = overlay_mod.OverlayManager;
 const StyledCell = overlay_mod.StyledCell;
 const Rgb = overlay_mod.Rgb;
 const win_search = @import("win_search.zig");
+const ipc_queue = @import("../../ipc/queue.zig");
+const ipc_handler = @import("../../ipc/handler_windows.zig");
 
 const HANDLE = std.os.windows.HANDLE;
 const DWORD = std.os.windows.DWORD;
@@ -113,6 +115,12 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Overlay dismiss (Esc) ──
         win_search.processOverlayDismiss(ctx);
+
+        // ── IPC commands ──
+        while (ipc_queue.dequeue()) |cmd| {
+            ipc_handler.handle(cmd, ctx);
+            ipc_queue.advance();
+        }
 
         // ── Clear screen ──
         if (@atomicRmw(i32, &ws.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {

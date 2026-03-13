@@ -4,10 +4,17 @@
 // Same atomic ring buffer pattern as src/app/ui/input.zig.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 pub const max_payload = 4096;
 pub const max_queued = 8;
+
+/// Platform-appropriate invalid fd sentinel.
+pub const invalid_fd: posix.fd_t = if (builtin.os.tag == .windows)
+    std.os.windows.INVALID_HANDLE_VALUE
+else
+    -1;
 
 pub const IpcCommand = struct {
     msg_type: u8,
@@ -68,7 +75,7 @@ test "enqueue and dequeue" {
         .msg_type = 0x20,
         .payload = undefined,
         .payload_len = 5,
-        .response_fd = -1,
+        .response_fd = invalid_fd,
     };
     @memcpy(cmd.payload[0..5], "hello");
 
@@ -93,7 +100,7 @@ test "ring full" {
         .msg_type = 0x20,
         .payload = undefined,
         .payload_len = 0,
-        .response_fd = -1,
+        .response_fd = invalid_fd,
     };
 
     // Fill ring

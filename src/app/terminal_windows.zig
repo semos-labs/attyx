@@ -153,6 +153,24 @@ pub fn run(
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
+    // Start IPC control server (named pipe)
+    const ipc_server = @import("../ipc/server_windows.zig");
+    ipc_server.start() catch |err| {
+        logging.warn("ipc", "failed to start IPC server: {}", .{err});
+    };
+    defer ipc_server.shutdown();
+    const ipc_thread = if (ipc_server.isStarted())
+        std.Thread.spawn(.{}, ipc_server.run, .{}) catch |err| blk: {
+            logging.warn("ipc", "failed to spawn IPC thread: {}", .{err});
+            break :blk null;
+        }
+    else
+        null;
+    defer {
+        ipc_server.shutdown();
+        if (ipc_thread) |t| t.join();
+    }
+
     // Start event loop thread
     const reader_thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer reader_thread.join();
