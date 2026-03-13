@@ -254,7 +254,7 @@ pub const Pty = struct {
             attr_list,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-            @ptrCast(&hpc),
+            @ptrCast(hpc), // pass the HPCON value directly, not a pointer to it
             @sizeOf(HPCON),
             null,
             null,

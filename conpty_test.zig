@@ -85,7 +85,7 @@ pub fn main() !void {
         return error.AttrListFailed;
     }
 
-    if (UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(&hpc), @sizeOf(HPCON), null, null) == 0) {
+    if (UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(hpc), @sizeOf(HPCON), null, null) == 0) {
         pr("UpdateProcThreadAttribute FAILED: {d}\n", .{GetLastError()});
         return error.AttrUpdateFailed;
     }
