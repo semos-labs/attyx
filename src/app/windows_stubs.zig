@@ -44,7 +44,7 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     writeHandle(g_pty_handle, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]);
 }
 
-var g_clear_screen_pending: i32 = 0;
+pub var g_clear_screen_pending: i32 = 0;
 
 export fn attyx_clear_screen() void {
     @atomicStore(i32, &g_clear_screen_pending, 1, .seq_cst);
@@ -254,9 +254,9 @@ export fn attyx_picker_cmd(cmd: c_int) void {
 // Tabs — atomic action signals
 // ---------------------------------------------------------------------------
 
-var tab_action_request: i32 = 0;
-var tab_click_index: i32 = -1;
-var tab_count: i32 = 1;
+pub var tab_action_request: i32 = 0;
+pub var tab_click_index: i32 = -1;
+pub var tab_count: i32 = 1;
 
 export fn attyx_tab_action(action: c_int) void {
     @atomicStore(i32, &tab_action_request, action, .seq_cst);
@@ -288,17 +288,17 @@ export fn attyx_statusbar_tab_click(col: c_int, grid_cols: c_int) void {
 // Splits — atomic action signals
 // ---------------------------------------------------------------------------
 
-var split_action_request: i32 = 0;
-var split_click_col: i32 = -1;
-var split_click_row: i32 = -1;
-var split_click_pending: i32 = 0;
-var split_drag_start_col: i32 = -1;
-var split_drag_start_row: i32 = -1;
-var split_drag_start_pending: i32 = 0;
-var split_drag_cur_col: i32 = -1;
-var split_drag_cur_row: i32 = -1;
-var split_drag_cur_pending: i32 = 0;
-var split_drag_end_pending: i32 = 0;
+pub var split_action_request: i32 = 0;
+pub var split_click_col: i32 = -1;
+pub var split_click_row: i32 = -1;
+pub var split_click_pending: i32 = 0;
+pub var split_drag_start_col: i32 = -1;
+pub var split_drag_start_row: i32 = -1;
+pub var split_drag_start_pending: i32 = 0;
+pub var split_drag_cur_col: i32 = -1;
+pub var split_drag_cur_row: i32 = -1;
+pub var split_drag_cur_pending: i32 = 0;
+pub var split_drag_end_pending: i32 = 0;
 
 export fn attyx_split_action(action: c_int) void {
     @atomicStore(i32, &split_action_request, action, .seq_cst);

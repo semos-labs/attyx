@@ -325,6 +325,12 @@ pub const Pty = struct {
         self.allocator.free(self.attr_list_buf);
     }
 
+    pub fn peekAvail(self: *Pty) usize {
+        var avail: DWORD = 0;
+        if (PeekNamedPipe(self.pipe_out_read, null, 0, null, &avail, null) == 0) return 0;
+        return avail;
+    }
+
     pub fn read(self: *Pty, buf: []u8) !usize {
         var bytes_read: DWORD = 0;
         if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
