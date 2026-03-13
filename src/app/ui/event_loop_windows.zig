@@ -22,6 +22,7 @@ const config_mod = @import("../../config/config.zig");
 const reload_mod = @import("../../config/reload.zig");
 const tab_bar_mod = @import("../tab_bar.zig");
 const statusbar_mod = @import("../statusbar.zig");
+const win_split = @import("win_split_actions.zig");
 const overlay_mod = attyx.overlay_mod;
 const StyledCell = overlay_mod.StyledCell;
 const Rgb = overlay_mod.Rgb;
@@ -96,7 +97,13 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         processTabActions(ctx);
 
         // ── Split actions ──
-        processSplitActions(ctx);
+        win_split.processSplitActions(ctx);
+
+        // ── Split click-to-focus ──
+        win_split.processSplitClick(ctx);
+
+        // ── Split drag ──
+        win_split.processSplitDrag(ctx);
 
         // ── Clear screen ──
         if (@atomicRmw(i32, &ws.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
@@ -416,78 +423,13 @@ fn processTabActions(ctx: *WinCtx) void {
     }
 }
 
-fn switchActiveTab(ctx: *WinCtx) void {
+pub fn switchActiveTab(ctx: *WinCtx) void {
     const pane = ctx.tab_mgr.activePane();
     const layout = ctx.tab_mgr.activeLayout();
     ws.g_engine = &pane.engine;
     ws.g_pty_handle = pane.pty.pipe_in_write;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
-}
-
-// ── Split actions ──
-
-fn processSplitActions(ctx: *WinCtx) void {
-    const action_raw = @atomicRmw(i32, &ws.split_action_request, .Xchg, 0, .seq_cst);
-    if (action_raw == 0) return;
-    const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
-    const layout = ctx.tab_mgr.activeLayout();
-    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-
-    switch (action) {
-        .split_vertical, .split_horizontal => {
-            const dir: split_layout_mod.Direction = if (action == .split_vertical) .vertical else .horizontal;
-            const new_pane = ctx.allocator.create(Pane) catch return;
-            new_pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch {
-                ctx.allocator.destroy(new_pane);
-                return;
-            };
-            ctx.tab_mgr.assignIpcId(new_pane);
-            new_pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
-            layout.splitPaneWith(dir, new_pane) catch {
-                new_pane.deinit();
-                ctx.allocator.destroy(new_pane);
-                return;
-            };
-            layout.layout(pty_rows, ctx.grid_cols);
-            switchActiveTab(ctx);
-        },
-        .pane_close => {
-            if (layout.pane_count <= 1) {
-                if (ctx.tab_mgr.count <= 1) {
-                    c.attyx_request_quit();
-                } else {
-                    ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-                    updateGridOffsets(ctx);
-                    switchActiveTab(ctx);
-                }
-                return;
-            }
-            _ = layout.closePane(ctx.allocator);
-            layout.layout(pty_rows, ctx.grid_cols);
-            switchActiveTab(ctx);
-        },
-        .pane_focus_up => { layout.navigate(.up); switchActiveTab(ctx); },
-        .pane_focus_down => { layout.navigate(.down); switchActiveTab(ctx); },
-        .pane_focus_left => { layout.navigate(.left); switchActiveTab(ctx); },
-        .pane_focus_right => { layout.navigate(.right); switchActiveTab(ctx); },
-        .pane_zoom_toggle => {
-            layout.toggleZoom();
-            layout.layout(pty_rows, ctx.grid_cols);
-            switchActiveTab(ctx);
-        },
-        .pane_rotate => {
-            layout.rotatePanes();
-            layout.layout(pty_rows, ctx.grid_cols);
-            switchActiveTab(ctx);
-        },
-        .pane_resize_up, .pane_resize_down, .pane_resize_left, .pane_resize_right,
-        .pane_resize_grow, .pane_resize_shrink,
-        => {
-            // TODO: implement pane resizing once resizeNode API is understood
-        },
-        else => {},
-    }
 }
 
 // ── Resize ──
@@ -558,7 +500,7 @@ fn doReloadConfig(ctx: *WinCtx) void {
 
 // ── Grid offsets ──
 
-fn updateGridOffsets(ctx: *WinCtx) void {
+pub fn updateGridOffsets(ctx: *WinCtx) void {
     const old_total = ws.g_grid_top_offset + ws.g_grid_bottom_offset;
     var top: i32 = 0;
     var bottom: i32 = 0;

@@ -299,6 +299,7 @@ pub var split_drag_cur_col: i32 = -1;
 pub var split_drag_cur_row: i32 = -1;
 pub var split_drag_cur_pending: i32 = 0;
 pub var split_drag_end_pending: i32 = 0;
+pub var split_drag_branch: u8 = 0xFF;
 
 export fn attyx_split_action(action: c_int) void {
     @atomicStore(i32, &split_action_request, action, .seq_cst);
