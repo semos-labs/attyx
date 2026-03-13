@@ -141,6 +141,19 @@ pub fn run(
         }
     }
 
+    // Try writing to the input pipe to trigger cmd.exe prompt
+    {
+        var written: DWORD = 0;
+        const write_ok = std.os.windows.kernel32.WriteFile(
+            pty.pipe_in_write,
+            "\r",
+            1,
+            &written,
+            null,
+        );
+        logging.info("pty", "initial write: ok={d} written={d}", .{ write_ok, written });
+    }
+
     // Create engine
     var engine = try Engine.init(allocator, pty_rows, config.cols, config.scrollback_lines);
     defer engine.deinit();
