@@ -112,7 +112,7 @@ export fn attyx_log(level: c_int, scope: [*:0]const u8, msg: [*:0]const u8) void
 // Overlay interaction — atomic flags consumed by event loop
 // ---------------------------------------------------------------------------
 
-export var g_overlay_has_actions: i32 = 0;
+pub export var g_overlay_has_actions: i32 = 0;
 
 pub var overlay_dismiss: i32 = 0;
 pub var overlay_cycle_focus: i32 = 0;
