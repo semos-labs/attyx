@@ -123,6 +123,20 @@ extern "kernel32" fn CreateProcessW(
     lpProcessInformation: *PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
 
+extern "kernel32" fn PeekNamedPipe(
+    hNamedPipe: HANDLE,
+    lpBuffer: ?[*]u8,
+    nBufferSize: DWORD,
+    lpBytesRead: ?*DWORD,
+    lpTotalBytesAvail: ?*DWORD,
+    lpBytesLeftThisMessage: ?*DWORD,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn GetExitCodeProcess(
+    hProcess: HANDLE,
+    lpExitCode: *DWORD,
+) callconv(.winapi) BOOL;
+
 extern "kernel32" fn ReadFile(
     hFile: HANDLE,
     lpBuffer: [*]u8,
@@ -282,7 +296,7 @@ pub const Pty = struct {
             null,
             null,
             0, // don't inherit handles
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+            EXTENDED_STARTUPINFO_PRESENT,
             null,
             cwd_wide,
             &si,
@@ -423,4 +437,42 @@ test "SpawnOpts defaults are reasonable" {
     try std.testing.expectEqual(@as(u16, 80), opts.cols);
     try std.testing.expect(opts.argv == null);
     try std.testing.expect(opts.cwd == null);
+}
+
+test "ConPTY spawn and read output" {
+    const allocator = std.testing.allocator;
+    var pty = try Pty.spawn(allocator, .{ .rows = 24, .cols = 80 });
+    defer pty.deinit();
+
+    // Give cmd.exe a moment to start
+    std.time.sleep(500 * std.time.ns_per_ms);
+
+    // Check if process is alive
+    var code: DWORD = 0;
+    _ = GetExitCodeProcess(pty.process, &code);
+    std.debug.print("\nProcess exit code: {d} (259=STILL_ACTIVE)\n", .{code});
+
+    // Try a non-blocking peek to see if there's data
+    var avail: DWORD = 0;
+    const peek_ok = PeekNamedPipe(pty.pipe_out_read, null, 0, null, &avail, null);
+    std.debug.print("PeekNamedPipe: ok={d} avail={d}\n", .{peek_ok, avail});
+
+    if (avail > 0) {
+        var buf: [4096]u8 = undefined;
+        const n = try pty.read(&buf);
+        std.debug.print("Read {d} bytes: [{s}]\n", .{n, buf[0..n]});
+    } else {
+        // Write a command to trigger output
+        _ = try pty.writeToPty("echo hello\r\n");
+        std.time.sleep(500 * std.time.ns_per_ms);
+
+        const peek2_ok = PeekNamedPipe(pty.pipe_out_read, null, 0, null, &avail, null);
+        std.debug.print("After write - PeekNamedPipe: ok={d} avail={d}\n", .{peek2_ok, avail});
+
+        if (avail > 0) {
+            var buf2: [4096]u8 = undefined;
+            const n2 = try pty.read(&buf2);
+            std.debug.print("Read {d} bytes: [{s}]\n", .{n2, buf2[0..n2]});
+        }
+    }
 }
