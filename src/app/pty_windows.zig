@@ -175,6 +175,19 @@ pub const Pty = struct {
 
     exit_status: ?c_int = null,
 
+    /// Return an inactive Pty (no process, no handles). Used for daemon-backed panes.
+    pub fn initInactive() Pty {
+        return .{
+            .pipe_out_read = INVALID_HANDLE,
+            .pipe_in_write = INVALID_HANDLE,
+            .hpc = undefined,
+            .process = INVALID_HANDLE,
+            .thread = INVALID_HANDLE,
+            .attr_list_buf = &.{},
+            .allocator = undefined,
+        };
+    }
+
     pub const SpawnOpts = struct {
         rows: u16 = 24,
         cols: u16 = 80,

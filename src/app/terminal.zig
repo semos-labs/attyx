@@ -28,9 +28,7 @@ const statusbar_mod = @import("statusbar.zig");
 pub const Statusbar = statusbar_mod.Statusbar;
 const ipc_server = @import("../ipc/server.zig");
 
-pub const c = @cImport({
-    @cInclude("bridge.h");
-});
+pub const c = publish.c;
 
 // Sub-modules
 const publish = @import("ui/publish.zig");

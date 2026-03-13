@@ -4,14 +4,17 @@
 // Shared by popups, tabs, and splits.
 
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const posix = if (!is_windows) std.posix else struct {};
 const Allocator = std.mem.Allocator;
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
 const logging = @import("../logging/log.zig");
-const terminal = @import("terminal.zig");
-const c = terminal.c;
+const c = @cImport({
+    @cInclude("bridge.h");
+});
 
 /// Minimum interval between PTY resize (TIOCSWINSZ/SIGWINCH) signals.
 /// During continuous window resizing, the engine state is updated every
@@ -41,7 +44,7 @@ pub const Pane = struct {
     /// IPC --wait: fd to write exit code to when this pane's process exits.
     /// Set by IPC handler when a client requests --wait. The fd is owned by
     /// this pane: deinit writes the exit code response and closes it.
-    ipc_wait_fd: posix.fd_t = -1,
+    ipc_wait_fd: if (!is_windows) std.posix.fd_t else i32 = -1,
     /// Stored exit code for daemon-backed panes (set from pane_died message).
     stored_exit_code: ?u8 = null,
     /// Captured stdout for --wait mode. When set, stdout_read_fd is drained
@@ -122,7 +125,7 @@ pub const Pane = struct {
         const engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         return .{
             .engine = engine,
-            .pty = .{ .master = -1, .pid = 0 },
+            .pty = Pty.initInactive(),
             .allocator = allocator,
         };
     }
@@ -132,23 +135,25 @@ pub const Pane = struct {
         self.drainCapturedStdout();
 
         // Notify any IPC --wait client with the exit code before cleanup.
-        if (self.ipc_wait_fd != -1) {
-            const exit_code: u8 = self.stored_exit_code orelse
-                if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
-            const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
-            const payload_len: u32 = 1 + @as(u32, @intCast(stdout_data.len));
-            // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1][stdout...]
-            var resp_hdr: [6]u8 = undefined;
-            std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
-            resp_hdr[4] = 0xA2; // exit_code message type
-            resp_hdr[5] = exit_code;
-            const ipc_protocol = @import("../ipc/protocol.zig");
-            ipc_protocol.writeAll(self.ipc_wait_fd, &resp_hdr) catch {};
-            if (stdout_data.len > 0) {
-                ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
+        if (!is_windows) {
+            if (self.ipc_wait_fd != -1) {
+                const exit_code: u8 = self.stored_exit_code orelse
+                    if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
+                const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
+                const payload_len: u32 = 1 + @as(u32, @intCast(stdout_data.len));
+                // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1][stdout...]
+                var resp_hdr: [6]u8 = undefined;
+                std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
+                resp_hdr[4] = 0xA2; // exit_code message type
+                resp_hdr[5] = exit_code;
+                const ipc_protocol = @import("../ipc/protocol.zig");
+                ipc_protocol.writeAll(self.ipc_wait_fd, &resp_hdr) catch {};
+                if (stdout_data.len > 0) {
+                    ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
+                }
+                std.posix.close(self.ipc_wait_fd);
+                self.ipc_wait_fd = -1;
             }
-            posix.close(self.ipc_wait_fd);
-            self.ipc_wait_fd = -1;
         }
         if (self.captured_stdout) |cs| {
             cs.deinit(self.allocator);
@@ -156,7 +161,9 @@ pub const Pane = struct {
             self.captured_stdout = null;
         }
         if (self.daemon_pane_id == null) {
-            _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+            if (!is_windows) {
+                _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+            }
             self.pty.deinit();
         }
         self.engine.deinit();
@@ -164,11 +171,12 @@ pub const Pane = struct {
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
     pub fn drainCapturedStdout(self: *Pane) void {
+        if (is_windows) return;
         const cs = self.captured_stdout orelse return;
         if (self.pty.stdout_read_fd == -1) return;
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = posix.read(self.pty.stdout_read_fd, &buf) catch break;
+            const n = std.posix.read(self.pty.stdout_read_fd, &buf) catch break;
             if (n == 0) break;
             cs.appendSlice(self.allocator, buf[0..n]) catch break;
         }

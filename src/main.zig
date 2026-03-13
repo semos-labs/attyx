@@ -12,11 +12,7 @@ const is_windows = builtin.os.tag == .windows;
 // These modules are deeply POSIX (Unix sockets, signals, poll, fork/exec).
 // On Windows they'll need complete rewrites (Phase 1+), so avoid importing
 // them at all to prevent type-checking failures on POSIX-only types.
-const terminal = if (!is_windows) @import("app/terminal.zig") else struct {
-    pub fn run(_: anytype, _: anytype, _: anytype, _: anytype) !void {
-        return error.UnsupportedPlatform;
-    }
-};
+const terminal = if (!is_windows) @import("app/terminal.zig") else @import("app/terminal_windows.zig");
 // On Windows, terminal.zig is not imported (deeply POSIX), so bridge
 // symbols it normally exports are missing. Pull them from stubs instead.
 comptime {

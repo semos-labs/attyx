@@ -40,6 +40,11 @@ pub const Pty = struct {
     /// Read end of stdout capture pipe (-1 when not capturing).
     stdout_read_fd: posix.fd_t = -1,
 
+    /// Return an inactive Pty (no process, no fd). Used for daemon-backed panes.
+    pub fn initInactive() Pty {
+        return .{ .master = -1, .pid = 0 };
+    }
+
     pub const SpawnOpts = struct {
         rows: u16 = 24,
         cols: u16 = 80,
