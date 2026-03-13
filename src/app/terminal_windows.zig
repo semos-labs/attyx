@@ -136,6 +136,7 @@ pub fn run(
         @intCast(engine.state.cursor.row + @as(usize, @intCast(grid_top))),
         @intCast(engine.state.cursor.col),
     );
+    c.attyx_mark_all_dirty();
 
     // Start PTY reader thread
     const reader_thread = try std.Thread.spawn(.{}, ptyReaderThread, .{
@@ -179,6 +180,7 @@ fn ptyReaderThread(
             @intCast(engine.state.cursor.row + @as(usize, @intCast(grid_top_offset))),
             @intCast(engine.state.cursor.col),
         );
+        c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
     }
 }
