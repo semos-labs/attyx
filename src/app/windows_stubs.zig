@@ -541,6 +541,7 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         .new_window => { c.attyx_spawn_new_window(); return 1; },
         .close_window => { attyx_platform_close_window(); return 1; },
         .clear_screen => { attyx_clear_screen(); return 1; },
+        .open_config => { openConfigWindows(); return 1; },
         .copy_mode_enter => { attyx_copy_mode_enter(); return 1; },
         .font_size_increase => {
             if (c.g_font_size < 72) { c.g_font_size += 2; c.g_needs_font_rebuild = 1; }
@@ -566,6 +567,46 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         },
         else => return 0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Open config file (Windows)
+// ---------------------------------------------------------------------------
+
+extern "shell32" fn ShellExecuteA(
+    hwnd: ?*anyopaque,
+    lpOperation: [*:0]const u8,
+    lpFile: [*:0]const u8,
+    lpParameters: ?[*:0]const u8,
+    lpDirectory: ?[*:0]const u8,
+    nShowCmd: c_int,
+) callconv(.winapi) ?*anyopaque;
+
+fn openConfigWindows() void {
+    const platform = @import("../platform/windows.zig");
+    // Use a thread-local GPA for the short-lived allocation
+    var buf: [512]u8 = undefined;
+    const appdata = std.process.getEnvVarOwned(std.heap.page_allocator, "APPDATA") catch {
+        _ = platform; // fallback: try USERPROFILE
+        return;
+    };
+    defer std.heap.page_allocator.free(appdata);
+    const path = std.fmt.bufPrintZ(&buf, "{s}\\attyx\\attyx.toml", .{appdata}) catch return;
+
+    // Ensure config dir + file exist
+    var dir_buf: [512]u8 = undefined;
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}\\attyx", .{appdata}) catch return;
+    std.fs.makeDirAbsolute(dir_path) catch |e| switch (e) {
+        error.PathAlreadyExists => {},
+        else => return,
+    };
+    if (std.fs.accessAbsolute(path, .{})) {} else |_| {
+        const f = std.fs.createFileAbsolute(path, .{ .exclusive = true }) catch null;
+        if (f) |file| file.close();
+    }
+
+    // Open with default editor (notepad, VS Code, etc.)
+    _ = ShellExecuteA(null, "open", path, null, null, 5); // SW_SHOW = 5
 }
 
 var ctx_action_id: i32 = 0;
