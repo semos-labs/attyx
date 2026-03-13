@@ -1,0 +1,492 @@
+// Attyx — Windows platform layer (Win32 + Direct3D 11)
+// This file contains: globals, bridge functions, entry point.
+// Renderer:  windows_renderer.c
+// Input:     windows_input.c
+// Clipboard: windows_clipboard.c
+
+#ifdef _WIN32
+
+#include "windows_internal.h"
+#include <dwmapi.h>
+
+// ---------------------------------------------------------------------------
+// Shared state definitions (C-owned globals — matches platform_linux.c)
+// ---------------------------------------------------------------------------
+
+AttyxCell* g_cells = NULL;
+int g_cols = 0;
+int g_rows = 0;
+
+volatile uint64_t g_cell_gen = 0;
+volatile int g_cursor_row = 0;
+volatile int g_cursor_col = 0;
+volatile int g_should_quit = 0;
+
+volatile int g_bracketed_paste = 0;
+volatile int g_cursor_keys_app = 0;
+
+volatile int g_mouse_tracking = 0;
+volatile int g_mouse_sgr = 0;
+
+volatile int g_viewport_offset = 0;
+volatile int g_scrollback_count = 0;
+volatile int g_alt_screen = 0;
+
+volatile int g_sel_start_row = -1, g_sel_start_col = -1;
+volatile int g_sel_end_row = -1, g_sel_end_col = -1;
+volatile int g_sel_active = 0;
+
+volatile uint8_t g_row_wrapped[ATTYX_MAX_ROWS] = {0};
+
+volatile int g_cursor_shape   = 0;
+volatile int g_cursor_visible = 1;
+volatile int g_cursor_trail   = 0;
+volatile int g_font_ligatures = 1;
+
+char         g_title_buf[ATTYX_TITLE_MAX];
+volatile int g_title_len     = 0;
+volatile int g_title_changed = 0;
+
+volatile int  g_ime_composing    = 0;
+volatile int  g_ime_cursor_index = -1;
+volatile int  g_ime_anchor_row   = 0;
+volatile int  g_ime_anchor_col   = 0;
+char          g_ime_preedit[ATTYX_IME_MAX_BYTES];
+volatile int  g_ime_preedit_len  = 0;
+
+// Font config (written by Zig at startup)
+char         g_font_family[ATTYX_FONT_FAMILY_MAX];
+volatile int g_font_family_len = 0;
+volatile int g_font_size       = 14;
+volatile int g_default_font_size = 14;
+volatile int g_cell_width      = 0;
+volatile int g_cell_height     = 0;
+char         g_font_fallback[ATTYX_FONT_FALLBACK_MAX][ATTYX_FONT_FAMILY_MAX];
+volatile int g_font_fallback_count = 0;
+
+// Search state globals
+char          g_search_query[ATTYX_SEARCH_QUERY_MAX];
+volatile int  g_search_query_len  = 0;
+volatile int  g_search_active     = 0;
+volatile int  g_search_gen        = 0;
+volatile int  g_search_nav_delta  = 0;
+volatile int  g_search_total      = 0;
+volatile int  g_search_current    = 0;
+AttyxSearchVis g_search_vis[ATTYX_SEARCH_VIS_MAX];
+volatile int  g_search_vis_count  = 0;
+volatile int  g_search_cur_vis_row = -1;
+volatile int  g_search_cur_vis_cs  = 0;
+volatile int  g_search_cur_vis_ce  = 0;
+
+// Hyperlink hover state
+volatile uint32_t g_hover_link_id = 0;
+volatile int g_hover_row = -1;
+
+// Regex-detected URL hover state
+char g_detected_url[DETECTED_URL_MAX];
+volatile int g_detected_url_len = 0;
+volatile int g_detected_url_row = -1;
+volatile int g_detected_url_start_col = 0;
+volatile int g_detected_url_end_col = 0;
+
+// Image placements
+AttyxImagePlacement g_image_placements[ATTYX_MAX_IMAGE_PLACEMENTS];
+volatile int      g_image_placement_count = 0;
+volatile uint64_t g_image_gen = 0;
+
+AttyxImagePlacement g_popup_image_placements[ATTYX_POPUP_MAX_IMAGE_PLACEMENTS];
+volatile int        g_popup_image_placement_count = 0;
+
+// Row dirty bits
+volatile uint64_t g_dirty[4] = {0,0,0,0};
+
+// Pending resize
+volatile int g_pending_resize_rows = 0;
+volatile int g_pending_resize_cols = 0;
+
+// Context menu state
+int   g_ctx_menu_open  = 0;
+float g_ctx_menu_x     = 0;
+float g_ctx_menu_y     = 0;
+int   g_ctx_menu_hover = -1;
+int   g_ctx_menu_col   = 0;
+int   g_ctx_menu_row   = 0;
+
+// Overlay system
+AttyxOverlayDesc  g_overlay_descs[ATTYX_OVERLAY_MAX_LAYERS];
+AttyxOverlayCell  g_overlay_cells[ATTYX_OVERLAY_MAX_LAYERS][ATTYX_OVERLAY_MAX_CELLS];
+volatile int      g_overlay_count = 0;
+volatile uint32_t g_overlay_gen   = 0;
+
+// Popup terminal
+AttyxPopupDesc    g_popup_desc;
+AttyxOverlayCell  g_popup_cells[ATTYX_POPUP_MAX_CELLS];
+volatile uint32_t g_popup_gen    = 0;
+
+// HWND handle (shared with input and render)
+HWND g_hwnd = NULL;
+
+// Cell pixel dimensions (set by renderer)
+float g_cell_px_w = 0;
+float g_cell_px_h = 0;
+float g_content_scale = 1.0f;
+volatile float g_cell_w_pts = 0;
+volatile float g_cell_h_pts = 0;
+int g_full_redraw = 1;
+
+// ---------------------------------------------------------------------------
+// Bridge function implementations
+// ---------------------------------------------------------------------------
+
+void attyx_set_cursor(int row, int col) {
+    g_cursor_row = row;
+    g_cursor_col = col;
+}
+
+void attyx_request_quit(void) { g_should_quit = 1; }
+int  attyx_should_quit(void)  { return g_should_quit; }
+
+void attyx_set_mode_flags(int bracketed_paste, int cursor_keys_app) {
+    g_bracketed_paste = bracketed_paste;
+    g_cursor_keys_app = cursor_keys_app;
+}
+
+void attyx_set_mouse_mode(int tracking, int sgr) {
+    g_mouse_tracking = tracking;
+    g_mouse_sgr = sgr;
+}
+
+void attyx_mark_all_dirty(void) {
+    for (int i = 0; i < 4; i++)
+        InterlockedOr64((volatile LONG64*)&g_dirty[i], ~(uint64_t)0);
+    if (g_hwnd) PostMessageW(g_hwnd, WM_USER + 1, 0, 0);
+}
+
+void attyx_scroll_viewport(int delta) {
+    int cur = g_viewport_offset;
+    int sb = g_scrollback_count;
+    int nv = cur + delta;
+    if (nv < 0) nv = 0;
+    if (nv > sb) nv = sb;
+    int actual = nv - cur;
+    g_viewport_offset = nv;
+    if (actual != 0 && g_sel_active) {
+        g_sel_start_row += actual;
+        g_sel_end_row += actual;
+    }
+}
+
+void attyx_set_dirty(const uint64_t dirty[4]) {
+    for (int i = 0; i < 4; i++)
+        InterlockedOr64((volatile LONG64*)&g_dirty[i], dirty[i]);
+    if (g_hwnd) PostMessageW(g_hwnd, WM_USER + 1, 0, 0);
+}
+
+void attyx_set_grid_size(int cols, int rows) {
+    g_cols = cols;
+    g_rows = rows;
+}
+
+void attyx_begin_cell_update(void) {
+    InterlockedIncrement64((volatile LONG64*)&g_cell_gen);
+}
+
+void attyx_end_cell_update(void) {
+    InterlockedIncrement64((volatile LONG64*)&g_cell_gen);
+    if (g_hwnd) PostMessageW(g_hwnd, WM_USER + 1, 0, 0);
+}
+
+int attyx_check_resize(int* out_rows, int* out_cols) {
+    int pr = g_pending_resize_rows;
+    int pc = g_pending_resize_cols;
+    if (pr <= 0 || pc <= 0) return 0;
+    if (pr == g_rows && pc == g_cols) return 0;
+    *out_rows = pr;
+    *out_cols = pc;
+    g_pending_resize_rows = 0;
+    g_pending_resize_cols = 0;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Platform callbacks
+// ---------------------------------------------------------------------------
+
+void attyx_platform_close_window(void) {
+    if (g_hwnd) PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+}
+
+void attyx_spawn_new_window(void) {
+    wchar_t exe[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
+    ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
+}
+
+void attyx_platform_notify(const char* title, const char* body) {
+    // TODO Phase 2+: implement toast notification via Windows API
+    (void)title;
+    (void)body;
+}
+
+void attyx_apply_window_update(void) {
+    if (!g_hwnd) return;
+
+    // Re-apply window decorations
+    LONG style = GetWindowLongW(g_hwnd, GWL_STYLE);
+    if (g_window_decorations)
+        style |= (WS_CAPTION | WS_THICKFRAME);
+    else
+        style &= ~(WS_CAPTION | WS_THICKFRAME);
+    SetWindowLongW(g_hwnd, GWL_STYLE, style);
+    SetWindowPos(g_hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    // Recalculate grid size from current client area
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    int fbW = rc.right - rc.left;
+    int fbH = rc.bottom - rc.top;
+    if (g_cell_px_w > 0 && g_cell_px_h > 0) {
+        float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+        float padPxH = (float)(g_padding_top + g_padding_bottom) * g_content_scale;
+        int new_cols = (int)((fbW - padPxW) / g_cell_px_w + 0.01f);
+        int new_rows = (int)((fbH - padPxH) / g_cell_px_h + 0.01f);
+        g_pending_resize_rows = new_rows;
+        g_pending_resize_cols = new_cols;
+    }
+    g_full_redraw = 1;
+    attyx_mark_all_dirty();
+}
+
+// ---------------------------------------------------------------------------
+// Renderer forward declarations (windows_renderer.c)
+// ---------------------------------------------------------------------------
+
+int  windows_renderer_init(HWND hwnd);
+void windows_renderer_resize(int width, int height);
+int  windows_renderer_draw_frame(void);
+void windows_renderer_present(void);
+void windows_renderer_cleanup(void);
+
+// ---------------------------------------------------------------------------
+// Window procedure
+// ---------------------------------------------------------------------------
+
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_SIZE:
+        if (wParam != SIZE_MINIMIZED) {
+            int w = LOWORD(lParam);
+            int h = HIWORD(lParam);
+            windows_renderer_resize(w, h);
+
+            if (g_cell_px_w > 0 && g_cell_px_h > 0) {
+                float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+                float padPxH = (float)(g_padding_top + g_padding_bottom) * g_content_scale;
+                int new_cols = (int)((w - padPxW) / g_cell_px_w + 0.01f);
+                int new_rows = (int)((h - padPxH) / g_cell_px_h + 0.01f);
+                g_pending_resize_rows = new_rows;
+                g_pending_resize_cols = new_cols;
+            }
+            g_full_redraw = 1;
+            attyx_mark_all_dirty();
+        }
+        return 0;
+
+    case WM_CLOSE:
+        g_should_quit = 1;
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+
+    default:
+        break;
+    }
+
+    // Route input messages
+    LRESULT result = windows_handle_input(hwnd, msg, wParam, lParam);
+    if (result != -1) return result;
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
+// Entry point: attyx_run (called from Zig after PTY setup)
+// ---------------------------------------------------------------------------
+
+void attyx_run(AttyxCell* cells, int cols, int rows) {
+    g_cells = cells;
+    g_cols  = cols;
+    g_rows  = rows;
+
+    HINSTANCE hInstance = GetModuleHandleW(NULL);
+
+    // Get DPI scaling
+    HDC hdc = GetDC(NULL);
+    g_content_scale = (float)GetDeviceCaps(hdc, LOGPIXELSX) / 96.0f;
+    ReleaseDC(NULL, hdc);
+
+    // TODO Phase 2: Initialize DWrite font + glyph cache here.
+    // For now, use placeholder cell dimensions.
+    g_cell_px_w = 8.0f * g_content_scale;
+    g_cell_px_h = 16.0f * g_content_scale;
+    g_cell_w_pts = 8.0f;
+    g_cell_h_pts = 16.0f;
+
+    int winW = (int)(cols * g_cell_px_w / g_content_scale) + g_padding_left + g_padding_right;
+    int winH = (int)(rows * g_cell_px_h / g_content_scale) + g_padding_top + g_padding_bottom;
+
+    // Register window class
+    WNDCLASSEXW wc = {0};
+    wc.cbSize        = sizeof(wc);
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance      = hInstance;
+    wc.hCursor       = LoadCursorW(NULL, IDC_IBEAM);
+    wc.lpszClassName  = L"AttyxWindow";
+    RegisterClassExW(&wc);
+
+    // Compute window rect from desired client area
+    DWORD style = WS_OVERLAPPEDWINDOW;
+    RECT rect = { 0, 0, winW, winH };
+    AdjustWindowRect(&rect, style, FALSE);
+
+    g_hwnd = CreateWindowExW(
+        0,
+        L"AttyxWindow",
+        L"Attyx",
+        style,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        NULL, NULL, hInstance, NULL
+    );
+
+    if (!g_hwnd) return;
+
+    // Initialize D3D11 renderer
+    if (!windows_renderer_init(g_hwnd)) {
+        DestroyWindow(g_hwnd);
+        return;
+    }
+
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
+
+    // Apply window title if set
+    if (g_title_len > 0) {
+        wchar_t wtitle[ATTYX_TITLE_MAX];
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, g_title_buf, g_title_len, wtitle, ATTYX_TITLE_MAX - 1);
+        wtitle[wlen] = 0;
+        SetWindowTextW(g_hwnd, wtitle);
+        g_title_changed = 0;
+    }
+
+    // Message loop with 60fps frame pacing
+    LARGE_INTEGER freq, last_frame;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&last_frame);
+    double frame_interval = 1.0 / 60.0;
+
+    while (!g_should_quit) {
+        // Process all pending messages
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                g_should_quit = 1;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (g_should_quit) break;
+
+        // Check font rebuild
+        if (g_needs_font_rebuild) {
+            g_needs_font_rebuild = 0;
+            // TODO Phase 2: rebuild DWrite glyph cache
+        }
+
+        // Check window property updates
+        if (g_needs_window_update) {
+            g_needs_window_update = 0;
+            attyx_apply_window_update();
+        }
+
+        // Update window title
+        if (g_title_changed) {
+            g_title_changed = 0;
+            wchar_t wtitle[ATTYX_TITLE_MAX];
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, g_title_buf, g_title_len, wtitle, ATTYX_TITLE_MAX - 1);
+            wtitle[wlen] = 0;
+            SetWindowTextW(g_hwnd, wtitle);
+        }
+
+        // Frame pacing
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double elapsed = (double)(now.QuadPart - last_frame.QuadPart) / (double)freq.QuadPart;
+
+        if (elapsed >= frame_interval) {
+            if (windows_renderer_draw_frame()) {
+                windows_renderer_present();
+            }
+            QueryPerformanceCounter(&last_frame);
+        } else {
+            // Sleep for ~1ms to avoid busy-waiting
+            Sleep(1);
+        }
+    }
+
+    // Cleanup
+    windows_renderer_cleanup();
+    DestroyWindow(g_hwnd);
+    g_hwnd = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// URL detection stub (Phase 2: full regex-based detection)
+// ---------------------------------------------------------------------------
+
+int detectUrlAtCell(int row, int col, int cols,
+                    int *outStart, int *outEnd,
+                    char *outUrl, int urlBufSize, int *outUrlLen) {
+    (void)row; (void)col; (void)cols;
+    (void)outStart; (void)outEnd;
+    (void)outUrl; (void)urlBufSize; (void)outUrlLen;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Word boundary helper (shared with mouse/input)
+// ---------------------------------------------------------------------------
+
+static int isWordCharPlatform(uint32_t ch) {
+    if (ch == 0 || ch == ' ') return 0;
+    if (ch == '_' || ch == '-') return 1;
+    if (ch > 127) return 1;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9')) return 1;
+    return 0;
+}
+
+void findWordBounds(int row, int col, int cols, int *outStart, int *outEnd) {
+    if (!g_cells || cols <= 0) { *outStart = col; *outEnd = col; return; }
+    int base = row * cols;
+    uint32_t ch = g_cells[base + col].character;
+    int target = isWordCharPlatform(ch);
+    int start = col;
+    while (start > 0 && isWordCharPlatform(g_cells[base + start - 1].character) == target)
+        start--;
+    int end = col;
+    while (end < cols - 1 && isWordCharPlatform(g_cells[base + end + 1].character) == target)
+        end++;
+    *outStart = start;
+    *outEnd = end;
+}
+
+#endif // _WIN32

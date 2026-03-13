@@ -179,11 +179,17 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("libpng", .{});
     }
 
-    // Windows (Direct3D 11 renderer) — no C source files yet (Phase 1+),
-    // but link the system libraries the renderer and platform layer will need.
+    // Windows (Direct3D 11 renderer) — Win32 platform layer + D3D11 renderer
     if (target.result.os.tag == .windows) {
         exe.root_module.addIncludePath(b.path("src/app"));
-        // C/Win32 sources will be added in Phase 1 (platform_windows.c, etc.)
+        const win_flags = &.{};
+        exe.addCSourceFile(.{ .file = b.path("src/app/platform_windows.c"),   .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_input.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_clipboard.c"),  .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer.c"),   .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_overlay.c"),    .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_popup.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),     .flags = win_flags });
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
@@ -194,6 +200,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("imm32", .{});
         exe.root_module.linkSystemLibrary("dwmapi", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
+        exe.root_module.linkSystemLibrary("ole32", .{});
     }
 
     // This declares intent for the executable to be installed into the

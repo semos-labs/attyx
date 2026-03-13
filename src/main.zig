@@ -17,6 +17,11 @@ const terminal = if (!is_windows) @import("app/terminal.zig") else struct {
         return error.UnsupportedPlatform;
     }
 };
+// On Windows, terminal.zig is not imported (deeply POSIX), so bridge
+// symbols it normally exports are missing. Pull them from stubs instead.
+comptime {
+    if (is_windows) _ = @import("app/windows_stubs.zig");
+}
 const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else struct {
     pub fn run(_: anytype, _: anytype) !void {
         return error.UnsupportedPlatform;
