@@ -117,6 +117,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Pane exit detection ──
         checkPaneExits(ctx);
 
+        // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
+        publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
+
         // ── Flush debounced PTY resizes ──
         flushPtyResizes(ctx);
 
