@@ -28,6 +28,7 @@ const OverlayManager = overlay_mod.OverlayManager;
 const StyledCell = overlay_mod.StyledCell;
 const Rgb = overlay_mod.Rgb;
 const win_search = @import("win_search.zig");
+const win_overlays = @import("win_overlays.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
 
@@ -113,8 +114,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Split drag ──
         win_split.processSplitDrag(ctx);
 
-        // ── Overlay dismiss (Esc) ──
-        win_search.processOverlayDismiss(ctx);
+        // ── Overlay dismiss (Esc) + toggle detection ──
+        win_overlays.processOverlayDismiss(ctx);
+        win_overlays.processToggles(ctx);
 
         // ── IPC commands ──
         while (ipc_queue.dequeue()) |cmd| {
@@ -181,6 +183,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             }
         }
 
+        // ── Command palette / theme picker input ──
+        const overlay_input_changed = win_overlays.processInput(ctx);
+
         // ── Search ──
         const search_input_changed = win_search.consumeSearchInput();
         win_search.processSearch(&ctx.tab_mgr.activePane().engine.state);
@@ -194,7 +199,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();

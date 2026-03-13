@@ -309,6 +309,15 @@ pub fn publishOverlays(ctx: *WinCtx) void {
     _ = @atomicRmw(u32, @as(*u32, @ptrCast(@volatileCast(&c.g_overlay_gen))), .Add, 1, .seq_cst);
 }
 
+/// Dismiss the search bar (called from win_overlays dismiss handler).
+pub fn dismissSearch() void {
+    g_search_bar.clear();
+    c.g_search_active = 0;
+    c.g_search_query_len = 0;
+    c.g_search_gen += 1;
+    c.attyx_mark_all_dirty();
+}
+
 /// Process overlay dismiss (Esc key) — currently just handles search dismiss.
 pub fn processOverlayDismiss(ctx: *WinCtx) void {
     if (@atomicRmw(i32, &ws.overlay_dismiss, .Xchg, 0, .seq_cst) == 0) return;

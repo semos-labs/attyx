@@ -225,12 +225,12 @@ export fn attyx_ai_prompt_cmd(cmd: c_int) void {
 
 export var g_session_picker_active: i32 = 0;
 
-var picker_char_ring: [32]u32 = .{0} ** 32;
-var picker_char_write: u32 = 0;
-var picker_char_read: u32 = 0;
-var picker_cmd_ring: [16]i32 = .{0} ** 16;
-var picker_cmd_write: u32 = 0;
-var picker_cmd_read: u32 = 0;
+pub var picker_char_ring: [32]u32 = .{0} ** 32;
+pub var picker_char_write: u32 = 0;
+pub var picker_char_read: u32 = 0;
+pub var picker_cmd_ring: [16]i32 = .{0} ** 16;
+pub var picker_cmd_write: u32 = 0;
+pub var picker_cmd_read: u32 = 0;
 
 export fn attyx_picker_insert_char(codepoint: u32) void {
     const w = @atomicLoad(u32, &picker_char_write, .seq_cst);

@@ -11,6 +11,7 @@ const actions = @import("actions.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const platform = @import("../../platform/platform.zig");
+const toml_edit = @import("../../config/toml_edit.zig");
 
 const attyx = @import("attyx");
 const picker_state_mod = attyx.overlay_theme_picker;
@@ -227,76 +228,12 @@ fn writeThemeToConfig(allocator: std.mem.Allocator, name: []const u8) void {
     const new_val = std.fmt.allocPrint(allocator, "name = \"{s}\"", .{name}) catch return;
     defer allocator.free(new_val);
 
-    const result = setTomlSectionKey(allocator, existing, "theme", "name", new_val) catch return;
+    const result = toml_edit.setSectionKey(allocator, existing, "theme", "name", new_val) catch return;
     defer allocator.free(result);
 
     var file = std.fs.cwd().createFile(config_path, .{}) catch return;
     defer file.close();
     file.writeAll(result) catch {};
-}
-
-/// Set a key within a TOML section, preserving file structure.
-/// If `[section]` exists and contains `key = ...`, replace that line.
-/// If `[section]` exists but has no `key`, insert the line after the section header.
-/// If `[section]` doesn't exist, append `[section]\nnew_line\n`.
-fn setTomlSectionKey(allocator: std.mem.Allocator, content: []const u8, section: []const u8, key: []const u8, new_line: []const u8) ![]u8 {
-    // Parse line boundaries
-    var section_header_end: ?usize = null; // byte offset after [section] header line (including \n)
-    var key_line_start: ?usize = null;
-    var key_line_end: usize = 0;
-    var in_section = false;
-
-    var start: usize = 0;
-    while (start < content.len) {
-        const rest = content[start..];
-        const nl = std.mem.indexOfScalar(u8, rest, '\n');
-        const end = if (nl) |n| start + n else content.len;
-        const line = content[start..end];
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
-
-        // Check for section header [xxx]
-        if (trimmed.len > 0 and trimmed[0] == '[') {
-            const close = std.mem.indexOfScalar(u8, trimmed, ']');
-            if (close) |ci| {
-                const sec_name = std.mem.trim(u8, trimmed[1..ci], " \t");
-                if (std.mem.eql(u8, sec_name, section)) {
-                    in_section = true;
-                    section_header_end = if (nl != null) end + 1 else end;
-                } else {
-                    in_section = false;
-                }
-            }
-        } else if (in_section and key_line_start == null) {
-            // Look for key = ... within the target section
-            if (std.mem.startsWith(u8, trimmed, key)) {
-                const after_key = trimmed[key.len..];
-                const after_trim = std.mem.trimLeft(u8, after_key, " \t");
-                if (after_trim.len > 0 and after_trim[0] == '=') {
-                    key_line_start = start;
-                    key_line_end = end;
-                }
-            }
-        }
-        start = if (nl != null) end + 1 else content.len;
-    }
-
-    if (key_line_start) |ks| {
-        // Replace existing key line in-place
-        const before = content[0..ks];
-        const after = if (key_line_end < content.len) content[key_line_end..] else "";
-        return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ before, new_line, after });
-    } else if (section_header_end) |she| {
-        // Section exists but no key — insert after header
-        const before = content[0..she];
-        const after = content[she..];
-        return std.fmt.allocPrint(allocator, "{s}{s}\n{s}", .{ before, new_line, after });
-    } else {
-        // No section — append
-        if (content.len > 0 and content[content.len - 1] != '\n') {
-            return std.fmt.allocPrint(allocator, "{s}\n\n[{s}]\n{s}\n", .{ content, section, new_line });
-        }
-        return std.fmt.allocPrint(allocator, "{s}\n[{s}]\n{s}\n", .{ content, section, new_line });
-    }
 }
 
 /// Re-render the theme picker at the current grid size without publishing.
@@ -359,45 +296,4 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
     publish.publishOverlays(ctx);
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-test "setTomlSectionKey: replace existing key" {
-    const alloc = std.testing.allocator;
-    const toml_input = "[font]\nsize = 14\n\n[theme]\nname = \"default\"\n\n[cursor]\nshape = \"block\"\n";
-    const result = try setTomlSectionKey(alloc, toml_input, "theme", "name", "name = \"dracula\"");
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("[font]\nsize = 14\n\n[theme]\nname = \"dracula\"\n\n[cursor]\nshape = \"block\"\n", result);
-}
-
-test "setTomlSectionKey: section exists, key missing" {
-    const alloc = std.testing.allocator;
-    const toml_input = "[theme]\nbackground = \"#000\"\n";
-    const result = try setTomlSectionKey(alloc, toml_input, "theme", "name", "name = \"nord\"");
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("[theme]\nname = \"nord\"\nbackground = \"#000\"\n", result);
-}
-
-test "setTomlSectionKey: no section at all" {
-    const alloc = std.testing.allocator;
-    const toml_input = "[font]\nsize = 14\n";
-    const result = try setTomlSectionKey(alloc, toml_input, "theme", "name", "name = \"gruvbox\"");
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("[font]\nsize = 14\n\n[theme]\nname = \"gruvbox\"\n", result);
-}
-
-test "setTomlSectionKey: empty file" {
-    const alloc = std.testing.allocator;
-    const result = try setTomlSectionKey(alloc, "", "theme", "name", "name = \"monokai\"");
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("\n[theme]\nname = \"monokai\"\n", result);
-}
-
-test "setTomlSectionKey: preserves other sections untouched" {
-    const alloc = std.testing.allocator;
-    const toml_input = "# my config\n\n[font]\nfamily = \"JetBrains Mono\"\nsize = 13\n\n[theme]\nname = \"old\"\nbackground = \"#112233\"\n\n[cursor]\nblink = true\n";
-    const result = try setTomlSectionKey(alloc, toml_input, "theme", "name", "name = \"new\"");
-    defer alloc.free(result);
-    try std.testing.expectEqualStrings("# my config\n\n[font]\nfamily = \"JetBrains Mono\"\nsize = 13\n\n[theme]\nname = \"new\"\nbackground = \"#112233\"\n\n[cursor]\nblink = true\n", result);
-}
+// Tests moved to src/config/toml_edit.zig
