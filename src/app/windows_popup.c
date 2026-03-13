@@ -1,7 +1,6 @@
 // Attyx — Windows popup terminal draw pass (Direct3D 11)
 // Draws popup overlay after regular overlays using shared D3D11 state.
-// Phase 5: structural stubs with vertex generation for linking.
-// Full D3D11 submission will be wired in Phase 6+.
+// Uses winDrawSolidVerts/winDrawTextVerts from windows_render_util.c.
 
 #ifdef _WIN32
 
@@ -23,8 +22,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
         WinVertex dimVerts[6];
         winEmitRect(dimVerts, 0, 0, 0, (float)vpW, (float)vpH,
                     0, 0, 0, 0.4f);
-        // TODO Phase 6: submit dim rect to D3D11
-        (void)dimVerts;
+        winDrawSolidVerts(dimVerts, 6);
     }
 
     // 2. Draw popup cells in chunks
@@ -98,9 +96,9 @@ void drawPopup(float offX, float offY, float gw, float gh,
             }
         }
 
-        // TODO Phase 6: submit bg + text vertex buffers to D3D11
-        (void)bgVerts; (void)textVerts;
-        (void)bi; (void)ti;
+        // Submit bg + text vertex buffers
+        if (bi > 0) winDrawSolidVerts(bgVerts, bi);
+        if (ti > 0) winDrawTextVerts(textVerts, ti, &g_gc);
     }
 
     // 3. Popup cursor
@@ -131,8 +129,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
         WinVertex curVerts[6];
         winEmitRect(curVerts, 0, rx0, ry0, rx1 - rx0, ry1 - ry0,
                     cr, ccg, cb, 1.0f);
-        // TODO Phase 6: submit cursor verts to D3D11
-        (void)curVerts;
+        winDrawSolidVerts(curVerts, 6);
     }
 }
 

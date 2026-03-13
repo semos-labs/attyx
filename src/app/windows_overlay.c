@@ -1,7 +1,7 @@
 // Attyx — Windows overlay draw pass (Direct3D 11)
 // Draws overlay layers after terminal content using shared D3D11 state.
-// Phase 5: structural stubs with correct signatures for linking.
-// Full rendering will use D3D11 vertex buffers + glyph atlas in Phase 6+.
+// Uses winDrawSolidVerts/winDrawTextVerts from windows_render_util.c for
+// D3D11 buffer submission.
 
 #ifdef _WIN32
 
@@ -26,25 +26,22 @@ void drawOverlays(float offX, float offY, float gw, float gh,
         if (!desc.visible) continue;
         if (desc.cell_count <= 0) continue;
 
-        // Backdrop: full-screen dim rect
+        // Backdrop: full-screen dim rect — flush accumulated verts first
         if (desc.backdrop_alpha > 0) {
-            // Flush accumulated verts before backdrop
             if (bi > 0) {
-                // TODO Phase 6: submit bg vertex buffer to D3D11
+                winDrawSolidVerts(bgVerts, bi);
                 bi = 0;
             }
             if (ti > 0) {
-                // TODO Phase 6: submit text vertex buffer to D3D11
+                winDrawTextVerts(textVerts, ti, &g_gc);
                 ti = 0;
             }
-            // Backdrop dim rect
+            // Draw full-screen dim rect
             float ba = desc.backdrop_alpha / 255.0f;
-            if (bi + 6 <= OVERLAY_MAX_BG_VERTS) {
-                bi = winEmitRect(bgVerts, bi, 0, 0, (float)vpW, (float)vpH,
-                                 0, 0, 0, ba);
-                // TODO Phase 6: submit dim rect to D3D11
-                bi = 0;
-            }
+            WinVertex dimVerts[6];
+            winEmitRect(dimVerts, 0, 0, 0, (float)vpW, (float)vpH,
+                        0, 0, 0, ba);
+            winDrawSolidVerts(dimVerts, 6);
         }
 
         int w = desc.width;
@@ -141,12 +138,15 @@ void drawOverlays(float offX, float offY, float gw, float gh,
         }
     }
 
-    // TODO Phase 6: submit final bg + text vertex buffers to D3D11 pipeline
-    // For now the vertices are built but not submitted — the D3D11 draw calls
-    // require the constant buffer, blend state, and shader setup from the
-    // main renderer which will be wired in Phase 6.
-    (void)bgVerts; (void)textVerts;
-    (void)bi; (void)ti;
+    // Flush remaining bg quads
+    if (bi > 0) {
+        winDrawSolidVerts(bgVerts, bi);
+    }
+
+    // Flush remaining text glyphs
+    if (ti > 0) {
+        winDrawTextVerts(textVerts, ti, &g_gc);
+    }
 }
 
 #endif // _WIN32

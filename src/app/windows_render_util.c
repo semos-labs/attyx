@@ -159,4 +159,47 @@ void winCursorColor(float* r, float* g, float* b) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared D3D11 vertex draw — creates a temporary buffer, uploads, draws,
+// releases.  Used by overlay/popup renderers that don't own a persistent VBO.
+// Caller must have already set the pipeline (shaders, blend, cbuffer, etc.)
+// ---------------------------------------------------------------------------
+
+void winDrawVerts(WinVertex* verts, int count) {
+    if (count <= 0 || !g_d3d_device || !g_d3d_context) return;
+
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof(bd));
+    bd.ByteWidth      = (UINT)(count * sizeof(WinVertex));
+    bd.Usage           = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags       = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA init;
+    memset(&init, 0, sizeof(init));
+    init.pSysMem = verts;
+
+    ID3D11Buffer* tmpBuf = NULL;
+    HRESULT hr = ID3D11Device_CreateBuffer(g_d3d_device, &bd, &init, &tmpBuf);
+    if (FAILED(hr) || !tmpBuf) return;
+
+    UINT stride = sizeof(WinVertex), offset = 0;
+    ID3D11DeviceContext_IASetVertexBuffers(g_d3d_context, 0, 1, &tmpBuf, &stride, &offset);
+    ID3D11DeviceContext_Draw(g_d3d_context, (UINT)count, 0);
+    ID3D11Buffer_Release(tmpBuf);
+}
+
+void winDrawSolidVerts(WinVertex* verts, int count) {
+    if (count <= 0) return;
+    ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
+    winDrawVerts(verts, count);
+}
+
+void winDrawTextVerts(WinVertex* verts, int count, GlyphCache* gc) {
+    if (count <= 0 || !gc->texture_srv) return;
+    ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_text, NULL, 0);
+    ID3D11DeviceContext_PSSetShaderResources(g_d3d_context, 0, 1, &gc->texture_srv);
+    ID3D11DeviceContext_PSSetSamplers(g_d3d_context, 0, 1, &g_d3d_sampler);
+    winDrawVerts(verts, count);
+}
+
 #endif // _WIN32

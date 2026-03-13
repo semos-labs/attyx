@@ -274,6 +274,11 @@ void winCellFgColor(const AttyxCell* cell, int row, int col,
                     float* r, float* g, float* b);
 void winCursorColor(float* r, float* g, float* b);
 
+// Shared D3D11 vertex draw (creates temp buffer, uploads, draws, releases)
+void winDrawVerts(WinVertex* verts, int count);
+void winDrawSolidVerts(WinVertex* verts, int count);
+void winDrawTextVerts(WinVertex* verts, int count, GlyphCache* gc);
+
 // ---------------------------------------------------------------------------
 // Renderer draw state (windows_renderer_draw.c)
 // ---------------------------------------------------------------------------

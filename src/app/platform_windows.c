@@ -228,10 +228,40 @@ void attyx_spawn_new_window(void) {
     ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
 }
 
+static DWORD WINAPI notifyThreadProc(LPVOID param) {
+    // param points to a heap-allocated buffer: title\0body\0
+    char* buf = (char*)param;
+    char* title = buf;
+    char* body  = buf + strlen(buf) + 1;
+
+    // Convert to wide strings for MessageBoxW
+    int tw = MultiByteToWideChar(CP_UTF8, 0, title, -1, NULL, 0);
+    int bw = MultiByteToWideChar(CP_UTF8, 0, body,  -1, NULL, 0);
+    wchar_t* wtitle = (wchar_t*)malloc(tw * sizeof(wchar_t));
+    wchar_t* wbody  = (wchar_t*)malloc(bw * sizeof(wchar_t));
+    if (wtitle && wbody) {
+        MultiByteToWideChar(CP_UTF8, 0, title, -1, wtitle, tw);
+        MultiByteToWideChar(CP_UTF8, 0, body,  -1, wbody,  bw);
+        MessageBoxW(NULL, wbody, wtitle, MB_OK | MB_ICONINFORMATION);
+    }
+    free(wtitle);
+    free(wbody);
+    free(buf);
+    return 0;
+}
+
 void attyx_platform_notify(const char* title, const char* body) {
-    // TODO Phase 2+: implement toast notification via Windows API
-    (void)title;
-    (void)body;
+    if (!title || !body) return;
+    size_t tlen = strlen(title);
+    size_t blen = strlen(body);
+    char* buf = (char*)malloc(tlen + 1 + blen + 1);
+    if (!buf) return;
+    memcpy(buf, title, tlen + 1);
+    memcpy(buf + tlen + 1, body, blen + 1);
+    // Run on a separate thread to avoid blocking the render loop
+    HANDLE h = CreateThread(NULL, 0, notifyThreadProc, buf, 0, NULL);
+    if (h) CloseHandle(h);
+    else free(buf);
 }
 
 void attyx_apply_window_update(void) {
