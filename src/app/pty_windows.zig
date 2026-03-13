@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const win_shell = @import("pty_windows_shell.zig");
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -166,12 +167,6 @@ extern "kernel32" fn SetEnvironmentVariableW(
     lpValue: ?LPCWSTR,
 ) callconv(.winapi) BOOL;
 
-extern "kernel32" fn GetModuleFileNameW(
-    hModule: ?HANDLE,
-    lpFilename: [*]u16,
-    nSize: DWORD,
-) callconv(.winapi) DWORD;
-
 extern "kernel32" fn GetEnvironmentVariableW(
     lpName: LPCWSTR,
     lpBuffer: ?[*]u16,
@@ -280,8 +275,11 @@ pub const Pty = struct {
         setEnvW("TERM_PROGRAM", "attyx");
         setEnvW("ATTYX", "1");
 
-        // Build the command line.
+        // Build the command line and set up shell integration.
         const cmd_line = buildCommandLine(opts) orelse return error.CommandLineFailed;
+        if (!opts.skip_shell_integration) {
+            win_shell.setupShellIntegration(cmd_line);
+        }
 
         // Convert CWD to wide string if provided.
         const cwd_wide = if (opts.cwd) |cwd_ptr| blk: {
@@ -305,7 +303,7 @@ pub const Pty = struct {
         }
 
         // Inject attyx executable directory into PATH so child shells can use `attyx` CLI.
-        injectExeDirIntoPath();
+        win_shell.injectExeDirIntoPath();
 
         // Set up STARTUPINFOEXW.
         var si = std.mem.zeroes(STARTUPINFOEXW);
@@ -432,51 +430,49 @@ fn toUtf16Literal(comptime s: []const u8) [s.len:0]u16 {
     }
 }
 
-/// Prepend the directory containing attyx.exe to the PATH environment variable.
-fn injectExeDirIntoPath() void {
-    // Get path to current executable.
-    var exe_path: [std.fs.max_path_bytes]u16 = undefined;
-    const exe_len = GetModuleFileNameW(null, &exe_path, @intCast(exe_path.len));
-    if (exe_len == 0) return;
 
-    // Find last backslash to extract directory.
-    var dir_len: usize = 0;
-    for (0..exe_len) |i| {
-        if (exe_path[i] == '\\') dir_len = i;
-    }
-    if (dir_len == 0) return;
-
-    // Get current PATH.
-    const path_name = comptime toUtf16Literal("PATH");
-    var old_path: [32768]u16 = undefined;
-    const old_len = GetEnvironmentVariableW(&path_name, &old_path, @intCast(old_path.len));
-
-    // Build new PATH: exe_dir + ";" + old_path.
-    var new_path: [32768]u16 = undefined;
-    var pos: usize = 0;
-    @memcpy(new_path[0..dir_len], exe_path[0..dir_len]);
-    pos = dir_len;
-    if (old_len > 0) {
-        new_path[pos] = ';';
-        pos += 1;
-        const copy_len = @min(old_len, new_path.len - pos - 1);
-        @memcpy(new_path[pos..pos + copy_len], old_path[0..copy_len]);
-        pos += copy_len;
-    }
-    new_path[pos] = 0;
-    _ = SetEnvironmentVariableW(&path_name, new_path[0..pos :0]);
-}
 
 fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
-    _ = opts;
-    // Default to cmd.exe. A more complete implementation would
-    // read COMSPEC and handle opts.argv, but this is sufficient
-    // for initial ConPTY bring-up.
-    const cmd = comptime toUtf16Literal("cmd.exe");
-    const static = struct {
-        var buf: [cmd.len:0]u16 = cmd;
+    const S = struct {
+        var buf: [4096:0]u16 = undefined;
     };
-    return &static.buf;
+
+    // If custom argv provided, join into a single command line.
+    if (opts.argv) |argv| {
+        if (argv.len == 0) return null;
+        var pos: usize = 0;
+        for (argv, 0..) |arg, i| {
+            if (i > 0) {
+                if (pos >= S.buf.len - 1) return null;
+                S.buf[pos] = ' ';
+                pos += 1;
+            }
+            for (arg) |ch| {
+                if (pos >= S.buf.len - 1) return null;
+                S.buf[pos] = ch;
+                pos += 1;
+            }
+        }
+        S.buf[pos] = 0;
+        return &S.buf;
+    }
+
+    // Read COMSPEC (user's preferred shell, usually cmd.exe).
+    const comspec_name = comptime toUtf16Literal("COMSPEC");
+    var comspec_buf: [1024]u16 = undefined;
+    const comspec_len = GetEnvironmentVariableW(&comspec_name, &comspec_buf, @intCast(comspec_buf.len));
+
+    if (comspec_len > 0 and comspec_len < comspec_buf.len) {
+        @memcpy(S.buf[0..comspec_len], comspec_buf[0..comspec_len]);
+        S.buf[comspec_len] = 0;
+        return &S.buf;
+    }
+
+    // Fallback to cmd.exe.
+    const cmd = comptime toUtf16Literal("cmd.exe");
+    @memcpy(S.buf[0..cmd.len], &cmd);
+    S.buf[cmd.len] = 0;
+    return &S.buf;
 }
 
 // ── Tests ──
