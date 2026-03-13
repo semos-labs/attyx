@@ -246,6 +246,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             Sleep(1);
         }
     }
+    // Clean up search state
+    if (win_search.g_search) |*s| {
+        s.deinit();
+        win_search.g_search = null;
+    }
     logging.info("event", "Windows event loop exited", .{});
 }
 
