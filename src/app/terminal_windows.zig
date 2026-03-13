@@ -119,11 +119,27 @@ pub fn run(
     const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - grid_top - grid_bottom));
 
     // Spawn ConPTY
+    logging.info("pty", "spawning ConPTY {d}x{d}...", .{ config.cols, pty_rows });
     var pty = try Pty.spawn(allocator, .{
         .rows = pty_rows,
         .cols = config.cols,
     });
     defer pty.deinit();
+
+    // Check if child is alive immediately after spawn
+    {
+        var code: DWORD = 0;
+        const ok = GetExitCodeProcess(pty.process, &code);
+        if (ok != 0) {
+            if (code == 259) { // STILL_ACTIVE
+                logging.info("pty", "child process is alive", .{});
+            } else {
+                logging.info("pty", "child process already exited with code {d}", .{code});
+            }
+        } else {
+            logging.info("pty", "GetExitCodeProcess failed: {d}", .{GetLastError()});
+        }
+    }
 
     // Create engine
     var engine = try Engine.init(allocator, pty_rows, config.cols, config.scrollback_lines);
