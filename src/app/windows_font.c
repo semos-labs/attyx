@@ -5,11 +5,6 @@
 #ifdef _WIN32
 
 #include "windows_internal.h"
-#include <wincodec.h>
-
-// GUIDs needed for WIC
-DEFINE_GUID(CLSID_WICImagingFactory,
-    0xcacaf262,0x9370,0x4615,0xa1,0x3b,0x9f,0x55,0x39,0xda,0x4c,0x0a);
 
 // ---------------------------------------------------------------------------
 // Font discovery helpers

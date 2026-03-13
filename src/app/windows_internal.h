@@ -27,6 +27,7 @@
 #include <dxgi.h>
 #include <dwrite.h>
 #include <d2d1.h>
+#include <wincodec.h>
 
 #include "bridge.h"
 

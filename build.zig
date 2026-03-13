@@ -193,6 +193,9 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),       .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_render_util.c"), .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_ligature.c"),  .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_font.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_glyph.c"),     .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_boxdraw.c"),   .flags = win_flags });
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
@@ -204,6 +207,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("dwmapi", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
         exe.root_module.linkSystemLibrary("ole32", .{});
+        exe.root_module.linkSystemLibrary("windowscodecs", .{});
     }
 
     // This declares intent for the executable to be installed into the
