@@ -162,6 +162,11 @@ pub fn parseStatusbar(
         config.widget_count += 1;
     }
 
+    // Auto-enable when widgets are configured and enabled wasn't explicitly set
+    if (config.widget_count > 0 and sb_table.get("enabled") == null) {
+        config.enabled = true;
+    }
+
     return config;
 }
 
