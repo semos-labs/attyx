@@ -9,9 +9,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.semos-labs.attyx</string>
     <key>CFBundleVersion</key>
-    <string>0.2.43</string>
+    <string>0.2.44</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.43</string>
+    <string>0.2.44</string>
     <key>CFBundleExecutable</key>
     <string>attyx</string>
     <key>CFBundleIconFile</key>
