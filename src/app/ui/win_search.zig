@@ -212,6 +212,14 @@ pub fn generateSearchBar(ctx: *WinCtx) void {
         if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
         if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
         event_loop.updateGridOffsets(ctx);
+        // Search bar occupies the top row — force offset so terminal content
+        // doesn't render underneath it.
+        if (ws.g_grid_top_offset == 0) {
+            ws.g_grid_top_offset = 1;
+            // Resize panes to account for the search bar row.
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - 1 - ws.g_grid_bottom_offset));
+            ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
+        }
         const eng = &ctx.tab_mgr.activePane().engine;
         g_saved_viewport_offset = eng.state.viewport_offset;
         if (!had_top_row and eng.state.viewport_offset > 0) {

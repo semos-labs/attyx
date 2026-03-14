@@ -88,13 +88,18 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         if (n == 0) break;
         pane.feed(buf[0..n]);
     }
-    // Publish initial cells after startup drain.
+    // Compute initial grid offsets and publish initial cells after startup drain.
+    updateGridOffsets(ctx);
     {
         const eng = &ctx.tab_mgr.activePane().engine;
-        const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+        const total: usize = @as(usize, pty_rows) * @as(usize, ctx.grid_cols);
         c.attyx_begin_cell_update();
         publish.fillCells(ctx.cells[0..total], eng, total, ctx.theme, null);
         setCursorFromEngine(eng, ws.g_grid_top_offset);
+        generateTabBar(ctx);
+        generateStatusbar(ctx);
+        win_search.publishOverlays(ctx);
         c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
         publishState(eng);
