@@ -96,6 +96,16 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
     updateGridOffsets(ctx);
+    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d} cols={d} rows={d} sb={s} mgr={s}", .{
+        ws.g_grid_top_offset,
+        ws.g_grid_bottom_offset,
+        ws.g_statusbar_visible,
+        ws.g_tab_bar_visible,
+        ctx.grid_cols,
+        ctx.grid_rows,
+        if (ctx.statusbar != null) "yes" else "no",
+        if (ctx.overlay_mgr != null) "yes" else "no",
+    });
     {
         const eng = &ctx.tab_mgr.activePane().engine;
         const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
@@ -105,6 +115,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         generateTabBar(ctx);
         generateStatusbar(ctx);
         win_search.publishOverlays(ctx);
+        logging.info("overlay", "init publish: g_overlay_count={d} g_overlay_gen={d}", .{
+            @as(i32, c.g_overlay_count),
+            @as(u32, @bitCast(c.g_overlay_gen)),
+        });
         c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
         publishState(eng);
@@ -395,6 +409,16 @@ pub fn generateTabBar(ctx: *WinCtx) void {
 
     const tbg = themeRgb(ctx.theme.background);
     const tfg = themeRgb(ctx.theme.foreground);
+    const mix20 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 4 + @as(u16, fg_c)) / 5);
+        }
+    }.m;
+    const mix35 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 13 + @as(u16, fg_c) * 7) / 20);
+        }
+    }.m;
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
     const result = tab_bar_mod.generate(
         &styled,
@@ -402,10 +426,12 @@ pub fn generateTabBar(ctx: *WinCtx) void {
         ctx.tab_mgr.active,
         ctx.grid_cols,
         .{
-            .tab_bg = tbg,
+            .tab_bg = .{ .r = mix20(tbg.r, tfg.r), .g = mix20(tbg.g, tfg.g), .b = mix20(tbg.b, tfg.b) },
+            .active_tab_bg = .{ .r = mix35(tbg.r, tfg.r), .g = mix35(tbg.g, tfg.g), .b = mix35(tbg.b, tfg.b) },
             .fg = tfg,
-            .active_tab_bg = tfg,
-            .active_fg = tbg,
+            .active_fg = tfg,
+            .num_highlight_bg = .{ .r = tfg.r / 2, .g = tfg.g / 2, .b = tfg.b / 2 },
+            .num_highlight_fg = tfg,
         },
         &titles,
         computeZoomedTabs(ctx),
@@ -416,7 +442,6 @@ pub fn generateTabBar(ctx: *WinCtx) void {
 
 pub fn generateStatusbar(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
-    if (ws.g_statusbar_visible == 0) return;
     const sb = ctx.statusbar orelse return;
     if (!sb.config.enabled) {
         if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
@@ -428,8 +453,23 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         return;
     }
 
-    const tbg = themeRgb(ctx.theme.background);
-    const tfg = themeRgb(ctx.theme.foreground);
+    const theme_bg = ctx.theme.background;
+    const theme_fg = ctx.theme.foreground;
+    const sb_bg = if (ctx.theme.statusbar_background) |bg|
+        Rgb{ .r = bg.r, .g = bg.g, .b = bg.b }
+    else
+        Rgb{ .r = theme_bg.r, .g = theme_bg.g, .b = theme_bg.b };
+    const tfg = Rgb{ .r = theme_fg.r, .g = theme_fg.g, .b = theme_fg.b };
+    const mix20 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 4 + @as(u16, fg_c)) / 5);
+        }
+    }.m;
+    const mix35 = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 13 + @as(u16, fg_c) * 7) / 20);
+        }
+    }.m;
 
     var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
     for (0..ctx.tab_mgr.count) |i| {
@@ -437,6 +477,7 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         titles[i] = layout.focusedPane().engine.state.title orelse "cmd";
     }
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
+    const sb_alpha: u8 = if (sb.config.background_opacity > 0) sb.config.background_opacity else 230;
     const result = statusbar_mod.generate(
         &styled,
         sb,
@@ -444,15 +485,19 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         ctx.tab_mgr.active,
         ctx.grid_cols,
         .{
-            .bg = tbg,
+            .bg = sb_bg,
             .fg = tfg,
-            .tab_bg = tbg,
-            .active_tab_bg = tfg,
-            .active_tab_fg = tbg,
+            .tab_bg = .{ .r = mix20(sb_bg.r, tfg.r), .g = mix20(sb_bg.g, tfg.g), .b = mix20(sb_bg.b, tfg.b) },
+            .active_tab_bg = .{ .r = mix35(sb_bg.r, tfg.r), .g = mix35(sb_bg.g, tfg.g), .b = mix35(sb_bg.b, tfg.b) },
+            .active_tab_fg = tfg,
+            .bg_alpha = sb_alpha,
         },
         &titles,
         computeZoomedTabs(ctx),
-    ) orelse return;
+    ) orelse {
+        logging.warn("overlay", "statusbar generate returned null (cols={d})", .{ctx.grid_cols});
+        return;
+    };
 
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
