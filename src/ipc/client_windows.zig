@@ -31,6 +31,10 @@ pub const win32 = if (is_windows) struct {
         lpBuffer: [*]u16,
         nSize: DWORD,
     ) callconv(.winapi) DWORD;
+    pub extern "kernel32" fn WaitNamedPipeW(
+        lpNamedPipeName: [*:0]const u16,
+        nTimeOut: DWORD,
+    ) callconv(.winapi) BOOL;
 } else struct {};
 
 /// Windows: discover named pipe for a running instance.
@@ -69,6 +73,9 @@ pub fn discoverPipe(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
     return null;
 }
 
+/// Check if a named pipe exists without consuming a connection.
+/// WaitNamedPipeW with timeout=0 returns immediately: TRUE if an instance
+/// is available, FALSE otherwise. It does NOT connect to the pipe.
 fn probePipe(path: []const u8) bool {
     if (comptime !is_windows) return false;
     var wide_buf: [256]u16 = undefined;
@@ -76,18 +83,7 @@ fn probePipe(path: []const u8) bool {
         wide_buf[i] = ch;
     }
     wide_buf[path.len] = 0;
-    const handle = win32.CreateFileW(
-        wide_buf[0..path.len :0],
-        win32.GENERIC_READ | win32.GENERIC_WRITE,
-        0,
-        null,
-        win32.OPEN_EXISTING,
-        0,
-        null,
-    );
-    if (handle == std.os.windows.INVALID_HANDLE_VALUE) return false;
-    _ = win32.CloseHandle(handle);
-    return true;
+    return win32.WaitNamedPipeW(wide_buf[0..path.len :0], 0) != 0;
 }
 
 /// Connect to a Windows named pipe, returning the HANDLE as fd_t.
