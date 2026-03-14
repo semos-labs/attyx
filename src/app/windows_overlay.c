@@ -16,9 +16,14 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     static int logged = 0;
     if (!logged && count > 0) {
         logged = 1;
-        fprintf(stderr, "[attyx] drawOverlays: count=%d desc0: vis=%d col=%d row=%d w=%d h=%d cells=%d\n",
+        AttyxOverlayCell c0 = g_overlay_cells[0][0];
+        fprintf(stderr, "[attyx] drawOverlays: count=%d desc0: vis=%d col=%d row=%d w=%d h=%d cells=%d\n"
+                "  cell0: ch=%u fg=(%u,%u,%u) bg=(%u,%u,%u) bg_alpha=%u flags=%u\n"
+                "  offX=%.1f offY=%.1f gw=%.1f gh=%.1f vpW=%d vpH=%d\n",
                 count, g_overlay_descs[0].visible, g_overlay_descs[0].col, g_overlay_descs[0].row,
-                g_overlay_descs[0].width, g_overlay_descs[0].height, g_overlay_descs[0].cell_count);
+                g_overlay_descs[0].width, g_overlay_descs[0].height, g_overlay_descs[0].cell_count,
+                c0.character, c0.fg_r, c0.fg_g, c0.fg_b, c0.bg_r, c0.bg_g, c0.bg_b, c0.bg_alpha, c0.flags,
+                offX, offY, gw, gh, vpW, vpH);
         fflush(stderr);
     }
     if (count <= 0) return;
@@ -154,6 +159,15 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     // Flush remaining text glyphs
     if (ti > 0) {
         winDrawTextVerts(textVerts, ti, &g_gc);
+    }
+
+    // DEBUG: Draw a bright red bar at the overlay row to verify rendering works
+    {
+        AttyxOverlayDesc d0 = g_overlay_descs[0];
+        float dy = offY + d0.row * gh;
+        WinVertex dbgV[6];
+        winEmitRect(dbgV, 0, offX, dy, d0.width * gw, gh, 1.0f, 0.0f, 0.0f, 1.0f);
+        winDrawSolidVerts(dbgV, 6);
     }
 }
 
