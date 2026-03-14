@@ -13,19 +13,6 @@
 void drawOverlays(float offX, float offY, float gw, float gh,
                   int vpW, int vpH) {
     int count = g_overlay_count;
-    static int logged = 0, logged_flush = 0;
-    if (!logged && count > 0) {
-        logged = 1;
-        AttyxOverlayCell c0 = g_overlay_cells[0][0];
-        fprintf(stderr, "[attyx] drawOverlays: count=%d desc0: vis=%d col=%d row=%d w=%d h=%d cells=%d\n"
-                "  cell0: ch=%u fg=(%u,%u,%u) bg=(%u,%u,%u) bg_alpha=%u flags=%u\n"
-                "  offX=%.1f offY=%.1f gw=%.1f gh=%.1f vpW=%d vpH=%d\n",
-                count, g_overlay_descs[0].visible, g_overlay_descs[0].col, g_overlay_descs[0].row,
-                g_overlay_descs[0].width, g_overlay_descs[0].height, g_overlay_descs[0].cell_count,
-                c0.character, c0.fg_r, c0.fg_g, c0.fg_b, c0.bg_r, c0.bg_g, c0.bg_b, c0.bg_alpha, c0.flags,
-                offX, offY, gw, gh, vpW, vpH);
-        fflush(stderr);
-    }
     if (count <= 0) return;
     if (count > ATTYX_OVERLAY_MAX_LAYERS) count = ATTYX_OVERLAY_MAX_LAYERS;
     if (!g_d3d_device || !g_d3d_context) return;
@@ -152,11 +139,6 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     }
 
     // Flush remaining bg quads
-    if (!logged_flush) {
-        fprintf(stderr, "[attyx] overlay flush: bi=%d ti=%d\n", bi, ti);
-        fflush(stderr);
-        logged_flush = 1;
-    }
     if (bi > 0) {
         winDrawSolidVerts(bgVerts, bi);
     }

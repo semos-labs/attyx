@@ -109,11 +109,6 @@ pub fn run(
     logging.info("popup", "configured {d} popup(s)", .{popup_count});
 
     // Statusbar offsets
-    logging.info("statusbar", "config.statusbar={s} enabled={s} widgets={d}", .{
-        if (config.statusbar != null) "present" else "null",
-        if (config.statusbar) |s| (if (s.enabled) "true" else "false") else "n/a",
-        if (config.statusbar) |s| @as(u32, s.widget_count) else 0,
-    });
     if (config.statusbar) |sb_cfg| {
         if (sb_cfg.enabled) {
             if (sb_cfg.position == .top) {

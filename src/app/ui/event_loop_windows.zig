@@ -96,18 +96,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
     updateGridOffsets(ctx);
-    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d} cols={d} rows={d} sb={s} mgr={s} sb_enabled={s} sb_pos={s} sb_widgets={d}", .{
-        ws.g_grid_top_offset,
-        ws.g_grid_bottom_offset,
-        ws.g_statusbar_visible,
-        ws.g_tab_bar_visible,
-        ctx.grid_cols,
-        ctx.grid_rows,
-        if (ctx.statusbar != null) "yes" else "no",
-        if (ctx.overlay_mgr != null) "yes" else "no",
-        if (ctx.statusbar) |sb| (if (sb.config.enabled) "true" else "false") else "n/a",
-        if (ctx.statusbar) |sb| (if (sb.config.position == .top) "top" else "bottom") else "n/a",
-        if (ctx.statusbar) |sb| @as(u32, sb.config.widget_count) else 0,
+    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d}", .{
+        ws.g_grid_top_offset, ws.g_grid_bottom_offset, ws.g_statusbar_visible, ws.g_tab_bar_visible,
     });
     {
         const eng = &ctx.tab_mgr.activePane().engine;
@@ -118,10 +108,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         generateTabBar(ctx);
         generateStatusbar(ctx);
         win_search.publishOverlays(ctx);
-        logging.info("overlay", "init publish: g_overlay_count={d} g_overlay_gen={d}", .{
-            @as(i32, c.g_overlay_count),
-            @as(u32, @bitCast(c.g_overlay_gen)),
-        });
         c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
         publishState(eng);
@@ -398,17 +384,66 @@ fn publishState(eng: *Engine) void {
     }
 }
 
+/// Resolve tab titles for Windows — strips MSYS2 prefix (e.g. "CLANGARM64:/path")
+/// and shows just the directory basename.
+fn resolveTabTitles(
+    ctx: *WinCtx,
+    titles: *tab_bar_mod.TabTitles,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    titles.* = .{null} ** tab_bar_mod.max_tabs;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        const pane = layout.focusedPane();
+        const raw_title = pane.engine.state.title orelse {
+            titles[i] = "cmd";
+            continue;
+        };
+        titles[i] = cleanWindowsTitle(raw_title, &name_bufs[i]) orelse raw_title;
+    }
+}
+
+/// Strip MSYS2 environment prefix (e.g. "MINGW64:/c/Users/foo" → "foo")
+/// and extract the basename from the path portion.
+fn cleanWindowsTitle(title: []const u8, buf: *[256]u8) ?[]const u8 {
+    // Look for "ENV:/path" pattern (MSYS2 sets title as MSYSTEM:PWD)
+    var path: []const u8 = title;
+    if (std.mem.indexOf(u8, title, ":/")) |colon_pos| {
+        path = title[colon_pos + 1 ..];
+    } else if (std.mem.indexOf(u8, title, ":\\")) |colon_pos| {
+        // Windows-style path like "C:\Users\foo"
+        path = title[colon_pos + 1 ..];
+    } else {
+        return null; // Not a path-style title, use as-is
+    }
+    // Find the last path separator
+    const basename = if (std.mem.lastIndexOfAny(u8, path, "/\\")) |sep|
+        path[sep + 1 ..]
+    else
+        path;
+    // Home directory → "~"
+    if (basename.len == 0 or std.mem.eql(u8, path, "/") or
+        std.mem.endsWith(u8, path, std.mem.sliceTo(std.posix.getenv("USERPROFILE") orelse "", 0)))
+    {
+        buf[0] = '~';
+        return buf[0..1];
+    }
+    if (basename.len > 0 and basename.len < 256) {
+        @memcpy(buf[0..basename.len], basename);
+        return buf[0..basename.len];
+    }
+    return null;
+}
+
 pub fn generateTabBar(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (ws.g_grid_top_offset <= 0) return;
     if (ws.g_tab_bar_visible == 0) return;
     if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
 
-    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
-    for (0..ctx.tab_mgr.count) |i| {
-        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        titles[i] = layout.focusedPane().engine.state.title orelse "cmd";
-    }
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    var titles: tab_bar_mod.TabTitles = undefined;
+    resolveTabTitles(ctx, &titles, &name_bufs);
 
     const tbg = themeRgb(ctx.theme.background);
     const tfg = themeRgb(ctx.theme.foreground);
@@ -474,11 +509,9 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         }
     }.m;
 
-    var titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
-    for (0..ctx.tab_mgr.count) |i| {
-        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        titles[i] = layout.focusedPane().engine.state.title orelse "cmd";
-    }
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    var titles: tab_bar_mod.TabTitles = undefined;
+    resolveTabTitles(ctx, &titles, &name_bufs);
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
     const sb_alpha: u8 = if (sb.config.background_opacity > 0) sb.config.background_opacity else 230;
     const result = statusbar_mod.generate(
@@ -497,10 +530,7 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         },
         &titles,
         computeZoomedTabs(ctx),
-    ) orelse {
-        logging.warn("overlay", "statusbar generate returned null (cols={d})", .{ctx.grid_cols});
-        return;
-    };
+    ) orelse return;
 
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
