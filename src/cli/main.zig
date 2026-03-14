@@ -197,6 +197,46 @@ fn doKillDaemonWindows() void {
         extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandles: i32, dwProcessId: u32) callconv(.winapi) ?windows.HANDLE;
         extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: u32) callconv(.winapi) i32;
         extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) i32;
+        extern "kernel32" fn GetModuleFileNameW(hModule: ?windows.HANDLE, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
+        extern "kernel32" fn CreateProcessW(
+            lpApplicationName: ?[*:0]const u16,
+            lpCommandLine: ?[*:0]u16,
+            lpProcessAttributes: ?*anyopaque,
+            lpThreadAttributes: ?*anyopaque,
+            bInheritHandles: i32,
+            dwCreationFlags: u32,
+            lpEnvironment: ?*anyopaque,
+            lpCurrentDirectory: ?[*:0]const u16,
+            lpStartupInfo: *StartupInfoW,
+            lpProcessInformation: *ProcessInformation,
+        ) callconv(.winapi) i32;
+
+        const StartupInfoW = extern struct {
+            cb: u32 = @sizeOf(StartupInfoW),
+            lpReserved: ?[*:0]u16 = null,
+            lpDesktop: ?[*:0]u16 = null,
+            lpTitle: ?[*:0]u16 = null,
+            dwX: u32 = 0,
+            dwY: u32 = 0,
+            dwXSize: u32 = 0,
+            dwYSize: u32 = 0,
+            dwXCountChars: u32 = 0,
+            dwYCountChars: u32 = 0,
+            dwFillAttribute: u32 = 0,
+            dwFlags: u32 = 0,
+            wShowWindow: u16 = 0,
+            cbReserved2: u16 = 0,
+            lpReserved2: ?*u8 = null,
+            hStdInput: ?windows.HANDLE = null,
+            hStdOutput: ?windows.HANDLE = null,
+            hStdError: ?windows.HANDLE = null,
+        };
+        const ProcessInformation = extern struct {
+            hProcess: windows.HANDLE,
+            hThread: windows.HANDLE,
+            dwProcessId: u32,
+            dwThreadId: u32,
+        };
     };
 
     // Get PID from ATTYX_PID env var
@@ -214,21 +254,48 @@ fn doKillDaemonWindows() void {
         return;
     };
 
-    // Open and terminate the process
+    // Get path to current executable for relaunch
+    var exe_path: [512]u16 = undefined;
+    const exe_len = kernel32.GetModuleFileNameW(null, &exe_path, exe_path.len);
+    if (exe_len == 0 or exe_len >= exe_path.len) {
+        stdout.writeAll("Failed to get executable path for restart.\n") catch {};
+        return;
+    }
+    exe_path[exe_len] = 0;
+
+    // Launch new instance before killing old one
+    var si: kernel32.StartupInfoW = .{};
+    var pi: kernel32.ProcessInformation = undefined;
+    if (kernel32.CreateProcessW(
+        exe_path[0..exe_len :0],
+        null,
+        null,
+        null,
+        0,
+        0,
+        null,
+        null,
+        &si,
+        &pi,
+    ) == 0) {
+        stdout.writeAll("Failed to launch new Attyx instance.\n") catch {};
+        return;
+    }
+    _ = kernel32.CloseHandle(pi.hProcess);
+    _ = kernel32.CloseHandle(pi.hThread);
+
+    // Now terminate the old instance
     const PROCESS_TERMINATE: u32 = 0x0001;
     const handle = kernel32.OpenProcess(PROCESS_TERMINATE, 0, pid) orelse {
-        stdout.writeAll("No running Attyx instance found (process not found).\n") catch {};
+        stdout.writeAll("New instance launched, but old instance not found.\n") catch {};
         return;
     };
     defer _ = kernel32.CloseHandle(handle);
+    _ = kernel32.TerminateProcess(handle, 0);
 
-    if (kernel32.TerminateProcess(handle, 0) != 0) {
-        var msg_buf: [64]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Attyx instance (PID {d}) killed.\n", .{pid}) catch "Instance killed.\n";
-        stdout.writeAll(msg) catch {};
-    } else {
-        stdout.writeAll("Failed to terminate Attyx instance.\n") catch {};
-    }
+    var msg_buf: [64]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "Attyx restarted (old PID {d}).\n", .{pid}) catch "Attyx restarted.\n";
+    stdout.writeAll(msg) catch {};
 }
 
 fn doKillDaemonPosix() void {
