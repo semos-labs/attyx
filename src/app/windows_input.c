@@ -107,8 +107,22 @@ void win_vkToKeyCombo(WPARAM vk, LPARAM lParam, uint16_t* outKey, uint32_t* outC
         *outKey = KC_CODEPOINT;
         *outCp = ' ';
     } else {
+        // OEM keys → ASCII codepoints for keybind matching
         *outKey = KC_CODEPOINT;
-        *outCp = 0;
+        switch (vk) {
+            case VK_OEM_1:      *outCp = ';'; break;   // ;:
+            case VK_OEM_PLUS:   *outCp = '='; break;   // =+
+            case VK_OEM_COMMA:  *outCp = ','; break;   // ,<
+            case VK_OEM_MINUS:  *outCp = '-'; break;   // -_
+            case VK_OEM_PERIOD: *outCp = '.'; break;   // .>
+            case VK_OEM_2:      *outCp = '/'; break;   // /?
+            case VK_OEM_3:      *outCp = '`'; break;   // `~
+            case VK_OEM_4:      *outCp = '['; break;   // [{
+            case VK_OEM_5:      *outCp = '\\'; break;  // \|
+            case VK_OEM_6:      *outCp = ']'; break;   // ]}
+            case VK_OEM_7:      *outCp = '\''; break;  // '"
+            default:            *outCp = 0; break;
+        }
     }
 }
 
@@ -266,6 +280,9 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
             if (shift) cp -= 32;
             attyx_popup_handle_key(KC_CODEPOINT, m, et, cp);
             g_suppress_char = 1;
+        } else if ((ctrl || alt) && vk >= '0' && vk <= '9') {
+            attyx_popup_handle_key(KC_CODEPOINT, m, et, (uint32_t)vk);
+            g_suppress_char = 1;
         } else {
             // Let WM_CHAR handle space, digits, quotes, punctuation, etc.
             g_suppress_char = 0;
@@ -303,19 +320,37 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
         return 0;
     }
 
-    // Ctrl+punctuation
-    if (ctrl && !alt && !shift) {
-        uint32_t cp = 0;
-        switch (vk) {
-            case VK_OEM_4:      cp = '['; break;  // [{
-            case VK_OEM_6:      cp = ']'; break;  // ]}
-            case VK_OEM_5:      cp = '\\'; break; // \|
-            case VK_SPACE:      cp = ' '; break;
-            default: g_suppress_char = 1; return 0;
-        }
+    // Alt+digit (tab switching, etc.)
+    if (alt && vk >= '0' && vk <= '9') {
+        uint32_t cp = (uint32_t)vk;
         attyx_handle_key(KC_CODEPOINT, m, et, cp);
         g_suppress_char = 1;
         return 0;
+    }
+
+    // Modifier+punctuation (Ctrl+[, Alt+-, Ctrl+Alt+=, etc.)
+    if (ctrl || alt) {
+        uint32_t cp = 0;
+        switch (vk) {
+            case VK_OEM_1:      cp = ';'; break;
+            case VK_OEM_PLUS:   cp = '='; break;
+            case VK_OEM_COMMA:  cp = ','; break;
+            case VK_OEM_MINUS:  cp = '-'; break;
+            case VK_OEM_PERIOD: cp = '.'; break;
+            case VK_OEM_2:      cp = '/'; break;
+            case VK_OEM_3:      cp = '`'; break;
+            case VK_OEM_4:      cp = '['; break;
+            case VK_OEM_5:      cp = '\\'; break;
+            case VK_OEM_6:      cp = ']'; break;
+            case VK_OEM_7:      cp = '\''; break;
+            case VK_SPACE:      cp = ' '; break;
+            default: break;
+        }
+        if (cp != 0) {
+            attyx_handle_key(KC_CODEPOINT, m, et, cp);
+            g_suppress_char = 1;
+            return 0;
+        }
     }
 
     return 0;
@@ -475,6 +510,7 @@ LRESULT windows_handle_input(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return handleKeyUp(hwnd, wParam, lParam);
 
         case WM_CHAR:
+        case WM_SYSCHAR:
             return handleChar(hwnd, wParam);
 
         case WM_LBUTTONDOWN:  return win_handleLButtonDown(hwnd, lParam);
