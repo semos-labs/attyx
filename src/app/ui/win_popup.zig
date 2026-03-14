@@ -58,6 +58,15 @@ pub fn drainPopupPty(ctx: *WinCtx, buf: []u8) void {
         ps.feed(buf[0..n]);
     }
 
+    // Nudge ConPTY to flush buffered output via overlapped read.
+    if (!got_data) {
+        const n = ps.pane.pty.readWithTimeout(buf, 2);
+        if (n > 0) {
+            got_data = true;
+            ps.feed(buf[0..n]);
+        }
+    }
+
     if (got_data) {
         const cfg = ctx.popup_configs[ps.config_index];
         ps.publishCells(ctx.theme, cfg);

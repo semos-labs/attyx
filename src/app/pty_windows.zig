@@ -186,7 +186,59 @@ extern "kernel32" fn GetFileAttributesW(
     lpFileName: LPCWSTR,
 ) callconv(.winapi) DWORD;
 
+extern "kernel32" fn CreateNamedPipeW(
+    lpName: LPCWSTR,
+    dwOpenMode: DWORD,
+    dwPipeMode: DWORD,
+    nMaxInstances: DWORD,
+    nOutBufferSize: DWORD,
+    nInBufferSize: DWORD,
+    nDefaultTimeOut: DWORD,
+    lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
+) callconv(.winapi) HANDLE;
+
+extern "kernel32" fn CreateFileW(
+    lpFileName: LPCWSTR,
+    dwDesiredAccess: DWORD,
+    dwShareMode: DWORD,
+    lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
+    dwCreationDisposition: DWORD,
+    dwFlagsAndAttributes: DWORD,
+    hTemplateFile: ?HANDLE,
+) callconv(.winapi) HANDLE;
+
+extern "kernel32" fn CreateEventW(
+    lpEventAttributes: ?*const SECURITY_ATTRIBUTES,
+    bManualReset: BOOL,
+    bInitialState: BOOL,
+    lpName: ?LPCWSTR,
+) callconv(.winapi) HANDLE;
+
+extern "kernel32" fn GetOverlappedResult(
+    hFile: HANDLE,
+    lpOverlapped: *OVERLAPPED,
+    lpNumberOfBytesTransferred: *DWORD,
+    bWait: BOOL,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+
+const OVERLAPPED = extern struct {
+    Internal: usize = 0,
+    InternalHigh: usize = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+
 const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+const PIPE_ACCESS_INBOUND: DWORD = 0x00000001;
+const PIPE_TYPE_BYTE_WAIT: DWORD = 0x00000000;
+const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
+const WIN_GENERIC_WRITE: DWORD = 0x40000000;
+const OPEN_EXISTING: DWORD = 3;
+const ERROR_IO_PENDING: DWORD = 997;
 
 // ── Pty ──
 
@@ -205,6 +257,8 @@ pub const Pty = struct {
     attr_list_buf: []align(8) u8,
     /// Allocator used for attr_list_buf.
     allocator: std.mem.Allocator,
+    /// Event handle for overlapped I/O on pipe_out_read.
+    read_event: HANDLE = INVALID_HANDLE,
 
     exit_status: ?c_int = null,
 
@@ -246,11 +300,16 @@ pub const Pty = struct {
             _ = CloseHandle(pty_in_write);
         }
 
-        if (CreatePipe(&pty_out_read, &pty_out_write, null, 0) == 0)
-            return error.CreatePipeFailed;
+        // Output pipe needs overlapped I/O — ConPTY only flushes its buffer
+        // when there's a pending ReadFile, not for PeekNamedPipe.
+        const out_pipe = createOverlappedOutputPipe() orelse return error.CreatePipeFailed;
+        pty_out_read = out_pipe.read;
+        pty_out_write = out_pipe.write;
+        const read_evt = out_pipe.event;
         errdefer {
             _ = CloseHandle(pty_out_read);
             _ = CloseHandle(pty_out_write);
+            _ = CloseHandle(read_evt);
         }
 
         // Create the pseudo console.
@@ -354,6 +413,7 @@ pub const Pty = struct {
             .thread = pi.hThread,
             .attr_list_buf = attr_buf,
             .allocator = allocator,
+            .read_event = read_evt,
         };
     }
 
@@ -362,6 +422,7 @@ pub const Pty = struct {
         _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
         _ = CloseHandle(self.process);
+        if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
         DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
         self.allocator.free(self.attr_list_buf);
     }
@@ -373,10 +434,45 @@ pub const Pty = struct {
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {
+        return self.readWithTimeout(buf, INFINITE);
+    }
+
+    /// Read with a timeout (milliseconds). Returns 0 if no data within timeout.
+    /// Uses overlapped I/O so that ConPTY flushes its output buffer in response
+    /// to the pending read — PeekNamedPipe alone doesn't trigger this flush.
+    pub fn readWithTimeout(self: *Pty, buf: []u8, timeout_ms: DWORD) usize {
+        if (self.read_event == INVALID_HANDLE) {
+            // Fallback: synchronous read (anonymous pipe).
+            var bytes_read: DWORD = 0;
+            if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
+                return 0;
+            return bytes_read;
+        }
+
+        _ = ResetEvent(self.read_event);
+        var overlapped = OVERLAPPED{ .hEvent = self.read_event };
         var bytes_read: DWORD = 0;
-        if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
-            return error.ReadFailed;
-        return bytes_read;
+
+        if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, @ptrCast(&overlapped)) != 0) {
+            return bytes_read; // Completed synchronously.
+        }
+
+        // Check if the operation is pending.
+        if (windows.kernel32.GetLastError() != ERROR_IO_PENDING) return 0;
+
+        // Wait for completion or timeout.
+        const wait = WaitForSingleObject(self.read_event, timeout_ms);
+        if (wait == WAIT_OBJECT_0) {
+            if (GetOverlappedResult(self.pipe_out_read, &overlapped, &bytes_read, 0) != 0) {
+                return bytes_read;
+            }
+            return 0;
+        }
+
+        // Timeout — cancel the pending I/O and wait for cancellation.
+        _ = CancelIo(self.pipe_out_read);
+        _ = GetOverlappedResult(self.pipe_out_read, &overlapped, &bytes_read, 1);
+        return 0;
     }
 
     pub fn writeToPty(self: *Pty, bytes: []const u8) !usize {
@@ -426,6 +522,67 @@ pub const Pty = struct {
         @compileError("fromExisting is not supported on Windows");
     }
 };
+
+/// Create a pipe pair where the read end supports overlapped I/O.
+/// Returns read handle, write handle, and event for overlapped operations.
+/// Uses a named pipe because CreatePipe doesn't support FILE_FLAG_OVERLAPPED.
+fn createOverlappedOutputPipe() ?struct { read: HANDLE, write: HANDLE, event: HANDLE } {
+    // Build unique pipe name using process ID and sequence counter.
+    const pid = GetCurrentProcessId();
+    const seq = blk: {
+        const S = struct {
+            var counter: u32 = 0;
+        };
+        break :blk @atomicRmw(u32, &S.counter, .Add, 1, .seq_cst);
+    };
+
+    var name_ascii: [128]u8 = undefined;
+    const name_str = std.fmt.bufPrint(&name_ascii, "\\\\.\\pipe\\attyx-pty-{d}-{d}", .{ pid, seq }) catch return null;
+
+    var name_wide: [128:0]u16 = undefined;
+    for (name_str, 0..) |ch, i| name_wide[i] = ch;
+    name_wide[name_str.len] = 0;
+    const pipe_name: LPCWSTR = name_wide[0..name_str.len :0];
+
+    // Server end: our read handle with overlapped support.
+    const read_handle = CreateNamedPipeW(
+        pipe_name,
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_BYTE_WAIT,
+        1,
+        0,
+        65536,
+        0,
+        null,
+    );
+    if (read_handle == INVALID_HANDLE) return null;
+
+    // Client end: ConPTY's write handle (synchronous is fine).
+    const write_handle = CreateFileW(
+        pipe_name,
+        WIN_GENERIC_WRITE,
+        0,
+        null,
+        OPEN_EXISTING,
+        0,
+        null,
+    );
+    if (write_handle == INVALID_HANDLE) {
+        _ = CloseHandle(read_handle);
+        return null;
+    }
+
+    // Manual-reset event for overlapped reads.
+    // CreateEventW returns NULL on failure — compare via @intFromPtr since HANDLE is non-optional.
+    const event = CreateEventW(null, 1, 0, null);
+    if (@intFromPtr(event) == 0) {
+        _ = CloseHandle(read_handle);
+        _ = CloseHandle(write_handle);
+        return null;
+    }
+
+    return .{ .read = read_handle, .write = write_handle, .event = event };
+}
 
 // ── Helpers ──
 

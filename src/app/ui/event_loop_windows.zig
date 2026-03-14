@@ -79,13 +79,12 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
     // Startup drain: give shell time to produce initial prompt.
+    // Use readWithTimeout to trigger ConPTY output flush via overlapped I/O.
     for (0..20) |_| {
         Sleep(50);
         const pane = ctx.tab_mgr.activePane();
-        const avail = pane.pty.peekAvail();
-        if (avail == 0) continue;
-        const n = pane.pty.read(&buf) catch break;
-        if (n == 0) break;
+        const n = pane.pty.readWithTimeout(&buf, 50);
+        if (n == 0) continue;
         pane.feed(buf[0..n]);
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
@@ -198,6 +197,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     if (n == 0) break;
                     leaf.pane.feed(buf[0..n]);
                     if (tab_idx == ctx.tab_mgr.active) got_data = true;
+                }
+            }
+        }
+
+        // ConPTY buffers output until a pending ReadFile triggers a flush.
+        // PeekNamedPipe doesn't create a pending read, so do a short overlapped
+        // read on the active pane to nudge ConPTY into flushing.
+        if (!got_data) {
+            const active = ctx.tab_mgr.activePane();
+            if (active.daemon_pane_id == null) {
+                const n = active.pty.readWithTimeout(&buf, 2);
+                if (n > 0) {
+                    active.feed(buf[0..n]);
+                    got_data = true;
                 }
             }
         }
