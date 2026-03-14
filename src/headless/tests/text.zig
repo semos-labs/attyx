@@ -344,3 +344,174 @@ test "Thai two-column alignment: cursor position matches pipe separator" {
 
     try std.testing.expectEqual(@as(usize, 31), e.state.cursor.col);
 }
+
+// ===========================================================================
+// Regional Indicator (flag emoji) — display-layer pairing
+// ===========================================================================
+// The state engine stores each RI codepoint as an individual width-1 cell.
+// Flag pairing (merging two adjacent RIs into a base+combining pair with a
+// spacer) happens in the publish layer (fillCells → mergeRegionalIndicators)
+// so that shell redraws simply overwrite cells without spacer side-effects.
+
+test "flag emoji: RIs stored as individual cells in state" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // Feed 🇺🇸 = U+1F1FA U+1F1F8
+    e.feed("\xf0\x9f\x87\xba" ++ "\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+
+    // Each RI is its own cell — no state-level pairing
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[0].char);
+    try std.testing.expectEqual(@as(u21, 0), row[0].combining[0]);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[1].char);
+    try std.testing.expectEqual(@as(u21, 0), row[1].combining[0]);
+
+    // Cursor at column 2 (each RI is width 1)
+    try std.testing.expectEqual(@as(usize, 2), e.state.cursor.col);
+}
+
+test "flag emoji: RIs across chunked feeds" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    e.feed("\xf0\x9f\x87\xba"); // U+1F1FA
+    e.feed("\xf0\x9f\x87\xb8"); // U+1F1F8
+
+    const row = e.state.ring.getScreenRow(0);
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[0].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[1].char);
+    try std.testing.expectEqual(@as(usize, 2), e.state.cursor.col);
+}
+
+test "flag emoji: preceded by text has correct cells" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // "Hi " then flag emoji
+    e.feed("Hi \xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+    try std.testing.expectEqual(@as(u21, 'H'), row[0].char);
+    try std.testing.expectEqual(@as(u21, 'i'), row[1].char);
+    try std.testing.expectEqual(@as(u21, ' '), row[2].char);
+    // Individual RIs at cols 3-4
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[3].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[4].char);
+    try std.testing.expectEqual(@as(usize, 5), e.state.cursor.col);
+}
+
+test "flag emoji: shell-style redraw with CR then flag" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // First draw: "$ " then RI1 RI2
+    e.feed("$ \xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+    // Redraw: CR + same line
+    e.feed("\r$ \xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+    try std.testing.expectEqual(@as(u21, '$'), row[0].char);
+    try std.testing.expectEqual(@as(u21, ' '), row[1].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[2].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[3].char);
+    try std.testing.expectEqual(@as(usize, 4), e.state.cursor.col);
+}
+
+test "flag emoji: erase line then redraw preserves single flag" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    e.feed("$ \xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+    e.feed("\r\x1b[K$ \xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[2].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[3].char);
+    try std.testing.expectEqual(@as(usize, 4), e.state.cursor.col);
+}
+
+test "flag emoji: VS16 between RIs stores FE0F as combining" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // Feed RI1 FE0F RI2 — VS16 attaches to RI1 as combining mark
+    // and upgrades it to 2-cell width (spacer at col 1), so RI2 lands at col 2
+    e.feed("\xf0\x9f\x87\xba" ++ "\xef\xb8\x8f" ++ "\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+    // RI1 with VS16 in combining[0]
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[0].char);
+    try std.testing.expectEqual(@as(u21, 0xFE0F), row[0].combining[0]);
+    // Spacer at col 1 from VS16 width upgrade
+    try std.testing.expectEqual(@as(u21, ' '), row[1].char);
+    // RI2 at col 2
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[2].char);
+    try std.testing.expectEqual(@as(usize, 3), e.state.cursor.col);
+}
+
+test "flag emoji: two consecutive different flags" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // Feed 🇺🇸🇫🇷 = U+1F1FA U+1F1F8 U+1F1EB U+1F1F7
+    e.feed("\xf0\x9f\x87\xba" ++ "\xf0\x9f\x87\xb8" ++
+        "\xf0\x9f\x87\xab" ++ "\xf0\x9f\x87\xb7");
+
+    const row = e.state.ring.getScreenRow(0);
+    // Four individual RI cells
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[0].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[1].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1EB), row[2].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F7), row[3].char);
+    try std.testing.expectEqual(@as(usize, 4), e.state.cursor.col);
+}
+
+test "flag emoji: two identical flags not suppressed when adjacent" {
+    const alloc = std.testing.allocator;
+    const Engine = @import("../../term/engine.zig").Engine;
+    const RingBuffer = @import("../../term/ring.zig").RingBuffer;
+
+    var e = try Engine.init(alloc, 3, 20, RingBuffer.default_max_scrollback);
+    defer e.deinit();
+
+    // Two identical flags typed consecutively — both should appear.
+    e.feed("\xf0\x9f\x87\xba" ++ "\xf0\x9f\x87\xb8" ++
+        "\xf0\x9f\x87\xba" ++ "\xf0\x9f\x87\xb8");
+
+    const row = e.state.ring.getScreenRow(0);
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[0].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[1].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1FA), row[2].char);
+    try std.testing.expectEqual(@as(u21, 0x1F1F8), row[3].char);
+    try std.testing.expectEqual(@as(usize, 4), e.state.cursor.col);
+}
