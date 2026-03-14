@@ -251,12 +251,24 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             win_search.generateSearchBar(ctx);
         }
 
+        // ── Statusbar widget tick ──
+        var statusbar_refreshed = false;
+        if (ctx.statusbar) |sb| {
+            if (sb.config.enabled) {
+                for (ctx.theme.palette, 0..) |opt_color, i| {
+                    if (opt_color) |p| sb.ansi_palette[i] = .{ .r = p.r, .g = p.g, .b = p.b };
+                }
+                const pane = ctx.tab_mgr.activePane();
+                statusbar_refreshed = sb.tick(std.time.timestamp(), pane.pty.pipe_out_read, pane.engine.state.working_directory);
+            }
+        }
+
         // ── Throttle & publish ──
         const eng = &ctx.tab_mgr.activePane().engine;
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
