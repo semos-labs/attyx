@@ -93,22 +93,35 @@ pub fn charDisplayWidth(char: u21) u2 {
     if (cp >= 0x1F900 and cp <= 0x1FAFF) return 2;
     if (cp >= 0x20000 and cp <= 0x2FFFD) return 2;
     if (cp >= 0x30000 and cp <= 0x3FFFD) return 2;
+    // SMP emoji below the main ranges
+    if (cp == 0x1F004) return 2; // 🀄 Mahjong Red Dragon
+    if (cp == 0x1F0CF) return 2; // 🃏 Joker
+    if (cp == 0x1F18E) return 2; // 🆎 AB button
+    if (cp >= 0x1F191 and cp <= 0x1F19A) return 2; // 🆑-🆚 squared symbols
+    if (cp == 0x1F201 or cp == 0x1F202) return 2; // 🈁🈂
+    if (cp == 0x1F21A) return 2; // 🈚
+    if (cp == 0x1F22F) return 2; // 🈯
+    if (cp >= 0x1F232 and cp <= 0x1F23A) return 2; // 🈲-🈺
+    if (cp >= 0x1F250 and cp <= 0x1F251) return 2; // 🉐🉑
     // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
     if (cp == 0x231A or cp == 0x231B) return 2;
     if (cp >= 0x23E9 and cp <= 0x23F3) return 2;
-    if (cp >= 0x25FD and cp <= 0x25FE) return 2;
+    if (cp >= 0x23F8 and cp <= 0x23FA) return 2; // ⏸⏹⏺
+    if (cp >= 0x25FB and cp <= 0x25FE) return 2;
     if (cp == 0x2614 or cp == 0x2615) return 2;
     if (cp >= 0x2648 and cp <= 0x2653) return 2;
     if (cp == 0x267F or cp == 0x2693 or cp == 0x26A1) return 2;
+    if (cp >= 0x26AA and cp <= 0x26AB) return 2; // ⚪⚫
+    if (cp >= 0x26BD and cp <= 0x26BE) return 2; // ⚽⚾
+    if (cp >= 0x26C4 and cp <= 0x26C5) return 2; // ⛄⛅
     if (cp == 0x26CE or cp == 0x26D4 or cp == 0x26EA) return 2;
     if (cp == 0x26F2 or cp == 0x26F3 or cp == 0x26F5) return 2;
     if (cp == 0x26FA or cp == 0x26FD) return 2;
     if (cp == 0x2702 or cp == 0x2705) return 2;
-    if (cp == 0x2708) return 2; // airplane
-    if (cp >= 0x270A and cp <= 0x270B) return 2; // fists
-    if (cp == 0x270D) return 2; // writing hand
-    if (cp == 0x2728) return 2;
-    if (cp == 0x2744 or cp == 0x2747) return 2;
+    if (cp >= 0x2708 and cp <= 0x270D) return 2; // ✈-✍
+    if (cp == 0x270F or cp == 0x2712 or cp == 0x2714 or cp == 0x2716) return 2;
+    if (cp == 0x271D or cp == 0x2721 or cp == 0x2728) return 2;
+    if (cp == 0x2733 or cp == 0x2734 or cp == 0x2744 or cp == 0x2747) return 2;
     if (cp == 0x274C or cp == 0x274E) return 2;
     if (cp >= 0x2753 and cp <= 0x2755) return 2;
     if (cp == 0x2757) return 2;
@@ -119,6 +132,29 @@ pub fn charDisplayWidth(char: u21) u2 {
     if (cp >= 0x2B05 and cp <= 0x2B07) return 2;
     if (cp == 0x2B1B or cp == 0x2B1C or cp == 0x2B50 or cp == 0x2B55) return 2;
     return 1;
+}
+
+/// Returns true for codepoints that can switch to emoji presentation (2-cell)
+/// when followed by VS16 (U+FE0F). Covers characters with the Unicode `Emoji`
+/// property that default to text presentation (i.e. charDisplayWidth returns 1).
+pub fn isTextDefaultEmoji(cp: u21) bool {
+    // Already 2-cell: no upgrade needed
+    if (charDisplayWidth(cp) == 2) return false;
+    // Broad emoji-capable ranges (Unicode Emoji property)
+    if (cp == 0x00A9 or cp == 0x00AE) return true; // ©®
+    if (cp == 0x203C or cp == 0x2049) return true; // ‼⁉
+    if (cp == 0x2122 or cp == 0x2139) return true; // ™ℹ
+    if (cp >= 0x2194 and cp <= 0x2199) return true; // ↔-↙
+    if (cp == 0x21A9 or cp == 0x21AA) return true; // ↩↪
+    if (cp >= 0x2300 and cp <= 0x23FF) return true; // Misc Technical
+    if (cp == 0x24C2) return true; // Ⓜ
+    if (cp >= 0x25AA and cp <= 0x25FF) return true; // Geometric Shapes
+    if (cp >= 0x2600 and cp <= 0x27BF) return true; // Misc Symbols + Dingbats
+    if (cp >= 0x2934 and cp <= 0x2935) return true;
+    if (cp >= 0x2B00 and cp <= 0x2BFF) return true; // Misc Symbols & Arrows
+    if (cp == 0x3030 or cp == 0x303D or cp == 0x3297 or cp == 0x3299) return true;
+    if (cp >= 0x1F000 and cp <= 0x1FAFF) return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,4 +198,34 @@ test "CJK wide characters" {
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x4E00)); // CJK unified
     try testing.expectEqual(@as(u2, 1), charDisplayWidth('a'));
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0xAC00)); // Hangul
+}
+
+test "Emoji_Presentation characters are wide" {
+    // Main SMP emoji ranges
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F389)); // 🎉 party popper
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F600)); // 😀 grinning face
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F680)); // 🚀 rocket
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F916)); // 🤖 robot
+    // BMP emoji with Emoji_Presentation
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26BD)); // ⚽ soccer ball
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26BE)); // ⚾ baseball
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26C4)); // ⛄ snowman
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26AA)); // ⚪ white circle
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x23F8)); // ⏸ pause button
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x25FB)); // ◻ white medium square
+    // SMP emoji below 0x1F300
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F004)); // 🀄 Mahjong
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F0CF)); // 🃏 Joker
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F18E)); // 🆎 AB button
+    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F191)); // 🆑 CL button
+}
+
+test "VS16 text-default emoji detection" {
+    // Characters that default to text but can become emoji with VS16
+    try testing.expect(isTextDefaultEmoji(0x2614) == false); // ☔ already 2-cell
+    try testing.expect(isTextDefaultEmoji(0x2600)); // ☀ sun (text default)
+    try testing.expect(isTextDefaultEmoji(0x2622)); // ☢ radioactive
+    try testing.expect(isTextDefaultEmoji(0x260E)); // ☎ telephone
+    try testing.expect(!isTextDefaultEmoji('a')); // not emoji
+    try testing.expect(!isTextDefaultEmoji(0x1F389)); // 🎉 already 2-cell
 }
