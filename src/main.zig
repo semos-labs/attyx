@@ -19,9 +19,7 @@ comptime {
     if (is_windows) _ = @import("app/windows_stubs.zig");
 }
 const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else @import("app/daemon/daemon_windows.zig");
-const ipc_client = if (!is_windows) @import("ipc/client.zig") else struct {
-    pub fn run(_: anytype) void {}
-};
+const ipc_client = @import("ipc/client.zig");
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
     "https://app.semos.sh"

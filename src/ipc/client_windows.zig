@@ -38,52 +38,26 @@ pub const win32 = if (is_windows) struct {
 } else struct {};
 
 /// Windows: discover named pipe for a running instance.
+/// Returns the pipe path built from ATTYX_PID (or target_pid).
+/// No probing — the actual connection attempt in sendCommand validates it.
 pub fn discoverPipe(buf: *[256]u8, target_pid: ?u32) ?[]const u8 {
     if (comptime !is_windows) unreachable;
 
-    const suffix = if (comptime builtin.mode == .Debug) "-dev" else "";
-
-    // If a specific PID is requested, try both suffixes
-    const pid_hint: ?u32 = target_pid orelse blk: {
+    const pid: u32 = target_pid orelse blk: {
         // Check ATTYX_PID env var
-        const env_buf: [*:0]const u16 = std.os.windows.L("ATTYX_PID");
+        const env_name: [*:0]const u16 = std.os.windows.L("ATTYX_PID");
         var val_buf: [32]u16 = undefined;
-        const len = win32.GetEnvironmentVariableW(env_buf, &val_buf, val_buf.len);
+        const len = win32.GetEnvironmentVariableW(env_name, &val_buf, val_buf.len);
         if (len > 0 and len < val_buf.len) {
             var ascii: [32]u8 = undefined;
             for (0..len) |i| ascii[i] = @intCast(val_buf[i] & 0xFF);
-            break :blk std.fmt.parseInt(u32, ascii[0..len], 10) catch null;
+            break :blk std.fmt.parseInt(u32, ascii[0..len], 10) catch return null;
         }
-        break :blk null;
+        return null;
     };
 
-    if (pid_hint) |pid| {
-        for ([_][]const u8{ "-dev", "" }) |sfx| {
-            const path = std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-ctl-{d}{s}", .{ pid, sfx }) catch continue;
-            if (probePipe(path)) return path;
-        }
-    }
-
-    // No specific PID — try connecting to pipes with common patterns.
-    // Windows doesn't let us enumerate pipes easily, so try current process
-    // and recent PIDs. For now, just try the env-provided PID or fail.
-    // The main use case is `attyx send-keys` from within an attyx pane,
-    // where ATTYX_PID is set.
-    _ = suffix;
-    return null;
-}
-
-/// Check if a named pipe exists without consuming a connection.
-/// WaitNamedPipeW with timeout=0 returns immediately: TRUE if an instance
-/// is available, FALSE otherwise. It does NOT connect to the pipe.
-fn probePipe(path: []const u8) bool {
-    if (comptime !is_windows) return false;
-    var wide_buf: [256]u16 = undefined;
-    for (path, 0..) |ch, i| {
-        wide_buf[i] = ch;
-    }
-    wide_buf[path.len] = 0;
-    return win32.WaitNamedPipeW(wide_buf[0..path.len :0], 0) != 0;
+    const suffix = if (comptime builtin.mode == .Debug) "-dev" else "";
+    return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-ctl-{d}{s}", .{ pid, suffix }) catch null;
 }
 
 /// Connect to a Windows named pipe, returning the HANDLE as fd_t.
