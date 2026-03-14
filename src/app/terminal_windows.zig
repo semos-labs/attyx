@@ -132,8 +132,10 @@ pub fn run(
     const tab_mgr = try allocator.create(TabManager);
     tab_mgr.* = TabManager.init(allocator, initial_pane);
 
-    // Session manager wraps the initial TabManager (takes ownership)
-    var session_mgr = session_win.WinSessionManager.init(allocator, tab_mgr, "default");
+    // Session manager wraps the initial TabManager (takes ownership).
+    // Derive initial session name from CWD (e.g. "C:\Users\nick\Projects\foo" → "foo").
+    const initial_name = session_win.cwdSessionName() orelse "main";
+    var session_mgr = session_win.WinSessionManager.init(allocator, tab_mgr, initial_name);
     defer session_mgr.deinit();
 
     // Wire up stubs so input dispatch can write to PTY and read engine state
@@ -179,6 +181,9 @@ pub fn run(
         .popup_configs = popup_configs,
         .popup_config_count = popup_count,
         .session_mgr = &session_mgr,
+        .finder_root = config.session_finder_root,
+        .finder_depth = config.session_finder_depth,
+        .finder_show_hidden = config.session_finder_show_hidden,
     };
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });

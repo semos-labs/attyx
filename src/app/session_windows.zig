@@ -5,6 +5,7 @@
 // Sessions do not persist across process restarts (no daemon).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const TabManager = @import("tab_manager.zig").TabManager;
 const Pane = @import("pane.zig").Pane;
@@ -177,6 +178,11 @@ pub const WinSessionManager = struct {
         return null;
     }
 
+    /// Get the currently active session ID.
+    pub fn activeId(self: *WinSessionManager) u32 {
+        return self.activeSession().id;
+    }
+
     pub fn deinit(self: *WinSessionManager) void {
         for (0..max_sessions) |i| {
             if (self.sessions[i]) |*s| {
@@ -187,3 +193,17 @@ pub const WinSessionManager = struct {
         }
     }
 };
+
+/// Derive a session name from the process's current working directory.
+/// Returns the last path component (e.g. "C:\Users\nick\Projects\foo" → "foo").
+pub fn cwdSessionName() ?[]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.process.getCwd(&buf) catch return null;
+    const trimmed = std.mem.trimRight(u8, cwd, "/\\");
+    if (trimmed.len == 0) return null;
+    if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| {
+        const name = trimmed[i + 1 ..];
+        return if (name.len > 0) name else null;
+    }
+    return trimmed;
+}

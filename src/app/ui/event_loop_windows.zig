@@ -30,6 +30,7 @@ const Rgb = overlay_mod.Rgb;
 const win_search = @import("win_search.zig");
 const win_overlays = @import("win_overlays.zig");
 const win_popup = @import("win_popup.zig");
+const win_session_picker = @import("win_session_picker.zig");
 const popup_mod = @import("../popup.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
@@ -62,6 +63,9 @@ pub const WinCtx = struct {
     popup_configs: [32]popup_mod.PopupConfig = undefined,
     popup_config_count: u8 = 0,
     session_mgr: ?*WinSessionManager = null,
+    finder_root: []const u8 = "~",
+    finder_depth: u8 = 4,
+    finder_show_hidden: bool = false,
 };
 
 pub fn ptyReaderThread(ctx: *WinCtx) void {
@@ -126,8 +130,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_overlays.processOverlayDismiss(ctx);
         win_overlays.processToggles(ctx);
 
-        // ── Command palette / theme picker input ──
+        // ── Overlay input + finder tick ──
         const overlay_input_changed = win_overlays.processInput(ctx);
+        win_session_picker.tickFinder(ctx);
 
         // Guard: an overlay action (e.g. close window) may have killed all tabs
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }

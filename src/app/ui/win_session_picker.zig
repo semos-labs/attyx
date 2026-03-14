@@ -1,8 +1,9 @@
 /// Windows session picker overlay — wires the cross-platform
-/// SessionPickerState + panel renderer to WinCtx and WinSessionManager.
+/// SessionPickerState + panel renderer + FinderState to WinCtx.
 const std = @import("std");
 const attyx = @import("attyx");
 const overlay_mod = attyx.overlay_mod;
+const FinderState = attyx.finder.FinderState;
 
 const ws = @import("../windows_stubs.zig");
 const publish = @import("publish.zig");
@@ -18,6 +19,7 @@ const SessionEntry = picker_state_mod.SessionEntry;
 const picker_panel = attyx.overlay_session_picker_panel;
 
 var g_picker_state: ?SessionPickerState = null;
+var g_finder_state: ?FinderState = null;
 
 pub fn openSessionPicker(ctx: *WinCtx) void {
     const smgr = ctx.session_mgr orelse return;
@@ -48,6 +50,18 @@ pub fn openSessionPicker(ctx: *WinCtx) void {
     g_picker_state = state;
     @atomicStore(i32, &ws.g_session_picker_active, 1, .seq_cst);
 
+    // Init filesystem finder
+    if (g_finder_state) |*f| {
+        f.deinit();
+        g_finder_state = null;
+    }
+    g_finder_state = FinderState.init(
+        ctx.allocator,
+        ctx.finder_root,
+        ctx.finder_depth,
+        ctx.finder_show_hidden,
+    ) catch null;
+
     renderAndPublish(ctx);
 }
 
@@ -77,8 +91,73 @@ pub fn consumeInput(ctx: *WinCtx) bool {
         if (processAction(ctx, action)) return true;
     }
 
-    if (consumed) renderAndPublish(ctx);
+    if (consumed) {
+        // Update finder with current filter text
+        if (g_finder_state) |*finder| {
+            finder.updateQuery(state.filter_buf[0..state.filter_len]);
+            pushFinderResults(state, finder);
+        }
+        renderAndPublish(ctx);
+    }
     return consumed;
+}
+
+/// Tick the finder — call from the event loop to process directory walking.
+pub fn tickFinder(ctx: *WinCtx) void {
+    const state = &(g_picker_state orelse return);
+    const finder = &(g_finder_state orelse return);
+
+    if (finder.walking_done) return;
+    finder.tick() catch return;
+
+    // If we have an active query, push updated results
+    if (state.filter_len > 0) {
+        const old_count = state.fs_count;
+        pushFinderResults(state, finder);
+        if (state.fs_count != old_count) {
+            renderAndPublish(ctx);
+        }
+    }
+}
+
+fn pushFinderResults(state: *SessionPickerState, finder: *FinderState) void {
+    if (state.filter_len == 0) {
+        state.fs_count = 0;
+        return;
+    }
+
+    const max_fs = picker_state_mod.max_fs_results;
+    const result_indices = finder.getResults(0, max_fs * 3);
+
+    var paths: [max_fs][]const u8 = undefined;
+    var scores: [max_fs]i32 = undefined;
+    var out: usize = 0;
+
+    for (result_indices, 0..) |idx, i| {
+        if (out >= max_fs) break;
+        const path = finder.getPath(idx);
+
+        // Deduplicate: skip if basename matches any existing session name
+        const basename = if (std.mem.lastIndexOfAny(u8, path, "/\\")) |sep|
+            path[sep + 1 ..]
+        else
+            path;
+        if (matchesExistingSession(state, basename)) continue;
+
+        paths[out] = path;
+        scores[out] = finder.getScore(@intCast(i));
+        out += 1;
+    }
+
+    state.updateFsResults(paths[0..out], scores[0..out]);
+}
+
+fn matchesExistingSession(state: *const SessionPickerState, basename: []const u8) bool {
+    if (basename.len == 0) return false;
+    for (0..state.entry_count) |i| {
+        if (std.mem.eql(u8, state.entries[i].getName(), basename)) return true;
+    }
+    return false;
 }
 
 fn processAction(ctx: *WinCtx, action: picker_state_mod.PickerAction) bool {
@@ -109,17 +188,44 @@ fn processAction(ctx: *WinCtx, action: picker_state_mod.PickerAction) bool {
             event_loop.switchSession(ctx);
             return true;
         },
-        .create_session_at => {
-            // Filesystem session creation not supported in Windows in-process mode
+        .create_session_at => |rel_path| {
+            // Build absolute path from finder root + relative path
+            const finder = &(g_finder_state orelse {
+                close(ctx);
+                return true;
+            });
+            const root = finder.getRootPath();
+            var abs_buf: [512]u8 = undefined;
+            const sep: []const u8 = if (comptime @import("builtin").os.tag == .windows) "\\" else "/";
+            const abs_path = std.fmt.bufPrint(&abs_buf, "{s}{s}{s}", .{ root, sep, rel_path }) catch {
+                close(ctx);
+                return true;
+            };
+            // Extract name from the path
+            const name = if (std.mem.lastIndexOfAny(u8, abs_path, "/\\")) |i|
+                abs_path[i + 1 ..]
+            else
+                abs_path;
+
             close(ctx);
+            const ws_stubs = @import("../windows_stubs.zig");
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws_stubs.g_grid_top_offset - ws_stubs.g_grid_bottom_offset));
+            const sid = smgr.createSession(
+                if (name.len > 0) name else "new",
+                pty_rows,
+                ctx.grid_cols,
+                ctx.theme,
+                ctx.applied_scrollback_lines,
+            ) catch return true;
+            _ = smgr.switchTo(sid) catch {};
+            event_loop.switchSession(ctx);
             return true;
         },
         .kill_session => |sid| {
             smgr.kill(sid) catch {};
-            // Refresh picker entries
             refreshEntries(ctx);
             if (g_picker_state) |*s| renderAndPublishState(ctx, s);
-            return false; // stay in picker
+            return false;
         },
         .rename_session => |rs| {
             smgr.rename(rs.id, rs.name) catch {};
@@ -151,6 +257,10 @@ fn refreshEntries(ctx: *WinCtx) void {
 }
 
 pub fn close(ctx: *WinCtx) void {
+    if (g_finder_state) |*f| {
+        f.deinit();
+        g_finder_state = null;
+    }
     g_picker_state = null;
     @atomicStore(i32, &ws.g_session_picker_active, 0, .seq_cst);
     if (ctx.overlay_mgr) |mgr| mgr.hide(.session_picker);
@@ -199,20 +309,14 @@ fn nameFromCwd(ctx: *WinCtx) []const u8 {
 
 /// Extract the last component from a path (handles / and \ separators, strips file:// URIs).
 fn lastPathComponent(path: []const u8) []const u8 {
-    // Strip file:// URI prefix if present (OSC 7 sends "file://host/path")
     var p = path;
     if (std.mem.startsWith(u8, p, "file://")) {
         p = p["file://".len..];
-        // Skip hostname (up to next /)
-        if (std.mem.indexOfScalar(u8, p, '/')) |i| {
-            p = p[i..];
-        }
+        if (std.mem.indexOfScalar(u8, p, '/')) |i| p = p[i..];
     }
     const trimmed = std.mem.trimRight(u8, p, "/\\");
     if (trimmed.len == 0) return "new";
-    if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| {
-        return trimmed[i + 1 ..];
-    }
+    if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| return trimmed[i + 1 ..];
     return trimmed;
 }
 
