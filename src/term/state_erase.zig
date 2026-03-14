@@ -2,28 +2,18 @@ const grid_mod = @import("grid.zig");
 const actions_mod = @import("actions.zig");
 
 const TerminalState = @import("state.zig").TerminalState;
-const Cell = grid_mod.Cell;
-const Style = grid_mod.Style;
-
-/// BCE (Background Color Erase): create a blank cell that preserves the
-/// current pen's background color so that erase operations fill with the
-/// active SGR background, not the default theme background.
-fn bceCell(self: *const TerminalState) Cell {
-    if (self.pen.bg == .default) return Cell{};
-    return .{ .style = .{ .bg = self.pen.bg } };
-}
 
 /// Clear a screen row using BCE.
 fn clearRowBce(self: *TerminalState, r: usize) void {
     const row_cells = self.ring.getScreenRowMut(r);
-    @memset(row_cells, bceCell(self));
+    @memset(row_cells, self.bceCell());
     self.ring.setScreenWrapped(r, false);
 }
 
 pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
     const cols = self.ring.cols;
     const rows = self.ring.screen_rows;
-    const blank = bceCell(self);
+    const blank = self.bceCell();
     switch (mode) {
         .to_end => {
             // Clear from cursor to end of screen
@@ -94,7 +84,7 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
 
 pub fn eraseInLine(self: *TerminalState, mode: actions_mod.EraseMode) void {
     const row_cells = self.ring.getScreenRowMut(self.cursor.row);
-    const blank = bceCell(self);
+    const blank = self.bceCell();
     switch (mode) {
         .to_end => {
             @memset(row_cells[self.cursor.col..], blank);

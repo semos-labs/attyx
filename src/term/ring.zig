@@ -208,7 +208,7 @@ pub const RingBuffer = struct {
     /// Scroll up within a scroll region [top, bottom] of the screen.
     /// Shifts cells: row top+1 → top, top+2 → top+1, etc. Row bottom is cleared.
     /// Does NOT push to scrollback — caller must handle that separately.
-    pub fn scrollUpRegion(self: *RingBuffer, top: usize, bottom: usize) void {
+    pub fn scrollUpRegion(self: *RingBuffer, top: usize, bottom: usize, blank: Cell) void {
         if (top >= bottom) return;
         var r = top;
         while (r < bottom) : (r += 1) {
@@ -217,12 +217,13 @@ pub const RingBuffer = struct {
             @memcpy(dst, src);
             self.setScreenWrapped(r, self.getScreenWrapped(r + 1));
         }
-        self.clearScreenRow(bottom);
+        @memset(self.getScreenRowMut(bottom), blank);
+        self.setScreenWrapped(bottom, false);
     }
 
     /// Scroll down within a scroll region [top, bottom] of the screen.
     /// Row `bottom` is lost, rows shift down, row `top` is cleared.
-    pub fn scrollDownRegion(self: *RingBuffer, top: usize, bottom: usize) void {
+    pub fn scrollDownRegion(self: *RingBuffer, top: usize, bottom: usize, blank: Cell) void {
         if (top >= bottom) return;
         var r = bottom;
         while (r > top) : (r -= 1) {
@@ -231,26 +232,27 @@ pub const RingBuffer = struct {
             @memcpy(dst, src);
             self.setScreenWrapped(r, self.getScreenWrapped(r - 1));
         }
-        self.clearScreenRow(top);
+        @memset(self.getScreenRowMut(top), blank);
+        self.setScreenWrapped(top, false);
     }
 
     /// Scroll up N times.
-    pub fn scrollUpRegionN(self: *RingBuffer, top: usize, bottom: usize, n: usize) void {
+    pub fn scrollUpRegionN(self: *RingBuffer, top: usize, bottom: usize, n: usize, blank: Cell) void {
         if (top >= bottom or n == 0) return;
         const count = @min(n, bottom - top + 1);
-        for (0..count) |_| self.scrollUpRegion(top, bottom);
+        for (0..count) |_| self.scrollUpRegion(top, bottom, blank);
     }
 
     /// Scroll down N times.
-    pub fn scrollDownRegionN(self: *RingBuffer, top: usize, bottom: usize, n: usize) void {
+    pub fn scrollDownRegionN(self: *RingBuffer, top: usize, bottom: usize, n: usize, blank: Cell) void {
         if (top >= bottom or n == 0) return;
         const count = @min(n, bottom - top + 1);
-        for (0..count) |_| self.scrollDownRegion(top, bottom);
+        for (0..count) |_| self.scrollDownRegion(top, bottom, blank);
     }
 
     // -- Character insertion/deletion within screen rows --
 
-    pub fn insertChars(self: *RingBuffer, row: usize, col: usize, n: usize) void {
+    pub fn insertChars(self: *RingBuffer, row: usize, col: usize, n: usize, blank: Cell) void {
         if (n == 0 or col >= self.cols) return;
         const cells = self.getScreenRowMut(row);
         const count = @min(n, self.cols - col);
@@ -258,10 +260,10 @@ pub const RingBuffer = struct {
         if (count < slice.len) {
             std.mem.copyBackwards(Cell, slice[count..], slice[0 .. slice.len - count]);
         }
-        @memset(slice[0..count], Cell{});
+        @memset(slice[0..count], blank);
     }
 
-    pub fn deleteChars(self: *RingBuffer, row: usize, col: usize, n: usize) void {
+    pub fn deleteChars(self: *RingBuffer, row: usize, col: usize, n: usize, blank: Cell) void {
         if (n == 0 or col >= self.cols) return;
         const cells = self.getScreenRowMut(row);
         const count = @min(n, self.cols - col);
@@ -269,14 +271,14 @@ pub const RingBuffer = struct {
         if (count < slice.len) {
             std.mem.copyForwards(Cell, slice[0 .. slice.len - count], slice[count..]);
         }
-        @memset(slice[slice.len - count ..], Cell{});
+        @memset(slice[slice.len - count ..], blank);
     }
 
-    pub fn eraseChars(self: *RingBuffer, row: usize, col: usize, n: usize) void {
+    pub fn eraseChars(self: *RingBuffer, row: usize, col: usize, n: usize, blank: Cell) void {
         if (n == 0 or col >= self.cols) return;
         const cells = self.getScreenRowMut(row);
         const count = @min(n, self.cols - col);
-        @memset(cells[col .. col + count], Cell{});
+        @memset(cells[col .. col + count], blank);
     }
 
     /// Clear all scrollback, keeping only screen rows.
@@ -383,7 +385,7 @@ test "ring: scrollUpRegion partial" {
     ring.setScreenCell(3, 0, .{ .char = 'D' });
     ring.setScreenCell(4, 0, .{ .char = 'E' });
 
-    ring.scrollUpRegion(1, 3);
+    ring.scrollUpRegion(1, 3, Cell{});
 
     try testing.expectEqual(@as(u21, 'A'), ring.getScreenCell(0, 0).char);
     try testing.expectEqual(@as(u21, 'C'), ring.getScreenCell(1, 0).char);
@@ -403,7 +405,7 @@ test "ring: scrollDownRegion partial" {
     ring.setScreenCell(3, 0, .{ .char = 'D' });
     ring.setScreenCell(4, 0, .{ .char = 'E' });
 
-    ring.scrollDownRegion(1, 3);
+    ring.scrollDownRegion(1, 3, Cell{});
 
     try testing.expectEqual(@as(u21, 'A'), ring.getScreenCell(0, 0).char);
     try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(1, 0).char);
@@ -505,7 +507,7 @@ test "ring: insertChars" {
     ring.setScreenCell(0, 1, .{ .char = 'B' });
     ring.setScreenCell(0, 2, .{ .char = 'C' });
 
-    ring.insertChars(0, 1, 2);
+    ring.insertChars(0, 1, 2, Cell{});
 
     try testing.expectEqual(@as(u21, 'A'), ring.getScreenCell(0, 0).char);
     try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(0, 1).char);
@@ -525,7 +527,7 @@ test "ring: deleteChars" {
     ring.setScreenCell(0, 3, .{ .char = 'D' });
     ring.setScreenCell(0, 4, .{ .char = 'E' });
 
-    ring.deleteChars(0, 1, 2);
+    ring.deleteChars(0, 1, 2, Cell{});
 
     try testing.expectEqual(@as(u21, 'A'), ring.getScreenCell(0, 0).char);
     try testing.expectEqual(@as(u21, 'D'), ring.getScreenCell(0, 1).char);
