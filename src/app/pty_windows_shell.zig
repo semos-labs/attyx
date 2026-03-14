@@ -64,6 +64,7 @@ pub fn injectExeDirIntoPath() void {
 /// Detect shell type from the command line and set up integration:
 /// - cmd.exe: set PROMPT env var for OSC 7/7337 reporting
 /// - PowerShell: write script, append -ExecutionPolicy Bypass -NoExit -File
+/// - bash (Git Bash): append --login for normal login shell behavior
 pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
     // Convert command line to UTF-8 for shell detection.
     var utf8_buf: [1024]u8 = undefined;
@@ -87,9 +88,9 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             appendPowerShellArgs(cmd_line, script_path);
         },
         .bash => {
-            const script = shell_integration.getBashScript();
-            const script_path = writeIntegrationScript("bash\\bashrc", script) orelse return;
-            appendBashArgs(cmd_line, script_path);
+            // Git Bash needs --login for proper MSYS2 profile setup (PS1, PATH, etc).
+            // --rcfile conflicts with --login and causes cursor/clear issues under ConPTY.
+            appendLoginFlag(cmd_line);
         },
         else => {},
     }
@@ -166,25 +167,17 @@ fn makeDirsWindows(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch {};
 }
 
-/// Append " --rcfile \"<script_path>\"" to the bash command line.
-fn appendBashArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
+/// Append " --login" to the bash command line so it starts as a login shell
+/// (matching Git Bash's default behavior with proper MSYS2 profile sourcing).
+fn appendLoginFlag(cmd_line: [*:0]u16) void {
     var pos: usize = 0;
     while (cmd_line[pos] != 0) : (pos += 1) {}
 
-    const args = comptime toUtf16Literal(" --rcfile \"");
-    const quote = comptime toUtf16Literal("\"");
+    const flag = comptime toUtf16Literal(" --login");
+    if (pos + flag.len >= 4095) return;
 
-    var sp_len: usize = 0;
-    while (script_path[sp_len] != 0) : (sp_len += 1) {}
-
-    if (pos + args.len + sp_len + quote.len >= 4095) return;
-
-    @memcpy(cmd_line[pos .. pos + args.len], &args);
-    pos += args.len;
-    @memcpy(cmd_line[pos .. pos + sp_len], script_path[0..sp_len]);
-    pos += sp_len;
-    @memcpy(cmd_line[pos .. pos + quote.len], &quote);
-    pos += quote.len;
+    @memcpy(cmd_line[pos .. pos + flag.len], &flag);
+    pos += flag.len;
     cmd_line[pos] = 0;
 }
 
