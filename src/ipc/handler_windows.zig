@@ -205,23 +205,19 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
     const publish = @import("../app/ui/publish.zig");
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
-    // Build "cmd.exe /c <command>" argv
-    const shell_z = ctx.allocator.dupeZ(u8, "cmd.exe") catch {
+    // Build "pwsh.exe -NoProfile -Command <command>" argv (fallback to cmd.exe /c)
+    const shell_info = resolveShellForCommand(ctx.allocator) orelse {
         sendError(cmd, "out of memory");
         return;
     };
-    defer ctx.allocator.free(shell_z);
-    const flag_z = ctx.allocator.dupeZ(u8, "/c") catch {
-        sendError(cmd, "out of memory");
-        return;
-    };
-    defer ctx.allocator.free(flag_z);
+    defer ctx.allocator.free(shell_info.shell_z);
+    defer ctx.allocator.free(shell_info.flag_z);
     const cmd_z = ctx.allocator.dupeZ(u8, command) catch {
         sendError(cmd, "out of memory");
         return;
     };
     defer ctx.allocator.free(cmd_z);
-    const argv = [3][:0]const u8{ shell_z, flag_z, cmd_z };
+    const argv = [3][:0]const u8{ shell_info.shell_z, shell_info.flag_z, cmd_z };
 
     // Spawn pane with command
     const pane = ctx.allocator.create(Pane) catch {
@@ -566,6 +562,63 @@ pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
         return;
     };
     protocol.writeAll(cmd.response_fd, msg) catch {};
+}
+
+const ShellForCommand = struct {
+    shell_z: [:0]u8,
+    flag_z: [:0]u8,
+};
+
+/// Find PowerShell (pwsh.exe or powershell.exe) for running --cmd commands.
+/// Falls back to cmd.exe /c if PowerShell is not found.
+fn resolveShellForCommand(allocator: std.mem.Allocator) ?ShellForCommand {
+    // Try pwsh.exe first (PS 7+), then powershell.exe (PS 5.1)
+    const windows = std.os.windows;
+    const SearchPathW = struct {
+        extern "kernel32" fn SearchPathW(
+            lpPath: ?[*:0]const u16,
+            lpFileName: [*:0]const u16,
+            lpExtension: ?[*:0]const u16,
+            nBufferLength: windows.DWORD,
+            lpBuffer: [*]u16,
+            lpFilePart: ?*?[*]u16,
+        ) callconv(.winapi) windows.DWORD;
+    }.SearchPathW;
+
+    const shells = [_]struct { name: [*:0]const u16, flag: []const u8 }{
+        .{ .name = std.unicode.utf8ToUtf16LeStringLiteral("pwsh.exe"), .flag = "-NoProfile\x00-Command" },
+        .{ .name = std.unicode.utf8ToUtf16LeStringLiteral("powershell.exe"), .flag = "-NoProfile\x00-Command" },
+    };
+
+    for (shells) |entry| {
+        var path_buf: [1024]u16 = undefined;
+        var file_part: ?[*]u16 = null;
+        const len = SearchPathW(null, entry.name, null, @intCast(path_buf.len), &path_buf, &file_part);
+        if (len > 0 and len < path_buf.len) {
+            // Convert wide path to UTF-8
+            var utf8_buf: [1024]u8 = undefined;
+            var utf8_len: usize = 0;
+            for (0..len) |i| {
+                const cp: u21 = path_buf[i];
+                const n = std.unicode.utf8Encode(cp, utf8_buf[utf8_len..]) catch break;
+                utf8_len += n;
+            }
+            const shell_z = allocator.dupeZ(u8, utf8_buf[0..utf8_len]) catch return null;
+            const flag_z = allocator.dupeZ(u8, "-Command") catch {
+                allocator.free(shell_z);
+                return null;
+            };
+            return .{ .shell_z = shell_z, .flag_z = flag_z };
+        }
+    }
+
+    // Fallback to cmd.exe
+    const shell_z = allocator.dupeZ(u8, "cmd.exe") catch return null;
+    const flag_z = allocator.dupeZ(u8, "/c") catch {
+        allocator.free(shell_z);
+        return null;
+    };
+    return .{ .shell_z = shell_z, .flag_z = flag_z };
 }
 
 pub fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {

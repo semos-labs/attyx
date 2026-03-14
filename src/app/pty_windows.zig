@@ -173,6 +173,15 @@ extern "kernel32" fn GetEnvironmentVariableW(
     nSize: DWORD,
 ) callconv(.winapi) DWORD;
 
+extern "kernel32" fn SearchPathW(
+    lpPath: ?LPCWSTR,
+    lpFileName: LPCWSTR,
+    lpExtension: ?LPCWSTR,
+    nBufferLength: DWORD,
+    lpBuffer: [*]u16,
+    lpFilePart: ?*?[*]u16,
+) callconv(.winapi) DWORD;
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -457,7 +466,17 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         return &S.buf;
     }
 
-    // Read COMSPEC (user's preferred shell, usually cmd.exe).
+    // Try PowerShell first: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
+    if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
+        S.buf[shell_len] = 0;
+        return &S.buf;
+    }
+    if (findOnPath("powershell.exe", &S.buf)) |shell_len| {
+        S.buf[shell_len] = 0;
+        return &S.buf;
+    }
+
+    // Fallback to COMSPEC (usually cmd.exe).
     const comspec_name = comptime toUtf16Literal("COMSPEC");
     var comspec_buf: [1024]u16 = undefined;
     const comspec_len = GetEnvironmentVariableW(&comspec_name, &comspec_buf, @intCast(comspec_buf.len));
@@ -468,11 +487,22 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         return &S.buf;
     }
 
-    // Fallback to cmd.exe.
+    // Last resort.
     const cmd = comptime toUtf16Literal("cmd.exe");
     @memcpy(S.buf[0..cmd.len], &cmd);
     S.buf[cmd.len] = 0;
     return &S.buf;
+}
+
+/// Search PATH for an executable. If found, writes the full path into
+/// the provided buffer and returns the length. Uses SearchPathW which
+/// checks the system directories and PATH.
+fn findOnPath(comptime name: []const u8, buf: *[4096:0]u16) ?usize {
+    const name_w = comptime toUtf16Literal(name);
+    var file_part: ?[*]u16 = null;
+    const len = SearchPathW(null, &name_w, null, @intCast(buf.len), buf, &file_part);
+    if (len > 0 and len < buf.len) return len;
+    return null;
 }
 
 // ── Tests ──
