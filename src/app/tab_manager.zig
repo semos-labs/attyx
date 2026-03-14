@@ -529,7 +529,13 @@ pub const TabManager = struct {
                         errdefer self.allocator.destroy(pane);
                         pane.* = try Pane.initDaemonBacked(self.allocator, rows, cols, scrollback_lines);
                         pane.daemon_pane_id = node.pane_id;
-                        self.assignIpcId(pane);
+                        // Use daemon pane ID as the IPC ID so it stays
+                        // stable across session switches.
+                        pane.ipc_id = node.pane_id;
+                        if (node.pane_id >= self.next_ipc_id) {
+                            self.next_ipc_id = node.pane_id +% 1;
+                            if (self.next_ipc_id == 0) self.next_ipc_id = 1;
+                        }
                         sl.pool[ni] = .{ .tag = .leaf, .pane = pane };
                         pane_count += 1;
                     },
@@ -571,3 +577,8 @@ pub const TabManager = struct {
         }
     }
 };
+
+// Tests are in tab_manager_test.zig
+test {
+    _ = @import("tab_manager_test.zig");
+}
