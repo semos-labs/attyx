@@ -103,7 +103,8 @@ fn processAction(ctx: *WinCtx, action: picker_state_mod.PickerAction) bool {
             close(ctx);
             const ws_stubs = @import("../windows_stubs.zig");
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws_stubs.g_grid_top_offset - ws_stubs.g_grid_bottom_offset));
-            const sid = smgr.createSession("new", pty_rows, ctx.grid_cols, ctx.theme, ctx.applied_scrollback_lines) catch return true;
+            const name = nameFromCwd(ctx);
+            const sid = smgr.createSession(name, pty_rows, ctx.grid_cols, ctx.theme, ctx.applied_scrollback_lines) catch return true;
             _ = smgr.switchTo(sid) catch {};
             event_loop.switchSession(ctx);
             return true;
@@ -188,6 +189,31 @@ fn renderAndPublishState(ctx: *WinCtx, state: *const SessionPickerState) void {
     ctx.allocator.free(result.cells);
 
     win_search.publishOverlays(ctx);
+}
+
+/// Derive session name from active pane's working directory.
+fn nameFromCwd(ctx: *WinCtx) []const u8 {
+    const wd = ctx.tab_mgr.activePane().engine.state.working_directory orelse return "new";
+    return lastPathComponent(wd);
+}
+
+/// Extract the last component from a path (handles / and \ separators, strips file:// URIs).
+fn lastPathComponent(path: []const u8) []const u8 {
+    // Strip file:// URI prefix if present (OSC 7 sends "file://host/path")
+    var p = path;
+    if (std.mem.startsWith(u8, p, "file://")) {
+        p = p["file://".len..];
+        // Skip hostname (up to next /)
+        if (std.mem.indexOfScalar(u8, p, '/')) |i| {
+            p = p[i..];
+        }
+    }
+    const trimmed = std.mem.trimRight(u8, p, "/\\");
+    if (trimmed.len == 0) return "new";
+    if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| {
+        return trimmed[i + 1 ..];
+    }
+    return trimmed;
 }
 
 pub fn relayout(ctx: *WinCtx) void {

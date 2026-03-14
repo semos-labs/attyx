@@ -380,6 +380,12 @@ fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     } else if (payload_len > 0) {
         name = cmd.payload[0..payload_len];
     }
+    // Fall back to active pane's working directory for the name
+    if (name.len == 0) {
+        if (ctx.tab_mgr.activePane().engine.state.working_directory) |wd| {
+            name = lastPathComponent(wd);
+        }
+    }
     if (name.len == 0) name = "new";
 
     const ws = @import("../app/windows_stubs.zig");
@@ -449,6 +455,19 @@ fn handleSessionRename(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         return;
     };
     sendOk(cmd, "");
+}
+
+/// Extract last path component, stripping file:// URI prefix if present.
+fn lastPathComponent(path: []const u8) []const u8 {
+    var p = path;
+    if (std.mem.startsWith(u8, p, "file://")) {
+        p = p["file://".len..];
+        if (std.mem.indexOfScalar(u8, p, '/')) |i| p = p[i..];
+    }
+    const trimmed = std.mem.trimRight(u8, p, "/\\");
+    if (trimmed.len == 0) return "";
+    if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| return trimmed[i + 1 ..];
+    return trimmed;
 }
 
 // ── Response helpers ──
