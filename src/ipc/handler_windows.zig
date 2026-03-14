@@ -114,9 +114,24 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         .list_tabs => buildTabList(cmd, ctx),
         .list_splits => buildSplitList(cmd, ctx),
 
-        // ── Not yet supported on Windows ──
-        .tab_create_wait, .split_vertical_wait, .split_horizontal_wait => {
-            sendError(cmd, "--wait not yet supported on Windows");
+        // ── Wait variants (hold response until process exits) ──
+        .tab_create_wait => {
+            if (cmd.payload_len > 0)
+                handleWaitCreate(cmd, ctx, .tab)
+            else
+                sendError(cmd, "--wait requires --cmd");
+        },
+        .split_vertical_wait => {
+            if (cmd.payload_len > 0)
+                handleWaitCreate(cmd, ctx, .split_v)
+            else
+                sendError(cmd, "--wait requires --cmd");
+        },
+        .split_horizontal_wait => {
+            if (cmd.payload_len > 0)
+                handleWaitCreate(cmd, ctx, .split_h)
+            else
+                sendError(cmd, "--wait requires --cmd");
         },
         .popup => sendError(cmd, "popup not yet supported on Windows"),
         .theme_set => sendError(cmd, "theme_set not yet supported on Windows"),
@@ -182,6 +197,73 @@ fn handleSplit(cmd: *queue.IpcCommand, ctx: *WinCtx, dir: split_layout_mod.Direc
     var id_buf: [16]u8 = undefined;
     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{new_pane.ipc_id}) catch "";
     sendOk(cmd, id_str);
+}
+
+fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, split_v, split_h }) void {
+    const command = cmd.payload[0..cmd.payload_len];
+    const ws = @import("../app/windows_stubs.zig");
+    const publish = @import("../app/ui/publish.zig");
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+
+    // Build "cmd.exe /c <command>" argv
+    const shell_z = ctx.allocator.dupeZ(u8, "cmd.exe") catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer ctx.allocator.free(shell_z);
+    const flag_z = ctx.allocator.dupeZ(u8, "/c") catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer ctx.allocator.free(flag_z);
+    const cmd_z = ctx.allocator.dupeZ(u8, command) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer ctx.allocator.free(cmd_z);
+    const argv = [3][:0]const u8{ shell_z, flag_z, cmd_z };
+
+    // Spawn pane with command
+    const pane = ctx.allocator.create(Pane) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, &argv, null, ctx.applied_scrollback_lines) catch {
+        ctx.allocator.destroy(pane);
+        sendError(cmd, "failed to spawn pane");
+        return;
+    };
+    ctx.tab_mgr.assignIpcId(pane);
+    pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
+
+    switch (mode) {
+        .tab => {
+            ctx.tab_mgr.addTabWithPane(pane, pty_rows, ctx.grid_cols) catch {
+                pane.deinit();
+                ctx.allocator.destroy(pane);
+                sendError(cmd, "failed to create tab");
+                return;
+            };
+            event_loop.updateGridOffsets(ctx);
+            event_loop.switchActiveTab(ctx);
+        },
+        .split_v, .split_h => {
+            const dir: split_layout_mod.Direction = if (mode == .split_v) .vertical else .horizontal;
+            const layout = ctx.tab_mgr.activeLayout();
+            layout.splitPaneWith(dir, pane) catch {
+                pane.deinit();
+                ctx.allocator.destroy(pane);
+                sendError(cmd, "failed to split");
+                return;
+            };
+            layout.layout(pty_rows, ctx.grid_cols);
+            event_loop.switchActiveTab(ctx);
+        },
+    }
+
+    // Transfer response_fd ownership to the pane — response sent on exit.
+    pane.ipc_wait_fd = cmd.response_fd;
+    cmd.response_fd = queue.invalid_fd; // prevent sendOk/sendError from closing it
 }
 
 fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {

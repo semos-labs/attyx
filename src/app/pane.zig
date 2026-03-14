@@ -16,6 +16,12 @@ const c = @cImport({
     @cInclude("bridge.h");
 });
 
+/// Platform-appropriate invalid fd sentinel for ipc_wait_fd.
+const ipc_invalid_fd: std.posix.fd_t = if (is_windows)
+    std.os.windows.INVALID_HANDLE_VALUE
+else
+    -1;
+
 /// Minimum interval between PTY resize (TIOCSWINSZ/SIGWINCH) signals.
 /// During continuous window resizing, the engine state is updated every
 /// frame for correct display, but SIGWINCH is throttled to avoid flooding
@@ -44,7 +50,7 @@ pub const Pane = struct {
     /// IPC --wait: fd to write exit code to when this pane's process exits.
     /// Set by IPC handler when a client requests --wait. The fd is owned by
     /// this pane: deinit writes the exit code response and closes it.
-    ipc_wait_fd: if (!is_windows) std.posix.fd_t else i32 = -1,
+    ipc_wait_fd: std.posix.fd_t = ipc_invalid_fd,
     /// Stored exit code for daemon-backed panes (set from pane_died message).
     stored_exit_code: ?u8 = null,
     /// Captured stdout for --wait mode. When set, stdout_read_fd is drained
@@ -139,25 +145,23 @@ pub const Pane = struct {
         self.drainCapturedStdout();
 
         // Notify any IPC --wait client with the exit code before cleanup.
-        if (!is_windows) {
-            if (self.ipc_wait_fd != -1) {
-                const exit_code: u8 = self.stored_exit_code orelse
-                    if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
-                const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
-                const payload_len: u32 = 1 + @as(u32, @intCast(stdout_data.len));
-                // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1][stdout...]
-                var resp_hdr: [6]u8 = undefined;
-                std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
-                resp_hdr[4] = 0xA2; // exit_code message type
-                resp_hdr[5] = exit_code;
-                const ipc_protocol = @import("../ipc/protocol.zig");
-                ipc_protocol.writeAll(self.ipc_wait_fd, &resp_hdr) catch {};
-                if (stdout_data.len > 0) {
-                    ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
-                }
-                std.posix.close(self.ipc_wait_fd);
-                self.ipc_wait_fd = -1;
+        if (self.ipc_wait_fd != ipc_invalid_fd) {
+            const exit_code: u8 = self.stored_exit_code orelse
+                if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
+            const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
+            const payload_len: u32 = 1 + @as(u32, @intCast(stdout_data.len));
+            // Send exit_code response: [payload_len:4 LE][msg_type 0xA2][code:1][stdout...]
+            var resp_hdr: [6]u8 = undefined;
+            std.mem.writeInt(u32, resp_hdr[0..4], payload_len, .little);
+            resp_hdr[4] = 0xA2; // exit_code message type
+            resp_hdr[5] = exit_code;
+            const ipc_protocol = @import("../ipc/protocol.zig");
+            ipc_protocol.writeAll(self.ipc_wait_fd, &resp_hdr) catch {};
+            if (stdout_data.len > 0) {
+                ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
             }
+            ipc_protocol.closeFd(self.ipc_wait_fd);
+            self.ipc_wait_fd = ipc_invalid_fd;
         }
         if (self.captured_stdout) |cs| {
             cs.deinit(self.allocator);
