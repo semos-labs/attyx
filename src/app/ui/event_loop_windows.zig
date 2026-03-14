@@ -125,7 +125,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         handleResize(ctx);
 
         // ── Tab actions ──
-        processTabActions(ctx);
+        var tabs_changed = false;
+        processTabActions(ctx, &tabs_changed);
 
         // ── Split actions ──
         win_split.processSplitActions(ctx);
@@ -255,7 +256,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
@@ -457,47 +458,50 @@ fn computeZoomedTabs(ctx: *WinCtx) u16 {
 
 // ── Tab actions ──
 
-fn processTabActions(ctx: *WinCtx) void {
+fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
     const action_raw = @atomicRmw(i32, &ws.tab_action_request, .Xchg, 0, .seq_cst);
-    if (action_raw == 0) return;
-    const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
 
-    switch (action) {
-        .tab_new => {
-            const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-            ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
-                logging.err("tabs", "addTab failed: {}", .{err});
-                return;
-            };
-            updateGridOffsets(ctx);
-            ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
-            switchActiveTab(ctx);
-            logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
-        },
-        .tab_close => {
-            if (ctx.tab_mgr.count <= 1) {
-                c.attyx_request_quit();
-                return;
-            }
-            ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
-            updateGridOffsets(ctx);
-            switchActiveTab(ctx);
-        },
-        .tab_next => { ctx.tab_mgr.nextTab(); switchActiveTab(ctx); },
-        .tab_prev => { ctx.tab_mgr.prevTab(); switchActiveTab(ctx); },
-        .tab_move_left => { ctx.tab_mgr.moveTabLeft(); switchActiveTab(ctx); },
-        .tab_move_right => { ctx.tab_mgr.moveTabRight(); switchActiveTab(ctx); },
-        .tab_select_1, .tab_select_2, .tab_select_3,
-        .tab_select_4, .tab_select_5, .tab_select_6,
-        .tab_select_7, .tab_select_8, .tab_select_9,
-        => {
-            const idx: u8 = @intFromEnum(action) - @intFromEnum(Action.tab_select_1);
-            if (idx < ctx.tab_mgr.count) {
-                ctx.tab_mgr.switchTo(idx);
+    if (action_raw != 0) {
+        tabs_changed.* = true;
+        const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
+
+        switch (action) {
+            .tab_new => {
+                const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+                ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
+                    logging.err("tabs", "addTab failed: {}", .{err});
+                    return;
+                };
+                updateGridOffsets(ctx);
+                ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
                 switchActiveTab(ctx);
-            }
-        },
-        else => {},
+                logging.info("tabs", "new tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
+            },
+            .tab_close => {
+                if (ctx.tab_mgr.count <= 1) {
+                    c.attyx_request_quit();
+                    return;
+                }
+                ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+                updateGridOffsets(ctx);
+                switchActiveTab(ctx);
+            },
+            .tab_next => { ctx.tab_mgr.nextTab(); switchActiveTab(ctx); },
+            .tab_prev => { ctx.tab_mgr.prevTab(); switchActiveTab(ctx); },
+            .tab_move_left => { ctx.tab_mgr.moveTabLeft(); switchActiveTab(ctx); },
+            .tab_move_right => { ctx.tab_mgr.moveTabRight(); switchActiveTab(ctx); },
+            .tab_select_1, .tab_select_2, .tab_select_3,
+            .tab_select_4, .tab_select_5, .tab_select_6,
+            .tab_select_7, .tab_select_8, .tab_select_9,
+            => {
+                const idx: u8 = @intFromEnum(action) - @intFromEnum(Action.tab_select_1);
+                if (idx < ctx.tab_mgr.count) {
+                    ctx.tab_mgr.switchTo(idx);
+                    switchActiveTab(ctx);
+                }
+            },
+            else => {},
+        }
     }
 
     // Process tab bar clicks
@@ -505,6 +509,7 @@ fn processTabActions(ctx: *WinCtx) void {
     if (click >= 0 and click < ctx.tab_mgr.count) {
         ctx.tab_mgr.switchTo(@intCast(@as(u32, @bitCast(click))));
         switchActiveTab(ctx);
+        tabs_changed.* = true;
     }
 }
 
