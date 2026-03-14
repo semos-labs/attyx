@@ -705,6 +705,22 @@ fn findOnPath(comptime name: []const u8, buf: *[4096:0]u16) ?usize {
     return null;
 }
 
+/// Resolve Git Bash path as a UTF-8 string. Returns a static slice or null.
+/// Used by popup spawn to get the full path for "bash" commands.
+pub fn findGitBashUtf8() ?[]const u8 {
+    const S = struct {
+        var utf8_buf: [1024]u8 = undefined;
+    };
+    var wide_buf: [4096:0]u16 = undefined;
+    const wide_len = findGitBash(&wide_buf) orelse return null;
+    var utf8_len: usize = 0;
+    for (wide_buf[0..wide_len]) |cp| {
+        const n = std.unicode.utf8Encode(@intCast(cp), S.utf8_buf[utf8_len..]) catch return null;
+        utf8_len += n;
+    }
+    return S.utf8_buf[0..utf8_len];
+}
+
 /// Find Git Bash by checking GIT_INSTALL_ROOT env var and standard
 /// Git for Windows install locations. We don't use SearchPathW("bash.exe")
 /// because Windows 10+ has a WSL bash.exe in System32.

@@ -131,8 +131,10 @@ pub const PopupState = struct {
             const shell_int = @import("shell_integration.zig");
             const detected = shell_int.detectShell(cfg.command);
             if (detected == .bash) {
-                // Bash — spawn directly with --login for proper interactive session.
-                const cmd_z = try allocator.dupeZ(u8, cfg.command);
+                // Bash — resolve full Git Bash path and spawn with --login.
+                const pty_win = @import("pty_windows.zig");
+                const bash_path = pty_win.findGitBashUtf8() orelse cfg.command;
+                const cmd_z = try allocator.dupeZ(u8, bash_path);
                 defer allocator.free(cmd_z);
                 const login: [:0]const u8 = "--login";
                 const shell_argv = [_][:0]const u8{ cmd_z, login };
