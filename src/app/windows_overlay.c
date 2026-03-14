@@ -16,12 +16,10 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     static int logged = 0;
     if (!logged && count > 0) {
         logged = 1;
-        OutputDebugStringA("[attyx] drawOverlays: first render");
-        char dbg[128];
-        snprintf(dbg, sizeof(dbg), "[attyx]   count=%d desc0.vis=%d desc0.w=%d desc0.h=%d desc0.cells=%d\n",
-                 count, g_overlay_descs[0].visible, g_overlay_descs[0].width,
-                 g_overlay_descs[0].height, g_overlay_descs[0].cell_count);
-        OutputDebugStringA(dbg);
+        fprintf(stderr, "[attyx] drawOverlays: count=%d desc0: vis=%d col=%d row=%d w=%d h=%d cells=%d\n",
+                count, g_overlay_descs[0].visible, g_overlay_descs[0].col, g_overlay_descs[0].row,
+                g_overlay_descs[0].width, g_overlay_descs[0].height, g_overlay_descs[0].cell_count);
+        fflush(stderr);
     }
     if (count <= 0) return;
     if (count > ATTYX_OVERLAY_MAX_LAYERS) count = ATTYX_OVERLAY_MAX_LAYERS;
