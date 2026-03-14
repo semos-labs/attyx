@@ -96,7 +96,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
     updateGridOffsets(ctx);
-    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d} cols={d} rows={d} sb={s} mgr={s}", .{
+    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d} cols={d} rows={d} sb={s} mgr={s} sb_enabled={s} sb_pos={s} sb_widgets={d}", .{
         ws.g_grid_top_offset,
         ws.g_grid_bottom_offset,
         ws.g_statusbar_visible,
@@ -105,6 +105,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         ctx.grid_rows,
         if (ctx.statusbar != null) "yes" else "no",
         if (ctx.overlay_mgr != null) "yes" else "no",
+        if (ctx.statusbar) |sb| (if (sb.config.enabled) "true" else "false") else "n/a",
+        if (ctx.statusbar) |sb| (if (sb.config.position == .top) "top" else "bottom") else "n/a",
+        if (ctx.statusbar) |sb| @as(u32, sb.config.widget_count) else 0,
     });
     {
         const eng = &ctx.tab_mgr.activePane().engine;
