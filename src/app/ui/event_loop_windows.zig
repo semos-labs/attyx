@@ -421,10 +421,8 @@ fn cleanWindowsTitle(title: []const u8, buf: *[256]u8) ?[]const u8 {
         path[sep + 1 ..]
     else
         path;
-    // Home directory → "~"
-    if (basename.len == 0 or std.mem.eql(u8, path, "/") or
-        std.mem.endsWith(u8, path, std.mem.sliceTo(std.posix.getenv("USERPROFILE") orelse "", 0)))
-    {
+    // Root or empty basename → "~"
+    if (basename.len == 0 or std.mem.eql(u8, path, "/")) {
         buf[0] = '~';
         return buf[0..1];
     }
