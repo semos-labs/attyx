@@ -182,6 +182,12 @@ extern "kernel32" fn SearchPathW(
     lpFilePart: ?*?[*]u16,
 ) callconv(.winapi) DWORD;
 
+extern "kernel32" fn GetFileAttributesW(
+    lpFileName: LPCWSTR,
+) callconv(.winapi) DWORD;
+
+const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -466,7 +472,13 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         return &S.buf;
     }
 
-    // Try PowerShell first: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
+    // Try Git Bash first — best terminal experience on Windows.
+    if (findGitBash(&S.buf)) |shell_len| {
+        S.buf[shell_len] = 0;
+        return &S.buf;
+    }
+
+    // Try PowerShell: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
     if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
         return &S.buf;
@@ -502,6 +514,39 @@ fn findOnPath(comptime name: []const u8, buf: *[4096:0]u16) ?usize {
     var file_part: ?[*]u16 = null;
     const len = SearchPathW(null, &name_w, null, @intCast(buf.len), buf, &file_part);
     if (len > 0 and len < buf.len) return len;
+    return null;
+}
+
+/// Find Git Bash by checking GIT_INSTALL_ROOT env var and standard
+/// Git for Windows install locations. We don't use SearchPathW("bash.exe")
+/// because Windows 10+ has a WSL bash.exe in System32.
+fn findGitBash(buf: *[4096:0]u16) ?usize {
+    // Try GIT_INSTALL_ROOT env var first.
+    const git_root_name = comptime toUtf16Literal("GIT_INSTALL_ROOT");
+    var git_root: [1024]u16 = undefined;
+    const git_root_len = GetEnvironmentVariableW(&git_root_name, &git_root, @intCast(git_root.len));
+
+    if (git_root_len > 0 and git_root_len < git_root.len) {
+        const suffix = comptime toUtf16Literal("\\bin\\bash.exe");
+        const total = git_root_len + suffix.len;
+        if (total < buf.len) {
+            @memcpy(buf[0..git_root_len], git_root[0..git_root_len]);
+            @memcpy(buf[git_root_len..total], &suffix);
+            buf[total] = 0;
+            if (GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) return total;
+        }
+    }
+
+    // Try standard install locations.
+    return tryGitBashPath(buf, "C:\\Program Files\\Git\\bin\\bash.exe") orelse
+        tryGitBashPath(buf, "C:\\Program Files (x86)\\Git\\bin\\bash.exe");
+}
+
+fn tryGitBashPath(buf: *[4096:0]u16, comptime path: []const u8) ?usize {
+    const wide = comptime toUtf16Literal(path);
+    @memcpy(buf[0..wide.len], &wide);
+    buf[wide.len] = 0;
+    if (GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) return wide.len;
     return null;
 }
 

@@ -86,6 +86,11 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             const script_path = writeIntegrationScript("powershell\\attyx.ps1", script) orelse return;
             appendPowerShellArgs(cmd_line, script_path);
         },
+        .bash => {
+            const script = shell_integration.getBashScript();
+            const script_path = writeIntegrationScript("bash\\bashrc", script) orelse return;
+            appendBashArgs(cmd_line, script_path);
+        },
         else => {},
     }
 }
@@ -159,6 +164,28 @@ fn makeDirsWindows(path: []const u8) void {
         i += 1;
     }
     std.fs.makeDirAbsolute(path) catch {};
+}
+
+/// Append " --rcfile \"<script_path>\"" to the bash command line.
+fn appendBashArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
+    var pos: usize = 0;
+    while (cmd_line[pos] != 0) : (pos += 1) {}
+
+    const args = comptime toUtf16Literal(" --rcfile \"");
+    const quote = comptime toUtf16Literal("\"");
+
+    var sp_len: usize = 0;
+    while (script_path[sp_len] != 0) : (sp_len += 1) {}
+
+    if (pos + args.len + sp_len + quote.len >= 4095) return;
+
+    @memcpy(cmd_line[pos .. pos + args.len], &args);
+    pos += args.len;
+    @memcpy(cmd_line[pos .. pos + sp_len], script_path[0..sp_len]);
+    pos += sp_len;
+    @memcpy(cmd_line[pos .. pos + quote.len], &quote);
+    pos += quote.len;
+    cmd_line[pos] = 0;
 }
 
 /// Append " -ExecutionPolicy Bypass -NoExit -File \"<script_path>\"" to the

@@ -38,7 +38,10 @@ pub const ArgvOverride = struct {
 /// Detect the user's shell from $SHELL or a given path.
 pub fn detectShell(shell_path: []const u8) Shell {
     if (std.mem.endsWith(u8, shell_path, "/zsh") or std.mem.eql(u8, shell_path, "zsh")) return .zsh;
-    if (std.mem.endsWith(u8, shell_path, "/bash") or std.mem.eql(u8, shell_path, "bash")) return .bash;
+    if (std.mem.endsWith(u8, shell_path, "/bash") or
+        std.mem.endsWith(u8, shell_path, "\\bash.exe") or
+        std.mem.eql(u8, shell_path, "bash.exe") or
+        std.mem.eql(u8, shell_path, "bash")) return .bash;
     if (std.mem.endsWith(u8, shell_path, "/fish") or std.mem.eql(u8, shell_path, "fish")) return .fish;
     if (std.mem.endsWith(u8, shell_path, "/nu") or std.mem.eql(u8, shell_path, "nu")) return .nushell;
     // Windows shells
@@ -133,6 +136,11 @@ pub fn getPowerShellScript() []const u8 {
     return powershell_script;
 }
 
+/// Get the bash script content for writing to a config file.
+pub fn getBashScript() []const u8 {
+    return bash_script;
+}
+
 /// Get the cmd.exe PROMPT string for setting in the environment.
 pub fn getCmdPromptString() []const u8 {
     return cmd_prompt_string;
@@ -145,6 +153,7 @@ pub fn windowsScriptPath(buf: []u8, shell: Shell) ?[]const u8 {
     const base = "shell-integration";
     const suffix: []const u8 = switch (shell) {
         .powershell => "powershell\\attyx.ps1",
+        .bash => "bash\\bashrc",
         .cmd => "cmd\\attyx_prompt.cmd",
         else => return null,
     };
@@ -320,7 +329,7 @@ const zsh_script =
     \\
 ;
 
-const bash_script =
+pub const bash_script =
     \\# Attyx shell integration (bash)
     \\# Source the real rc files first
     \\if [ -f /etc/profile ]; then . /etc/profile; fi
@@ -520,7 +529,8 @@ test "detectShell — Git Bash uses bash integration" {
     try testing.expectEqual(Shell.bash, detectShell("/bin/bash"));
     try testing.expectEqual(Shell.bash, detectShell("bash"));
     // Git Bash accessed via Windows path
-    try testing.expectEqual(Shell.bash, detectShell("bash"));
+    try testing.expectEqual(Shell.bash, detectShell("C:\\Program Files\\Git\\bin\\bash.exe"));
+    try testing.expectEqual(Shell.bash, detectShell("bash.exe"));
 }
 
 test "PowerShell script contains OSC sequences" {
@@ -560,9 +570,13 @@ test "windowsScriptPath generates correct paths" {
     try testing.expect(cmd_path != null);
     try testing.expect(std.mem.endsWith(u8, cmd_path.?, "attyx_prompt.cmd"));
 
+    const bash_path = windowsScriptPath(&buf, .bash);
+    try testing.expect(bash_path != null);
+    try testing.expect(std.mem.endsWith(u8, bash_path.?, "bashrc"));
+    try testing.expect(std.mem.indexOf(u8, bash_path.?, "bash") != null);
+
     // Non-Windows shells return null
     try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .zsh));
-    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .bash));
     try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .fish));
 }
 
