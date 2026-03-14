@@ -223,7 +223,7 @@ export fn attyx_ai_prompt_cmd(cmd: c_int) void {
 // Session picker — ring buffers
 // ---------------------------------------------------------------------------
 
-export var g_session_picker_active: i32 = 0;
+pub export var g_session_picker_active: i32 = 0;
 
 pub var picker_char_ring: [32]u32 = .{0} ** 32;
 pub var picker_char_write: u32 = 0;
