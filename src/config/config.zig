@@ -342,13 +342,35 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8, config: *App
     defer allocator.free(file_content);
 
     // Strip UTF-8 BOM if present (Windows editors like Notepad add this).
-    const content = if (file_content.len >= 3 and
+    const after_bom = if (file_content.len >= 3 and
         file_content[0] == 0xEF and file_content[1] == 0xBB and file_content[2] == 0xBF)
         file_content[3..]
     else
         file_content;
 
+    // Strip \r (the TOML parser doesn't treat \r as whitespace, so \r\n
+    // line endings from Windows editors cause parse failures).
+    const content = stripCr(allocator, after_bom) catch after_bom;
+    defer if (content.ptr != after_bom.ptr) allocator.free(content);
+
     return config_parse.applyToml(allocator, content, path, config);
+}
+
+/// Remove all \r bytes from file content so the TOML parser (which doesn't
+/// treat \r as whitespace) can handle Windows \r\n line endings.
+fn stripCr(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    // Fast path: no \r present.
+    if (std.mem.indexOfScalar(u8, input, '\r') == null) return input;
+
+    var out = try allocator.alloc(u8, input.len);
+    var j: usize = 0;
+    for (input) |ch| {
+        if (ch != '\r') {
+            out[j] = ch;
+            j += 1;
+        }
+    }
+    return out[0..j];
 }
 
 /// Returns the path to the user's custom themes directory (e.g. ~/.config/attyx/themes).
