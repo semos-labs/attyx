@@ -362,7 +362,12 @@ fn stripCr(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     // Fast path: no \r present.
     if (std.mem.indexOfScalar(u8, input, '\r') == null) return input;
 
-    var out = try allocator.alloc(u8, input.len);
+    // Count output length first to allocate exactly.
+    var count: usize = 0;
+    for (input) |ch| {
+        if (ch != '\r') count += 1;
+    }
+    var out = try allocator.alloc(u8, count);
     var j: usize = 0;
     for (input) |ch| {
         if (ch != '\r') {
@@ -370,7 +375,7 @@ fn stripCr(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
             j += 1;
         }
     }
-    return out[0..j];
+    return out;
 }
 
 /// Returns the path to the user's custom themes directory (e.g. ~/.config/attyx/themes).
