@@ -1,8 +1,7 @@
-/// Windows overlay integration — command palette and theme picker.
+/// Windows overlay integration — command palette, theme picker, session picker.
 ///
 /// Mirrors command_palette_ui.zig and theme_picker_ui.zig but uses WinCtx
 /// and windows_stubs.zig globals instead of PtyThreadCtx/terminal.zig.
-/// Session picker overlay not yet implemented; use `attyx session` CLI commands.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -20,6 +19,7 @@ const commands = @import("../../config/commands.zig");
 const keybinds = @import("../../config/keybinds.zig");
 const platform = @import("../../platform/platform.zig");
 const toml_edit = @import("../../config/toml_edit.zig");
+const win_session_picker = @import("win_session_picker.zig");
 // Note: can't import actions.zig (depends on terminal.zig/POSIX).
 // Use c.attyx_mark_all_dirty() directly for force-redraw instead.
 
@@ -494,6 +494,12 @@ pub fn processOverlayDismiss(ctx: *WinCtx) void {
     }
 
     // Command palette
+    // Session picker
+    if (ws.g_session_picker_active != 0) {
+        win_session_picker.close(ctx);
+        return;
+    }
+
     if (ws.g_command_palette_active != 0) {
         closeCommandPalette(ctx);
         return;
@@ -536,6 +542,16 @@ pub fn processToggles(ctx: *WinCtx) void {
         }
     }
 
+    if (@atomicRmw(i32, &ws.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
+        if (ws.g_session_picker_active != 0) {
+            win_session_picker.close(ctx);
+        } else {
+            if (ws.g_command_palette_active != 0) closeCommandPalette(ctx);
+            if (ws.g_theme_picker_active != 0) closeThemePicker(ctx);
+            win_session_picker.openSessionPicker(ctx);
+        }
+    }
+
     if (@atomicRmw(i32, &ws.g_toggle_theme_picker, .Xchg, 0, .seq_cst) != 0) {
         if (ws.g_theme_picker_active != 0) {
             // Revert on toggle-off
@@ -557,6 +573,9 @@ pub fn processToggles(ctx: *WinCtx) void {
 
 /// Returns true if any overlay input was consumed this tick.
 pub fn processInput(ctx: *WinCtx) bool {
+    if (ws.g_session_picker_active != 0) {
+        return win_session_picker.consumeInput(ctx);
+    }
     if (ws.g_command_palette_active != 0) {
         return consumePaletteInput(ctx);
     }
