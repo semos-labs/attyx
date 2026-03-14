@@ -41,6 +41,8 @@ const HANDLE = std.os.windows.HANDLE;
 const DWORD = std.os.windows.DWORD;
 
 extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
+extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
@@ -70,6 +72,9 @@ pub const WinCtx = struct {
 
 pub fn ptyReaderThread(ctx: *WinCtx) void {
     logging.info("event", "Windows event loop started", .{});
+    // Set 1ms timer resolution so Sleep(1) actually sleeps ~1ms instead of ~15ms.
+    _ = timeBeginPeriod(1);
+    defer _ = timeEndPeriod(1);
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
@@ -276,7 +281,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         if (need_update) {
             const now = std.time.nanoTimestamp();
             if (!viewport_changed and (now - last_publish_ns) < min_frame_ns) {
-                Sleep(1);
+                Sleep(0); // Yield timeslice but don't wait — keep draining PTY data
                 continue;
             }
 

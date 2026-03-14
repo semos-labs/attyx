@@ -210,6 +210,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("shell32", .{});
         exe.root_module.linkSystemLibrary("ole32", .{});
         exe.root_module.linkSystemLibrary("windowscodecs", .{});
+        exe.root_module.linkSystemLibrary("winmm", .{});
     }
 
     // This declares intent for the executable to be installed into the
