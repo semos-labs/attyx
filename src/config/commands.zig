@@ -140,6 +140,7 @@ pub fn commandForAction(action: Action) ?*const CommandDef {
 
 pub fn defaultKeybinds() []const Keybind {
     const is_macos = comptime builtin.os.tag == .macos;
+    const is_windows = comptime builtin.os.tag == .windows;
     const keybinds = comptime blk: {
         @setEvalBranchQuota(10_000);
         var list: []const Keybind = &.{};
@@ -151,6 +152,15 @@ pub fn defaultKeybinds() []const Keybind {
                         .{ .combo = combo, .action = cmd.action },
                     };
                 }
+            }
+        }
+        // Windows: add ctrl+c (copy) and ctrl+v (paste) alongside ctrl+shift+c/v
+        if (is_windows) {
+            if (parseKeyCombo("ctrl+c")) |combo| {
+                list = list ++ &[_]Keybind{.{ .combo = combo, .action = .copy }};
+            }
+            if (parseKeyCombo("ctrl+v")) |combo| {
+                list = list ++ &[_]Keybind{.{ .combo = combo, .action = .paste }};
             }
         }
         break :blk list;

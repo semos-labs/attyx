@@ -159,7 +159,13 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         .close_window => { attyx_platform_close_window(); return 1; },
         .clear_screen => { attyx_clear_screen(); return 1; },
         .open_config => { openConfigWindows(); return 1; },
-        .copy => { attyx_platform_copy(); return 1; },
+        .copy => {
+            // Only copy when selection is active; otherwise fall through
+            // so ctrl+c sends ^C to the shell.
+            if (c.g_sel_active == 0 and c.g_copy_mode == 0) return 0;
+            attyx_platform_copy();
+            return 1;
+        },
         .paste => { attyx_platform_paste(); return 1; },
         .copy_mode_enter => { attyx_copy_mode_enter(); return 1; },
         .font_size_increase => {
