@@ -357,9 +357,9 @@ export fn attyx_toggle_ai_demo() void {
 // Popup terminal
 // ---------------------------------------------------------------------------
 
-var popup_toggle_request: [32]i32 = .{0} ** 32;
-var popup_dead: i32 = 0;
-var popup_close_request: i32 = 0;
+pub var popup_toggle_request: [32]i32 = .{0} ** 32;
+pub var popup_dead: i32 = 0;
+pub var popup_close_request: i32 = 0;
 
 export fn attyx_popup_toggle(index: c_int) void {
     if (index < 0 or index >= 32) return;

@@ -22,6 +22,7 @@ const publish = @import("ui/publish.zig");
 const event_loop = @import("ui/event_loop_windows.zig");
 const WinCtx = event_loop.WinCtx;
 const statusbar_mod = @import("statusbar.zig");
+const popup_mod = @import("popup.zig");
 
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
@@ -65,12 +66,32 @@ pub fn run(
     if (config.theme_background) |bg| theme.background = bg;
     publish.publishTheme(&theme);
 
-    // Keybinds
-    var popup_hotkeys: [32]keybinds_mod.PopupHotkey = undefined;
+    // Parse popup configs and build keybind table
+    var popup_configs: [32]popup_mod.PopupConfig = undefined;
     var popup_count: u8 = 0;
+    var popup_hotkeys: [32]keybinds_mod.PopupHotkey = undefined;
     if (config.popup_configs) |entries| {
         for (entries) |entry| {
             if (popup_count >= 32) break;
+            popup_configs[popup_count] = .{
+                .command = entry.command,
+                .width_pct = popup_mod.parsePct(entry.width, 80),
+                .height_pct = popup_mod.parsePct(entry.height, 80),
+                .border_style = popup_mod.parseBorderStyle(entry.border),
+                .border_fg = popup_mod.parseHexColor(entry.border_color, .{ 120, 130, 150 }),
+                .pad = popup_mod.parsePadding(
+                    entry.padding, entry.padding_x, entry.padding_y,
+                    entry.padding_top, entry.padding_bottom,
+                    entry.padding_left, entry.padding_right,
+                ),
+                .on_return_cmd = entry.on_return_cmd,
+                .inject_alt = entry.inject_alt,
+                .bg_opacity = if (entry.background_opacity) |o| @intFromFloat(o * 255.0) else 255,
+                .bg_color = if (entry.background.len == 7 and entry.background[0] == '#')
+                    popup_mod.parseHexColor(entry.background, .{ 0, 0, 0 })
+                else
+                    null,
+            };
             popup_hotkeys[popup_count] = .{
                 .index = popup_count,
                 .hotkey = entry.hotkey,
@@ -84,6 +105,7 @@ pub fn run(
         popup_hotkeys[0..popup_count],
     );
     keybinds_mod.installTable(&kb_table);
+    logging.info("popup", "configured {d} popup(s)", .{popup_count});
 
     // Statusbar offsets
     if (config.statusbar) |sb_cfg| {
@@ -149,6 +171,8 @@ pub fn run(
         .statusbar = if (statusbar) |*sb| sb else null,
         .overlay_mgr = &overlay_mgr,
         .split_resize_step = config.split_resize_step,
+        .popup_configs = popup_configs,
+        .popup_config_count = popup_count,
     };
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });

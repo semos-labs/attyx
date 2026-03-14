@@ -29,6 +29,8 @@ const StyledCell = overlay_mod.StyledCell;
 const Rgb = overlay_mod.Rgb;
 const win_search = @import("win_search.zig");
 const win_overlays = @import("win_overlays.zig");
+const win_popup = @import("win_popup.zig");
+const popup_mod = @import("../popup.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
 
@@ -54,6 +56,9 @@ pub const WinCtx = struct {
     statusbar: ?*statusbar_mod.Statusbar = null,
     overlay_mgr: ?*OverlayManager = null,
     split_resize_step: u16 = 4,
+    popup_state: ?*popup_mod.PopupState = null,
+    popup_configs: [32]popup_mod.PopupConfig = undefined,
+    popup_config_count: u8 = 0,
 };
 
 pub fn ptyReaderThread(ctx: *WinCtx) void {
@@ -145,6 +150,14 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             eng.state.dirty.markAll(eng.state.ring.screen_rows);
             _ = pane.pty.writeToPty("\x0c") catch 0;
         }
+
+        // ── Popup lifecycle ──
+        win_popup.processPopupToggle(ctx);
+        if (@atomicRmw(i32, &ws.popup_close_request, .Xchg, 0, .seq_cst) != 0) {
+            win_popup.closePopup(ctx);
+        }
+        win_popup.drainPopupPty(ctx, &buf);
+        win_popup.checkPopupExit(ctx);
 
         // ── Pane exit detection ──
         checkPaneExits(ctx);

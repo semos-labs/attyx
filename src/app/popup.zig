@@ -4,7 +4,9 @@
 // publish to C bridge globals. Imported by terminal.zig.
 
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const posix = if (!is_windows) std.posix else struct {};
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
@@ -123,11 +125,21 @@ pub const PopupState = struct {
                 allocator.destroy(pane);
                 return err;
             };
+        } else if (comptime is_windows) {
+            // Windows: cmd.exe /c '<command>'
+            const cmd_exe: [:0]const u8 = "cmd.exe";
+            const c_flag: [:0]const u8 = "/c";
+            const cmd_z = try allocator.dupeZ(u8, cfg.command);
+            defer allocator.free(cmd_z);
+            const shell_argv = [_][:0]const u8{ cmd_exe, c_flag, cmd_z };
+            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
+                .skip_shell_integration = true,
+            }) catch |err| {
+                allocator.destroy(pane);
+                return err;
+            };
         } else {
-            // Shell-wrapped: $SHELL -c '<command>'
-            // The attyx process (launched as .app) has a minimal PATH.
-            // Shell integration reports the interactive shell's PATH via
-            // OSC 7337;set-path, stored in the main pane's engine state.
+            // POSIX: $SHELL -c '<command>'
             // Prepend an export to restore the full PATH before the command.
             const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
             const shell_z = try allocator.dupeZ(u8, shell_env);
@@ -513,12 +525,13 @@ pub fn parsePct(s: []const u8, default: u8) u8 {
     return num;
 }
 
-/// Read captured stdout from the popup's pipe fd.
+/// Read captured stdout from the popup's pipe fd (POSIX only).
 /// Returns allocated text (caller owns) with escape sequences stripped
 /// and whitespace trimmed, or null if nothing was captured.
 /// Takes only the last non-empty line to skip shell init noise
 /// (OSC 7 from shell integration, MOTD, etc.).
-pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: posix.fd_t) ?[]u8 {
+pub fn readCapturedStdout(allocator: std.mem.Allocator, fd: anytype) ?[]u8 {
+    if (comptime is_windows) return null;
     if (fd == -1) return null;
     // Set non-blocking: shell background processes (.zshrc plugins, nix hooks)
     // may inherit the pipe write end, preventing EOF even after the main child
@@ -596,18 +609,16 @@ fn skipEscape(data: []const u8, start: usize) usize {
 }
 
 /// Execute `cmd_prefix` with `value` as a separate argument in a detached
-/// subprocess. Uses posix_spawn to avoid os_once_t corruption from fork()
-/// in multithreaded processes. The value is passed as a distinct argv entry
-/// so shell metacharacters in it are not interpreted.
+/// subprocess. POSIX only — uses posix_spawn to avoid os_once_t corruption
+/// from fork() in multithreaded processes.
 pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value: []const u8) void {
+    if (comptime is_windows) return;
     const spawn = @import("spawn.zig");
 
     const shell = posix.getenv("SHELL") orelse "/bin/sh";
     const shell_z = allocator.dupeZ(u8, shell) catch return;
     defer allocator.free(shell_z);
 
-    // Build command: $SHELL -ic 'cmd_prefix "$1"' _ value
-    // Using "$1" passes value as a literal argument, avoiding shell injection.
     const wrapper_slice = std.fmt.allocPrint(allocator, "{s} \"$1\"", .{cmd_prefix}) catch return;
     defer allocator.free(wrapper_slice);
     const wrapper = allocator.dupeZ(u8, wrapper_slice) catch return;
@@ -621,8 +632,6 @@ pub fn execDetached(allocator: std.mem.Allocator, cmd_prefix: []const u8, value:
         shell_z.ptr, i_flag, wrapper.ptr, placeholder, value_z.ptr, null,
     };
 
-    // Build custom envp with TMUX injected (if needed) to avoid mutating
-    // the parent process environment.
     const envp = spawn.buildEnvWithTmux(allocator) orelse std.c.environ;
     defer if (envp != std.c.environ) spawn.freeEnvp(allocator, envp);
 
