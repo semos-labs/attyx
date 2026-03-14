@@ -79,13 +79,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
     // Startup drain: give shell time to produce initial prompt.
-    // Use readWithTimeout to trigger ConPTY output flush via overlapped I/O.
     for (0..20) |_| {
-        Sleep(50);
         const pane = ctx.tab_mgr.activePane();
-        const n = pane.pty.readWithTimeout(&buf, 50);
-        if (n == 0) continue;
-        pane.feed(buf[0..n]);
+        // Start async read to trigger ConPTY flush, then wait a bit.
+        pane.pty.startAsyncRead();
+        Sleep(50);
+        if (pane.pty.checkAsyncRead()) |data| {
+            pane.feed(data);
+            // Drain any remaining data.
+            while (pane.pty.peekAvail() > 0) {
+                const n = pane.pty.read(&buf) catch break;
+                if (n == 0) break;
+                pane.feed(buf[0..n]);
+            }
+        }
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
     updateGridOffsets(ctx);
@@ -182,36 +189,43 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Read PTY data from all panes ──
         var got_data = false;
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
-            const lay = &(maybe_layout.* orelse continue);
-            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-            const lc = lay.collectLeaves(&leaves);
-            for (leaves[0..lc]) |leaf| {
-                if (leaf.pane.daemon_pane_id != null) continue;
-                const avail = leaf.pane.pty.peekAvail();
-                if (avail == 0) continue;
-                while (true) {
-                    const pa = leaf.pane.pty.peekAvail();
-                    if (pa == 0) break;
-                    const n = leaf.pane.pty.read(&buf) catch break;
-                    if (n == 0) break;
-                    leaf.pane.feed(buf[0..n]);
-                    if (tab_idx == ctx.tab_mgr.active) got_data = true;
+        {
+            const active_pane = ctx.tab_mgr.activePane();
+
+            // Active pane: check async read completion first (non-blocking).
+            // This must happen before PeekNamedPipe to maintain data ordering.
+            if (active_pane.daemon_pane_id == null) {
+                if (active_pane.pty.checkAsyncRead()) |data| {
+                    active_pane.feed(data);
+                    got_data = true;
+                    // Drain any additional data now available via peek+read.
+                    while (active_pane.pty.peekAvail() > 0) {
+                        const n = active_pane.pty.read(&buf) catch break;
+                        if (n == 0) break;
+                        active_pane.feed(buf[0..n]);
+                    }
                 }
             }
-        }
 
-        // ConPTY buffers output until a pending ReadFile triggers a flush.
-        // PeekNamedPipe doesn't create a pending read, so do a short overlapped
-        // read on the active pane to nudge ConPTY into flushing.
-        if (!got_data) {
-            const active = ctx.tab_mgr.activePane();
-            if (active.daemon_pane_id == null) {
-                const n = active.pty.readWithTimeout(&buf, 2);
-                if (n > 0) {
-                    active.feed(buf[0..n]);
-                    got_data = true;
+            // All panes (including active): drain via PeekNamedPipe.
+            for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
+                const lay = &(maybe_layout.* orelse continue);
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id != null) continue;
+                    while (leaf.pane.pty.peekAvail() > 0) {
+                        const n = leaf.pane.pty.read(&buf) catch break;
+                        if (n == 0) break;
+                        leaf.pane.feed(buf[0..n]);
+                        if (tab_idx == ctx.tab_mgr.active) got_data = true;
+                    }
                 }
+            }
+
+            // Keep an async read pending on active pane so ConPTY flushes output.
+            if (active_pane.daemon_pane_id == null) {
+                active_pane.pty.startAsyncRead();
             }
         }
 

@@ -58,13 +58,13 @@ pub fn drainPopupPty(ctx: *WinCtx, buf: []u8) void {
         ps.feed(buf[0..n]);
     }
 
-    // Nudge ConPTY to flush buffered output via overlapped read.
+    // Keep async read pending to trigger ConPTY output flush.
     if (!got_data) {
-        const n = ps.pane.pty.readWithTimeout(buf, 2);
-        if (n > 0) {
+        if (ps.pane.pty.checkAsyncRead()) |data| {
             got_data = true;
-            ps.feed(buf[0..n]);
+            ps.feed(data);
         }
+        ps.pane.pty.startAsyncRead();
     }
 
     if (got_data) {

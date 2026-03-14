@@ -258,6 +258,10 @@ pub const Pty = struct {
     allocator: std.mem.Allocator,
     /// Event handle for overlapped I/O on pipe_out_read.
     read_event: HANDLE = INVALID_HANDLE,
+    /// Persistent async read state — keeps a read pending so ConPTY flushes output.
+    async_pending: bool = false,
+    async_overlapped: OVERLAPPED = .{},
+    async_buf: [65536]u8 = undefined,
 
     exit_status: ?c_int = null,
 
@@ -417,6 +421,7 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
+        self.cancelAsyncRead();
         ClosePseudoConsole(self.hpc);
         _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
@@ -433,45 +438,72 @@ pub const Pty = struct {
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {
-        return self.readWithTimeout(buf, INFINITE);
-    }
-
-    /// Read with a timeout (milliseconds). Returns 0 if no data within timeout.
-    /// Uses overlapped I/O so that ConPTY flushes its output buffer in response
-    /// to the pending read — PeekNamedPipe alone doesn't trigger this flush.
-    pub fn readWithTimeout(self: *Pty, buf: []u8, timeout_ms: DWORD) usize {
         if (self.read_event == INVALID_HANDLE) {
             // Fallback: synchronous read (anonymous pipe).
             var bytes_read: DWORD = 0;
             if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
-                return 0;
+                return error.ReadFailed;
             return bytes_read;
         }
 
+        // Overlapped handle: do an overlapped read that waits for completion.
         _ = ResetEvent(self.read_event);
         var overlapped = OVERLAPPED{ .hEvent = self.read_event };
         var bytes_read: DWORD = 0;
 
         if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, @ptrCast(&overlapped)) != 0) {
-            return bytes_read; // Completed synchronously.
+            return bytes_read;
         }
+        if (windows.kernel32.GetLastError() != .IO_PENDING) return error.ReadFailed;
 
-        // Check if the operation is pending.
-        if (windows.kernel32.GetLastError() != .IO_PENDING) return 0;
-
-        // Wait for completion or timeout.
-        const wait = WaitForSingleObject(self.read_event, timeout_ms);
-        if (wait == WAIT_OBJECT_0) {
-            if (GetOverlappedResult(self.pipe_out_read, &overlapped, &bytes_read, 0) != 0) {
-                return bytes_read;
-            }
-            return 0;
+        _ = WaitForSingleObject(self.read_event, INFINITE);
+        if (GetOverlappedResult(self.pipe_out_read, &overlapped, &bytes_read, 0) != 0) {
+            return bytes_read;
         }
+        return error.ReadFailed;
+    }
 
-        // Timeout — cancel the pending I/O and wait for cancellation.
+    /// Start an async read into the internal buffer if one isn't already pending.
+    /// The pending read triggers ConPTY to flush its output buffer.
+    pub fn startAsyncRead(self: *Pty) void {
+        if (self.async_pending or self.read_event == INVALID_HANDLE) return;
+
+        _ = ResetEvent(self.read_event);
+        self.async_overlapped = OVERLAPPED{ .hEvent = self.read_event };
+
+        var bytes_read: DWORD = 0;
+        if (ReadFile(self.pipe_out_read, &self.async_buf, @intCast(self.async_buf.len), &bytes_read, @ptrCast(&self.async_overlapped)) != 0) {
+            self.async_pending = true; // Sync completion — event is signaled, checkAsyncRead will pick it up.
+            return;
+        }
+        if (windows.kernel32.GetLastError() == .IO_PENDING) {
+            self.async_pending = true;
+        }
+    }
+
+    /// Non-blocking check: did the pending async read complete?
+    /// Returns the data slice if yes, null if still pending or no read active.
+    pub fn checkAsyncRead(self: *Pty) ?[]u8 {
+        if (!self.async_pending) return null;
+
+        const wait = WaitForSingleObject(self.read_event, 0);
+        if (wait != WAIT_OBJECT_0) return null; // Still pending.
+
+        var bytes_read: DWORD = 0;
+        self.async_pending = false;
+        if (GetOverlappedResult(self.pipe_out_read, &self.async_overlapped, &bytes_read, 0) != 0 and bytes_read > 0) {
+            return self.async_buf[0..bytes_read];
+        }
+        return null;
+    }
+
+    /// Cancel a pending async read (must be called before deinit or sync reads).
+    pub fn cancelAsyncRead(self: *Pty) void {
+        if (!self.async_pending) return;
         _ = CancelIo(self.pipe_out_read);
-        _ = GetOverlappedResult(self.pipe_out_read, &overlapped, &bytes_read, 1);
-        return 0;
+        var bytes_read: DWORD = 0;
+        _ = GetOverlappedResult(self.pipe_out_read, &self.async_overlapped, &bytes_read, 1);
+        self.async_pending = false;
     }
 
     pub fn writeToPty(self: *Pty, bytes: []const u8) !usize {
