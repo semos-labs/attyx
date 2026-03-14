@@ -260,12 +260,16 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
         uint8_t et = isRepeat ? 2 : 1;
         if (mapped != UINT16_MAX) {
             attyx_popup_handle_key(mapped, m, et, 0);
+            g_suppress_char = 1;
         } else if (vk >= 'A' && vk <= 'Z') {
             uint32_t cp = 'a' + (uint32_t)(vk - 'A');
             if (shift) cp -= 32;
             attyx_popup_handle_key(KC_CODEPOINT, m, et, cp);
+            g_suppress_char = 1;
+        } else {
+            // Let WM_CHAR handle space, digits, quotes, punctuation, etc.
+            g_suppress_char = 0;
         }
-        g_suppress_char = 1;
         return 0;
     }
 
