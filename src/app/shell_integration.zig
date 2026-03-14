@@ -90,7 +90,8 @@ pub fn setup() ArgvOverride {
 /// PowerShell integration script content. Emits OSC 7337 (PATH) and OSC 7 (CWD)
 /// on every prompt via the prompt function override.
 pub const powershell_script =
-    \\# Attyx shell integration (PowerShell)
+    \\# Attyx shell integration (PowerShell 5.1+)
+    \\$ESC = [char]27; $BEL = [char]7
     \\# Prepend attyx bin dir to PATH
     \\if ($env:__ATTYX_BIN_DIR -and ($env:PATH -notlike "*$env:__ATTYX_BIN_DIR*")) {
     \\    $env:PATH = "$env:__ATTYX_BIN_DIR;$env:PATH"
@@ -103,9 +104,9 @@ pub const powershell_script =
     \\function global:prompt {
     \\    # OSC 7: report CWD
     \\    $cwd = (Get-Location).Path
-    \\    [Console]::Error.Write("`e]7;file://$($env:COMPUTERNAME)/$($cwd -replace '\\','/')`a")
+    \\    [Console]::Error.Write("${ESC}]7;file://$($env:COMPUTERNAME)/$($cwd -replace '\\','/')${BEL}")
     \\    # OSC 7337: report PATH for popup commands
-    \\    [Console]::Error.Write("`e]7337;set-path;$($env:PATH)`a")
+    \\    [Console]::Error.Write("${ESC}]7337;set-path;$($env:PATH)${BEL}")
     \\    # Execute startup command on first prompt
     \\    if ($env:__ATTYX_STARTUP_CMD) {
     \\        $cmd = $env:__ATTYX_STARTUP_CMD
