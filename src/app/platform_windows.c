@@ -447,6 +447,29 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     g_cols  = cols;
     g_rows  = rows;
 
+    // Declare per-monitor DPI awareness so Windows doesn't bitmap-scale us.
+    // SetProcessDpiAwarenessContext (Win10 1703+), fall back to older API.
+    {
+        typedef BOOL (WINAPI *PFN_SetDpiCtx)(HANDLE);
+        typedef HRESULT (WINAPI *PFN_SetDpiAwareness)(int);
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) {
+            PFN_SetDpiCtx fn = (PFN_SetDpiCtx)GetProcAddress(user32,
+                "SetProcessDpiAwarenessContext");
+            if (fn) {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4
+                fn((HANDLE)(intptr_t)-4);
+            } else {
+                HMODULE shcore = LoadLibraryW(L"shcore.dll");
+                if (shcore) {
+                    PFN_SetDpiAwareness fn2 = (PFN_SetDpiAwareness)GetProcAddress(
+                        shcore, "SetProcessDpiAwareness");
+                    if (fn2) fn2(2); // PROCESS_PER_MONITOR_DPI_AWARE
+                }
+            }
+        }
+    }
+
     HINSTANCE hInstance = GetModuleHandleW(NULL);
 
     // Get DPI scaling (system-level; per-monitor updated in WM_DPICHANGED)
