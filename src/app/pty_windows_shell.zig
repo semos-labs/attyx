@@ -88,8 +88,10 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             appendPowerShellArgs(cmd_line, script_path);
         },
         .bash => {
-            // Git Bash needs --login for proper MSYS2 profile setup (PS1, PATH, etc).
-            // --rcfile conflicts with --login and causes cursor/clear issues under ConPTY.
+            // HOME redirect: write a shadow .bash_profile that restores real HOME,
+            // sources user profiles, then injects OSC 7/7337 hooks for CWD and PATH
+            // reporting. This is the bash equivalent of the ZDOTDIR trick for zsh.
+            setupBashHomeRedirect();
             appendLoginFlag(cmd_line);
         },
         else => {},
@@ -167,6 +169,81 @@ fn makeDirsWindows(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch {};
 }
 
+/// Set up HOME redirect for bash shell integration.
+/// 1. Saves real HOME to __ATTYX_REAL_HOME
+/// 2. Writes shadow .bash_profile to %LOCALAPPDATA%\attyx\bash-home\
+/// 3. Points HOME at the shadow dir so bash --login sources our profile
+fn setupBashHomeRedirect() void {
+    // Get real home — prefer USERPROFILE (always set on Windows), fall back to HOME.
+    const userprofile_name = comptime toUtf16Literal("USERPROFILE");
+    const home_name = comptime toUtf16Literal("HOME");
+    var real_home: [512]u16 = undefined;
+    var real_home_len = GetEnvironmentVariableW(&userprofile_name, &real_home, @intCast(real_home.len));
+    if (real_home_len == 0 or real_home_len >= real_home.len) {
+        real_home_len = GetEnvironmentVariableW(&home_name, &real_home, @intCast(real_home.len));
+    }
+    if (real_home_len == 0 or real_home_len >= real_home.len) return;
+
+    // Write shadow .bash_profile to %LOCALAPPDATA%\attyx\bash-home\.bash_profile
+    const profile_path = writeIntegrationScript(
+        "bash-home\\.bash_profile",
+        shell_integration.bash_login_profile,
+    ) orelse return;
+
+    // Extract shadow home dir (strip trailing \.bash_profile).
+    var shadow_len: usize = 0;
+    {
+        var j: usize = 0;
+        while (profile_path[j] != 0) : (j += 1) {
+            if (profile_path[j] == '\\') shadow_len = j;
+        }
+    }
+    if (shadow_len == 0) return;
+
+    // Convert real home to MSYS2-style path for __ATTYX_REAL_HOME.
+    // Git Bash's bash expects forward-slash paths: /c/Users/Foo
+    var msys_home: [512]u16 = undefined;
+    const msys_len = toMsysPath(real_home[0..real_home_len], &msys_home);
+    if (msys_len == 0) return;
+    msys_home[msys_len] = 0;
+
+    // Set __ATTYX_REAL_HOME to the real home (MSYS path).
+    const real_home_env = comptime toUtf16Literal("__ATTYX_REAL_HOME");
+    _ = SetEnvironmentVariableW(&real_home_env, msys_home[0..msys_len :0]);
+
+    // Convert shadow dir to MSYS path for HOME.
+    var msys_shadow: [512]u16 = undefined;
+    const msys_shadow_len = toMsysPath(profile_path[0..shadow_len], &msys_shadow);
+    if (msys_shadow_len == 0) return;
+    msys_shadow[msys_shadow_len] = 0;
+
+    // Point HOME at the shadow dir.
+    _ = SetEnvironmentVariableW(&home_name, msys_shadow[0..msys_shadow_len :0]);
+}
+
+/// Convert a Windows path (C:\Users\Foo) to MSYS2-style (/c/Users/Foo).
+/// Returns the length of the converted path in `out`, or 0 on failure.
+fn toMsysPath(win_path: []const u16, out: []u16) usize {
+    if (win_path.len < 2) return 0;
+    // Check for drive letter pattern: X:
+    const drive = win_path[0];
+    if (win_path[1] != ':') return 0;
+    if (out.len < win_path.len + 1) return 0; // need 1 extra for /x vs X:
+
+    // /x
+    out[0] = '/';
+    // Lowercase the drive letter.
+    out[1] = if (drive >= 'A' and drive <= 'Z') drive + ('a' - 'A') else drive;
+
+    var pos: usize = 2;
+    var i: usize = 2;
+    while (i < win_path.len) : (i += 1) {
+        out[pos] = if (win_path[i] == '\\') '/' else win_path[i];
+        pos += 1;
+    }
+    return pos;
+}
+
 /// Append " --login" to the bash command line so it starts as a login shell
 /// (matching Git Bash's default behavior with proper MSYS2 profile sourcing).
 fn appendLoginFlag(cmd_line: [*:0]u16) void {
@@ -213,4 +290,27 @@ test "toUtf16Literal basic" {
     try std.testing.expectEqual(@as(u16, 'h'), w[0]);
     try std.testing.expectEqual(@as(u16, 'o'), w[4]);
     try std.testing.expectEqual(@as(u16, 0), w[5]);
+}
+
+test "toMsysPath converts drive paths" {
+    // C:\Users\Foo → /c/Users/Foo
+    const input = comptime toUtf16Literal("C:\\Users\\Foo");
+    var out: [64]u16 = undefined;
+    const len = toMsysPath(&input, &out);
+    try std.testing.expectEqual(@as(usize, 12), len);
+    // /c/Users/Foo
+    try std.testing.expectEqual(@as(u16, '/'), out[0]);
+    try std.testing.expectEqual(@as(u16, 'c'), out[1]);
+    try std.testing.expectEqual(@as(u16, '/'), out[2]);
+    try std.testing.expectEqual(@as(u16, 'U'), out[3]);
+}
+
+test "toMsysPath lowercase drive letter" {
+    const input = comptime toUtf16Literal("D:\\work");
+    var out: [64]u16 = undefined;
+    const len = toMsysPath(&input, &out);
+    try std.testing.expectEqual(@as(usize, 6), len);
+    try std.testing.expectEqual(@as(u16, '/'), out[0]);
+    try std.testing.expectEqual(@as(u16, 'd'), out[1]);
+    try std.testing.expectEqual(@as(u16, '/'), out[2]);
 }

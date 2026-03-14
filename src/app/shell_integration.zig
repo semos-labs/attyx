@@ -359,6 +359,47 @@ pub const bash_script =
     \\
 ;
 
+/// Shadow .bash_profile for the HOME redirect trick on Windows.
+/// bash --login reads this from the shadow HOME dir. It immediately restores
+/// the real HOME, sources user profiles normally, then injects integration.
+pub const bash_login_profile =
+    \\# Attyx shell integration — shadow .bash_profile
+    \\# Restore real HOME before anything else.
+    \\HOME="$__ATTYX_REAL_HOME"
+    \\export HOME
+    \\unset __ATTYX_REAL_HOME
+    \\cd "$HOME"
+    \\# Source real user profiles (bash --login precedence order).
+    \\if   [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"
+    \\elif [ -f "$HOME/.bash_login" ];   then . "$HOME/.bash_login"
+    \\elif [ -f "$HOME/.profile" ];      then . "$HOME/.profile"
+    \\fi
+    \\# Append attyx bin dir to PATH
+    \\if [ -n "$__ATTYX_BIN_DIR" ] && [ "${PATH#*"$__ATTYX_BIN_DIR"}" = "$PATH" ]; then
+    \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
+    \\fi
+    \\unset __ATTYX_BIN_DIR
+    \\# OSC 7: report cwd (stderr so --wait capture pipe doesn't eat it)
+    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "$(hostname)" "$PWD" >&2; }
+    \\# OSC 7337: report PATH for popup commands
+    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" >&2; }
+    \\# Execute startup command on first prompt, then remove the hook
+    \\__attyx_first_prompt() {
+    \\  __attyx_chpwd; __attyx_report_path
+    \\  if [ -n "$__ATTYX_STARTUP_CMD" ]; then
+    \\    local cmd="$__ATTYX_STARTUP_CMD"
+    \\    unset __ATTYX_STARTUP_CMD
+    \\    eval "$cmd"
+    \\  fi
+    \\  PROMPT_COMMAND="__attyx_chpwd;__attyx_report_path${__ATTYX_ORIG_PC:+;$__ATTYX_ORIG_PC}"
+    \\  unset __ATTYX_ORIG_PC
+    \\}
+    \\__ATTYX_ORIG_PC="$PROMPT_COMMAND"
+    \\PROMPT_COMMAND="__attyx_first_prompt"
+    \\HISTFILE="$HOME/.bash_history"
+    \\
+;
+
 const fish_script =
     \\# Attyx shell integration (fish)
     \\if set -q __ATTYX_BIN_DIR; and not contains $__ATTYX_BIN_DIR $PATH
