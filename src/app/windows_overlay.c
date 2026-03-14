@@ -13,7 +13,7 @@
 void drawOverlays(float offX, float offY, float gw, float gh,
                   int vpW, int vpH) {
     int count = g_overlay_count;
-    static int logged = 0;
+    static int logged = 0, logged_flush = 0;
     if (!logged && count > 0) {
         logged = 1;
         AttyxOverlayCell c0 = g_overlay_cells[0][0];
@@ -152,6 +152,11 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     }
 
     // Flush remaining bg quads
+    if (!logged_flush) {
+        fprintf(stderr, "[attyx] overlay flush: bi=%d ti=%d\n", bi, ti);
+        fflush(stderr);
+        logged_flush = 1;
+    }
     if (bi > 0) {
         winDrawSolidVerts(bgVerts, bi);
     }
@@ -159,15 +164,6 @@ void drawOverlays(float offX, float offY, float gw, float gh,
     // Flush remaining text glyphs
     if (ti > 0) {
         winDrawTextVerts(textVerts, ti, &g_gc);
-    }
-
-    // DEBUG: Draw a bright red bar at the overlay row to verify rendering works
-    {
-        AttyxOverlayDesc d0 = g_overlay_descs[0];
-        float dy = offY + d0.row * gh;
-        WinVertex dbgV[6];
-        winEmitRect(dbgV, 0, offX, dy, d0.width * gw, gh, 1.0f, 0.0f, 0.0f, 1.0f);
-        winDrawSolidVerts(dbgV, 6);
     }
 }
 
