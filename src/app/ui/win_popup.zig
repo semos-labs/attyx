@@ -22,7 +22,7 @@ pub fn processPopupToggle(ctx: *WinCtx) void {
                 if (same) return;
             }
             const cfg = ctx.popup_configs[i];
-            logging.info("popup", "spawning: cmd={s} w={d}% h={d}%", .{ cfg.command, cfg.width_pct, cfg.height_pct });
+            logging.info("popup", "spawning: cmd={s} w={d}% h={d}% grid={d}x{d}", .{ cfg.command, cfg.width_pct, cfg.height_pct, ctx.grid_cols, ctx.grid_rows });
             var ps = ctx.allocator.create(popup_mod.PopupState) catch return;
             ps.* = popup_mod.PopupState.spawn(
                 ctx.allocator, cfg, ctx.grid_cols, ctx.grid_rows, null, null,
