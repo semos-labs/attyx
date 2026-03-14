@@ -103,6 +103,9 @@ void win_vkToKeyCombo(WPARAM vk, LPARAM lParam, uint16_t* outKey, uint32_t* outC
     } else if (vk >= '0' && vk <= '9') {
         *outKey = KC_CODEPOINT;
         *outCp = '0' + (uint32_t)(vk - '0');
+    } else if (vk == VK_SPACE) {
+        *outKey = KC_CODEPOINT;
+        *outCp = ' ';
     } else {
         *outKey = KC_CODEPOINT;
         *outCp = 0;

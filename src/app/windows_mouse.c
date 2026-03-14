@@ -479,6 +479,50 @@ LRESULT win_handleMouseMove(HWND hwnd, LPARAM lParam) {
 // WM_RBUTTONDOWN / WM_RBUTTONUP
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Right-click context menu (native Win32)
+// ---------------------------------------------------------------------------
+
+#define CTX_ID_COPY           1
+#define CTX_ID_PASTE          2
+#define CTX_ID_SPLIT_VERT     3
+#define CTX_ID_SPLIT_HORIZ    4
+#define CTX_ID_ROTATE         5
+#define CTX_ID_CLOSE_PANE     6
+
+static void showContextMenu(HWND hwnd, int px, int py, int gridCol, int gridRow) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    AppendMenuW(menu, MF_STRING, CTX_ID_COPY,  L"Copy");
+    AppendMenuW(menu, MF_STRING, CTX_ID_PASTE, L"Paste");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, CTX_ID_SPLIT_VERT,  L"Split Vertical");
+    AppendMenuW(menu, MF_STRING, CTX_ID_SPLIT_HORIZ, L"Split Horizontal");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, CTX_ID_ROTATE,     L"Rotate Panes");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, CTX_ID_CLOSE_PANE, L"Close Pane");
+
+    // Convert client coords to screen coords for TrackPopupMenu
+    POINT pt = { px, py };
+    ClientToScreen(hwnd, &pt);
+
+    int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                             pt.x, pt.y, 0, hwnd, NULL);
+    DestroyMenu(menu);
+
+    switch (cmd) {
+        case CTX_ID_COPY:        attyx_platform_copy(); break;
+        case CTX_ID_PASTE:       attyx_platform_paste(); break;
+        case CTX_ID_SPLIT_VERT:  attyx_context_menu_action(53, gridCol, gridRow); break;
+        case CTX_ID_SPLIT_HORIZ: attyx_context_menu_action(54, gridCol, gridRow); break;
+        case CTX_ID_ROTATE:      attyx_dispatch_action(78); break;
+        case CTX_ID_CLOSE_PANE:  attyx_context_menu_action(55, gridCol, gridRow); break;
+        default: break;
+    }
+}
+
 LRESULT win_handleRButtonDown(HWND hwnd, LPARAM lParam) {
     (void)hwnd;
     int px = LOWORD(lParam), py = HIWORD(lParam);
@@ -502,7 +546,6 @@ LRESULT win_handleRButtonDown(HWND hwnd, LPARAM lParam) {
 }
 
 LRESULT win_handleRButtonUp(HWND hwnd, LPARAM lParam) {
-    (void)hwnd;
     int px = LOWORD(lParam), py = HIWORD(lParam);
 
     if (g_popup_active) {
@@ -519,7 +562,13 @@ LRESULT win_handleRButtonUp(HWND hwnd, LPARAM lParam) {
         int col, row;
         mouseToCell1(px, py, &col, &row);
         sendSgrMouse(2 | mouseModifiers(), col, row, 0);
+        return 0;
     }
+
+    // No mouse tracking — show context menu
+    int col, row;
+    mouseToCell(px, py, &col, &row);
+    showContextMenu(hwnd, px, py, col, row);
     return 0;
 }
 

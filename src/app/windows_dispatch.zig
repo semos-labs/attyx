@@ -29,6 +29,8 @@ extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
 extern fn attyx_copy_mode_enter() void;
 extern fn attyx_platform_close_window() void;
 extern fn attyx_clear_screen() void;
+extern fn attyx_platform_copy() void;
+extern fn attyx_platform_paste() void;
 
 // ---------------------------------------------------------------------------
 // Action dispatch
@@ -157,6 +159,8 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         .close_window => { attyx_platform_close_window(); return 1; },
         .clear_screen => { attyx_clear_screen(); return 1; },
         .open_config => { openConfigWindows(); return 1; },
+        .copy => { attyx_platform_copy(); return 1; },
+        .paste => { attyx_platform_paste(); return 1; },
         .copy_mode_enter => { attyx_copy_mode_enter(); return 1; },
         .font_size_increase => {
             if (c.g_font_size < 72) { c.g_font_size += 2; c.g_needs_font_rebuild = 1; }
