@@ -181,11 +181,54 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
 
 pub fn doKillDaemon() void {
     if (comptime is_windows) {
-        // TODO(windows): implement daemon kill via named pipe or TerminateProcess
-        std.fs.File.stdout().writeAll("Daemon management not yet supported on Windows.\n") catch {};
+        doKillDaemonWindows();
         return;
     }
     doKillDaemonPosix();
+}
+
+fn doKillDaemonWindows() void {
+    if (comptime !is_windows) unreachable;
+    const windows = std.os.windows;
+    const stdout = std.fs.File.stdout();
+
+    const kernel32 = struct {
+        extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: [*]u16, nSize: u32) callconv(.winapi) u32;
+        extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandles: i32, dwProcessId: u32) callconv(.winapi) ?windows.HANDLE;
+        extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: u32) callconv(.winapi) i32;
+        extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) i32;
+    };
+
+    // Get PID from ATTYX_PID env var
+    const env_name: [*:0]const u16 = windows.L("ATTYX_PID");
+    var val_buf: [32]u16 = undefined;
+    const len = kernel32.GetEnvironmentVariableW(env_name, &val_buf, val_buf.len);
+    if (len == 0 or len >= val_buf.len) {
+        stdout.writeAll("No running Attyx instance found (ATTYX_PID not set).\n") catch {};
+        return;
+    }
+    var ascii: [32]u8 = undefined;
+    for (0..len) |i| ascii[i] = @intCast(val_buf[i] & 0xFF);
+    const pid = std.fmt.parseInt(u32, ascii[0..len], 10) catch {
+        stdout.writeAll("No running Attyx instance found (invalid ATTYX_PID).\n") catch {};
+        return;
+    };
+
+    // Open and terminate the process
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const handle = kernel32.OpenProcess(PROCESS_TERMINATE, 0, pid) orelse {
+        stdout.writeAll("No running Attyx instance found (process not found).\n") catch {};
+        return;
+    };
+    defer _ = kernel32.CloseHandle(handle);
+
+    if (kernel32.TerminateProcess(handle, 0) != 0) {
+        var msg_buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Attyx instance (PID {d}) killed.\n", .{pid}) catch "Instance killed.\n";
+        stdout.writeAll(msg) catch {};
+    } else {
+        stdout.writeAll("Failed to terminate Attyx instance.\n") catch {};
+    }
 }
 
 fn doKillDaemonPosix() void {
