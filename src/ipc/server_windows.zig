@@ -117,10 +117,13 @@ pub fn run() void {
 }
 
 fn handleClient(pipe: HANDLE) void {
-    defer {
-        _ = DisconnectNamedPipe(pipe);
-        _ = CloseHandle(pipe);
-    }
+    // NOTE: Do NOT DisconnectNamedPipe here. The server enqueues the command
+    // and the PTY thread writes the response later via the duplicated handle.
+    // DisconnectNamedPipe kills the connection for ALL handles to this pipe
+    // instance, so the client would never receive the response.
+    // We only close the original handle; the duplicate keeps the pipe alive
+    // until the handler writes the response and closes it.
+    defer _ = CloseHandle(pipe);
 
     // Read header
     var hdr: [protocol.header_size]u8 = undefined;
