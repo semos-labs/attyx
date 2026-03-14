@@ -410,7 +410,6 @@ fn handleSessionKill(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         switch (err) {
             error.CannotKillLastSession => sendError(cmd, "cannot kill last session"),
             error.SessionNotFound => sendError(cmd, "session not found"),
-            else => sendError(cmd, "failed to kill session"),
         }
         return;
     };
