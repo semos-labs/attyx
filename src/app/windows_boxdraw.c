@@ -147,10 +147,10 @@ static void drawArcCorner(uint8_t* pixels, int stride, int gh,
     float arcCx, arcCy;
     int drawRight, drawDown; // direction of straight segments
     switch (cp) {
-    case 0x256D: arcCx = cx + r; arcCy = cy - r; drawRight = 1; drawDown = 0; break; // top-left
-    case 0x256E: arcCx = cx - r; arcCy = cy - r; drawRight = 0; drawDown = 0; break; // top-right
-    case 0x256F: arcCx = cx - r; arcCy = cy + r; drawRight = 0; drawDown = 1; break; // bottom-right
-    case 0x2570: arcCx = cx + r; arcCy = cy + r; drawRight = 1; drawDown = 1; break; // bottom-left
+    case 0x256D: arcCx = cx + r; arcCy = cy + r; drawRight = 1; drawDown = 1; break; // top-left
+    case 0x256E: arcCx = cx - r; arcCy = cy + r; drawRight = 0; drawDown = 1; break; // top-right
+    case 0x256F: arcCx = cx - r; arcCy = cy - r; drawRight = 0; drawDown = 0; break; // bottom-right
+    case 0x2570: arcCx = cx + r; arcCy = cy - r; drawRight = 1; drawDown = 0; break; // bottom-left
     default: return;
     }
 
@@ -161,7 +161,7 @@ static void drawArcCorner(uint8_t* pixels, int stride, int gh,
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps * pi2;
         float ax = arcCx + r * cosf(t + pi2 * (cp == 0x256D ? 1 : cp == 0x256E ? 0 : cp == 0x256F ? 3 : 2));
-        float ay = arcCy + r * sinf(t + pi2 * (cp == 0x256D ? 1 : cp == 0x256E ? 0 : cp == 0x256F ? 3 : 2));
+        float ay = arcCy - r * sinf(t + pi2 * (cp == 0x256D ? 1 : cp == 0x256E ? 0 : cp == 0x256F ? 3 : 2));
         for (int dy = 0; dy < ilw; dy++) {
             for (int dx = 0; dx < ilw; dx++) {
                 int px = (int)(ax - ilw * 0.5f) + dx;
