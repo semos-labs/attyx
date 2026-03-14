@@ -126,18 +126,45 @@ pub const PopupState = struct {
                 return err;
             };
         } else if (comptime is_windows) {
-            // Windows: cmd.exe /c '<command>'
-            const cmd_exe: [:0]const u8 = "cmd.exe";
-            const c_flag: [:0]const u8 = "/c";
-            const cmd_z = try allocator.dupeZ(u8, cfg.command);
-            defer allocator.free(cmd_z);
-            const shell_argv = [_][:0]const u8{ cmd_exe, c_flag, cmd_z };
-            pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
-                .skip_shell_integration = true,
-            }) catch |err| {
-                allocator.destroy(pane);
-                return err;
-            };
+            // Windows: if command is a shell, spawn it directly (interactive);
+            // otherwise wrap in cmd.exe /c for non-interactive commands.
+            const shell_int = @import("shell_integration.zig");
+            const detected = shell_int.detectShell(cfg.command);
+            if (detected == .bash) {
+                // Bash — spawn directly with --login for proper interactive session.
+                const cmd_z = try allocator.dupeZ(u8, cfg.command);
+                defer allocator.free(cmd_z);
+                const login: [:0]const u8 = "--login";
+                const shell_argv = [_][:0]const u8{ cmd_z, login };
+                pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{}) catch |err| {
+                    allocator.destroy(pane);
+                    return err;
+                };
+            } else if (detected == .powershell or detected == .cmd) {
+                // PowerShell/cmd — spawn directly for interactive session.
+                const cmd_z = try allocator.dupeZ(u8, cfg.command);
+                defer allocator.free(cmd_z);
+                const shell_argv = [_][:0]const u8{cmd_z};
+                pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
+                    .skip_shell_integration = true,
+                }) catch |err| {
+                    allocator.destroy(pane);
+                    return err;
+                };
+            } else {
+                // Non-shell command: wrap in cmd.exe /c
+                const cmd_exe: [:0]const u8 = "cmd.exe";
+                const c_flag: [:0]const u8 = "/c";
+                const cmd_z = try allocator.dupeZ(u8, cfg.command);
+                defer allocator.free(cmd_z);
+                const shell_argv = [_][:0]const u8{ cmd_exe, c_flag, cmd_z };
+                pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
+                    .skip_shell_integration = true,
+                }) catch |err| {
+                    allocator.destroy(pane);
+                    return err;
+                };
+            }
         } else {
             // POSIX: $SHELL -c '<command>'
             // Prepend an export to restore the full PATH before the command.
