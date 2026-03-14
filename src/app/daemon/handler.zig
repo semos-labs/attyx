@@ -304,7 +304,8 @@ fn handleFocusPanes(
         if (!was_active) {
             if (session.findPane(new_id)) |pane| {
                 // Drain any buffered PTY output into the ring buffer
-                while (pane.readPty(&drain_buf) catch null) |n| {
+                while (true) {
+                    const n = pane.readPty(&drain_buf) catch break;
                     if (n == 0) break;
                 }
                 cl.sendPaneReplay(pane);

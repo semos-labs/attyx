@@ -238,7 +238,6 @@ const PIPE_TYPE_BYTE_WAIT: DWORD = 0x00000000;
 const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
 const WIN_GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
-const ERROR_IO_PENDING: DWORD = 997;
 
 // ── Pty ──
 
@@ -458,7 +457,7 @@ pub const Pty = struct {
         }
 
         // Check if the operation is pending.
-        if (windows.kernel32.GetLastError() != ERROR_IO_PENDING) return 0;
+        if (windows.kernel32.GetLastError() != .IO_PENDING) return 0;
 
         // Wait for completion or timeout.
         const wait = WaitForSingleObject(self.read_event, timeout_ms);
