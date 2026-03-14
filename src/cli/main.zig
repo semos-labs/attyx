@@ -200,7 +200,7 @@ fn doKillDaemonWindows() void {
     };
 
     // Get PID from ATTYX_PID env var
-    const env_name: [*:0]const u16 = windows.L("ATTYX_PID");
+    const env_name: [*:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("ATTYX_PID");
     var val_buf: [32]u16 = undefined;
     const len = kernel32.GetEnvironmentVariableW(env_name, &val_buf, val_buf.len);
     if (len == 0 or len >= val_buf.len) {
