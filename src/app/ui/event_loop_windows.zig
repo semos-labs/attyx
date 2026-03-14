@@ -92,8 +92,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     updateGridOffsets(ctx);
     {
         const eng = &ctx.tab_mgr.activePane().engine;
-        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-        const total: usize = @as(usize, pty_rows) * @as(usize, ctx.grid_cols);
+        const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
         c.attyx_begin_cell_update();
         publish.fillCells(ctx.cells[0..total], eng, total, ctx.theme, null);
         setCursorFromEngine(eng, ws.g_grid_top_offset);
@@ -305,23 +304,6 @@ fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
 }
 
-fn copyStyledToCells(dst: []c.AttyxCell, src: []const StyledCell) void {
-    for (dst, src) |*d, s| {
-        d.* = .{
-            .character = s.char,
-            .combining = .{ @intCast(s.combining[0]), @intCast(s.combining[1]) },
-            .fg_r = s.fg.r,
-            .fg_g = s.fg.g,
-            .fg_b = s.fg.b,
-            .bg_r = s.bg.r,
-            .bg_g = s.bg.g,
-            .bg_b = s.bg.b,
-            .flags = s.flags,
-            .link_id = 0,
-        };
-    }
-}
-
 fn setCursorFromEngine(eng: *Engine, grid_top: i32) void {
     const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
     c.attyx_set_cursor(
@@ -360,6 +342,7 @@ fn publishState(eng: *Engine) void {
 }
 
 pub fn generateTabBar(ctx: *WinCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
     if (ws.g_grid_top_offset <= 0) return;
     if (ws.g_tab_bar_visible == 0) return;
     if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
@@ -387,13 +370,23 @@ pub fn generateTabBar(ctx: *WinCtx) void {
         &titles,
         computeZoomedTabs(ctx),
     ) orelse return;
-    copyStyledToCells(ctx.cells[0..result.width], styled[0..result.width]);
+    mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;
+    if (!mgr.isVisible(.tab_bar)) mgr.show(.tab_bar);
 }
 
 pub fn generateStatusbar(ctx: *WinCtx) void {
+    const mgr = ctx.overlay_mgr orelse return;
     if (ws.g_statusbar_visible == 0) return;
     const sb = ctx.statusbar orelse return;
-    if (!sb.config.enabled) return;
+    if (!sb.config.enabled) {
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        return;
+    }
+    // Search takes priority for the top row
+    if (@as(i32, @bitCast(c.g_search_active)) != 0 and sb.config.position == .top) {
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        return;
+    }
 
     const tbg = themeRgb(ctx.theme.background);
     const tfg = themeRgb(ctx.theme.foreground);
@@ -421,11 +414,9 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         computeZoomedTabs(ctx),
     ) orelse return;
 
-    const row_offset: usize = if (ws.g_statusbar_position != 0)
-        @as(usize, @intCast(@as(i32, ctx.grid_rows) - 1)) * @as(usize, ctx.grid_cols)
-    else
-        0;
-    copyStyledToCells(ctx.cells[row_offset..][0..result.width], styled[0..result.width]);
+    const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
+    mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
+    if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);
 }
 
 fn computeZoomedTabs(ctx: *WinCtx) u16 {
