@@ -3,31 +3,48 @@ const actions_mod = @import("actions.zig");
 
 const TerminalState = @import("state.zig").TerminalState;
 const Cell = grid_mod.Cell;
+const Style = grid_mod.Style;
+
+/// BCE (Background Color Erase): create a blank cell that preserves the
+/// current pen's background color so that erase operations fill with the
+/// active SGR background, not the default theme background.
+fn bceCell(self: *const TerminalState) Cell {
+    if (self.pen.bg == .default) return Cell{};
+    return .{ .style = .{ .bg = self.pen.bg } };
+}
+
+/// Clear a screen row using BCE.
+fn clearRowBce(self: *TerminalState, r: usize) void {
+    const row_cells = self.ring.getScreenRowMut(r);
+    @memset(row_cells, bceCell(self));
+    self.ring.setScreenWrapped(r, false);
+}
 
 pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
     const cols = self.ring.cols;
     const rows = self.ring.screen_rows;
+    const blank = bceCell(self);
     switch (mode) {
         .to_end => {
             // Clear from cursor to end of screen
             // Clear rest of current row
             const row_cells = self.ring.getScreenRowMut(self.cursor.row);
-            @memset(row_cells[self.cursor.col..], Cell{});
+            @memset(row_cells[self.cursor.col..], blank);
             self.ring.setScreenWrapped(self.cursor.row, false);
             // Clear all rows below
             for (self.cursor.row + 1..rows) |r| {
-                self.ring.clearScreenRow(r);
+                clearRowBce(self, r);
             }
             self.dirty.markRange(self.cursor.row, rows - 1);
         },
         .to_start => {
             // Clear from start of screen to cursor
             for (0..self.cursor.row) |r| {
-                self.ring.clearScreenRow(r);
+                clearRowBce(self, r);
             }
             // Clear current row up to and including cursor
             const row_cells = self.ring.getScreenRowMut(self.cursor.row);
-            @memset(row_cells[0 .. self.cursor.col + 1], Cell{});
+            @memset(row_cells[0 .. self.cursor.col + 1], blank);
             self.ring.setScreenWrapped(self.cursor.row, false);
             self.dirty.markRange(0, self.cursor.row);
         },
@@ -60,7 +77,7 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
             }
             // Clear all screen rows
             for (0..rows) |r| {
-                self.ring.clearScreenRow(r);
+                clearRowBce(self, r);
             }
             self.dirty.markAll(rows);
         },
@@ -77,16 +94,17 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
 
 pub fn eraseInLine(self: *TerminalState, mode: actions_mod.EraseMode) void {
     const row_cells = self.ring.getScreenRowMut(self.cursor.row);
+    const blank = bceCell(self);
     switch (mode) {
         .to_end => {
-            @memset(row_cells[self.cursor.col..], Cell{});
+            @memset(row_cells[self.cursor.col..], blank);
             self.ring.setScreenWrapped(self.cursor.row, false);
         },
         .to_start => {
-            @memset(row_cells[0 .. self.cursor.col + 1], Cell{});
+            @memset(row_cells[0 .. self.cursor.col + 1], blank);
         },
         .all => {
-            @memset(row_cells, Cell{});
+            @memset(row_cells, blank);
             self.ring.setScreenWrapped(self.cursor.row, false);
         },
         .scrollback => {},
