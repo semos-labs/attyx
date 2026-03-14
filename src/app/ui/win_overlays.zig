@@ -2,7 +2,7 @@
 ///
 /// Mirrors command_palette_ui.zig and theme_picker_ui.zig but uses WinCtx
 /// and windows_stubs.zig globals instead of PtyThreadCtx/terminal.zig.
-/// Session picker is not yet supported on Windows (requires daemon client).
+/// Session picker overlay not yet implemented; use `attyx session` CLI commands.
 const std = @import("std");
 const builtin = @import("builtin");
 

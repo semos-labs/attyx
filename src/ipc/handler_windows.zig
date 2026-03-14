@@ -12,6 +12,7 @@ const split_layout_mod = @import("../app/split_layout.zig");
 const event_loop = @import("../app/ui/event_loop_windows.zig");
 const WinCtx = event_loop.WinCtx;
 const Pane = @import("../app/pane.zig").Pane;
+const session_win = @import("../app/session_windows.zig");
 
 extern fn attyx_dispatch_action(action_raw: u8) u8;
 extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
@@ -119,9 +120,11 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         },
         .popup => sendError(cmd, "popup not yet supported on Windows"),
         .theme_set => sendError(cmd, "theme_set not yet supported on Windows"),
-        .session_list, .session_create, .session_kill,
-        .session_switch, .session_rename,
-        => sendError(cmd, "sessions not yet supported on Windows"),
+        .session_list => handleSessionList(cmd, ctx),
+        .session_create => handleSessionCreate(cmd, ctx),
+        .session_kill => handleSessionKill(cmd, ctx),
+        .session_switch => handleSessionSwitch(cmd, ctx),
+        .session_rename => handleSessionRename(cmd, ctx),
         .session_envelope => sendError(cmd, "unexpected session envelope"),
         .tab_rename_targeted, .pane_rotate_targeted, .pane_zoom_targeted => {
             sendError(cmd, "targeted operation not yet supported");
@@ -319,6 +322,134 @@ fn writeScreenText(cmd: *queue.IpcCommand, pane: *Pane) void {
         w.writeAll("\n") catch break;
     }
     sendOk(cmd, stream.getWritten());
+}
+
+// ── Session commands ──
+
+fn getSessionMgr(cmd: *queue.IpcCommand, ctx: *WinCtx) ?*session_win.WinSessionManager {
+    if (ctx.session_mgr) |smgr| return smgr;
+    sendError(cmd, "sessions not enabled");
+    return null;
+}
+
+fn handleSessionList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const smgr = getSessionMgr(cmd, ctx) orelse return;
+    var buf: [4096]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+
+    for (0..session_win.max_sessions) |i| {
+        if (smgr.sessions[i]) |*s| {
+            const active = (i == smgr.active);
+            w.print("{d}\t{s}", .{ s.id, s.getName() }) catch break;
+            if (active) w.writeAll("\t*") catch break;
+            w.print("\t{d} panes", .{s.paneCount()}) catch break;
+            w.writeAll("\n") catch break;
+        }
+    }
+    sendOk(cmd, stream.getWritten());
+}
+
+fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const smgr = getSessionMgr(cmd, ctx) orelse return;
+    // Payload: [flags:u8][cwd_len:u16 LE][cwd...][name...]
+    var background: bool = false;
+    var name: []const u8 = "new";
+    const payload_len: usize = cmd.payload_len;
+    if (payload_len >= 3) {
+        const cwd_len: usize = std.mem.readInt(u16, cmd.payload[1..3], .little);
+        if (3 + cwd_len <= payload_len) {
+            background = (cmd.payload[0] & 0x01) != 0;
+            const cwd_end = 3 + cwd_len;
+            const cwd = cmd.payload[3..cwd_end];
+            if (cwd_end < payload_len) {
+                name = cmd.payload[cwd_end..payload_len];
+            }
+            // Derive name from CWD if empty
+            if (name.len == 0 and cwd.len > 0) {
+                const trimmed = std.mem.trimRight(u8, cwd, "/\\");
+                if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |sep| {
+                    name = trimmed[sep + 1 ..];
+                } else {
+                    name = trimmed;
+                }
+            }
+        } else {
+            name = cmd.payload[0..payload_len];
+        }
+    } else if (payload_len > 0) {
+        name = cmd.payload[0..payload_len];
+    }
+    if (name.len == 0) name = "new";
+
+    const ws = @import("../app/windows_stubs.zig");
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const sid = smgr.createSession(name, pty_rows, ctx.grid_cols, ctx.theme, ctx.applied_scrollback_lines) catch {
+        sendError(cmd, "failed to create session");
+        return;
+    };
+
+    if (!background) {
+        _ = smgr.switchTo(sid) catch {};
+        event_loop.switchSession(ctx);
+    }
+
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{sid}) catch "";
+    sendOk(cmd, id_str);
+}
+
+fn handleSessionKill(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const smgr = getSessionMgr(cmd, ctx) orelse return;
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing session id");
+        return;
+    }
+    const sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    smgr.kill(sid) catch |err| {
+        switch (err) {
+            error.CannotKillLastSession => sendError(cmd, "cannot kill last session"),
+            error.SessionNotFound => sendError(cmd, "session not found"),
+            else => sendError(cmd, "failed to kill session"),
+        }
+        return;
+    };
+    // If the killed session was active, we already switched — update ctx
+    event_loop.switchSession(ctx);
+    sendOk(cmd, "");
+}
+
+fn handleSessionSwitch(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const smgr = getSessionMgr(cmd, ctx) orelse return;
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing session id");
+        return;
+    }
+    const sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    _ = smgr.switchTo(sid) catch {
+        sendError(cmd, "session not found");
+        return;
+    };
+    event_loop.switchSession(ctx);
+    sendOk(cmd, "");
+}
+
+fn handleSessionRename(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const smgr = getSessionMgr(cmd, ctx) orelse return;
+    if (cmd.payload_len < 5) {
+        sendError(cmd, "missing session id or name");
+        return;
+    }
+    var sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    if (sid == 0) {
+        sid = smgr.activeSession().id;
+    }
+    const new_name = cmd.payload[4..cmd.payload_len];
+    smgr.rename(sid, new_name) catch {
+        sendError(cmd, "session not found");
+        return;
+    };
+    sendOk(cmd, "");
 }
 
 // ── Response helpers ──

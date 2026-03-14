@@ -23,6 +23,7 @@ const event_loop = @import("ui/event_loop_windows.zig");
 const WinCtx = event_loop.WinCtx;
 const statusbar_mod = @import("statusbar.zig");
 const popup_mod = @import("popup.zig");
+const session_win = @import("session_windows.zig");
 
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
@@ -128,8 +129,12 @@ pub fn run(
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&theme);
 
-    var tab_mgr = TabManager.init(allocator, initial_pane);
-    defer tab_mgr.deinit();
+    const tab_mgr = try allocator.create(TabManager);
+    tab_mgr.* = TabManager.init(allocator, initial_pane);
+
+    // Session manager wraps the initial TabManager (takes ownership)
+    var session_mgr = session_win.WinSessionManager.init(allocator, tab_mgr, "default");
+    defer session_mgr.deinit();
 
     // Wire up stubs so input dispatch can write to PTY and read engine state
     ws.g_engine = &tab_mgr.activePane().engine;
@@ -157,7 +162,7 @@ pub fn run(
 
     // Build event loop context
     var ctx = WinCtx{
-        .tab_mgr = &tab_mgr,
+        .tab_mgr = tab_mgr,
         .cells = render_cells.ptr,
         .allocator = allocator,
         .theme = &theme,
@@ -173,6 +178,7 @@ pub fn run(
         .split_resize_step = config.split_resize_step,
         .popup_configs = popup_configs,
         .popup_config_count = popup_count,
+        .session_mgr = &session_mgr,
     };
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });

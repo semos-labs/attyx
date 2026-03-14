@@ -33,6 +33,8 @@ const win_popup = @import("win_popup.zig");
 const popup_mod = @import("../popup.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
+const session_win = @import("../session_windows.zig");
+const WinSessionManager = session_win.WinSessionManager;
 
 const HANDLE = std.os.windows.HANDLE;
 const DWORD = std.os.windows.DWORD;
@@ -59,6 +61,7 @@ pub const WinCtx = struct {
     popup_state: ?*popup_mod.PopupState = null,
     popup_configs: [32]popup_mod.PopupConfig = undefined,
     popup_config_count: u8 = 0,
+    session_mgr: ?*WinSessionManager = null,
 };
 
 pub fn ptyReaderThread(ctx: *WinCtx) void {
@@ -484,6 +487,13 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     ws.g_pty_handle = pane.pty.pipe_in_write;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+}
+
+/// Switch the active session — update tab_mgr and bridge globals.
+pub fn switchSession(ctx: *WinCtx) void {
+    const smgr = ctx.session_mgr orelse return;
+    ctx.tab_mgr = smgr.activeTabMgr();
+    switchActiveTab(ctx);
 }
 
 // ── Resize ──
