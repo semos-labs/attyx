@@ -63,7 +63,7 @@ pub fn injectExeDirIntoPath() void {
 
 /// Detect shell type from the command line and set up integration:
 /// - cmd.exe: set PROMPT env var for OSC 7/7337 reporting
-/// - PowerShell: write integration script and append -NoExit -File args
+/// - PowerShell: write script, append -ExecutionPolicy Bypass -NoExit -File
 pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
     // Convert command line to UTF-8 for shell detection.
     var utf8_buf: [1024]u8 = undefined;
@@ -161,12 +161,14 @@ fn makeDirsWindows(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch {};
 }
 
-/// Append " -NoExit -File \"<script_path>\"" to the PowerShell command line.
+/// Append " -ExecutionPolicy Bypass -NoExit -File \"<script_path>\"" to the
+/// PowerShell command line. -ExecutionPolicy Bypass is scoped to this process
+/// only and avoids the default Restricted policy blocking our integration script.
 fn appendPowerShellArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
     var pos: usize = 0;
     while (cmd_line[pos] != 0) : (pos += 1) {}
 
-    const args = comptime toUtf16Literal(" -NoExit -File \"");
+    const args = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -File \"");
     const quote = comptime toUtf16Literal("\"");
 
     var sp_len: usize = 0;
