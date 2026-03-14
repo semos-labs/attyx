@@ -12,7 +12,7 @@ const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
 const Pane = @import("pane.zig").Pane;
-const logging = @import("../logging/log.zig");
+
 const RingBuffer = attyx.RingBuffer;
 const theme_registry_mod = @import("../theme/registry.zig");
 const Theme = theme_registry_mod.Theme;
@@ -95,7 +95,6 @@ pub const PopupState = struct {
 
     pub fn spawn(allocator: std.mem.Allocator, cfg: PopupConfig, grid_cols: u16, grid_rows: u16, cwd: ?[]const u8, shell_path: ?[]const u8) !PopupState {
         const dims = calcDims(cfg, grid_cols, grid_rows);
-        logging.info("popup", "inner dims: {d}x{d} outer: {d}x{d}", .{ dims.cols, dims.rows, dims.outer_w, dims.outer_h });
 
         const cwd_z: ?[:0]u8 = if (cwd) |d| allocator.dupeZ(u8, d) catch null else null;
         defer if (cwd_z) |z| allocator.free(z);

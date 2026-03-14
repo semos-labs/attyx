@@ -341,7 +341,14 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8, config: *App
     };
     defer allocator.free(file_content);
 
-    return config_parse.applyToml(allocator, file_content, path, config);
+    // Strip UTF-8 BOM if present (Windows editors like Notepad add this).
+    const content = if (file_content.len >= 3 and
+        file_content[0] == 0xEF and file_content[1] == 0xBB and file_content[2] == 0xBF)
+        file_content[3..]
+    else
+        file_content;
+
+    return config_parse.applyToml(allocator, content, path, config);
 }
 
 /// Returns the path to the user's custom themes directory (e.g. ~/.config/attyx/themes).
