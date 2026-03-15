@@ -481,6 +481,12 @@ int windows_renderer_draw_frame(void) {
     if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_win_prev_cursor_row)
                      + abs(curCol - g_win_prev_cursor_col);
+        static int s_trail_dbg = 0;
+        if (s_trail_dbg < 5) {
+            ATTYX_LOG_INFO("trail", "cursor moved: dist=%d prev=(%d,%d) cur=(%d,%d) g_cursor_trail=%d",
+                           cellDist, g_win_prev_cursor_row, g_win_prev_cursor_col, curRow, curCol, g_cursor_trail);
+            s_trail_dbg++;
+        }
         if (cellDist > 1) {
             s_trail_x = offX + g_win_prev_cursor_col * gw;
             s_trail_y = baseOffY + g_win_prev_cursor_row * gh;
