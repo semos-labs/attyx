@@ -314,13 +314,21 @@ pub fn buildTable(
 
     // 2. Apply keybinding overrides
     if (overrides) |ovs| {
+        logging.info("keybind", "applying {d} override(s)", .{ovs.len});
         for (ovs) |ov| {
-            const action = actionFromString(ov.action_name) orelse continue;
+            const action = actionFromString(ov.action_name) orelse {
+                logging.warn("keybind", "unknown action: {s}", .{ov.action_name});
+                continue;
+            };
             if (eql(ov.key_combo, "none")) {
                 removeAction(&table, action);
                 continue;
             }
-            const combo = parseKeyCombo(ov.key_combo) orelse continue;
+            const combo = parseKeyCombo(ov.key_combo) orelse {
+                logging.warn("keybind", "bad combo: {s} for {s}", .{ ov.key_combo, ov.action_name });
+                continue;
+            };
+            logging.info("keybind", "override: {s} -> key={d} mods=0x{x:0>2} cp={d}", .{ ov.action_name, combo.key, combo.mods, combo.codepoint });
             replaceOrAddAction(&table, .{ .combo = combo, .action = action });
         }
     }
