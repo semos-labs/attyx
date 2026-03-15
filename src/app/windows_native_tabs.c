@@ -25,6 +25,11 @@
 #define PI_HALF         1.5707963f
 #define ARC_SEGS        5
 
+// Padding: tabs float inside the bar with margins
+#define BAR_PAD_TOP     4   // top margin above tabs
+#define BAR_PAD_LEFT    8   // left margin before first tab
+#define TAB_FONT_PT     12  // fixed UI font size (Segoe UI)
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -36,6 +41,108 @@ static int s_caption_hover = 0;  // 0, HTMINBUTTON, HTMAXBUTTON, HTCLOSE
 static wchar_t s_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX];
 static int     s_title_lens[16];
 
+// Dedicated glyph cache for tab titles (Segoe UI, fixed 12px)
+static GlyphCache s_tab_gc;
+static int        s_tab_gc_ready = 0;
+
+// Tab font: Segoe UI at fixed size, independent of terminal config
+static void tab_gc_init(void) {
+    if (s_tab_gc_ready) return;
+    float scale = g_content_scale, fontSize = TAB_FONT_PT * scale;
+    memset(&s_tab_gc, 0, sizeof(s_tab_gc));
+    for (int i = 0; i < GLYPH_CACHE_CAP; i++) s_tab_gc.map[i].slot = -1;
+    s_tab_gc.d3d_device = g_d3d_device;
+    s_tab_gc.scale = scale;
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                     &IID_IDWriteFactory, (IUnknown**)&s_tab_gc.dw_factory);
+    if (FAILED(hr)) return;
+    const wchar_t* family = L"Segoe UI";
+    IDWriteTextFormat* fmt = NULL;
+    hr = IDWriteFactory_CreateTextFormat(s_tab_gc.dw_factory, family, NULL,
+             DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+             DWRITE_FONT_STRETCH_NORMAL, fontSize, L"en-us", &fmt);
+    if (FAILED(hr)) return;
+    IDWriteTextFormat_SetWordWrapping(fmt, DWRITE_WORD_WRAPPING_NO_WRAP);
+    s_tab_gc.dw_format = fmt;
+    // Font face for glyph index lookups
+    IDWriteFontCollection* coll = NULL;
+    IDWriteFactory_GetSystemFontCollection(s_tab_gc.dw_factory, &coll, FALSE);
+    if (coll) {
+        UINT32 fi = 0; BOOL exists = FALSE;
+        IDWriteFontCollection_FindFamilyName(coll, family, &fi, &exists);
+        if (exists) {
+            IDWriteFontFamily* fam = NULL;
+            IDWriteFontCollection_GetFontFamily(coll, fi, &fam);
+            if (fam) {
+                IDWriteFont* font = NULL;
+                IDWriteFontFamily_GetFirstMatchingFont(fam,
+                    DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STRETCH_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL, &font);
+                if (font) { IDWriteFont_CreateFontFace(font, &s_tab_gc.dw_face); IDWriteFont_Release(font); }
+                IDWriteFontFamily_Release(fam);
+            }
+        }
+        IDWriteFontCollection_Release(coll);
+    }
+    // Measure cell size
+    IDWriteTextLayout* layout = NULL;
+    hr = IDWriteFactory_CreateTextLayout(s_tab_gc.dw_factory, L"M", 1, fmt, 1000, 1000, &layout);
+    float gw = 8, gh = 16, asc = 12;
+    if (SUCCEEDED(hr) && layout) {
+        DWRITE_TEXT_METRICS tm; IDWriteTextLayout_GetMetrics(layout, &tm);
+        DWRITE_LINE_METRICS lm; UINT32 lc = 0;
+        IDWriteTextLayout_GetLineMetrics(layout, &lm, 1, &lc);
+        gw = roundf(tm.widthIncludingTrailingWhitespace);
+        gh = roundf(lm.height); asc = roundf(lm.baseline);
+        IDWriteTextLayout_Release(layout);
+    }
+    s_tab_gc.glyph_w = gw; s_tab_gc.glyph_h = gh;
+    s_tab_gc.font_size = (int)fontSize;
+    s_tab_gc.ascender = asc;
+    s_tab_gc.baseline_y_offset = 0; s_tab_gc.x_offset = 0;
+    // Atlas texture (32×16 grid)
+    int cols = 32, rows = 16;
+    s_tab_gc.atlas_cols = cols;
+    s_tab_gc.atlas_w = (int)(gw * cols); s_tab_gc.atlas_h = (int)(gh * rows);
+    s_tab_gc.next_slot = 0; s_tab_gc.max_slots = cols * rows;
+    D3D11_TEXTURE2D_DESC td = {
+        .Width = (UINT)s_tab_gc.atlas_w, .Height = (UINT)s_tab_gc.atlas_h,
+        .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R8_UNORM,
+        .SampleDesc = { .Count = 1 }, .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE,
+    };
+    hr = ID3D11Device_CreateTexture2D(g_d3d_device, &td, NULL, &s_tab_gc.texture);
+    if (FAILED(hr)) return;
+    hr = ID3D11Device_CreateShaderResourceView(g_d3d_device,
+             (ID3D11Resource*)s_tab_gc.texture, NULL, &s_tab_gc.texture_srv);
+    if (FAILED(hr)) return;
+    // D2D offscreen for glyph rasterization
+    int bmpW = (int)(gw * 2), bmpH = (int)gh;
+    hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+                           &IID_IWICImagingFactory, (void**)&s_tab_gc.wic_factory);
+    if (FAILED(hr)) return;
+    hr = IWICImagingFactory_CreateBitmap(s_tab_gc.wic_factory, (UINT)bmpW, (UINT)bmpH,
+             &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &s_tab_gc.wic_bitmap);
+    if (FAILED(hr)) return;
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                            &IID_ID2D1Factory, NULL, (void**)&s_tab_gc.d2d_factory);
+    if (FAILED(hr)) return;
+    D2D1_RENDER_TARGET_PROPERTIES rtp = {
+        .type = D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        .pixelFormat = { .format = DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED },
+        .dpiX = 96, .dpiY = 96,
+    };
+    hr = ID2D1Factory_CreateWicBitmapRenderTarget(s_tab_gc.d2d_factory,
+             s_tab_gc.wic_bitmap, &rtp, &s_tab_gc.d2d_rt);
+    if (FAILED(hr)) return;
+    D2D1_COLOR_F white = { 1, 1, 1, 1 };
+    hr = ID2D1RenderTarget_CreateSolidColorBrush(s_tab_gc.d2d_rt, &white, NULL, &s_tab_gc.d2d_brush);
+    if (FAILED(hr)) return;
+    for (uint32_t ch = 32; ch < 127; ch++) glyphCacheRasterize(&s_tab_gc, ch);
+    s_tab_gc_ready = 1;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -44,8 +151,11 @@ static float sc(void) { return g_content_scale; }
 float ntab_bar_height(void) { return BAR_H * sc(); }
 static float cap_w(void) { return CAP_BTN_W * CAP_COUNT * sc(); }
 
+static float padL(void) { return BAR_PAD_LEFT * sc(); }
+static float padT(void) { return BAR_PAD_TOP * sc(); }
+
 static float tw(int n, float vpW) {
-    float avail = vpW - cap_w() - PLUS_W * sc();
+    float avail = vpW - cap_w() - PLUS_W * sc() - padL();
     float w = avail / (float)(n > 0 ? n : 1);
     float s = sc();
     if (w < TAB_MIN_W * s) w = TAB_MIN_W * s;
@@ -53,7 +163,7 @@ static float tw(int n, float vpW) {
     return w;
 }
 
-static float tx(int i, int n, float vpW) { return i * tw(n, vpW); }
+static float tx(int i, int n, float vpW) { return padL() + i * tw(n, vpW); }
 
 // Emit a thin diagonal line as two triangles.
 static int emitLine(WinVertex* v, int vi,
@@ -146,11 +256,13 @@ void ntab_draw(float vpW, float vpH) {
     if (count <= 1 && !g_tab_always_show) return;
 
     sync_titles();
+    tab_gc_init();
 
     float s = sc();
     float barH = ntab_bar_height();
     float tabW = tw(count, vpW);
     float rad = CORNER_R * s;
+    float pT = padT();  // vertical offset: tabs start below top padding
 
     // Theme colors
     float tR = g_theme_bg_r / 255.0f, tG = g_theme_bg_g / 255.0f, tB = g_theme_bg_b / 255.0f;
@@ -167,7 +279,6 @@ void ntab_draw(float vpW, float vpH) {
     float hR = (bR + aR) * 0.5f, hG = (bG + aG) * 0.5f, hB = (bB + aB) * 0.5f;
 
     // --- Solid pass: backgrounds ---
-    // Max verts: bar(6) + active(~42) + hover(~42) + capHover(6) + seps(count*6)
     int maxV = 200 + count * 6;
     WinVertex* v = (WinVertex*)_alloca(maxV * sizeof(WinVertex));
     int vi = 0;
@@ -175,20 +286,21 @@ void ntab_draw(float vpW, float vpH) {
     // Bar background
     vi = winEmitRect(v, vi, 0, 0, vpW, barH, bR, bG, bB, 1.0f);
 
-    // Active tab: rounded top corners, bottom flush with content
-    vi = emitRoundTopRect(v, vi, tx(active, count, vpW), 0, tabW, barH,
+    // Active tab: rounded top corners, offset by top padding, flush with bottom
+    float tabH = barH - pT;
+    vi = emitRoundTopRect(v, vi, tx(active, count, vpW), pT, tabW, tabH,
                           rad, aR, aG, aB, 1.0f);
 
     // Hover tab (not active)
     if (s_hovered_tab >= 0 && s_hovered_tab < count && s_hovered_tab != active) {
-        vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), 2*s,
-                              tabW, barH - 2*s, rad, hR, hG, hB, 0.5f);
+        vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), pT + 2*s,
+                              tabW, tabH - 2*s, rad, hR, hG, hB, 0.5f);
     }
 
     // Plus button hover
     if (s_hovered_tab == count) {
-        float px = count * tabW;
-        vi = emitRoundTopRect(v, vi, px, 2*s, PLUS_W * s, barH - 2*s,
+        float px = tx(count, count, vpW);
+        vi = emitRoundTopRect(v, vi, px, pT + 2*s, PLUS_W * s, tabH - 2*s,
                               rad, hR, hG, hB, 0.5f);
     }
 
@@ -197,7 +309,7 @@ void ntab_draw(float vpW, float vpH) {
         if (i - 1 == active || i == active) continue;
         if (i - 1 == s_hovered_tab || i == s_hovered_tab) continue;
         float sx = tx(i, count, vpW);
-        float sepH = barH * 0.5f, sepY = (barH - sepH) * 0.5f;
+        float sepH = tabH * 0.5f, sepY = pT + (tabH - sepH) * 0.5f;
         vi = winEmitRect(v, vi, sx - 0.5f, sepY, 1.0f, sepH, fR, fG, fB, 0.1f);
     }
 
@@ -227,7 +339,8 @@ void ntab_draw(float vpW, float vpH) {
             if (count <= 1 || (!isA && !isH)) continue;
             float tabX = tx(i, count, vpW);
             float csz = CLOSE_SZ * s;
-            float cx = tabX + tabW - csz - 8 * s, cy = (barH - csz) * 0.5f;
+            float cx = tabX + tabW - csz - 8 * s;
+            float cy = pT + (tabH - csz) * 0.5f;
             float pad = CLOSE_ICON_PAD * s;
             float alpha = (isH && s_hover_close) ? 0.9f : 0.35f;
             if (isH && s_hover_close)
@@ -240,8 +353,8 @@ void ntab_draw(float vpW, float vpH) {
 
         // Plus +
         {
-            float px = count * tabW + PLUS_W * s * 0.5f;
-            float py = barH * 0.5f;
+            float px = tx(count, count, vpW) + PLUS_W * s * 0.5f;
+            float py = pT + tabH * 0.5f;
             float arm = 5.0f * s;
             ii = winEmitRect(iv, ii, px-arm, py-lw*0.5f, arm*2, lw, fR,fG,fB, 0.45f);
             ii = winEmitRect(iv, ii, px-lw*0.5f, py-arm, lw, arm*2, fR,fG,fB, 0.45f);
@@ -301,8 +414,9 @@ void ntab_draw(float vpW, float vpH) {
         if (ii > 0) winDrawSolidVerts(iv, ii);
     }
 
-    // --- Text pass: tab titles ---
-    if (g_gc.texture_srv) {
+    // --- Text pass: tab titles (Segoe UI via s_tab_gc) ---
+    if (s_tab_gc_ready && s_tab_gc.texture_srv) {
+        GlyphCache* tgc = &s_tab_gc;
         int maxTV = count * 64 * 6;
         WinVertex* tv = (WinVertex*)_alloca(maxTV * sizeof(WinVertex));
         int tvi = 0;
@@ -319,33 +433,33 @@ void ntab_draw(float vpW, float vpH) {
             float textR = tabX + tabW - closeW;
             if (textR - textL < 10) continue;
 
-            float textY = (barH - g_gc.glyph_h) * 0.5f;
+            float textY = pT + (tabH - tgc->glyph_h) * 0.5f;
             wchar_t* title = s_titles[i];
             int tlen = s_title_lens[i];
             if (tlen <= 0) { title = L"Tab"; tlen = 3; }
 
             float cx = textL;
-            for (int ch = 0; ch < tlen && cx + g_gc.glyph_w <= textR; ch++) {
+            for (int ch = 0; ch < tlen && cx + tgc->glyph_w <= textR; ch++) {
                 uint32_t cp = (uint32_t)title[ch];
                 if (cp == 0) break;
-                int slot = glyphCacheLookup(&g_gc, cp);
-                if (slot < 0) slot = glyphCacheRasterize(&g_gc, cp);
-                if (slot < 0) { cx += g_gc.glyph_w; continue; }
+                int slot = glyphCacheLookup(tgc, cp);
+                if (slot < 0) slot = glyphCacheRasterize(tgc, cp);
+                if (slot < 0) { cx += tgc->glyph_w; continue; }
 
-                int ac = slot % g_gc.atlas_cols, ar = slot / g_gc.atlas_cols;
-                float u0 = (float)(ac * (int)g_gc.glyph_w) / (float)g_gc.atlas_w;
-                float v0 = (float)(ar * (int)g_gc.glyph_h) / (float)g_gc.atlas_h;
-                float u1 = u0 + g_gc.glyph_w / (float)g_gc.atlas_w;
-                float v1 = v0 + g_gc.glyph_h / (float)g_gc.atlas_h;
+                int ac = slot % tgc->atlas_cols, ar = slot / tgc->atlas_cols;
+                float u0 = (float)(ac * (int)tgc->glyph_w) / (float)tgc->atlas_w;
+                float v0 = (float)(ar * (int)tgc->glyph_h) / (float)tgc->atlas_h;
+                float u1 = u0 + tgc->glyph_w / (float)tgc->atlas_w;
+                float v1 = v0 + tgc->glyph_h / (float)tgc->atlas_h;
 
                 if (tvi + 6 <= maxTV)
-                    tvi = winEmitQuad(tv, tvi, cx, textY, cx + g_gc.glyph_w,
-                                     textY + g_gc.glyph_h, u0, v0, u1, v1,
+                    tvi = winEmitQuad(tv, tvi, cx, textY, cx + tgc->glyph_w,
+                                     textY + tgc->glyph_h, u0, v0, u1, v1,
                                      tfR, tfG, tfB, tfA);
-                cx += g_gc.glyph_w;
+                cx += tgc->glyph_w;
             }
         }
-        if (tvi > 0) winDrawTextVerts(tv, tvi, &g_gc);
+        if (tvi > 0) winDrawTextVerts(tv, tvi, tgc);
     }
 }
 
@@ -373,11 +487,13 @@ int ntab_hit_test(int px, int py, int clientW) {
     }
 
     float tabW = tw(count, (float)clientW);
-    float tabsEnd = count * tabW;
+    float pL = padL();
+    float tabsEnd = pL + count * tabW;
     float plusEnd = tabsEnd + PLUS_W * s;
 
-    if ((float)px < tabsEnd) return HTCLIENT;
-    if ((float)px < plusEnd)  return HTCLIENT;
+    if ((float)px < pL)       return HTCAPTION;
+    if ((float)px < tabsEnd)  return HTCLIENT;
+    if ((float)px < plusEnd)   return HTCLIENT;
     return HTCAPTION;
 }
 
@@ -399,17 +515,20 @@ int ntab_mouse_move(int px, int py, int clientW) {
     } else {
         float s = sc();
         float tabW = tw(count, (float)clientW);
-        float tabsEnd = count * tabW;
+        float pL = padL();
+        float tabsEnd = pL + count * tabW;
         float plusEnd = tabsEnd + PLUS_W * s;
 
-        if ((float)px < tabsEnd) {
-            int idx = (int)((float)px / tabW);
+        if ((float)px >= pL && (float)px < tabsEnd) {
+            int idx = (int)(((float)px - pL) / tabW);
             if (idx >= count) idx = count - 1;
             s_hovered_tab = idx;
             if (count > 1) {
                 float tabX = tx(idx, count, (float)clientW);
                 float csz = CLOSE_SZ * s;
-                float cx = tabX + tabW - csz - 8*s, cy = (barH - csz) * 0.5f;
+                float tH = barH - padT();
+                float cx = tabX + tabW - csz - 8*s;
+                float cy = padT() + (tH - csz) * 0.5f;
                 s_hover_close = ((float)px >= cx && (float)px <= cx+csz &&
                                  (float)py >= cy && (float)py <= cy+csz);
             } else s_hover_close = 0;
@@ -437,10 +556,11 @@ int ntab_mouse_down(int px, int py, int clientW) {
 
     float s = sc();
     float tabW = tw(count, (float)clientW);
-    float tabsEnd = count * tabW;
+    float pL = padL();
+    float tabsEnd = pL + count * tabW;
 
-    if ((float)px < tabsEnd) {
-        int idx = (int)((float)px / tabW);
+    if ((float)px >= pL && (float)px < tabsEnd) {
+        int idx = (int)(((float)px - pL) / tabW);
         if (idx >= count) idx = count - 1;
         if (count > 1 && s_hover_close) {
             g_native_tab_click = idx;
