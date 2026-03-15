@@ -333,6 +333,12 @@ int winEmitQuad(WinVertex* v, int i,
                 float x0, float y0, float x1, float y1,
                 float u0, float v0, float u1, float v1,
                 float r, float g, float b, float a);
+int winEmitLine(WinVertex* v, int vi,
+                float x0, float y0, float x1, float y1, float thick,
+                float r, float g, float b, float a);
+int winEmitRoundTopRect(WinVertex* v, int vi,
+                        float x, float y, float w, float h, float rad,
+                        float r, float g, float b, float a);
 
 // Selection helpers
 int winCellIsSelected(int row, int col);

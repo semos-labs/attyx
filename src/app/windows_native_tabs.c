@@ -22,13 +22,12 @@
 #define CLOSE_SZ        16
 #define CLOSE_ICON_PAD  5
 #define CAP_ICON_SZ     10
-#define PI_HALF         1.5707963f
-#define ARC_SEGS        5
+#define SESS_W          36  // session dropdown button width
 
 // Padding: tabs float inside the bar with margins
-#define BAR_PAD_TOP     6   // top margin above tabs
-#define BAR_PAD_LEFT    8   // left margin before first tab
-#define TAB_FONT_PT     11  // fixed tab title font size (uses terminal font family)
+#define BAR_PAD_TOP     6
+#define BAR_PAD_LEFT    8
+#define TAB_FONT_PT     11
 
 // ---------------------------------------------------------------------------
 // State
@@ -73,9 +72,13 @@ static float cap_w(void) { return CAP_BTN_W * CAP_COUNT * sc(); }
 
 static float padL(void) { return BAR_PAD_LEFT * sc(); }
 static float padT(void) { return BAR_PAD_TOP * sc(); }
+static float trail_w(void) {
+    float s = sc();
+    return PLUS_W * s + (g_sessions_active ? SESS_W * s : 0);
+}
 
 static float tw(int n, float vpW) {
-    float avail = vpW - cap_w() - PLUS_W * sc() - padL();
+    float avail = vpW - cap_w() - trail_w() - padL();
     float w = avail / (float)(n > 0 ? n : 1);
     float s = sc();
     if (w < TAB_MIN_W * s) w = TAB_MIN_W * s;
@@ -85,64 +88,6 @@ static float tw(int n, float vpW) {
 
 static float tx(int i, int n, float vpW) { return padL() + i * tw(n, vpW); }
 
-// Emit a thin diagonal line as two triangles.
-static int emitLine(WinVertex* v, int vi,
-                    float x0, float y0, float x1, float y1, float thick,
-                    float r, float g, float b, float a) {
-    float dx = x1 - x0, dy = y1 - y0;
-    float len = sqrtf(dx * dx + dy * dy);
-    if (len < 0.01f) return vi;
-    float nx = -dy / len * thick * 0.5f, ny = dx / len * thick * 0.5f;
-    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
-    v[vi++] = (WinVertex){x0-nx,y0-ny, 0,0, r,g,b,a};
-    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
-    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
-    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
-    v[vi++] = (WinVertex){x1+nx,y1+ny, 0,0, r,g,b,a};
-    return vi;
-}
-
-// Emit a rectangle with rounded top-left and top-right corners.
-// Bottom edge is flat (connects to content area).
-static int emitRoundTopRect(WinVertex* v, int vi,
-                            float x, float y, float w, float h, float rad,
-                            float r, float g, float b, float a) {
-    if (rad < 1.0f) return winEmitRect(v, vi, x, y, w, h, r, g, b, a);
-
-    float pts[4 + 2 * ARC_SEGS][2];
-    int n = 0;
-
-    // Bottom edge (flat)
-    pts[n][0] = x;     pts[n][1] = y + h; n++;
-    pts[n][0] = x + w; pts[n][1] = y + h; n++;
-    // Right side up to arc
-    pts[n][0] = x + w; pts[n][1] = y + rad; n++;
-    // Top-right arc
-    for (int i = 1; i <= ARC_SEGS; i++) {
-        float t = (float)i / (float)ARC_SEGS * PI_HALF;
-        pts[n][0] = (x + w - rad) + rad * cosf(t);
-        pts[n][1] = (y + rad) - rad * sinf(t);
-        n++;
-    }
-    // Top-left arc
-    for (int i = 1; i <= ARC_SEGS; i++) {
-        float t = PI_HALF + (float)i / (float)ARC_SEGS * PI_HALF;
-        pts[n][0] = (x + rad) + rad * cosf(t);
-        pts[n][1] = (y + rad) - rad * sinf(t);
-        n++;
-    }
-    // Left side closes back to bottom-left (pts[0])
-
-    // Fan triangulate from centroid
-    float cx = x + w * 0.5f, cy = y + h * 0.5f;
-    for (int i = 0; i < n; i++) {
-        int j = (i + 1) % n;
-        v[vi++] = (WinVertex){cx, cy, 0, 0, r, g, b, a};
-        v[vi++] = (WinVertex){pts[i][0], pts[i][1], 0, 0, r, g, b, a};
-        v[vi++] = (WinVertex){pts[j][0], pts[j][1], 0, 0, r, g, b, a};
-    }
-    return vi;
-}
 
 // ---------------------------------------------------------------------------
 // Title sync
@@ -216,7 +161,7 @@ void ntab_draw(float vpW, float vpH) {
             float sx = padL() + slot * tabW;
             int isA = (i == active);
             if (isA)
-                vi = emitRoundTopRect(v, vi, sx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
+                vi = winEmitRoundTopRect(v, vi, sx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
             slot++;
         }
         // Floating dragged tab
@@ -224,22 +169,28 @@ void ntab_draw(float vpW, float vpH) {
         if (fx < padL()) fx = padL();
         float maxFx = vpW - cap_w() - PLUS_W * s - tabW;
         if (fx > maxFx) fx = maxFx;
-        vi = emitRoundTopRect(v, vi, fx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
+        vi = winEmitRoundTopRect(v, vi, fx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
     } else {
         // --- Normal mode ---
-        vi = emitRoundTopRect(v, vi, tx(active, count, vpW), pT, tabW, tabH,
+        vi = winEmitRoundTopRect(v, vi, tx(active, count, vpW), pT, tabW, tabH,
                               rad, aR, aG, aB, 1.0f);
 
         // Hover tab (not active)
         if (s_hovered_tab >= 0 && s_hovered_tab < count && s_hovered_tab != active) {
-            vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), pT + 2*s,
+            vi = winEmitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), pT + 2*s,
                                   tabW, tabH - 2*s, rad, hR, hG, hB, 0.5f);
         }
 
         // Plus button hover
         if (s_hovered_tab == count) {
             float px = tx(count, count, vpW);
-            vi = emitRoundTopRect(v, vi, px, pT + 2*s, PLUS_W * s, tabH - 2*s,
+            vi = winEmitRoundTopRect(v, vi, px, pT + 2*s, PLUS_W * s, tabH - 2*s,
+                                  rad, hR, hG, hB, 0.5f);
+        }
+        // Session button hover
+        if (g_sessions_active && s_hovered_tab == count + 1) {
+            float sx = tx(count, count, vpW) + PLUS_W * s;
+            vi = winEmitRoundTopRect(v, vi, sx, pT + 2*s, SESS_W * s, tabH - 2*s,
                                   rad, hR, hG, hB, 0.5f);
         }
 
@@ -285,9 +236,9 @@ void ntab_draw(float vpW, float vpH) {
             float alpha = (isH && s_hover_close) ? 0.9f : 0.35f;
             if (isH && s_hover_close)
                 ii = winEmitRect(iv, ii, cx, cy, csz, csz, fR, fG, fB, 0.1f);
-            ii = emitLine(iv, ii, cx+pad, cy+pad, cx+csz-pad, cy+csz-pad,
+            ii = winEmitLine(iv, ii, cx+pad, cy+pad, cx+csz-pad, cy+csz-pad,
                           lw, fR, fG, fB, alpha);
-            ii = emitLine(iv, ii, cx+csz-pad, cy+pad, cx+pad, cy+csz-pad,
+            ii = winEmitLine(iv, ii, cx+csz-pad, cy+pad, cx+pad, cy+csz-pad,
                           lw, fR, fG, fB, alpha);
         }
 
@@ -298,6 +249,25 @@ void ntab_draw(float vpW, float vpH) {
             float arm = 5.0f * s;
             ii = winEmitRect(iv, ii, px-arm, py-lw*0.5f, arm*2, lw, fR,fG,fB, 0.45f);
             ii = winEmitRect(iv, ii, px-lw*0.5f, py-arm, lw, arm*2, fR,fG,fB, 0.45f);
+        }
+        // Session icon: stacked rectangles (rectangle.stack style)
+        if (g_sessions_active) {
+            float sx = tx(count, count, vpW) + PLUS_W * s + SESS_W * s * 0.5f;
+            float sy = pT + tabH * 0.5f;
+            float rw = 8.0f * s, rh = 5.0f * s, off = 3.0f * s;
+            float ilw = 1.0f * s, ia = 0.45f;
+            // Back rect (offset up)
+            float bx = sx - rw*0.5f + off*0.3f, by = sy - rh*0.5f - off*0.5f;
+            ii = winEmitRect(iv, ii, bx, by, rw, ilw, fR,fG,fB, ia*0.5f);
+            ii = winEmitRect(iv, ii, bx, by+rh-ilw, rw, ilw, fR,fG,fB, ia*0.5f);
+            ii = winEmitRect(iv, ii, bx, by, ilw, rh, fR,fG,fB, ia*0.5f);
+            ii = winEmitRect(iv, ii, bx+rw-ilw, by, ilw, rh, fR,fG,fB, ia*0.5f);
+            // Front rect (offset down)
+            float fx = sx - rw*0.5f - off*0.3f, fy = sy - rh*0.5f + off*0.5f;
+            ii = winEmitRect(iv, ii, fx, fy, rw, ilw, fR,fG,fB, ia);
+            ii = winEmitRect(iv, ii, fx, fy+rh-ilw, rw, ilw, fR,fG,fB, ia);
+            ii = winEmitRect(iv, ii, fx, fy, ilw, rh, fR,fG,fB, ia);
+            ii = winEmitRect(iv, ii, fx+rw-ilw, fy, ilw, rh, fR,fG,fB, ia);
         }
 
         // Caption icons: minimize (−), maximize (□/⧉), close (×)
@@ -345,9 +315,9 @@ void ntab_draw(float vpW, float vpH) {
 
             // Close: ×
             float clx = capX + bw * 2.5f, cly = barH * 0.5f;
-            ii = emitLine(iv, ii, clx-half, cly-half, clx+half, cly+half,
+            ii = winEmitLine(iv, ii, clx-half, cly-half, clx+half, cly+half,
                           ci_lw, clR, clG, clB, clA);
-            ii = emitLine(iv, ii, clx+half, cly-half, clx-half, cly+half,
+            ii = winEmitLine(iv, ii, clx+half, cly-half, clx-half, cly+half,
                           ci_lw, clR, clG, clB, clA);
         }
 
@@ -456,7 +426,42 @@ int ntab_hit_test(int px, int py, int clientW) {
     if ((float)px < pL)       return HTCAPTION;
     if ((float)px < tabsEnd)  return HTCLIENT;
     if ((float)px < plusEnd)   return HTCLIENT;
+    if (g_sessions_active && (float)px < plusEnd + SESS_W * s) return HTCLIENT;
     return HTCAPTION;
+}
+
+// ---------------------------------------------------------------------------
+// Session dropdown menu (Win32 popup)
+// ---------------------------------------------------------------------------
+
+#define IDM_SESSION_BASE  10000
+#define IDM_SESSION_NEW   10999
+
+static void ntab_show_session_menu(void) {
+    int cnt = g_session_count;
+    int activeIdx = g_active_session_idx;
+    if (cnt <= 0) { attyx_create_session_direct(); return; }
+    HMENU menu = CreatePopupMenu();
+    for (int i = 0; i < cnt && i < ATTYX_MAX_SESSIONS; i++) {
+        wchar_t name[ATTYX_SESSION_NAME_MAX];
+        int n = MultiByteToWideChar(CP_UTF8, 0, g_session_names[i], -1,
+                                     name, ATTYX_SESSION_NAME_MAX - 1);
+        if (n <= 0) wcscpy(name, L"Session");
+        UINT flags = MF_STRING;
+        if (i == activeIdx) flags |= MF_CHECKED;
+        AppendMenuW(menu, flags, IDM_SESSION_BASE + i, name);
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, IDM_SESSION_NEW, L"Create Session");
+    POINT pt; GetCursorPos(&pt);
+    int cmd = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                                   pt.x, pt.y, 0, g_hwnd, NULL);
+    DestroyMenu(menu);
+    if (cmd == IDM_SESSION_NEW) {
+        attyx_toggle_session_switcher();
+    } else if (cmd >= IDM_SESSION_BASE && cmd < IDM_SESSION_BASE + cnt) {
+        g_session_switch_id = (int)g_session_ids[cmd - IDM_SESSION_BASE];
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +500,8 @@ int ntab_mouse_move(int px, int py, int clientW) {
             } else s_hover_close = 0;
         } else if ((float)px < plusEnd) {
             s_hovered_tab = count; s_hover_close = 0;
+        } else if (g_sessions_active && (float)px < plusEnd + SESS_W * s) {
+            s_hovered_tab = count + 1; s_hover_close = 0;
         } else {
             s_hovered_tab = -1; s_hover_close = 0;
         }
@@ -539,6 +546,9 @@ int ntab_mouse_down(int px, int py, int clientW) {
     } else if ((float)px < tabsEnd + PLUS_W * s) {
         attyx_dispatch_action(49);
         g_full_redraw = 1;
+        return 1;
+    } else if (g_sessions_active && (float)px < tabsEnd + PLUS_W * s + SESS_W * s) {
+        ntab_show_session_menu();
         return 1;
     }
     return 0;

@@ -206,4 +206,53 @@ void winDrawTextVerts(WinVertex* verts, int count, GlyphCache* gc) {
     winDrawVerts(verts, count);
 }
 
+// Emit a thin diagonal line as two triangles.
+int winEmitLine(WinVertex* v, int vi,
+                float x0, float y0, float x1, float y1, float thick,
+                float r, float g, float b, float a) {
+    float dx = x1 - x0, dy = y1 - y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.01f) return vi;
+    float nx = -dy / len * thick * 0.5f, ny = dx / len * thick * 0.5f;
+    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x0-nx,y0-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1+nx,y1+ny, 0,0, r,g,b,a};
+    return vi;
+}
+
+// Emit a rectangle with rounded top-left and top-right corners.
+#define NTAB_PI_HALF  1.5707963f
+#define NTAB_ARC_SEGS 5
+int winEmitRoundTopRect(WinVertex* v, int vi,
+                        float x, float y, float w, float h, float rad,
+                        float r, float g, float b, float a) {
+    if (rad < 1.0f) return winEmitRect(v, vi, x, y, w, h, r, g, b, a);
+    float pts[4 + 2 * NTAB_ARC_SEGS][2];
+    int n = 0;
+    pts[n][0] = x;     pts[n][1] = y + h; n++;
+    pts[n][0] = x + w; pts[n][1] = y + h; n++;
+    pts[n][0] = x + w; pts[n][1] = y + rad; n++;
+    for (int i = 1; i <= NTAB_ARC_SEGS; i++) {
+        float t = (float)i / (float)NTAB_ARC_SEGS * NTAB_PI_HALF;
+        pts[n][0] = (x + w - rad) + rad * cosf(t);
+        pts[n][1] = (y + rad) - rad * sinf(t); n++;
+    }
+    for (int i = 1; i <= NTAB_ARC_SEGS; i++) {
+        float t = NTAB_PI_HALF + (float)i / (float)NTAB_ARC_SEGS * NTAB_PI_HALF;
+        pts[n][0] = (x + rad) + rad * cosf(t);
+        pts[n][1] = (y + rad) - rad * sinf(t); n++;
+    }
+    float cx = x + w * 0.5f, cy = y + h * 0.5f;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        v[vi++] = (WinVertex){cx, cy, 0, 0, r, g, b, a};
+        v[vi++] = (WinVertex){pts[i][0], pts[i][1], 0, 0, r, g, b, a};
+        v[vi++] = (WinVertex){pts[j][0], pts[j][1], 0, 0, r, g, b, a};
+    }
+    return vi;
+}
+
 #endif // _WIN32
