@@ -30,6 +30,7 @@ const popup_mod = @import("popup.zig");
 const session_win = @import("session_windows.zig");
 const SessionClient = @import("session_client.zig").SessionClient;
 const conn = @import("session_connect.zig");
+const layout_codec = @import("layout_codec.zig");
 
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
@@ -161,16 +162,6 @@ pub fn run(
         if (result.pane_id != 0) daemon_pane_id = result.pane_id;
     }
 
-    // Spawn initial pane — local ConPTY (always needed for Engine).
-    // In daemon mode, I/O routes through the daemon socket instead.
-    const initial_pane = try allocator.create(Pane);
-    errdefer allocator.destroy(initial_pane);
-    initial_pane.* = try Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines);
-    initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
-    initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
-    initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&theme);
-    if (daemon_pane_id) |dpid| initial_pane.daemon_pane_id = dpid;
-
     // Transfer SessionClient to heap so it outlives this scope.
     var heap_session_client: ?*SessionClient = null;
     if (session_client) |sc_val| {
@@ -184,8 +175,13 @@ pub fn run(
         allocator.destroy(hsc);
     };
 
+    // Build initial TabManager — reconstruct from daemon layout if available,
+    // otherwise spawn a single local pane.
     const tab_mgr = try allocator.create(TabManager);
-    tab_mgr.* = TabManager.init(allocator, initial_pane);
+    const initial_pane = try buildInitialTabs(
+        tab_mgr, allocator, heap_session_client, daemon_pane_id,
+        pty_rows, config.cols, config.scrollback_lines, &theme, &config,
+    );
 
     // Session manager wraps the initial TabManager (takes ownership).
     const initial_name = session_win.cwdSessionName() orelse "main";
@@ -270,11 +266,9 @@ pub fn run(
     const reader_thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer reader_thread.join();
 
-    // Send focus_panes so daemon starts streaming output for our pane.
+    // Send focus_panes for all daemon panes in the active tab.
     if (heap_session_client) |hsc| {
-        if (initial_pane.daemon_pane_id) |dpid| {
-            hsc.sendFocusPanes(&.{dpid}) catch {};
-        }
+        sendInitialFocusPanes(tab_mgr, hsc);
     }
 
     // Enter Win32 message loop + D3D11 rendering
@@ -339,4 +333,93 @@ fn findAliveSession(sc: *SessionClient) ?u32 {
 
 fn isDefaultSession(name: []const u8) bool {
     return std.mem.eql(u8, name, "default");
+}
+
+const split_layout_mod = @import("split_layout.zig");
+
+/// Build the initial TabManager. If the daemon has a saved layout, reconstruct
+/// tabs from it; otherwise spawn a single local pane.
+/// Returns the active pane (for wiring up globals).
+fn buildInitialTabs(
+    tab_mgr: *TabManager,
+    allocator: std.mem.Allocator,
+    hsc: ?*SessionClient,
+    daemon_pane_id: ?u32,
+    pty_rows: u16,
+    cols: u16,
+    scrollback: u32,
+    theme: *const @import("../theme/registry.zig").Theme,
+    config: *const @import("../config/config.zig").AppConfig,
+) !*Pane {
+    // Try layout reconstruction from daemon.
+    if (hsc) |sc| {
+        if (sc.layout_len > 0) {
+            if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
+                if (info.tab_count > 0) {
+                    // Create a throwaway initial pane for TabManager.init, then reset.
+                    const placeholder = try allocator.create(Pane);
+                    placeholder.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
+                    tab_mgr.* = TabManager.init(allocator, placeholder);
+                    tab_mgr.reconstructFromLayout(&info, pty_rows, cols, scrollback) catch {
+                        logging.err("session", "layout reconstruction failed", .{});
+                    };
+                    if (tab_mgr.count > 0) {
+                        logging.info("session", "reconstructed {d} tab(s) from layout", .{tab_mgr.count});
+                        applyThemeToAllPanes(tab_mgr, theme, config);
+                        return tab_mgr.activePane();
+                    }
+                }
+            } else |_| {
+                logging.warn("session", "layout deserialization failed, using single pane", .{});
+            }
+        }
+    }
+
+    // Fallback: single pane (daemon-backed if we have a pane ID, local ConPTY otherwise).
+    const pane = try allocator.create(Pane);
+    errdefer allocator.destroy(pane);
+    if (daemon_pane_id != null) {
+        pane.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
+        pane.daemon_pane_id = daemon_pane_id;
+    } else {
+        pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
+    }
+    pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
+    pane.engine.state.reflow_on_resize = config.reflow_enabled;
+    pane.engine.state.theme_colors = publish.themeToEngineColors(theme);
+    tab_mgr.* = TabManager.init(allocator, pane);
+    return pane;
+}
+
+fn applyThemeToAllPanes(
+    tab_mgr: *TabManager,
+    theme: *const @import("../theme/registry.zig").Theme,
+    config: *const @import("../config/config.zig").AppConfig,
+) void {
+    for (tab_mgr.tabs[0..tab_mgr.count]) |*maybe_layout| {
+        const lay = &(maybe_layout.* orelse continue);
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = lay.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            leaf.pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
+            leaf.pane.engine.state.reflow_on_resize = config.reflow_enabled;
+            leaf.pane.engine.state.theme_colors = publish.themeToEngineColors(theme);
+        }
+    }
+}
+
+/// Send focus_panes for all daemon panes in the active tab.
+fn sendInitialFocusPanes(tab_mgr: *TabManager, hsc: *SessionClient) void {
+    const layout = tab_mgr.activeLayout();
+    var focus_ids: [split_layout_mod.max_panes]u32 = undefined;
+    var count: usize = 0;
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const lc = layout.collectLeaves(&leaves);
+    for (leaves[0..lc]) |leaf| {
+        if (leaf.pane.daemon_pane_id) |dpid| {
+            focus_ids[count] = dpid;
+            count += 1;
+        }
+    }
+    if (count > 0) hsc.sendFocusPanes(focus_ids[0..count]) catch {};
 }

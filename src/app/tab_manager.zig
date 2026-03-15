@@ -457,9 +457,11 @@ pub const TabManager = struct {
                 const focused_pane = lay.focusedPane();
                 const title_src: ?[]const u8 = focused_pane.getCustomTitle() orelse
                     focused_pane.engine.state.title orelse blk: {
-                    var name_buf: [256]u8 = undefined;
-                    if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
-                        break :blk name;
+                    if (comptime @import("builtin").os.tag != .windows) {
+                        var name_buf: [256]u8 = undefined;
+                        if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
+                            break :blk name;
+                    }
                     break :blk focused_pane.getDaemonProcName();
                 };
                 if (title_src) |t| {

@@ -77,6 +77,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Set 1ms timer resolution so Sleep(1) actually sleeps ~1ms instead of ~15ms.
     _ = timeBeginPeriod(1);
     defer _ = timeEndPeriod(1);
+
+    // Save layout and last-session on clean shutdown.
+    defer saveLayoutToDaemon(ctx);
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
@@ -130,6 +133,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Tab actions ──
         var tabs_changed = false;
         processTabActions(ctx, &tabs_changed);
+        if (tabs_changed) saveLayoutToDaemon(ctx);
 
         // ── Split actions ──
         win_split.processSplitActions(ctx);
@@ -341,6 +345,15 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_search.g_search = null;
     }
     logging.info("event", "Windows event loop exited", .{});
+}
+
+// ── Layout persistence ──
+
+fn saveLayoutToDaemon(ctx: *WinCtx) void {
+    const sc = ctx.session_client orelse return;
+    var save_buf: [4096]u8 = undefined;
+    const len = ctx.tab_mgr.serializeLayout(&save_buf) catch return;
+    if (len > 0) sc.sendSaveLayout(save_buf[0..len]) catch {};
 }
 
 // ── Helpers ──
