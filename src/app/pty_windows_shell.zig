@@ -189,9 +189,19 @@ fn makeDirsWindows(path: []const u8) void {
 /// 2. Writes shadow .bash_profile to %LOCALAPPDATA%\attyx\bash-home\
 /// 3. Points HOME at the shadow dir so bash --login sources our profile
 fn setupBashHomeRedirect() void {
-    // Get real home — prefer USERPROFILE (always set on Windows), fall back to HOME.
     const userprofile_name = comptime toUtf16Literal("USERPROFILE");
     const home_name = comptime toUtf16Literal("HOME");
+
+    // If __ATTYX_REAL_HOME is already set, the redirect is active from a
+    // previous pane spawn. Skip to avoid corrupting the saved real HOME
+    // (HOME now points at the shadow dir).
+    {
+        const check_env = comptime toUtf16Literal("__ATTYX_REAL_HOME");
+        var probe: [4]u16 = undefined;
+        if (GetEnvironmentVariableW(&check_env, &probe, @intCast(probe.len)) > 0) return;
+    }
+
+    // Get real home — prefer USERPROFILE (always set on Windows), fall back to HOME.
     var real_home: [512]u16 = undefined;
     var real_home_len = GetEnvironmentVariableW(&userprofile_name, &real_home, @intCast(real_home.len));
     if (real_home_len == 0 or real_home_len >= real_home.len) {
@@ -241,10 +251,21 @@ fn setupBashHomeRedirect() void {
 /// 2. Writes shadow .zshenv to %LOCALAPPDATA%\attyx\shell-integration\zsh\
 /// 3. Points ZDOTDIR at the shadow dir so zsh sources our .zshenv
 fn setupZshZdotdirRedirect() void {
-    // Determine the original ZDOTDIR — fallback to HOME, then USERPROFILE.
     const zdotdir_name = comptime toUtf16Literal("ZDOTDIR");
     const home_name = comptime toUtf16Literal("HOME");
     const userprofile_name = comptime toUtf16Literal("USERPROFILE");
+
+    // If __ATTYX_ORIGINAL_ZDOTDIR is already set, the redirect is active
+    // from a previous pane spawn. Don't re-read ZDOTDIR (which now points
+    // at the shadow dir) or we'd save the shadow path as the "original",
+    // causing infinite .zshenv recursion on the second pane.
+    {
+        const check_env = comptime toUtf16Literal("__ATTYX_ORIGINAL_ZDOTDIR");
+        var probe: [4]u16 = undefined;
+        if (GetEnvironmentVariableW(&check_env, &probe, @intCast(probe.len)) > 0) return;
+    }
+
+    // Determine the original ZDOTDIR — fallback to HOME, then USERPROFILE.
     var orig_zd: [512]u16 = undefined;
     var orig_zd_len = GetEnvironmentVariableW(&zdotdir_name, &orig_zd, @intCast(orig_zd.len));
     if (orig_zd_len == 0 or orig_zd_len >= orig_zd.len) {
