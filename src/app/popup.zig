@@ -131,7 +131,20 @@ pub const PopupState = struct {
             // otherwise wrap in cmd.exe /c for non-interactive commands.
             const shell_int = @import("shell_integration.zig");
             const detected = shell_int.detectShell(cfg.command);
-            if (detected == .bash) {
+            if (detected == .zsh) {
+                // Zsh — use bundled MSYS2 zsh or fall through to command.
+                const bshell = @import("bundled_shell.zig");
+                const zsh_path = bshell.findBundledZshUtf8() orelse cfg.command;
+                const cmd_z = try allocator.dupeZ(u8, zsh_path);
+                defer allocator.free(cmd_z);
+                const login: [:0]const u8 = "--login";
+                const shell_argv = [_][:0]const u8{ cmd_z, login };
+                bshell.setupMsysEnv();
+                pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{}) catch |err| {
+                    allocator.destroy(pane);
+                    return err;
+                };
+            } else if (detected == .bash) {
                 // Bash — resolve full Git Bash path and spawn with --login.
                 const pty_win = @import("pty_windows.zig");
                 const bash_path = pty_win.findGitBashUtf8() orelse cfg.command;

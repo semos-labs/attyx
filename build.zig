@@ -212,6 +212,17 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ole32", .{});
         exe.root_module.linkSystemLibrary("windowscodecs", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
+
+        // Bundle MSYS2 sysroot (zsh + coreutils) if present.
+        // Run `powershell scripts/fetch-msys2-sysroot.ps1` to populate share/msys2/.
+        // Install the sysroot tree next to the binary so bundled_shell.zig can find it.
+        const install_msys2 = b.addInstallDirectory(.{
+            .source_dir = b.path("share/msys2"),
+            .install_dir = .{ .custom = "bin/share/msys2" },
+            .install_subdir = "",
+        });
+        const install_msys2_step = b.step("install-msys2", "Install bundled MSYS2 sysroot (zsh)");
+        install_msys2_step.dependOn(&install_msys2.step);
     }
 
     // This declares intent for the executable to be installed into the

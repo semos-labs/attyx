@@ -37,7 +37,10 @@ pub const ArgvOverride = struct {
 
 /// Detect the user's shell from $SHELL or a given path.
 pub fn detectShell(shell_path: []const u8) Shell {
-    if (std.mem.endsWith(u8, shell_path, "/zsh") or std.mem.eql(u8, shell_path, "zsh")) return .zsh;
+    if (std.mem.endsWith(u8, shell_path, "/zsh") or
+        std.mem.endsWith(u8, shell_path, "\\zsh.exe") or
+        std.mem.eql(u8, shell_path, "zsh.exe") or
+        std.mem.eql(u8, shell_path, "zsh")) return .zsh;
     if (std.mem.endsWith(u8, shell_path, "/bash") or
         std.mem.endsWith(u8, shell_path, "\\bash.exe") or
         std.mem.eql(u8, shell_path, "bash.exe") or
@@ -155,6 +158,7 @@ pub fn windowsScriptPath(buf: []u8, shell: Shell) ?[]const u8 {
         .powershell => "powershell\\attyx.ps1",
         .bash => "bash\\bashrc",
         .cmd => "cmd\\attyx_prompt.cmd",
+        .zsh => "zsh\\.zshenv",
         else => return null,
     };
     return std.fmt.bufPrint(buf, "{s}\\{s}", .{ base, suffix }) catch null;
@@ -288,7 +292,7 @@ fn setupPosixSh(_: []const u8, exe_dir: []const u8) ArgvOverride {
 // Shell scripts
 // ---------------------------------------------------------------------------
 
-const zsh_script =
+pub const zsh_script =
     \\#!/bin/zsh
     \\# Attyx shell integration (zsh)
     \\if [[ -n "$__ATTYX_ORIGINAL_ZDOTDIR" ]]; then
@@ -563,6 +567,12 @@ test "detectShell" {
     try testing.expectEqual(Shell.cmd, detectShell("C:\\Windows\\System32\\cmd.exe"));
 }
 
+test "detectShell — zsh on Windows" {
+    const testing = std.testing;
+    try testing.expectEqual(Shell.zsh, detectShell("zsh.exe"));
+    try testing.expectEqual(Shell.zsh, detectShell("C:\\attyx\\share\\msys2\\usr\\bin\\zsh.exe"));
+}
+
 test "detectShell — Git Bash uses bash integration" {
     const testing = std.testing;
     // Git Bash on Windows uses /usr/bin/bash or /bin/bash inside MSYS2
@@ -616,8 +626,11 @@ test "windowsScriptPath generates correct paths" {
     try testing.expect(std.mem.endsWith(u8, bash_path.?, "bashrc"));
     try testing.expect(std.mem.indexOf(u8, bash_path.?, "bash") != null);
 
+    const zsh_path = windowsScriptPath(&buf, .zsh);
+    try testing.expect(zsh_path != null);
+    try testing.expect(std.mem.endsWith(u8, zsh_path.?, ".zshenv"));
+
     // Non-Windows shells return null
-    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .zsh));
     try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .fish));
 }
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const win_shell = @import("pty_windows_shell.zig");
+const bundled_shell = @import("bundled_shell.zig");
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -660,7 +661,18 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         return &S.buf;
     }
 
-    // Try Git Bash first — best terminal experience on Windows.
+    // Bundled zsh is the highest priority — built-in MSYS2 sysroot.
+    if (bundled_shell.findBundledZsh()) |zsh| {
+        bundled_shell.setupMsysEnv();
+        @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
+        // Append " --login" so zsh sources /etc/profile and user rc files.
+        const login_flag = comptime toUtf16Literal(" --login");
+        @memcpy(S.buf[zsh.zsh_len .. zsh.zsh_len + login_flag.len], &login_flag);
+        S.buf[zsh.zsh_len + login_flag.len] = 0;
+        return &S.buf;
+    }
+
+    // Try Git Bash — best fallback terminal experience on Windows.
     if (findGitBash(&S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
         return &S.buf;

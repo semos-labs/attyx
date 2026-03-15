@@ -94,6 +94,11 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             setupBashHomeRedirect();
             appendLoginFlag(cmd_line);
         },
+        .zsh => {
+            // ZDOTDIR redirect: write a shadow .zshenv that restores real ZDOTDIR,
+            // sources user configs, then injects OSC 7/7337 hooks.
+            setupZshZdotdirRedirect();
+        },
         else => {},
     }
 }
@@ -219,6 +224,57 @@ fn setupBashHomeRedirect() void {
 
     // Point HOME at the shadow dir.
     _ = SetEnvironmentVariableW(&home_name, msys_shadow[0..msys_shadow_len :0]);
+}
+
+/// Set up ZDOTDIR redirect for zsh shell integration on Windows.
+/// 1. Saves real ZDOTDIR (or HOME) to __ATTYX_ORIGINAL_ZDOTDIR
+/// 2. Writes shadow .zshenv to %LOCALAPPDATA%\attyx\shell-integration\zsh\
+/// 3. Points ZDOTDIR at the shadow dir so zsh sources our .zshenv
+fn setupZshZdotdirRedirect() void {
+    // Determine the original ZDOTDIR — fallback to HOME, then USERPROFILE.
+    const zdotdir_name = comptime toUtf16Literal("ZDOTDIR");
+    const home_name = comptime toUtf16Literal("HOME");
+    const userprofile_name = comptime toUtf16Literal("USERPROFILE");
+    var orig_zd: [512]u16 = undefined;
+    var orig_zd_len = GetEnvironmentVariableW(&zdotdir_name, &orig_zd, @intCast(orig_zd.len));
+    if (orig_zd_len == 0 or orig_zd_len >= orig_zd.len) {
+        orig_zd_len = GetEnvironmentVariableW(&home_name, &orig_zd, @intCast(orig_zd.len));
+    }
+    if (orig_zd_len == 0 or orig_zd_len >= orig_zd.len) {
+        orig_zd_len = GetEnvironmentVariableW(&userprofile_name, &orig_zd, @intCast(orig_zd.len));
+    }
+    if (orig_zd_len == 0 or orig_zd_len >= orig_zd.len) return;
+
+    // Convert original ZDOTDIR to MSYS path and save as __ATTYX_ORIGINAL_ZDOTDIR.
+    var msys_orig: [512]u16 = undefined;
+    const msys_orig_len = toMsysPath(orig_zd[0..orig_zd_len], &msys_orig);
+    if (msys_orig_len == 0) return;
+    msys_orig[msys_orig_len] = 0;
+    const orig_env = comptime toUtf16Literal("__ATTYX_ORIGINAL_ZDOTDIR");
+    _ = SetEnvironmentVariableW(&orig_env, msys_orig[0..msys_orig_len :0]);
+
+    // Write shadow .zshenv — this is the zsh integration script content.
+    const script = shell_integration.zsh_script;
+    const zshenv_path = writeIntegrationScript("zsh\\.zshenv", script) orelse return;
+
+    // Extract shadow dir (strip trailing \.zshenv).
+    var shadow_len: usize = 0;
+    {
+        var j: usize = 0;
+        while (zshenv_path[j] != 0) : (j += 1) {
+            if (zshenv_path[j] == '\\') shadow_len = j;
+        }
+    }
+    if (shadow_len == 0) return;
+
+    // Convert shadow dir to MSYS path for ZDOTDIR.
+    var msys_shadow: [512]u16 = undefined;
+    const msys_shadow_len = toMsysPath(zshenv_path[0..shadow_len], &msys_shadow);
+    if (msys_shadow_len == 0) return;
+    msys_shadow[msys_shadow_len] = 0;
+
+    // Point ZDOTDIR at the shadow dir.
+    _ = SetEnvironmentVariableW(&zdotdir_name, msys_shadow[0..msys_shadow_len :0]);
 }
 
 /// Convert a Windows path (C:\Users\Foo) to MSYS2-style (/c/Users/Foo).
