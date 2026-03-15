@@ -40,6 +40,28 @@ pub const std_options: std.Options = .{
     .logFn = logging.stdLogFn,
 };
 
+// Daemon panic handler — routes panics to the debug log file since the
+// daemon process has no console (DETACHED_PROCESS).
+var g_daemon_panic_handler_installed: bool = false;
+
+fn installDaemonPanicHandler() void {
+    g_daemon_panic_handler_installed = true;
+}
+
+pub const panic = if (is_windows) daemonPanicFn else std.debug.FullPanic;
+
+fn daemonPanicFn(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    if (g_daemon_panic_handler_installed) {
+        var buf: [512]u8 = undefined;
+        const text = if (ret_addr) |addr|
+            std.fmt.bufPrint(&buf, "PANIC at 0x{x}: {s}", .{ addr, msg }) catch msg
+        else
+            std.fmt.bufPrint(&buf, "PANIC: {s}", .{msg}) catch msg;
+        debugToFile(text);
+    }
+    std.process.exit(3);
+}
+
 // Windows API imports for console management and error dialogs.
 const win32 = if (is_windows) struct {
     const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
@@ -118,6 +140,7 @@ pub fn main() !void {
         },
         .daemon => {
             debugToFile("main: daemon action dispatched");
+            if (is_windows) installDaemonPanicHandler();
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
