@@ -599,8 +599,9 @@ static bool CreateShortcutLink(const wchar_t* lnkPath, const wchar_t* target,
 // Entry point
 // ---------------------------------------------------------------------------
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int cmdShow) {
-    (void)hPrev; (void)cmdLine; (void)cmdShow;
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow) {
+    (void)hPrev; (void)cmdLineA; (void)cmdShow;
+    LPWSTR cmdLine = GetCommandLineW();
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     // Parse /version=X.Y.Z from command line
