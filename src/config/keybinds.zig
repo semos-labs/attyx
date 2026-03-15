@@ -407,6 +407,12 @@ var g_table: Table = .{};
 /// Install a new keybind table (called at startup and on config reload).
 pub fn installTable(table: *const Table) void {
     g_table = table.*;
+    // Dump keybind table at startup for debugging
+    for (g_table.entries[0..g_table.count]) |entry| {
+        logging.info("keybind", "table: action={d} key={d} mods=0x{x:0>2} cp={d}", .{
+            @intFromEnum(entry.action), entry.combo.key, entry.combo.mods, entry.combo.codepoint,
+        });
+    }
 }
 
 // Matched sequence result (set by attyx_keybind_match for send_sequence actions)
