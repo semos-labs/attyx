@@ -79,6 +79,14 @@ uint16_t win_mapVirtualKey(WPARAM vk, LPARAM lParam) {
     }
 }
 
+// Detect AltGr: Windows sends left-Ctrl + right-Alt for AltGr.
+// Returns true when the "Ctrl" is just a phantom from AltGr.
+static int win_isAltGr(void) {
+    return (GetKeyState(VK_RMENU) & 0x8000) &&
+           (GetKeyState(VK_LCONTROL) & 0x8000) &&
+           !(GetKeyState(VK_RCONTROL) & 0x8000);
+}
+
 // Build modifier bitmask: bit0=shift, bit1=alt, bit2=ctrl, bit3=super
 uint8_t win_buildMods(void) {
     uint8_t m = 0;
@@ -86,6 +94,8 @@ uint8_t win_buildMods(void) {
     if (GetKeyState(VK_MENU)    & 0x8000) m |= 2;
     if (GetKeyState(VK_CONTROL) & 0x8000) m |= 4;
     if (GetKeyState(VK_LWIN) & 0x8000 || GetKeyState(VK_RWIN) & 0x8000) m |= 8;
+    // Strip phantom Ctrl from AltGr so alt+key bindings work with right-Alt
+    if (win_isAltGr() && (m & 6) == 6) m &= ~4;
     return m;
 }
 
@@ -150,11 +160,8 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
     int ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     int alt   = (GetKeyState(VK_MENU)    & 0x8000) != 0;
     int shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
-
-    if (alt && vk != VK_MENU && vk != VK_LMENU && vk != VK_RMENU) {
-        ATTYX_LOG_INFO("input", "handleKeyDown: vk=0x%02X ctrl=%d alt=%d shift=%d",
-                       (unsigned)vk, ctrl, alt, shift);
-    }
+    // Strip phantom Ctrl from AltGr (right-Alt sends Ctrl+Alt on Windows)
+    if (win_isAltGr() && ctrl && alt) ctrl = 0;
 
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
