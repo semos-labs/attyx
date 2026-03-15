@@ -121,10 +121,12 @@ fn ctrlHandler(ctrl_type: DWORD) callconv(.winapi) BOOL {
     }
 }
 
-const root = @import("../../main.zig");
+pub fn testLog() void {
+    daemonLog("testLog: daemon module is reachable");
+}
 
 pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
-    root.debugToFile("daemon_windows.run: ENTERED");
+    daemonLog("daemon_windows.run: ENTERED");
     daemonLog("daemon starting");
 
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);

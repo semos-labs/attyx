@@ -151,6 +151,9 @@ pub fn main() !void {
             debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
             debugToFile("main: about to call daemon.run");
+            // Test: call daemonLog directly to see if the module works
+            daemon.testLog();
+            debugToFile("main: testLog returned, now calling daemon.run");
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
