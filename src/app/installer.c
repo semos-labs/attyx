@@ -171,6 +171,34 @@ static void SetStatus(const wchar_t* fmt, ...) {
     InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
+// Translate a Win32 error code into a short human-readable reason.
+static const wchar_t* DescribeError(DWORD code) {
+    switch (code) {
+    case ERROR_ACCESS_DENIED:       return L"Access denied. Try a different folder or close any programs using Attyx.";
+    case ERROR_SHARING_VIOLATION:   return L"The file is in use by another program. Close Attyx and try again.";
+    case ERROR_DISK_FULL:           return L"Not enough disk space. Free some space and try again.";
+    case ERROR_PATH_NOT_FOUND:      return L"The install path does not exist and could not be created.";
+    case ERROR_FILE_NOT_FOUND:      return L"A required file is missing from the installer package.";
+    case ERROR_WRITE_PROTECT:       return L"The disk is write-protected.";
+    case ERROR_DIRECTORY:           return L"The directory name is invalid.";
+    case ERROR_ALREADY_EXISTS:      return L"A file with that name already exists.";
+    case ERROR_INVALID_NAME:        return L"The folder path contains invalid characters.";
+    default: {
+        // Ask Windows for a description
+        static wchar_t buf[256];
+        DWORD len = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                    NULL, code, 0, buf, 256, NULL);
+        if (len > 0) {
+            // Trim trailing \r\n
+            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) buf[--len] = 0;
+            return buf;
+        }
+        swprintf(buf, 256, L"Unexpected error (code %lu).", code);
+        return buf;
+    }
+    }
+}
+
 static void InitPaths(void) {
     GetModuleFileNameW(NULL, g_exe_dir, MAX_PATH);
     PathRemoveFileSpecW(g_exe_dir);
@@ -472,8 +500,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     if (dirErr != ERROR_SUCCESS && dirErr != ERROR_ALREADY_EXISTS
         && dirErr != ERROR_FILE_EXISTS) {
         wchar_t msg[512];
-        swprintf(msg, 512, L"Could not create %s (error %d). Try a different path or run as admin.",
-                 g_install_dir, dirErr);
+        swprintf(msg, 512, L"Could not create folder: %s", DescribeError((DWORD)dirErr));
         SetStatus(msg);
         g_failed = true; g_done = true; g_installing = false;
         return 1;
@@ -487,7 +514,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     if (!CopyFileW(src, dst, FALSE)) {
         DWORD err = GetLastError();
         wchar_t msg[512];
-        swprintf(msg, 512, L"Could not copy attyx.exe (error %lu)", err);
+        swprintf(msg, 512, L"Could not install attyx.exe: %s", DescribeError(err));
         SetStatus(msg);
         g_failed = true; g_done = true; g_installing = false;
         return 1;
