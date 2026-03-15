@@ -172,6 +172,10 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
+    if (is_windows) {
+        _ = win32.MessageBoxA(null, "DEBUG: about to call terminal.run", "Attyx Debug", 0);
+    }
+
     terminal.run(merged, result.no_config, result.config_path, args) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Terminal failed: {s}", .{@errorName(err)}) catch "Terminal failed";

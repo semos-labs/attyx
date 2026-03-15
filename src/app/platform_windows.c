@@ -708,6 +708,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 // ---------------------------------------------------------------------------
 
 void attyx_run(AttyxCell* cells, int cols, int rows) {
+    MessageBoxA(NULL, "DEBUG: attyx_run entered", "Attyx Debug", MB_OK);
     // Console already detached by main() before reaching here.
     g_cells = cells;
     g_cols  = cols;
