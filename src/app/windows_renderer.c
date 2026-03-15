@@ -510,13 +510,18 @@ int windows_renderer_draw_frame(void) {
     float bf[4] = {0,0,0,0};
     ID3D11DeviceContext_OMSetBlendState(g_d3d_context, g_d3d_blend_alpha, bf, 0xFFFFFFFF);
 
-    // Gap fill
+    // Gap fill — margins around the grid.
+    // When the statusbar is active and positioned at top/bottom, skip the
+    // gap fill in that area so the overlay controls the bg (important for
+    // transparent windows where stacking would compound alpha).
     {
         float gridR = offX + cols * gw, gridB = offY + visibleRows * gh;
         WinVertex gv[24]; int gvc = 0;
-        if (offY > 0.5f)
+        int sb_top = (g_statusbar_visible && g_statusbar_position == 0);
+        int sb_bot = (g_statusbar_visible && g_statusbar_position == 1);
+        if (offY > 0.5f && !sb_top)
             gvc = winEmitRect(gv, gvc, 0, 0, vpW, offY, bgR, bgG, bgB, opacity);
-        if (gridB + 0.5f < vpH)
+        if (gridB + 0.5f < vpH && !sb_bot)
             gvc = winEmitRect(gv, gvc, 0, gridB, vpW, vpH - gridB, bgR, bgG, bgB, opacity);
         if (offX > 0.5f)
             gvc = winEmitRect(gv, gvc, 0, offY, offX, visibleRows * gh, bgR, bgG, bgB, opacity);

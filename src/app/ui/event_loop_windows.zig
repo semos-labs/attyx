@@ -516,7 +516,7 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
     var titles: tab_bar_mod.TabTitles = undefined;
     resolveTabTitles(ctx, &titles, &name_bufs);
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
-    const sb_alpha: u8 = if (sb.config.background_opacity > 0) sb.config.background_opacity else 230;
+    const sb_alpha: u8 = sb.config.background_opacity;
     const result = statusbar_mod.generate(
         &styled,
         sb,
