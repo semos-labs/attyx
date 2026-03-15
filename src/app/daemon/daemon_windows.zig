@@ -133,15 +133,22 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     var run_err: bool = false;
     const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, struct {
         fn entry(alloc: std.mem.Allocator, rpath: ?[]const u8, err_flag: *bool) void {
-            runImpl(alloc, rpath) catch {
+            daemonLog("thread: entry point reached");
+            runImpl(alloc, rpath) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "thread: runImpl failed: {s}", .{@errorName(err)}) catch "thread: runImpl failed";
+                daemonLog(msg);
                 err_flag.* = true;
             };
+            daemonLog("thread: runImpl returned");
         }
     }.entry, .{ allocator, restore_path, &run_err }) catch {
         daemonLog("ERROR: failed to spawn daemon thread");
         return error.SpawnFailed;
     };
+    daemonLog("run: thread spawned, joining");
     thread.join();
+    daemonLog("run: thread joined");
     if (run_err) return error.DaemonFailed;
 }
 
