@@ -6,6 +6,9 @@ package-lock.json
 .env
 cert
 zig-out/
+installer/dist/
+installer/output/
+installer/.innosetup/
 *.app
 worktrees
 tasks

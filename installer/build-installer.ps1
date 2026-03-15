@@ -46,7 +46,7 @@ if (Test-Path $sysroot) {
     xcopy /E /I /Q "$sysroot" "$destSysroot" | Out-Null
 }
 
-# Step 3: Find iscc.exe
+# Step 3: Find or download Inno Setup
 $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if (-not $iscc) {
     $defaultPaths = @(
@@ -57,12 +57,33 @@ if (-not $iscc) {
     foreach ($p in $defaultPaths) {
         if (Test-Path $p) { $iscc = $p; break }
     }
-    if (-not $iscc) {
-        Write-Error "Inno Setup not found. Install from https://jrsoftware.org/issetup.html or add iscc.exe to PATH."
-        exit 1
+}
+if ($iscc -and $iscc.Source) { $iscc = $iscc.Source }
+
+# Auto-download portable Inno Setup if not found
+if (-not $iscc) {
+    $innoDir = Join-Path $root "installer\.innosetup"
+    $innoIscc = Join-Path $innoDir "ISCC.exe"
+    if (Test-Path $innoIscc) {
+        $iscc = $innoIscc
+    } else {
+        Write-Host ">> Downloading Inno Setup 6..." -ForegroundColor Yellow
+        $innoUrl = "https://files.jrsoftware.org/is/6/innosetup-6.4.3.exe"
+        $innoInstaller = Join-Path $root "installer\innosetup-dl.exe"
+        Invoke-WebRequest -Uri $innoUrl -OutFile $innoInstaller -UseBasicParsing
+        # Silent extract to local dir (no system install)
+        Write-Host ">> Extracting Inno Setup..." -ForegroundColor Yellow
+        & "$innoInstaller" /VERYSILENT /SUPPRESSMSGBOXES /DIR="$innoDir" /NOICONS /CURRENTUSER /LOG
+        # Wait for installer to finish
+        Start-Sleep -Seconds 3
+        Remove-Item $innoInstaller -Force -ErrorAction SilentlyContinue
+        if (Test-Path $innoIscc) {
+            $iscc = $innoIscc
+        } else {
+            Write-Error "Failed to install Inno Setup."
+            exit 1
+        }
     }
-} else {
-    $iscc = $iscc.Source
 }
 
 # Step 4: Compile installer
