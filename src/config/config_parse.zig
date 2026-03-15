@@ -9,6 +9,7 @@ const PopupConfigEntry = config_mod.PopupConfigEntry;
 const KeybindOverride = config_mod.KeybindOverride;
 const SequenceEntry = config_mod.SequenceEntry;
 const statusbar_config = @import("statusbar_config.zig");
+const logging = @import("../logging/log.zig");
 
 pub fn parseCellSize(v: toml.TomlValue, path: []const u8, field: []const u8) ?CellSize {
     if (v == .int) {
@@ -36,6 +37,20 @@ pub fn tomlOptU16(v: ?toml.TomlValue) ?u16 {
 }
 
 pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8, config: *AppConfig) !void {
+    // Debug: dump raw [keybindings] section content
+    if (std.mem.indexOf(u8, content, "[keybindings]")) |kb_start| {
+        const section = content[kb_start..@min(kb_start + 500, content.len)];
+        logging.info("config", "raw [keybindings] section ({d} bytes from offset {d}):", .{ section.len, kb_start });
+        // Log line by line
+        var line_it = std.mem.splitScalar(u8, section, '\n');
+        var line_n: usize = 0;
+        while (line_it.next()) |line| {
+            logging.info("config", "  [{d}] \"{s}\"", .{ line_n, line });
+            line_n += 1;
+            if (line_n > 15) break;
+        }
+    }
+
     const parser = toml.Parser.init(allocator) catch {
         std.debug.print("error: failed to initialize TOML parser\n", .{});
         return error.ConfigParseError;
@@ -496,7 +511,6 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
     if (root.get("keybindings")) |kb_val| {
         if (kb_val == .table) {
             const commands = @import("commands.zig");
-            const logging = @import("../logging/log.zig");
 
             // Debug: dump raw TOML table contents via iterator
             var dbg_it = kb_val.table.table.iterator();
