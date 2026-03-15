@@ -357,8 +357,10 @@ fn buildInitialTabs(
             if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
                 if (info.tab_count > 0) {
                     // Create a throwaway initial pane for TabManager.init, then reset.
+                    // Mark it daemon-backed so deinit() skips PTY cleanup.
                     const placeholder = try allocator.create(Pane);
                     placeholder.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
+                    placeholder.daemon_pane_id = 0xFFFFFFFF; // sentinel so deinit skips PTY
                     tab_mgr.* = TabManager.init(allocator, placeholder);
                     tab_mgr.reconstructFromLayout(&info, pty_rows, cols, scrollback) catch {
                         logging.err("session", "layout reconstruction failed", .{});
