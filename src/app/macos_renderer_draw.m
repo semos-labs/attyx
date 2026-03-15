@@ -51,7 +51,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
 - (void)drawFrameImpl:(MTKView*)view {
     if (!g_cells || g_cols <= 0 || g_rows <= 0) return;
 
-    uint64_t gen1 = g_cell_gen;
+    uint64_t gen1 = __atomic_load_n((volatile uint64_t*)&g_cell_gen, __ATOMIC_ACQUIRE);
     if (gen1 & 1) return;
 
     @autoreleasepool {
@@ -152,7 +152,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             return;
         }
 
-        uint64_t gen2 = g_cell_gen;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        uint64_t gen2 = __atomic_load_n((volatile uint64_t*)&g_cell_gen, __ATOMIC_ACQUIRE);
         if (gen1 != gen2) {
             // Torn read — restore dirty bits so the next frame re-reads.
             for (int i = 0; i < 4; i++)

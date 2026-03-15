@@ -9,6 +9,7 @@ const OverlayManager = overlay_mod.OverlayManager;
 const tab_bar_mod = @import("../tab_bar.zig");
 const statusbar_mod = @import("../statusbar.zig");
 const split_render = @import("../split_render.zig");
+const logging = @import("../../logging/log.zig");
 const platform = @import("../../platform/platform.zig");
 const Pty = @import("../pty.zig").Pty;
 const AppConfig = @import("../../config/config.zig").AppConfig;
@@ -23,6 +24,14 @@ const overlay_ui = attyx.overlay_ui;
 
 // Shared anchor demo mode counter (persists across calls).
 pub var g_anchor_mode_counter: u8 = 0;
+
+// Last hash of statusbar cells — skip overlay update when unchanged.
+var last_statusbar_hash: u64 = 0;
+
+fn hashStatusbarCells(cells: []const overlay_mod.StyledCell) u64 {
+    const bytes = std.mem.sliceAsBytes(cells);
+    return std.hash.Wyhash.hash(0, bytes);
+}
 
 /// Derive overlay panel theme from the active terminal theme.
 pub fn overlayThemeFromTheme(theme: *const Theme) overlay_ui.OverlayTheme {
@@ -818,6 +827,13 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 0 else ctx.tab_mgr.count;
     const zoomed_tabs = computeZoomedTabs(ctx);
     const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs) orelse return;
+
+    // Skip overlay update if statusbar content hasn't changed.
+    const cell_count = @as(usize, result.width) * @as(usize, result.height);
+    const hash = hashStatusbarCells(result.cells[0..cell_count]);
+    if (hash == last_statusbar_hash) return;
+    last_statusbar_hash = hash;
+
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
     mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);

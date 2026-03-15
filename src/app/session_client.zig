@@ -6,6 +6,7 @@ const posix = std.posix;
 const attyx = @import("attyx");
 const protocol = @import("daemon/protocol.zig");
 const conn = @import("session_connect.zig");
+const logging = @import("../logging/log.zig");
 
 pub const max_list_entries = 32;
 
@@ -38,6 +39,12 @@ pub const DaemonMessage = union(enum) {
 };
 
 pub const SessionClient = struct {
+    /// Max buffered events captured during blocking waits.
+    const max_buffered_deaths = 16;
+    const max_buffered_proc_names = 16;
+    pub const BufferedDeath = struct { pane_id: u32, exit_code: u8 };
+    pub const BufferedProcName = struct { pane_id: u32, name: [64]u8 = undefined, name_len: u8 = 0 };
+
     socket_fd: posix.fd_t = -1,
     read_buf: [65536]u8 = undefined,
     read_len: usize = 0,
@@ -51,6 +58,14 @@ pub const SessionClient = struct {
     pending_list: [max_list_entries]ListEntry = undefined,
     pending_list_count: u8 = 0,
     pending_list_ready: bool = false,
+
+    /// Buffered pane_died events captured during blocking waits (e.g.
+    /// waitForPaneCreated) that would otherwise be silently discarded.
+    buffered_deaths: [max_buffered_deaths]BufferedDeath = undefined,
+    buffered_death_count: u8 = 0,
+    /// Buffered pane_proc_name events captured during blocking waits.
+    buffered_proc_names: [max_buffered_proc_names]BufferedProcName = undefined,
+    buffered_proc_name_count: u8 = 0,
 
     /// True if daemon did not respond to hello (pre-upgrade legacy daemon).
     legacy_daemon: bool = false,
@@ -294,7 +309,7 @@ pub const SessionClient = struct {
                     self.consumeBytes(total);
                     return;
                 }
-                self.consumeBytes(total);
+                self.consumeOrBuffer(header.msg_type, payload, total);
             }
             // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
@@ -337,7 +352,7 @@ pub const SessionClient = struct {
                     self.consumeBytes(total);
                     return error.DaemonError;
                 }
-                self.consumeBytes(total);
+                self.consumeOrBuffer(header.msg_type, payload, total);
             }
             // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
@@ -373,7 +388,7 @@ pub const SessionClient = struct {
                     self.consumeBytes(total);
                     return error.DaemonError;
                 }
-                self.consumeBytes(total);
+                self.consumeOrBuffer(header.msg_type, payload, total);
             }
             // Poll for more data
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
@@ -384,6 +399,36 @@ pub const SessionClient = struct {
             elapsed += 100;
         }
         return error.Timeout;
+    }
+
+    /// Pop the next buffered pane death captured during a blocking wait.
+    /// Returns null when the buffer is empty.
+    pub fn popBufferedDeath(self: *SessionClient) ?BufferedDeath {
+        if (self.buffered_death_count == 0) return null;
+        const death = self.buffered_deaths[0];
+        self.buffered_death_count -= 1;
+        if (self.buffered_death_count > 0) {
+            // Shift remaining entries left.
+            var i: u8 = 0;
+            while (i < self.buffered_death_count) : (i += 1) {
+                self.buffered_deaths[i] = self.buffered_deaths[i + 1];
+            }
+        }
+        return death;
+    }
+
+    /// Pop the next buffered proc name captured during a blocking wait.
+    pub fn popBufferedProcName(self: *SessionClient) ?BufferedProcName {
+        if (self.buffered_proc_name_count == 0) return null;
+        const entry = self.buffered_proc_names[0];
+        self.buffered_proc_name_count -= 1;
+        if (self.buffered_proc_name_count > 0) {
+            var i: u8 = 0;
+            while (i < self.buffered_proc_name_count) : (i += 1) {
+                self.buffered_proc_names[i] = self.buffered_proc_names[i + 1];
+            }
+        }
+        return entry;
     }
 
     pub fn killSession(self: *SessionClient, session_id: u32) !void {
@@ -461,6 +506,7 @@ pub const SessionClient = struct {
                     return .{ .pane_created = pane_id };
                 },
                 .pane_died => {
+                    logging.info("tabs", "readMessage: pane_died received", .{});
                     const msg = protocol.decodePaneDied(payload) catch {
                         self.consumeBytes(total);
                         continue;
@@ -575,8 +621,43 @@ pub const SessionClient = struct {
         self.read_off += n;
     }
 
+    /// Consume a message, buffering it if it's a pane_died or pane_proc_name.
+    /// Called by blocking waits that would otherwise silently discard messages.
+    fn consumeOrBuffer(self: *SessionClient, msg_type: protocol.MessageType, payload: []const u8, total: usize) void {
+        if (msg_type == .pane_died) {
+            if (protocol.decodePaneDied(payload)) |died| {
+                logging.info("tabs", "buffering pane_died during blocking wait: pane_id={d}", .{died.pane_id});
+                if (self.buffered_death_count < max_buffered_deaths) {
+                    self.buffered_deaths[self.buffered_death_count] = .{
+                        .pane_id = died.pane_id,
+                        .exit_code = died.exit_code,
+                    };
+                    self.buffered_death_count += 1;
+                }
+            } else |_| {}
+        } else if (msg_type == .pane_proc_name) {
+            if (protocol.decodePaneProcName(payload)) |pn| {
+                if (self.buffered_proc_name_count < max_buffered_proc_names) {
+                    var entry = BufferedProcName{ .pane_id = pn.pane_id };
+                    const len: u8 = @intCast(@min(pn.name.len, 64));
+                    @memcpy(entry.name[0..len], pn.name[0..len]);
+                    entry.name_len = len;
+                    self.buffered_proc_names[self.buffered_proc_name_count] = entry;
+                    self.buffered_proc_name_count += 1;
+                }
+            } else |_| {}
+        }
+        self.consumeBytes(total);
+    }
+
     fn availableBytes(self: *const SessionClient) usize {
         return self.read_len - self.read_off;
+    }
+
+    /// Returns true if there are unprocessed bytes in the read buffer
+    /// (e.g. from a previous recvData call that wasn't fully drained).
+    pub fn hasBufferedData(self: *const SessionClient) bool {
+        return self.availableBytes() >= protocol.header_size;
     }
 
     fn compactReadBuf(self: *SessionClient) void {
@@ -647,7 +728,7 @@ pub const SessionClient = struct {
                     self.consumeBytes(total);
                     return error.DaemonError;
                 }
-                self.consumeBytes(total);
+                self.consumeOrBuffer(header.msg_type, payload, total);
             }
             // Poll for more data from the daemon
             var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = 0x0001, .revents = 0 }};
@@ -666,4 +747,68 @@ pub const SessionClient = struct {
             self.socket_fd = -1;
         }
     }
+
+    // ── Tests ──
+
+    /// Inject raw bytes into the read buffer for testing.
+    fn injectBytes(self: *SessionClient, data: []const u8) void {
+        @memcpy(self.read_buf[self.read_len .. self.read_len + data.len], data);
+        self.read_len += data.len;
+    }
 };
+
+test "waitForPaneCreated buffers pane_died instead of discarding" {
+    const alloc = std.testing.allocator;
+    var client = SessionClient{ .allocator = alloc, .socket_fd = -1 };
+
+    // Encode a pane_died message (pane 42, exit code 0)
+    var died_payload: [8]u8 = undefined;
+    const died_p = protocol.encodePaneDied(&died_payload, 42, 0) catch unreachable;
+    var died_msg: [protocol.header_size + 8]u8 = undefined;
+    const died_full = protocol.encodeMessage(&died_msg, .pane_died, died_p) catch unreachable;
+
+    // Encode a pane_created message (pane 99)
+    var created_payload: [4]u8 = undefined;
+    const created_p = protocol.encodePaneCreated(&created_payload, 99) catch unreachable;
+    var created_msg: [protocol.header_size + 4]u8 = undefined;
+    const created_full = protocol.encodeMessage(&created_msg, .pane_created, created_p) catch unreachable;
+
+    // Inject both messages: pane_died first, then pane_created
+    client.injectBytes(died_full);
+    client.injectBytes(created_full);
+
+    // waitForPaneCreated should return the created pane ID
+    const pane_id = client.waitForPaneCreated(100) catch |err| {
+        std.debug.print("unexpected error: {}\n", .{err});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(@as(u32, 99), pane_id);
+
+    // The pane_died should be buffered, not lost
+    try std.testing.expectEqual(@as(u8, 1), client.buffered_death_count);
+    const death = client.popBufferedDeath().?;
+    try std.testing.expectEqual(@as(u32, 42), death.pane_id);
+    try std.testing.expectEqual(@as(u8, 0), death.exit_code);
+
+    // Buffer should now be empty
+    try std.testing.expectEqual(@as(?SessionClient.BufferedDeath, null), client.popBufferedDeath());
+}
+
+test "popBufferedDeath drains in order" {
+    const alloc = std.testing.allocator;
+    var client = SessionClient{ .allocator = alloc, .socket_fd = -1 };
+
+    // Manually fill the buffer
+    client.buffered_deaths[0] = .{ .pane_id = 10, .exit_code = 1 };
+    client.buffered_deaths[1] = .{ .pane_id = 20, .exit_code = 2 };
+    client.buffered_deaths[2] = .{ .pane_id = 30, .exit_code = 3 };
+    client.buffered_death_count = 3;
+
+    const d1 = client.popBufferedDeath().?;
+    try std.testing.expectEqual(@as(u32, 10), d1.pane_id);
+    const d2 = client.popBufferedDeath().?;
+    try std.testing.expectEqual(@as(u32, 20), d2.pane_id);
+    const d3 = client.popBufferedDeath().?;
+    try std.testing.expectEqual(@as(u32, 30), d3.pane_id);
+    try std.testing.expectEqual(@as(?SessionClient.BufferedDeath, null), client.popBufferedDeath());
+}
