@@ -244,7 +244,7 @@ static void DoPaint(HWND hwnd) {
     // Title — vertically centered with icon
     SelectObject(mem, g_font_hero);
     SetTextColor(mem, TEXT_PRI);
-    RECT tr = { PAD + iconSz + 14, y + 6, W - PAD, y + iconSz };
+    RECT tr = { PAD + iconSz + 14, y, W - PAD, y + iconSz };
     DrawTextW(mem, L"Attyx", -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     // Version badge
