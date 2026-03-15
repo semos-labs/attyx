@@ -163,6 +163,15 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
     // Strip phantom Ctrl from AltGr (right-Alt sends Ctrl+Alt on Windows)
     if (win_isAltGr() && ctrl && alt) ctrl = 0;
 
+    if (alt && vk != VK_MENU && vk != VK_LMENU && vk != VK_RMENU) {
+        int lctrl = (GetKeyState(VK_LCONTROL) & 0x8000) != 0;
+        int rctrl = (GetKeyState(VK_RCONTROL) & 0x8000) != 0;
+        int lalt  = (GetKeyState(VK_LMENU) & 0x8000) != 0;
+        int ralt  = (GetKeyState(VK_RMENU) & 0x8000) != 0;
+        ATTYX_LOG_INFO("input", "vk=0x%02X c=%d a=%d s=%d | lc=%d rc=%d la=%d ra=%d altgr=%d mods=0x%02X",
+                       (unsigned)vk, ctrl, alt, shift, lctrl, rctrl, lalt, ralt, win_isAltGr(), win_buildMods());
+    }
+
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
         if (vk == VK_ESCAPE)                         { attyx_overlay_esc(); g_suppress_char = 1; return 0; }
