@@ -1,9 +1,10 @@
 # Attyx — Build Windows installer
 # Usage: powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
-# Requires: Inno Setup (iscc.exe on PATH or default install location)
+# Builds attyx, assembles payload, compiles the custom installer exe.
 
 param(
-    [string]$Version = ""
+    [string]$Version = "",
+    [switch]$SkipBuild
 )
 
 Set-StrictMode -Version Latest
@@ -11,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $dist = Join-Path $root "installer\dist"
-$issFile = Join-Path $root "installer\attyx.iss"
+$output = Join-Path $root "installer\output"
 
 # Read version from build.zig.zon if not provided
 if (-not $Version) {
@@ -25,14 +26,16 @@ if (-not $Version) {
 }
 Write-Host "Building Attyx $Version installer..." -ForegroundColor Cyan
 
-# Step 1: Build
-Write-Host ">> zig build" -ForegroundColor Yellow
-Push-Location $root
-zig build
-Pop-Location
+# Step 1: Build attyx
+if (-not $SkipBuild) {
+    Write-Host ">> zig build" -ForegroundColor Yellow
+    Push-Location $root
+    zig build
+    Pop-Location
+}
 
-# Step 2: Copy to dist/
-Write-Host ">> Copying to installer\dist\" -ForegroundColor Yellow
+# Step 2: Assemble dist/
+Write-Host ">> Assembling payload in installer\dist\" -ForegroundColor Yellow
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 Copy-Item (Join-Path $root "zig-out\bin\attyx.exe") $dist
@@ -46,54 +49,34 @@ if (Test-Path $sysroot) {
     xcopy /E /I /Q "$sysroot" "$destSysroot" | Out-Null
 }
 
-# Step 3: Find or download Inno Setup
-$iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
-if (-not $iscc) {
-    $defaultPaths = @(
-        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe"
-    )
-    foreach ($p in $defaultPaths) {
-        if (Test-Path $p) { $iscc = $p; break }
-    }
-}
-if ($iscc -and $iscc.Source) { $iscc = $iscc.Source }
+# Step 3: Compile custom installer
+Write-Host ">> Compiling installer..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Path $output -Force | Out-Null
+$installerC = Join-Path $root "installer\installer.c"
+$installerRc = Join-Path $root "installer\installer.rc"
+$setupExe = Join-Path $output "attyx-$Version-setup.exe"
 
-# Auto-download portable Inno Setup if not found
-if (-not $iscc) {
-    $innoDir = Join-Path $root "installer\.innosetup"
-    $innoIscc = Join-Path $innoDir "ISCC.exe"
-    if (Test-Path $innoIscc) {
-        $iscc = $innoIscc
-    } else {
-        Write-Host ">> Downloading Inno Setup 6..." -ForegroundColor Yellow
-        $innoUrl = "https://files.jrsoftware.org/is/6/innosetup-6.4.3.exe"
-        $innoInstaller = Join-Path $root "installer\innosetup-dl.exe"
-        Invoke-WebRequest -Uri $innoUrl -OutFile $innoInstaller -UseBasicParsing
-        # Silent extract to local dir (no system install)
-        Write-Host ">> Extracting Inno Setup..." -ForegroundColor Yellow
-        & "$innoInstaller" /VERYSILENT /SUPPRESSMSGBOXES /DIR="$innoDir" /NOICONS /CURRENTUSER /LOG
-        # Wait for installer to finish
-        Start-Sleep -Seconds 3
-        Remove-Item $innoInstaller -Force -ErrorAction SilentlyContinue
-        if (Test-Path $innoIscc) {
-            $iscc = $innoIscc
-        } else {
-            Write-Error "Failed to install Inno Setup."
-            exit 1
-        }
-    }
-}
+# Use zig cc to compile the installer (works without MSVC)
+Push-Location (Join-Path $root "installer")
+zig cc $installerC $installerRc `
+    -o $setupExe `
+    -target x86_64-windows-gnu `
+    -lkernel32 -luser32 -lgdi32 -lshell32 -lole32 `
+    -ladvapi32 -lshlwapi -luuid `
+    -mwindows `
+    -O2
+Pop-Location
 
-# Step 4: Compile installer
-Write-Host ">> iscc /DMyAppVersion=$Version" -ForegroundColor Yellow
-& "$iscc" "/DMyAppVersion=$Version" "$issFile"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Inno Setup compilation failed."
+if (-not (Test-Path $setupExe)) {
+    Write-Error "Installer compilation failed."
     exit 1
 }
 
-$output = Join-Path $root "installer\output\attyx-$Version-setup.exe"
+# Step 4: Copy dist/ next to the setup exe (installer expects it)
+$setupDist = Join-Path $output "dist"
+if (Test-Path $setupDist) { Remove-Item $setupDist -Recurse -Force }
+xcopy /E /I /Q "$dist" "$setupDist" | Out-Null
+
 Write-Host ""
-Write-Host "Done! Installer: $output" -ForegroundColor Green
+Write-Host "Done! Installer: $setupExe" -ForegroundColor Green
+Write-Host "  Distribute the entire 'output' folder (setup exe + dist/)." -ForegroundColor DarkGray
