@@ -182,6 +182,9 @@ pub fn build(b: *std.Build) void {
 
     // Windows (Direct3D 11 renderer) — Win32 platform layer + D3D11 renderer
     if (target.result.os.tag == .windows) {
+        // GUI app — no console window on launch
+        exe.subsystem = .Windows;
+
         exe.root_module.addIncludePath(b.path("src/app"));
         const win_flags = &.{};
         exe.addCSourceFile(.{ .file = b.path("src/app/platform_windows.c"),   .flags = win_flags });
@@ -200,6 +203,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_text_util.c"), .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_menu.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_native_tabs.c"), .flags = win_flags });
+        exe.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});

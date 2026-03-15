@@ -1,0 +1,5 @@
+// Attyx — Windows resource file
+// Embeds the application icon into the executable.
+// Icon ID 1 is used by Windows as the default exe/window icon.
+
+1 ICON "../../images/attyx.ico"
