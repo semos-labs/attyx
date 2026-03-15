@@ -460,6 +460,8 @@ int windows_renderer_draw_frame(void) {
     float sc = g_content_scale;
     float padL = g_padding_left * sc, padR = g_padding_right * sc;
     float padT = g_padding_top  * sc;
+    // Native tabs: content starts below the tab bar
+    if (g_native_tabs_enabled) padT += ntab_bar_height();
     float availW = vpW - padL - padR;
     float cx = floorf((availW - cols * gw) * 0.5f);
     if (cx < 0) cx = 0;
@@ -538,6 +540,9 @@ int windows_renderer_draw_frame(void) {
             upload_and_draw(gv, gvc);
         }
     }
+
+    // Native tab bar (drawn above gap fill, below grid content)
+    ntab_draw(vpW, vpH);
 
     // BG pass
     if (bgVertCount > 0) {

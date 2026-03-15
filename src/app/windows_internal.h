@@ -450,6 +450,17 @@ int detectUrlAtCell(int row, int col, int cols,
 void findWordBounds(int row, int col, int cols, int* outStart, int* outEnd);
 
 // ---------------------------------------------------------------------------
+// Native tab bar (windows_native_tabs.c)
+// ---------------------------------------------------------------------------
+
+float ntab_bar_height(void);
+void  ntab_draw(float vpW, float vpH);
+int   ntab_hit_test(int px, int py, int clientW);
+int   ntab_mouse_move(int px, int py, int clientW);
+int   ntab_mouse_down(int px, int py, int clientW);
+void  ntab_mouse_leave(void);
+
+// ---------------------------------------------------------------------------
 // Mouse helpers (windows_mouse.c)
 // ---------------------------------------------------------------------------
 

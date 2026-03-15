@@ -373,6 +373,7 @@ void attyx_apply_window_update(void) {
     if (g_cell_px_w > 0 && g_cell_px_h > 0) {
         float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
         float padPxH = (float)(g_padding_top + g_padding_bottom) * g_content_scale;
+        if (g_native_tabs_enabled) padPxH += ntab_bar_height();
         int new_cols = (int)((fbW - padPxW) / g_cell_px_w + 0.01f);
         int new_rows = (int)((fbH - padPxH) / g_cell_px_h + 0.01f);
         g_pending_resize_rows = new_rows;
@@ -472,8 +473,16 @@ static void win_apply_transparency(HWND hwnd) {
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_NCCALCSIZE:
+        // Native tabs: extend client area into the title bar.
         // Borderless: expand client area to fill the entire window frame.
-        // Keeps WS_OVERLAPPEDWINDOW for proper minimize/maximize animations and snap.
+        if (g_native_tabs_enabled && wParam) {
+            // Let DefWindowProc calculate the default frame, then remove the
+            // title bar portion so our client area extends to the top.
+            LRESULT r = DefWindowProcW(hwnd, msg, wParam, lParam);
+            NCCALCSIZE_PARAMS* p = (NCCALCSIZE_PARAMS*)lParam;
+            p->rgrc[0].top = p->rgrc[1].top;  // extend client into title bar
+            return r;
+        }
         if (!g_window_decorations && wParam) return 0;
         break;
 
@@ -486,6 +495,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (g_cell_px_w > 0 && g_cell_px_h > 0) {
                 float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
                 float padPxH = (float)(g_padding_top + g_padding_bottom) * g_content_scale;
+                if (g_native_tabs_enabled) padPxH += ntab_bar_height();
                 int new_cols = (int)((w - padPxW) / g_cell_px_w + 0.01f);
                 int new_rows = (int)((h - padPxH) / g_cell_px_h + 0.01f);
                 g_pending_resize_rows = new_rows;
@@ -532,12 +542,43 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
 
     case WM_NCHITTEST: {
-        if (g_window_decorations) break;  // decorated windows use default hit-testing
-        // Borderless: enable edge resize + top-area drag
         POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
         ScreenToClient(hwnd, &pt);
         RECT rc;
         GetClientRect(hwnd, &rc);
+        int cw = rc.right - rc.left;
+
+        // Native tabs: handle tab bar area + caption buttons + edge resize
+        if (g_native_tabs_enabled) {
+            enum { EDGE = 6 };
+            BOOL bottom = pt.y >= rc.bottom - EDGE;
+            BOOL left   = pt.x < EDGE;
+            BOOL right  = pt.x >= rc.right - EDGE;
+            BOOL top    = pt.y < EDGE;
+            if (top && left)     return HTTOPLEFT;
+            if (top && right)    return HTTOPRIGHT;
+            if (bottom && left)  return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (top)             return HTTOP;
+            if (bottom)          return HTBOTTOM;
+            if (left)            return HTLEFT;
+            if (right)           return HTRIGHT;
+
+            int ht = ntab_hit_test(pt.x, pt.y, cw);
+            if (ht == HTCLOSE || ht == HTMAXBUTTON || ht == HTMINBUTTON)
+                return ht;
+            if (ht == HTCLIENT) {
+                // Tab bar area: let mouse messages through for tab interaction
+                return HTCLIENT;
+            }
+            // In tab bar but outside tab area = drag
+            float barH = ntab_bar_height();
+            if ((float)pt.y < barH) return HTCAPTION;
+            return HTCLIENT;
+        }
+
+        if (g_window_decorations) break;  // decorated windows use default hit-testing
+        // Borderless: enable edge resize + top-area drag
         enum { EDGE = 6 };  // resize grip in pixels
         BOOL top    = pt.y < EDGE;
         BOOL bottom = pt.y >= rc.bottom - EDGE;
@@ -567,6 +608,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
+
+    case WM_MOUSEMOVE:
+        if (g_native_tabs_enabled) {
+            POINT mp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            RECT mrc; GetClientRect(hwnd, &mrc);
+            if (ntab_mouse_move(mp.x, mp.y, mrc.right - mrc.left))
+                InvalidateRect(hwnd, NULL, FALSE);
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        if (g_native_tabs_enabled) ntab_mouse_leave();
+        break;
+
+    case WM_LBUTTONDOWN:
+        if (g_native_tabs_enabled) {
+            POINT lp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            RECT lrc; GetClientRect(hwnd, &lrc);
+            if (ntab_mouse_down(lp.x, lp.y, lrc.right - lrc.left))
+                return 0;
+        }
+        break;
 
     default:
         break;

@@ -112,6 +112,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         setCursorFromEngine(eng, ws.g_grid_top_offset);
         generateTabBar(ctx);
         generateStatusbar(ctx);
+        publishNativeTabTitles(ctx);
         win_search.publishOverlays(ctx);
         c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
@@ -330,6 +331,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
             generateTabBar(ctx);
             generateStatusbar(ctx);
+            publishNativeTabTitles(ctx);
             win_search.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publishState(eng);
@@ -457,6 +459,27 @@ fn cleanWindowsTitle(title: []const u8, buf: *[256]u8) ?[]const u8 {
         return buf[0..basename.len];
     }
     return null;
+}
+
+pub fn publishNativeTabTitles(ctx: *WinCtx) void {
+    if (ws.g_native_tabs_enabled == 0) return;
+
+    var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
+    var titles: tab_bar_mod.TabTitles = undefined;
+    resolveTabTitles(ctx, &titles, &name_bufs);
+
+    const max_native = 16;
+    const count = @min(ctx.tab_mgr.count, max_native);
+    for (0..count) |i| {
+        const title = titles[i] orelse "shell";
+        const len = @min(title.len, c.ATTYX_NATIVE_TAB_TITLE_MAX - 1);
+        const dst: [*]u8 = @ptrCast(@volatileCast(&ws.g_native_tab_titles[i]));
+        @memcpy(dst[0..len], title[0..len]);
+        dst[len] = 0;
+    }
+    @atomicStore(i32, &ws.g_native_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    @atomicStore(i32, &ws.g_native_tab_active, @as(i32, ctx.tab_mgr.active), .seq_cst);
+    @atomicStore(i32, &ws.g_native_tab_titles_changed, 1, .seq_cst);
 }
 
 pub fn generateTabBar(ctx: *WinCtx) void {
@@ -618,12 +641,35 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
         }
     }
 
-    // Process tab bar clicks
+    // Process tab bar clicks (overlay-based tab bar)
     const click = @atomicRmw(i32, &ws.tab_click_index, .Xchg, -1, .seq_cst);
     if (click >= 0 and click < ctx.tab_mgr.count) {
         ctx.tab_mgr.switchTo(@intCast(@as(u32, @bitCast(click))));
         switchActiveTab(ctx);
         tabs_changed.* = true;
+    }
+
+    // Native tab bar clicks (from windows_native_tabs.c)
+    const native_click = @atomicRmw(i32, &ws.g_native_tab_click, .Xchg, -1, .seq_cst);
+    if (native_click >= 0 and native_click < ctx.tab_mgr.count) {
+        const idx: u8 = @intCast(@as(u32, @bitCast(native_click)));
+        if (idx != ctx.tab_mgr.active) {
+            ctx.tab_mgr.switchTo(idx);
+            switchActiveTab(ctx);
+            tabs_changed.* = true;
+        }
+    }
+
+    // Native tab drag-reorder
+    const reorder_val = @atomicRmw(i32, &ws.g_native_tab_reorder, .Xchg, -1, .seq_cst);
+    if (reorder_val >= 0) {
+        const from: u8 = @intCast((reorder_val >> 8) & 0xFF);
+        const to: u8 = @intCast(reorder_val & 0xFF);
+        if (from < ctx.tab_mgr.count and to < ctx.tab_mgr.count and from != to) {
+            ctx.tab_mgr.moveTabTo(from, to);
+            switchActiveTab(ctx);
+            tabs_changed.* = true;
+        }
     }
 }
 
