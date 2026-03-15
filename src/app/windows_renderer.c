@@ -44,6 +44,7 @@ static IDXGISwapChain*         s_swap_chain   = NULL;
 static ID3D11RenderTargetView* s_rtv          = NULL;
 static ID3D11Buffer*           s_vbo          = NULL;
 static int                     s_vbo_cap      = 0;
+static int                     s_want_composition = 0;
 
 static LARGE_INTEGER s_blink_last_toggle;
 static LARGE_INTEGER s_perf_freq;
@@ -259,6 +260,7 @@ int windows_renderer_init(HWND hwnd) {
     IDXGIAdapter_Release(dxgi_adapter);
 
     int want_alpha = (g_background_opacity < 1.0f);
+    s_want_composition = want_alpha;
     DXGI_SWAP_CHAIN_DESC1 sc1 = {0};
     sc1.Width       = (UINT)w;
     sc1.Height      = (UINT)h;
@@ -340,7 +342,16 @@ void windows_renderer_resize(int width, int height) {
 // ---------------------------------------------------------------------------
 
 int windows_renderer_draw_frame(void) {
-    if (!s_rtv || !g_d3d_context) return 0;
+    if (!g_d3d_context) return 0;
+
+    // Flip-model swap chains rotate buffers on Present — re-acquire
+    // the current back buffer each frame.
+    if (s_want_composition) {
+        create_render_target();
+        if (!s_rtv) return 0;
+    } else if (!s_rtv) {
+        return 0;
+    }
     if (!g_cells || g_cols <= 0 || g_rows <= 0) return 0;
 
     uint64_t gen1 = g_cell_gen;
@@ -404,6 +415,10 @@ int windows_renderer_draw_frame(void) {
     static uint32_t lastOvGen = 0, lastPopGen = 0;
     int ovChanged  = (g_overlay_gen != lastOvGen);
     int popChanged = (g_popup_gen != lastPopGen);
+
+    // Composition swap chains use flip-model: buffer contents are undefined
+    // after Present, so we must redraw every frame.
+    if (s_want_composition) g_full_redraw = 1;
 
     if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !blinkChanged
         && !g_search_active && !ovChanged && !popChanged) return 0;
@@ -523,6 +538,14 @@ int windows_renderer_draw_frame(void) {
 
 void windows_renderer_present(void) {
     if (!s_swap_chain) return;
+
+    // For composition swap chains: unbind the RTV before Present so DXGI
+    // can flip the buffers.  We re-acquire in draw_frame next iteration.
+    if (s_want_composition) {
+        ID3D11DeviceContext_OMSetRenderTargets(g_d3d_context, 0, NULL, NULL);
+        if (s_rtv) { ID3D11RenderTargetView_Release(s_rtv); s_rtv = NULL; }
+    }
+
     IDXGISwapChain_Present(s_swap_chain, 1, 0);
 }
 
