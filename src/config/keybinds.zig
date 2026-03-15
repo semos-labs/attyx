@@ -314,7 +314,6 @@ pub fn buildTable(
 
     // 2. Apply keybinding overrides
     if (overrides) |ovs| {
-        logging.info("keybind", "applying {d} override(s)", .{ovs.len});
         for (ovs) |ov| {
             const action = actionFromString(ov.action_name) orelse {
                 logging.warn("keybind", "unknown action: {s}", .{ov.action_name});
@@ -328,7 +327,6 @@ pub fn buildTable(
                 logging.warn("keybind", "bad combo: {s} for {s}", .{ ov.key_combo, ov.action_name });
                 continue;
             };
-            logging.info("keybind", "override: {s} -> key={d} mods=0x{x:0>2} cp={d}", .{ ov.action_name, combo.key, combo.mods, combo.codepoint });
             replaceOrAddAction(&table, .{ .combo = combo, .action = action });
         }
     }
@@ -415,12 +413,6 @@ var g_table: Table = .{};
 /// Install a new keybind table (called at startup and on config reload).
 pub fn installTable(table: *const Table) void {
     g_table = table.*;
-    // Dump keybind table at startup for debugging
-    for (g_table.entries[0..g_table.count]) |entry| {
-        logging.info("keybind", "table: action={d} key={d} mods=0x{x:0>2} cp={d}", .{
-            @intFromEnum(entry.action), entry.combo.key, entry.combo.mods, entry.combo.codepoint,
-        });
-    }
 }
 
 // Matched sequence result (set by attyx_keybind_match for send_sequence actions)
@@ -439,7 +431,6 @@ pub export fn attyx_keybind_match(key: u16, mods: u8, codepoint: u32) u8 {
             g_keybind_matched_seq = @ptrCast(&g_table.seq_buf[entry.seq_offset]);
             g_keybind_matched_seq_len = @intCast(entry.seq_len);
         }
-        logging.info("keybind", "matched: key={d} mods=0x{x:0>2} cp={d} -> action={d}", .{ key, mods, codepoint, @intFromEnum(entry.action) });
         return @intFromEnum(entry.action);
     }
     return 0;

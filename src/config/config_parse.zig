@@ -490,23 +490,28 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
     }
 
     // [keybindings] — table of action_name = "key+combo" pairs
+    // NOTE: We use direct get() lookups instead of table.iterator() because
+    // zig-toml 0.3.2's insert_at/reIndex can corrupt the hash map index on
+    // Windows, causing the iterator to silently skip entries.
     if (root.get("keybindings")) |kb_val| {
         if (kb_val == .table) {
-            var it = kb_val.table.table.iterator();
+            const commands = @import("commands.zig");
             var kb_count: usize = 0;
-            // First pass: count valid entries
-            while (it.next()) |entry| {
-                if (entry.value_ptr.* == .string) kb_count += 1;
+            // First pass: count valid entries by looking up each known action name
+            for (commands.registry) |cmd| {
+                if (kb_val.table.get(cmd.name)) |v| {
+                    if (v == .string) kb_count += 1;
+                }
             }
             if (kb_count > 0) {
                 const entries = try allocator.alloc(KeybindOverride, kb_count);
                 var idx: usize = 0;
-                var it2 = kb_val.table.table.iterator();
-                while (it2.next()) |entry| {
-                    if (entry.value_ptr.* != .string) continue;
+                for (commands.registry) |cmd| {
+                    const v = kb_val.table.get(cmd.name) orelse continue;
+                    if (v != .string) continue;
                     entries[idx] = .{
-                        .action_name = try allocator.dupe(u8, entry.key_ptr.*),
-                        .key_combo = try allocator.dupe(u8, entry.value_ptr.string),
+                        .action_name = try allocator.dupe(u8, cmd.name),
+                        .key_combo = try allocator.dupe(u8, v.string),
                     };
                     idx += 1;
                 }
