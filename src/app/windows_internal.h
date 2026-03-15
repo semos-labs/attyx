@@ -29,6 +29,80 @@
 #include <d2d1.h>
 #include <wincodec.h>
 
+// DXGI 1.2 types for swap chain creation (avoid dxgi1_2.h dependency)
+#ifndef __dxgi1_2_h__
+typedef enum DXGI_ALPHA_MODE {
+    DXGI_ALPHA_MODE_UNSPECIFIED    = 0,
+    DXGI_ALPHA_MODE_PREMULTIPLIED  = 1,
+    DXGI_ALPHA_MODE_STRAIGHT       = 2,
+    DXGI_ALPHA_MODE_IGNORE         = 3,
+} DXGI_ALPHA_MODE;
+
+typedef enum DXGI_SCALING {
+    DXGI_SCALING_STRETCH              = 0,
+    DXGI_SCALING_NONE                 = 1,
+    DXGI_SCALING_ASPECT_RATIO_STRETCH = 2,
+} DXGI_SCALING;
+
+typedef struct DXGI_SWAP_CHAIN_DESC1 {
+    UINT Width, Height;
+    DXGI_FORMAT Format;
+    BOOL Stereo;
+    DXGI_SAMPLE_DESC SampleDesc;
+    DXGI_USAGE BufferUsage;
+    UINT BufferCount;
+    DXGI_SCALING Scaling;
+    DXGI_SWAP_EFFECT SwapEffect;
+    DXGI_ALPHA_MODE AlphaMode;
+    UINT Flags;
+} DXGI_SWAP_CHAIN_DESC1;
+
+// Minimal IDXGISwapChain1 — inherits IDXGISwapChain, no extra methods needed
+typedef IDXGISwapChain IDXGISwapChain1;
+
+// IDXGIFactory2 vtable (only the methods we use)
+typedef struct IDXGIFactory2 IDXGIFactory2;
+typedef struct IDXGIFactory2Vtbl {
+    // IUnknown
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDXGIFactory2*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDXGIFactory2*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDXGIFactory2*);
+    // IDXGIObject (4 methods)
+    HRESULT (STDMETHODCALLTYPE *SetPrivateData)(IDXGIFactory2*, REFGUID, UINT, const void*);
+    HRESULT (STDMETHODCALLTYPE *SetPrivateDataInterface)(IDXGIFactory2*, REFGUID, const IUnknown*);
+    HRESULT (STDMETHODCALLTYPE *GetPrivateData)(IDXGIFactory2*, REFGUID, UINT*, void*);
+    HRESULT (STDMETHODCALLTYPE *GetParent)(IDXGIFactory2*, REFIID, void**);
+    // IDXGIFactory (4 methods)
+    HRESULT (STDMETHODCALLTYPE *EnumAdapters)(IDXGIFactory2*, UINT, IDXGIAdapter**);
+    HRESULT (STDMETHODCALLTYPE *MakeWindowAssociation)(IDXGIFactory2*, HWND, UINT);
+    HRESULT (STDMETHODCALLTYPE *GetWindowAssociation)(IDXGIFactory2*, HWND*);
+    HRESULT (STDMETHODCALLTYPE *CreateSwapChain)(IDXGIFactory2*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+    HRESULT (STDMETHODCALLTYPE *CreateSoftwareAdapter)(IDXGIFactory2*, HMODULE, IDXGIAdapter**);
+    // IDXGIFactory1 (2 methods)
+    HRESULT (STDMETHODCALLTYPE *EnumAdapters1)(IDXGIFactory2*, UINT, void**);
+    BOOL    (STDMETHODCALLTYPE *IsCurrent)(IDXGIFactory2*);
+    // IDXGIFactory2
+    BOOL    (STDMETHODCALLTYPE *IsWindowedStereoEnabled)(IDXGIFactory2*);
+    HRESULT (STDMETHODCALLTYPE *CreateSwapChainForHwnd)(IDXGIFactory2*, IUnknown*, HWND,
+                const DXGI_SWAP_CHAIN_DESC1*, const void*, IDXGIOutput*, IDXGISwapChain1**);
+    HRESULT (STDMETHODCALLTYPE *CreateSwapChainForCoreWindow)(IDXGIFactory2*, IUnknown*, IUnknown*,
+                const DXGI_SWAP_CHAIN_DESC1*, IDXGIOutput*, IDXGISwapChain1**);
+    HRESULT (STDMETHODCALLTYPE *GetSharedResourceAdapterLuid)(IDXGIFactory2*, HANDLE, LUID*);
+    HRESULT (STDMETHODCALLTYPE *RegisterStereoStatusWindow)(IDXGIFactory2*, HWND, UINT, DWORD*);
+    HRESULT (STDMETHODCALLTYPE *RegisterStereoStatusEvent)(IDXGIFactory2*, HANDLE, DWORD*);
+    HRESULT (STDMETHODCALLTYPE *UnregisterStereoStatus)(IDXGIFactory2*, DWORD);
+    HRESULT (STDMETHODCALLTYPE *RegisterOcclusionStatusWindow)(IDXGIFactory2*, HWND, UINT, DWORD*);
+    HRESULT (STDMETHODCALLTYPE *RegisterOcclusionStatusEvent)(IDXGIFactory2*, HANDLE, DWORD*);
+    HRESULT (STDMETHODCALLTYPE *UnregisterOcclusionStatus)(IDXGIFactory2*, DWORD);
+    HRESULT (STDMETHODCALLTYPE *CreateSwapChainForComposition)(IDXGIFactory2*, IUnknown*,
+                const DXGI_SWAP_CHAIN_DESC1*, IDXGIOutput*, IDXGISwapChain1**);
+} IDXGIFactory2Vtbl;
+struct IDXGIFactory2 { IDXGIFactory2Vtbl *lpVtbl; };
+
+static const GUID IID_IDXGIFactory2 =
+    {0x50c83a1c,0xe072,0x4c48,{0x87,0xb0,0x36,0x30,0xfa,0x36,0xa6,0xd0}};
+#endif // __dxgi1_2_h__
+
 #include "bridge.h"
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
-#include <dxgi1_2.h>
 
 // D3DCompile loaded dynamically (avoids static link to d3dcompiler_47.dll)
 typedef HRESULT (WINAPI *PFN_D3DCompile)(
@@ -23,6 +22,7 @@ static PFN_D3DCompile s_D3DCompile = NULL;
 void windows_renderer_cleanup(void);
 void drawOverlays(float offX, float offY, float gw, float gh, int vpW, int vpH);
 void drawPopup(float offX, float offY, float gw, float gh, int vpW, int vpH);
+void win_init_composition(HWND hwnd, IDXGISwapChain* swap_chain);
 
 // ---------------------------------------------------------------------------
 // D3D11 state (device/swap chain owned here, shared objects exported)
@@ -247,7 +247,8 @@ int windows_renderer_init(HWND hwnd) {
     );
     if (FAILED(hr)) return 0;
 
-    // Create swap chain via IDXGIFactory2 for per-pixel alpha support
+    // Create swap chain — use DirectComposition for per-pixel alpha (opacity < 1),
+    // otherwise use a standard hwnd swap chain.
     IDXGIDevice* dxgi_device = NULL;
     IDXGIAdapter* dxgi_adapter = NULL;
     IDXGIFactory2* dxgi_factory = NULL;
@@ -261,18 +262,30 @@ int windows_renderer_init(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC1 sc1 = {0};
     sc1.Width       = (UINT)w;
     sc1.Height      = (UINT)h;
-    sc1.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sc1.Format      = DXGI_FORMAT_B8G8R8A8_UNORM;
     sc1.SampleDesc.Count   = 1;
     sc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sc1.BufferCount = 2;
     sc1.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     sc1.AlphaMode   = want_alpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE;
 
-    hr = IDXGIFactory2_CreateSwapChainForHwnd(
-        dxgi_factory, (IUnknown*)g_d3d_device, hwnd,
-        &sc1, NULL, NULL, (IDXGISwapChain1**)&s_swap_chain
-    );
-    IDXGIFactory2_Release(dxgi_factory);
+    if (want_alpha) {
+        // Per-pixel alpha requires CreateSwapChainForComposition + DirectComposition
+        hr = dxgi_factory->lpVtbl->CreateSwapChainForComposition(
+            dxgi_factory, (IUnknown*)g_d3d_device,
+            &sc1, NULL, (IDXGISwapChain1**)&s_swap_chain
+        );
+        if (SUCCEEDED(hr)) {
+            win_init_composition(hwnd, s_swap_chain);
+        }
+    } else {
+        sc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        hr = dxgi_factory->lpVtbl->CreateSwapChainForHwnd(
+            dxgi_factory, (IUnknown*)g_d3d_device, hwnd,
+            &sc1, NULL, NULL, (IDXGISwapChain1**)&s_swap_chain
+        );
+    }
+    dxgi_factory->lpVtbl->Release(dxgi_factory);
     if (FAILED(hr)) return 0;
 
     create_render_target();
