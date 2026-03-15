@@ -656,6 +656,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_native_tabs_enabled) ntab_set_caption_hover(0);
         break;
 
+    case WM_NCLBUTTONDOWN:
+        if (g_native_tabs_enabled) {
+            int ht = (int)wParam;
+            if (ht == HTCLOSE) {
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            if (ht == HTMINBUTTON) {
+                ShowWindow(hwnd, SW_MINIMIZE);
+                return 0;
+            }
+            if (ht == HTMAXBUTTON) {
+                ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+                return 0;
+            }
+        }
+        break;
+
     case WM_LBUTTONDOWN:
         if (g_native_tabs_enabled) {
             POINT lp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
