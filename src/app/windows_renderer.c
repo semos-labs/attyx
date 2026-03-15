@@ -49,6 +49,11 @@ static int                     s_want_composition = 0;
 static LARGE_INTEGER s_blink_last_toggle;
 static LARGE_INTEGER s_perf_freq;
 
+// Cursor trail state
+static float  s_trail_x = 0, s_trail_y = 0;
+static int    s_trail_active = 0;
+static double s_trail_last_time = 0;
+
 // g_full_redraw, g_cell_px_w, g_cell_px_h, g_content_scale, g_cell_w_pts,
 // g_cell_h_pts are defined in platform_windows.c
 
@@ -433,7 +438,7 @@ int windows_renderer_draw_frame(void) {
     if (s_want_composition) g_full_redraw = 1;
 
     if (!g_full_redraw && !dirtyAny(dirty) && !cursorChanged && !blinkChanged
-        && !g_search_active && !ovChanged && !popChanged) return 0;
+        && !g_search_active && !ovChanged && !popChanged && !s_trail_active) return 0;
 
     // Snapshot cells
     if (!g_win_cell_snapshot || g_win_cell_snapshot_cap < total) return 0;
@@ -471,6 +476,18 @@ int windows_renderer_draw_frame(void) {
                                           curRow, curCol, curShape, curVis,
                                           offX, baseOffY, offY, gw, gh,
                                           visibleRows, visibleTotal);
+
+    // Activate cursor trail before updating prev-cursor (needs old position)
+    if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
+        int cellDist = abs(curRow - g_win_prev_cursor_row)
+                     + abs(curCol - g_win_prev_cursor_col);
+        if (cellDist > 1) {
+            s_trail_x = offX + g_win_prev_cursor_col * gw;
+            s_trail_y = baseOffY + g_win_prev_cursor_row * gh;
+            s_trail_active = 1;
+            s_trail_last_time = now;
+        }
+    }
 
     // Update cursor tracking
     g_win_prev_cursor_row   = curRow;
@@ -537,37 +554,23 @@ int windows_renderer_draw_frame(void) {
         upload_and_draw(g_win_bg_verts, bgVertCount);
     }
 
-    // Cursor trail (Neovide-style comet tail)
+    // Cursor trail animation + draw (activation happens before cursor tracking update above)
     {
-        static float trailX = 0, trailY = 0;
-        static int   trailActive = 0;
-        static double trailLastTime = 0;
-
-        if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
-            int cellDist = abs(curRow - g_win_prev_cursor_row)
-                         + abs(curCol - g_win_prev_cursor_col);
-            if (cellDist > 1) {
-                trailX = offX + g_win_prev_cursor_col * gw;
-                trailY = baseOffY + g_win_prev_cursor_row * gh;
-                trailActive = 1;
-                trailLastTime = now;
-            }
-        }
-        if (trailActive && !curVis) trailActive = 0;
-        if (trailActive && g_cursor_trail && curVis) {
+        if (s_trail_active && !curVis) s_trail_active = 0;
+        if (s_trail_active && g_cursor_trail && curVis) {
             float targetX = offX + curCol * gw;
             float targetY = baseOffY + curRow * gh;
-            float dt = (float)(now - trailLastTime);
-            trailLastTime = now;
+            float dt = (float)(now - s_trail_last_time);
+            s_trail_last_time = now;
             float speed = 14.0f;
             float t = 1.0f - expf(-speed * dt);
-            trailX += (targetX - trailX) * t;
-            trailY += (targetY - trailY) * t;
-            float tdx = targetX - trailX;
-            float tdy = targetY - trailY;
+            s_trail_x += (targetX - s_trail_x) * t;
+            s_trail_y += (targetY - s_trail_y) * t;
+            float tdx = targetX - s_trail_x;
+            float tdy = targetY - s_trail_y;
             float dist = sqrtf(tdx * tdx + tdy * tdy);
             if (dist < 0.5f) {
-                trailActive = 0;
+                s_trail_active = 0;
             } else {
                 float cr_t, cg_t, cb_t;
                 if (g_theme_cursor_r >= 0) {
@@ -587,7 +590,7 @@ int windows_renderer_draw_frame(void) {
                 }
 
                 // Convex hull hexagon between trail pos and cursor pos
-                float tx0 = trailX + cxOff, ty0 = trailY + cyOff;
+                float tx0 = s_trail_x + cxOff, ty0 = s_trail_y + cyOff;
                 float tx1 = tx0 + cw,       ty1 = ty0 + ch;
                 float cx0 = targetX + cxOff, cy0 = targetY + cyOff;
                 float cx1 = cx0 + cw,        cy1 = cy0 + ch;
