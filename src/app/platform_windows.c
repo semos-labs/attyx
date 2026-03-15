@@ -614,6 +614,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         PostQuitMessage(0);
         return 0;
 
+    case WM_SETCURSOR:
+        if (g_native_tabs_enabled && LOWORD(lParam) == HTCLIENT) {
+            POINT cp; GetCursorPos(&cp);
+            ScreenToClient(hwnd, &cp);
+            if ((float)cp.y < ntab_bar_height()) {
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
+                return TRUE;
+            }
+        }
+        break;
+
     case WM_MOUSEMOVE:
         if (g_native_tabs_enabled) {
             POINT mp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };

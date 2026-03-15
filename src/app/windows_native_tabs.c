@@ -440,7 +440,7 @@ int ntab_hit_test(int px, int py, int clientW) {
 static void ntab_show_session_menu(void) {
     int cnt = g_session_count;
     int activeIdx = g_active_session_idx;
-    if (cnt <= 0) { attyx_create_session_direct(); return; }
+    if (cnt <= 0) { attyx_dispatch_action(74); return; }  // session_switcher_toggle
     HMENU menu = CreatePopupMenu();
     for (int i = 0; i < cnt && i < ATTYX_MAX_SESSIONS; i++) {
         wchar_t name[ATTYX_SESSION_NAME_MAX];
