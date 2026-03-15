@@ -458,6 +458,8 @@ void  ntab_draw(float vpW, float vpH);
 int   ntab_hit_test(int px, int py, int clientW);
 int   ntab_mouse_move(int px, int py, int clientW);
 int   ntab_mouse_down(int px, int py, int clientW);
+int   ntab_mouse_drag(int px, int py, int clientW);
+int   ntab_mouse_up(int px, int py, int clientW);
 void  ntab_mouse_leave(void);
 void  ntab_set_caption_hover(int ht);
 

@@ -618,8 +618,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_native_tabs_enabled) {
             POINT mp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
             RECT mrc; GetClientRect(hwnd, &mrc);
-            ntab_mouse_move(mp.x, mp.y, mrc.right - mrc.left);
-            ntab_set_caption_hover(0);  // clear caption hover when in client area
+            int cw = mrc.right - mrc.left;
+            if (ntab_mouse_drag(mp.x, mp.y, cw))
+                return 0;
+            ntab_mouse_move(mp.x, mp.y, cw);
+            ntab_set_caption_hover(0);
         }
         break;
 
@@ -634,7 +637,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ntab_set_caption_hover(ht);
             else
                 ntab_set_caption_hover(0);
-            ntab_mouse_leave();  // clear tab hover when in NC area
+            ntab_mouse_leave();
         }
         break;
 
@@ -647,6 +650,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             POINT lp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
             RECT lrc; GetClientRect(hwnd, &lrc);
             if (ntab_mouse_down(lp.x, lp.y, lrc.right - lrc.left))
+                return 0;
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (g_native_tabs_enabled) {
+            POINT up = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            RECT urc; GetClientRect(hwnd, &urc);
+            if (ntab_mouse_up(up.x, up.y, urc.right - urc.left))
                 return 0;
         }
         break;

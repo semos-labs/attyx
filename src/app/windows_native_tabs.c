@@ -41,6 +41,18 @@ static int s_caption_hover = 0;  // 0, HTMINBUTTON, HTMAXBUTTON, HTCLOSE
 static wchar_t s_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX];
 static int     s_title_lens[16];
 
+// Drag state
+#define DRAG_THRESH  4.0f
+#define TEAR_DIST   40.0f
+static int   s_drag_on    = 0;  // mouse is down on a tab
+static int   s_drag_go    = 0;  // past threshold, actively dragging
+static int   s_drag_tear  = 0;  // dragged far enough to tear off
+static int   s_drag_idx   = -1; // which tab is being dragged
+static int   s_drag_slot  = -1; // where it would drop
+static float s_drag_start_x, s_drag_start_y;
+static float s_drag_off_x;      // click offset within tab
+static float s_drag_x;          // current drag position
+
 // Dedicated glyph cache for tab titles (Segoe UI, fixed 12px)
 static GlyphCache s_tab_gc;
 static int        s_tab_gc_ready = 0;
@@ -294,31 +306,52 @@ void ntab_draw(float vpW, float vpH) {
     // Bar background
     vi = winEmitRect(v, vi, 0, 0, vpW, barH, bR, bG, bB, 1.0f);
 
-    // Active tab: rounded top corners, offset by top padding, flush with bottom
     float tabH = barH - pT;
-    vi = emitRoundTopRect(v, vi, tx(active, count, vpW), pT, tabW, tabH,
-                          rad, aR, aG, aB, 1.0f);
 
-    // Hover tab (not active)
-    if (s_hovered_tab >= 0 && s_hovered_tab < count && s_hovered_tab != active) {
-        vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), pT + 2*s,
-                              tabW, tabH - 2*s, rad, hR, hG, hB, 0.5f);
-    }
+    if (s_drag_on && s_drag_go && !s_drag_tear) {
+        // --- Drag mode: draw non-dragged tabs shifted, floating dragged tab ---
+        int slot = 0;
+        for (int i = 0; i < count; i++) {
+            if (i == s_drag_idx) continue;
+            if (slot == s_drag_slot) slot++;
+            float sx = padL() + slot * tabW;
+            int isA = (i == active);
+            if (isA)
+                vi = emitRoundTopRect(v, vi, sx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
+            slot++;
+        }
+        // Floating dragged tab
+        float fx = s_drag_x - s_drag_off_x;
+        if (fx < padL()) fx = padL();
+        float maxFx = vpW - cap_w() - PLUS_W * s - tabW;
+        if (fx > maxFx) fx = maxFx;
+        vi = emitRoundTopRect(v, vi, fx, pT, tabW, tabH, rad, aR, aG, aB, 1.0f);
+    } else {
+        // --- Normal mode ---
+        vi = emitRoundTopRect(v, vi, tx(active, count, vpW), pT, tabW, tabH,
+                              rad, aR, aG, aB, 1.0f);
 
-    // Plus button hover
-    if (s_hovered_tab == count) {
-        float px = tx(count, count, vpW);
-        vi = emitRoundTopRect(v, vi, px, pT + 2*s, PLUS_W * s, tabH - 2*s,
-                              rad, hR, hG, hB, 0.5f);
-    }
+        // Hover tab (not active)
+        if (s_hovered_tab >= 0 && s_hovered_tab < count && s_hovered_tab != active) {
+            vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), pT + 2*s,
+                                  tabW, tabH - 2*s, rad, hR, hG, hB, 0.5f);
+        }
 
-    // Separators
-    for (int i = 1; i < count; i++) {
-        if (i - 1 == active || i == active) continue;
-        if (i - 1 == s_hovered_tab || i == s_hovered_tab) continue;
-        float sx = tx(i, count, vpW);
-        float sepH = tabH * 0.5f, sepY = pT + (tabH - sepH) * 0.5f;
-        vi = winEmitRect(v, vi, sx - 0.5f, sepY, 1.0f, sepH, fR, fG, fB, 0.1f);
+        // Plus button hover
+        if (s_hovered_tab == count) {
+            float px = tx(count, count, vpW);
+            vi = emitRoundTopRect(v, vi, px, pT + 2*s, PLUS_W * s, tabH - 2*s,
+                                  rad, hR, hG, hB, 0.5f);
+        }
+
+        // Separators
+        for (int i = 1; i < count; i++) {
+            if (i - 1 == active || i == active) continue;
+            if (i - 1 == s_hovered_tab || i == s_hovered_tab) continue;
+            float sx = tx(i, count, vpW);
+            float sepH = tabH * 0.5f, sepY = pT + (tabH - sepH) * 0.5f;
+            vi = winEmitRect(v, vi, sx - 0.5f, sepY, 1.0f, sepH, fR, fG, fB, 0.1f);
+        }
     }
 
     // Caption button hover backgrounds
@@ -430,8 +463,30 @@ void ntab_draw(float vpW, float vpH) {
         int tvi = 0;
         float inactA = (lum < 0.5f) ? 0.5f : 0.55f;
 
+        // Build position array (handles both normal and drag modes)
+        float tabXs[16];
+        if (s_drag_on && s_drag_go && !s_drag_tear) {
+            int slot = 0;
+            for (int i = 0; i < count; i++) {
+                if (i == s_drag_idx) {
+                    float fx = s_drag_x - s_drag_off_x;
+                    if (fx < padL()) fx = padL();
+                    float maxFx = vpW - cap_w() - PLUS_W * s - tabW;
+                    if (fx > maxFx) fx = maxFx;
+                    tabXs[i] = fx;
+                    continue;
+                }
+                if (slot == s_drag_slot) slot++;
+                tabXs[i] = padL() + slot * tabW;
+                slot++;
+            }
+        } else {
+            for (int i = 0; i < count; i++) tabXs[i] = tx(i, count, vpW);
+        }
+
         for (int i = 0; i < count; i++) {
-            float tabX = tx(i, count, vpW);
+            if (s_drag_tear && i == s_drag_idx) continue;
+            float tabX = tabXs[i];
             int isA = (i == active);
             float tfR = fR, tfG = fG, tfB = fB;
             float tfA = isA ? 1.0f : inactA;
@@ -510,7 +565,7 @@ int ntab_hit_test(int px, int py, int clientW) {
 // ---------------------------------------------------------------------------
 
 int ntab_mouse_move(int px, int py, int clientW) {
-    if (!g_native_tabs_enabled) return 0;
+    if (!g_native_tabs_enabled || s_drag_on) return 0;
     int count = g_native_tab_count;
     if (count < 1) count = 1;
     if (count <= 1 && !g_tab_always_show) return 0;
@@ -576,10 +631,13 @@ int ntab_mouse_down(int px, int py, int clientW) {
             g_full_redraw = 1;
             return 1;
         }
-        if (idx != g_native_tab_active) {
-            g_native_tab_click = idx;
-            g_full_redraw = 1;
-        }
+        // Start drag tracking
+        s_drag_on = 1; s_drag_go = 0; s_drag_tear = 0;
+        s_drag_idx = idx; s_drag_slot = idx;
+        s_drag_start_x = (float)px; s_drag_start_y = (float)py;
+        s_drag_off_x = (float)px - tx(idx, count, (float)clientW);
+        s_drag_x = (float)px;
+        SetCapture(g_hwnd);
         return 1;
     } else if ((float)px < tabsEnd + PLUS_W * s) {
         attyx_dispatch_action(49);
@@ -587,6 +645,74 @@ int ntab_mouse_down(int px, int py, int clientW) {
         return 1;
     }
     return 0;
+}
+
+int ntab_mouse_drag(int px, int py, int clientW) {
+    if (!s_drag_on) return 0;
+    int count = g_native_tab_count;
+    if (count < 1) count = 1;
+
+    float fpx = (float)px, fpy = (float)py;
+    if (!s_drag_go) {
+        float dx = fpx - s_drag_start_x, dy = fpy - s_drag_start_y;
+        if (dx*dx + dy*dy < DRAG_THRESH * DRAG_THRESH) return 0;
+        s_drag_go = 1;
+        // Switch to dragged tab immediately
+        if (s_drag_idx != g_native_tab_active) {
+            g_native_tab_click = s_drag_idx;
+        }
+    }
+    s_drag_x = fpx;
+    float barH = ntab_bar_height();
+    int wasTear = s_drag_tear;
+    s_drag_tear = (count > 1) && (fpy < -TEAR_DIST || fpy > barH + TEAR_DIST);
+    if (!s_drag_tear) {
+        float tabW = tw(count, (float)clientW);
+        int slot = (int)((s_drag_x - s_drag_off_x + tabW * 0.5f - padL()) / tabW);
+        if (slot < 0) slot = 0;
+        if (slot >= count) slot = count - 1;
+        s_drag_slot = slot;
+    } else if (!wasTear) {
+        s_drag_slot = s_drag_idx;
+    }
+    g_full_redraw = 1;
+    return 1;
+}
+
+int ntab_mouse_up(int px, int py, int clientW) {
+    if (!s_drag_on) return 0;
+    ReleaseCapture();
+    int wasGo = s_drag_go;
+    int idx = s_drag_idx, slot = s_drag_slot;
+    int count = g_native_tab_count;
+    s_drag_on = 0; s_drag_go = 0;
+
+    if (!wasGo) {
+        // Simple click — switch tab
+        s_drag_idx = -1; s_drag_slot = -1;
+        if (idx >= 0 && idx < count && idx != g_native_tab_active) {
+            g_native_tab_click = idx;
+            g_full_redraw = 1;
+        }
+        return 1;
+    }
+
+    if (s_drag_tear) {
+        // Tear off: close tab in current window, spawn new window
+        s_drag_tear = 0;
+        s_drag_idx = -1; s_drag_slot = -1;
+        g_native_tab_click = idx;
+        attyx_dispatch_action(50);
+        attyx_spawn_new_window();
+    } else if (slot != idx) {
+        // Reorder: packed (from << 8) | to
+        s_drag_idx = -1; s_drag_slot = -1;
+        g_native_tab_reorder = (idx << 8) | slot;
+    } else {
+        s_drag_idx = -1; s_drag_slot = -1;
+    }
+    g_full_redraw = 1;
+    return 1;
 }
 
 void ntab_mouse_leave(void) {
