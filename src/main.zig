@@ -152,7 +152,7 @@ pub fn main() !void {
             // TEMPORARY: test if daemon process survives without actual daemon code
             if (is_windows) {
                 debugToFile("main: daemon alive, sleeping 10s as test");
-                std.time.sleep(10 * std.time.ns_per_s);
+                std.Thread.sleep(10 * std.time.ns_per_s);
                 debugToFile("main: daemon sleep done, exiting");
                 return;
             }
