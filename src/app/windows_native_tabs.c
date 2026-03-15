@@ -74,7 +74,7 @@ static float padL(void) { return BAR_PAD_LEFT * sc(); }
 static float padT(void) { return BAR_PAD_TOP * sc(); }
 static float trail_w(void) {
     float s = sc();
-    return PLUS_W * s + (g_sessions_active ? SESS_W * s : 0);
+    return PLUS_W * s + (g_native_tabs_enabled ? SESS_W * s : 0);
 }
 
 static float tw(int n, float vpW) {
@@ -188,7 +188,7 @@ void ntab_draw(float vpW, float vpH) {
                                   rad, hR, hG, hB, 0.5f);
         }
         // Session button hover
-        if (g_sessions_active && s_hovered_tab == count + 1) {
+        if (g_native_tabs_enabled && s_hovered_tab == count + 1) {
             float sx = tx(count, count, vpW) + PLUS_W * s;
             vi = winEmitRoundTopRect(v, vi, sx, pT + 2*s, SESS_W * s, tabH - 2*s,
                                   rad, hR, hG, hB, 0.5f);
@@ -251,7 +251,7 @@ void ntab_draw(float vpW, float vpH) {
             ii = winEmitRect(iv, ii, px-lw*0.5f, py-arm, lw, arm*2, fR,fG,fB, 0.45f);
         }
         // Session icon: stacked rectangles (rectangle.stack style)
-        if (g_sessions_active) {
+        if (g_native_tabs_enabled) {
             float sx = tx(count, count, vpW) + PLUS_W * s + SESS_W * s * 0.5f;
             float sy = pT + tabH * 0.5f;
             float rw = 8.0f * s, rh = 5.0f * s, off = 3.0f * s;
@@ -426,7 +426,7 @@ int ntab_hit_test(int px, int py, int clientW) {
     if ((float)px < pL)       return HTCAPTION;
     if ((float)px < tabsEnd)  return HTCLIENT;
     if ((float)px < plusEnd)   return HTCLIENT;
-    if (g_sessions_active && (float)px < plusEnd + SESS_W * s) return HTCLIENT;
+    if (g_native_tabs_enabled && (float)px < plusEnd + SESS_W * s) return HTCLIENT;
     return HTCAPTION;
 }
 
@@ -500,7 +500,7 @@ int ntab_mouse_move(int px, int py, int clientW) {
             } else s_hover_close = 0;
         } else if ((float)px < plusEnd) {
             s_hovered_tab = count; s_hover_close = 0;
-        } else if (g_sessions_active && (float)px < plusEnd + SESS_W * s) {
+        } else if (g_native_tabs_enabled && (float)px < plusEnd + SESS_W * s) {
             s_hovered_tab = count + 1; s_hover_close = 0;
         } else {
             s_hovered_tab = -1; s_hover_close = 0;
@@ -547,7 +547,7 @@ int ntab_mouse_down(int px, int py, int clientW) {
         attyx_dispatch_action(49);
         g_full_redraw = 1;
         return 1;
-    } else if (g_sessions_active && (float)px < tabsEnd + PLUS_W * s + SESS_W * s) {
+    } else if (g_native_tabs_enabled && (float)px < tabsEnd + PLUS_W * s + SESS_W * s) {
         ntab_show_session_menu();
         return 1;
     }
