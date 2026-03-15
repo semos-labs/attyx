@@ -667,6 +667,7 @@ fn doReloadConfig(ctx: *WinCtx) void {
     // Apply hot-reloadable settings
     publish.publishFontConfig(&new_config);
     c.g_font_ligatures = @intFromBool(new_config.font_ligatures);
+    c.g_cursor_trail = @intFromBool(new_config.cursor_trail);
     ws.g_background_opacity = new_config.background_opacity;
 
     // Theme

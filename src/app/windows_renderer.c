@@ -537,6 +537,93 @@ int windows_renderer_draw_frame(void) {
         upload_and_draw(g_win_bg_verts, bgVertCount);
     }
 
+    // Cursor trail (Neovide-style comet tail)
+    {
+        static float trailX = 0, trailY = 0;
+        static int   trailActive = 0;
+        static double trailLastTime = 0;
+
+        if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
+            int cellDist = abs(curRow - g_win_prev_cursor_row)
+                         + abs(curCol - g_win_prev_cursor_col);
+            if (cellDist > 1) {
+                trailX = offX + g_win_prev_cursor_col * gw;
+                trailY = baseOffY + g_win_prev_cursor_row * gh;
+                trailActive = 1;
+                trailLastTime = now;
+            }
+        }
+        if (trailActive && !curVis) trailActive = 0;
+        if (trailActive && g_cursor_trail && curVis) {
+            float targetX = offX + curCol * gw;
+            float targetY = baseOffY + curRow * gh;
+            float dt = (float)(now - trailLastTime);
+            trailLastTime = now;
+            float speed = 14.0f;
+            float t = 1.0f - expf(-speed * dt);
+            trailX += (targetX - trailX) * t;
+            trailY += (targetY - trailY) * t;
+            float tdx = targetX - trailX;
+            float tdy = targetY - trailY;
+            float dist = sqrtf(tdx * tdx + tdy * tdy);
+            if (dist < 0.5f) {
+                trailActive = 0;
+            } else {
+                float cr_t, cg_t, cb_t;
+                if (g_theme_cursor_r >= 0) {
+                    cr_t = g_theme_cursor_r / 255.0f;
+                    cg_t = g_theme_cursor_g / 255.0f;
+                    cb_t = g_theme_cursor_b / 255.0f;
+                } else {
+                    cr_t = 0.86f; cg_t = 0.86f; cb_t = 0.86f;
+                }
+
+                // Cursor shape dimensions
+                float cw = gw, ch = gh, cxOff = 0, cyOff = 0;
+                switch (curShape) {
+                    case 2: case 3: { float th = fmaxf(2.0f, 1.0f); cyOff = gh - th; ch = th; break; }
+                    case 4: case 5: { cw = fmaxf(2.0f, 1.0f); break; }
+                    default: break;
+                }
+
+                // Convex hull hexagon between trail pos and cursor pos
+                float tx0 = trailX + cxOff, ty0 = trailY + cyOff;
+                float tx1 = tx0 + cw,       ty1 = ty0 + ch;
+                float cx0 = targetX + cxOff, cy0 = targetY + cyOff;
+                float cx1 = cx0 + cw,        cy1 = cy0 + ch;
+
+                float hex[6][2];
+                if (tdx >= 0 && tdy >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty0; hex[1][0]=tx1; hex[1][1]=ty0;
+                    hex[2][0]=cx1; hex[2][1]=cy0; hex[3][0]=cx1; hex[3][1]=cy1;
+                    hex[4][0]=cx0; hex[4][1]=cy1; hex[5][0]=tx0; hex[5][1]=ty1;
+                } else if (tdx >= 0) {
+                    hex[0][0]=tx0; hex[0][1]=ty1; hex[1][0]=tx1; hex[1][1]=ty1;
+                    hex[2][0]=cx1; hex[2][1]=cy1; hex[3][0]=cx1; hex[3][1]=cy0;
+                    hex[4][0]=cx0; hex[4][1]=cy0; hex[5][0]=tx0; hex[5][1]=ty0;
+                } else if (tdy >= 0) {
+                    hex[0][0]=tx1; hex[0][1]=ty0; hex[1][0]=tx0; hex[1][1]=ty0;
+                    hex[2][0]=cx0; hex[2][1]=cy0; hex[3][0]=cx0; hex[3][1]=cy1;
+                    hex[4][0]=cx1; hex[4][1]=cy1; hex[5][0]=tx1; hex[5][1]=ty1;
+                } else {
+                    hex[0][0]=tx1; hex[0][1]=ty1; hex[1][0]=tx0; hex[1][1]=ty1;
+                    hex[2][0]=cx0; hex[2][1]=cy1; hex[3][0]=cx0; hex[3][1]=cy0;
+                    hex[4][0]=cx1; hex[4][1]=cy0; hex[5][0]=tx1; hex[5][1]=ty0;
+                }
+
+                WinVertex tv[12];
+                for (int ti = 0; ti < 4; ti++) {
+                    tv[ti*3+0] = (WinVertex){ hex[0][0],hex[0][1], 0,0, cr_t,cg_t,cb_t,1.0f };
+                    tv[ti*3+1] = (WinVertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr_t,cg_t,cb_t,1.0f };
+                    tv[ti*3+2] = (WinVertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr_t,cg_t,cb_t,1.0f };
+                }
+                ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
+                upload_and_draw(tv, 12);
+                g_full_redraw = 1;
+            }
+        }
+    }
+
     // Text pass (grayscale glyphs from atlas)
     if (g_win_total_text_verts > 0 && g_gc.texture_srv) {
         ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_text, NULL, 0);

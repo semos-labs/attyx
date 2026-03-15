@@ -43,6 +43,7 @@ pub fn run(
     // Publish font config and globals
     publish.publishFontConfig(&config);
     c.g_font_ligatures = @intFromBool(config.font_ligatures);
+    c.g_cursor_trail = @intFromBool(config.cursor_trail);
     ws.g_background_opacity = config.background_opacity;
     ws.g_background_blur = @intCast(config.background_blur);
     ws.g_window_decorations = if (config.window_decorations) 1 else 0;
