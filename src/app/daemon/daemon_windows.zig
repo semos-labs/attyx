@@ -170,7 +170,15 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         if (slot != null) session_count += 1;
     }
 
-    var clients: [max_clients]?DaemonClient = .{null} ** max_clients;
+    // Clients array is heap-allocated (same reason as sessions — each
+    // DaemonClient has ~128KB of buffers, 16 clients = ~2MB).
+    const clients_ptr = allocator.create([max_clients]?DaemonClient) catch {
+        daemonLog("ERROR: failed to allocate clients array");
+        return error.OutOfMemory;
+    };
+    defer allocator.destroy(clients_ptr);
+    clients_ptr.* = .{null} ** max_clients;
+    const clients: *[max_clients]?DaemonClient = clients_ptr;
     var client_count: usize = 0;
 
     // Create a pipe instance with overlapped I/O for async accept
@@ -198,7 +206,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                 slot.* = null;
             }
         }
-        for (&clients) |*slot| {
+        for (clients) |*slot| {
             if (slot.*) |*cl| {
                 cl.deinit();
                 slot.* = null;
@@ -209,7 +217,9 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         deleteVersionFile();
     }
 
-    var pty_buf: [65536]u8 = undefined;
+    const pty_buf_ptr = try allocator.alloc(u8, 65536);
+    defer allocator.free(pty_buf_ptr);
+    const pty_buf: *[65536]u8 = pty_buf_ptr[0..65536];
     var proc_name_tick: u32 = 0;
     var g_upgrade_requested: bool = false;
 
@@ -220,7 +230,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                 if (WaitForSingleObject(ev, 0) == WAIT_OBJECT_0) {
                     // Client connected
                     const client_pipe = listen_pipe.?;
-                    acceptClient(client_pipe, &clients, &client_count);
+                    acceptClient(client_pipe, clients, &client_count);
                     _ = ResetEvent(ev);
                     // Create new pipe instance for next client
                     listen_pipe = createPipeInstance(pipe_name);
@@ -236,9 +246,9 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                     if (pslot.*) |*pane| {
                         if (pane.alive) {
                             // Try reading PTY output (non-blocking via ConPTY)
-                            const n = pane.readPty(&pty_buf) catch 0;
+                            const n = pane.readPty(pty_buf) catch 0;
                             if (n > 0) {
-                                for (&clients) |*cslot| {
+                                for (clients) |*cslot| {
                                     if (cslot.*) |*cl| {
                                         if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
                                             cl.sendPaneOutput(pane.id, pty_buf[0..n]);
@@ -258,7 +268,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                                 }
                                 if (!any_alive) s.alive = false;
                                 const stdout_data = pane.getCapturedStdout();
-                                for (&clients) |*cslot| {
+                                for (clients) |*cslot| {
                                     if (cslot.*) |*cl| {
                                         if (cl.attached_session == s.id) {
                                             cl.sendPaneDiedWithStdout(pane.id, exit_code, stdout_data);
@@ -274,7 +284,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         }
 
         // 3. Read client messages
-        for (&clients, 0..) |*slot, ci| {
+        for (clients, 0..) |*slot, ci| {
             if (slot.*) |*cl| {
                 if (!cl.recvData()) {
                     cl.deinit();
@@ -284,7 +294,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                     continue;
                 }
                 while (cl.nextMessage()) |msg| {
-                    handler.handleMessage(cl, msg, sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients, &g_upgrade_requested);
+                    handler.handleMessage(cl, msg, sessions, &session_count, &next_session_id, &next_pane_id, allocator, clients, &g_upgrade_requested);
                 }
                 if (cl.dead) {
                     cl.deinit();
@@ -304,7 +314,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                         if (pslot.*) |*pane| {
                             if (pane.alive) {
                                 if (pane.checkProcNameChanged()) |name| {
-                                    for (&clients) |*cslot| {
+                                    for (clients) |*cslot| {
                                         if (cslot.*) |*cl| {
                                             if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
                                                 cl.sendPaneProcName(pane.id, name);
@@ -324,7 +334,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
             if (slot.*) |*s| {
                 if (s.alive) {
                     if (s.checkExit()) |_| {
-                        for (&clients) |*cslot| {
+                        for (clients) |*cslot| {
                             if (cslot.*) |*cl| {
                                 if (cl.attached_session == s.id) cl.attached_session = null;
                             }
