@@ -232,6 +232,29 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 }
             }
 
+            // Coalescing: if we got data, briefly yield so the shell can finish
+            // its output burst (e.g. prompt redraw after Ctrl+W sends \r then
+            // rewrites the line).  Without this, we publish the intermediate
+            // cursor-at-column-0 state before the rest of the redraw arrives.
+            if (got_data) {
+                Sleep(1);
+                // Second drain pass — pick up the rest of the burst.
+                for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout2, tab_idx2| {
+                    const lay2 = &(maybe_layout2.* orelse continue);
+                    var leaves2: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                    const lc2 = lay2.collectLeaves(&leaves2);
+                    for (leaves2[0..lc2]) |leaf2| {
+                        if (leaf2.pane.daemon_pane_id != null) continue;
+                        while (leaf2.pane.pty.peekAvail() > 0) {
+                            const n2 = leaf2.pane.pty.read(&buf) catch break;
+                            if (n2 == 0) break;
+                            leaf2.pane.feed(buf[0..n2]);
+                            if (tab_idx2 == ctx.tab_mgr.active) got_data = true;
+                        }
+                    }
+                }
+            }
+
             // Keep an async read pending on active pane so ConPTY flushes output.
             if (active_pane.daemon_pane_id == null) {
                 active_pane.pty.startAsyncRead();
