@@ -245,8 +245,8 @@ pub fn build(b: *std.Build) void {
             }),
         });
         setup.subsystem = .Windows;
-        setup.addCSourceFile(.{ .file = b.path("installer/installer.c"), .flags = &.{} });
-        setup.addWin32ResourceFile(.{ .file = b.path("installer/installer.rc") });
+        setup.addCSourceFile(.{ .file = b.path("src/app/installer.c"), .flags = &.{} });
+        setup.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         setup.root_module.linkSystemLibrary("kernel32", .{});
         setup.root_module.linkSystemLibrary("user32", .{});
         setup.root_module.linkSystemLibrary("gdi32", .{});
