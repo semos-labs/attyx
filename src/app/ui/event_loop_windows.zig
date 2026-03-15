@@ -484,6 +484,7 @@ pub fn publishNativeTabTitles(ctx: *WinCtx) void {
 
 pub fn generateTabBar(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
+    if (ws.g_native_tabs_enabled != 0) return; // native tabs rendered by D3D11
     if (ws.g_grid_top_offset <= 0) return;
     if (ws.g_tab_bar_visible == 0) return;
     if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
@@ -561,10 +562,12 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
     resolveTabTitles(ctx, &titles, &name_bufs);
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
     const sb_alpha: u8 = sb.config.background_opacity;
+    // When native tabs are active, don't duplicate tabs in the statusbar
+    const sb_tab_count: u8 = if (ws.g_native_tabs_enabled != 0) 0 else ctx.tab_mgr.count;
     const result = statusbar_mod.generate(
         &styled,
         sb,
-        ctx.tab_mgr.count,
+        sb_tab_count,
         ctx.tab_mgr.active,
         ctx.grid_cols,
         .{
@@ -779,8 +782,10 @@ pub fn updateGridOffsets(ctx: *WinCtx) void {
         ws.g_tab_bar_visible = 0;
     } else {
         ws.g_statusbar_visible = 0;
+        // Native tabs are rendered in the extended titlebar area, not as a grid row.
+        const native = (ws.g_native_tabs_enabled != 0);
         const always_show = (ws.g_tab_always_show != 0);
-        const show_builtin = (ctx.tab_mgr.count > 1) or always_show;
+        const show_builtin = !native and ((ctx.tab_mgr.count > 1) or always_show);
         if (show_builtin) top += 1;
         ws.g_tab_bar_visible = if (show_builtin) @as(i32, 1) else @as(i32, 0);
     }

@@ -1,488 +1,476 @@
-// Attyx — Windows native tab bar renderer (D3D11)
+// Attyx — Windows native tab bar (D3D11, Windows 11 style)
 //
-// Renders a Windows Terminal-style tab bar in the custom titlebar area.
-// Uses the existing D3D11 pipeline (solid rects + glyph text) to draw
-// tabs, close buttons, a + button, and leaves space for caption buttons.
+// File Explorer-style tab cards: rounded top corners on the active tab,
+// DWM-integrated caption buttons (−, □, ×), theme-adaptive colors.
 
 #ifdef _WIN32
 
 #include "windows_internal.h"
-#include <dwmapi.h>
 
 // ---------------------------------------------------------------------------
-// Layout constants (at 96 DPI — scaled by g_content_scale)
+// Layout constants (at 96 DPI, scaled by g_content_scale)
 // ---------------------------------------------------------------------------
 
-#define TAB_BAR_HEIGHT      36   // px at 96 DPI
-#define CAPTION_BTN_WIDTH   46   // each: min, max, close
-#define CAPTION_BTN_COUNT   3
-#define CAPTION_TOTAL_W     (CAPTION_BTN_WIDTH * CAPTION_BTN_COUNT)
-#define CLOSE_BTN_SIZE      14   // close X icon size
-#define CLOSE_BTN_PAD       6    // padding inside close circle
-#define PLUS_BTN_WIDTH      40   // + button width
-#define TAB_PAD_H           10   // text padding inside tab
-#define TAB_MIN_WIDTH       60   // minimum tab width
-#define TAB_MAX_WIDTH       240  // maximum tab width
+#define BAR_H           40
+#define CORNER_R        8
+#define CAP_BTN_W       46
+#define CAP_COUNT       3
+#define PLUS_W          40
+#define TAB_PAD         12
+#define TAB_MIN_W       80
+#define TAB_MAX_W       240
+#define CLOSE_SZ        16
+#define CLOSE_ICON_PAD  5
+#define CAP_ICON_SZ     10
+#define PI_HALF         1.5707963f
+#define ARC_SEGS        5
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-static int  s_hovered_tab   = -1;  // -1 = none, 0..N-1 = tab, N = plus btn
-static int  s_hover_close   = 0;   // hovering over close X
-static int  s_last_tab_count = 0;
-static int  s_last_active    = -1;
-static int  s_last_titles_gen = 0;
+static int s_hovered_tab  = -1;
+static int s_hover_close  = 0;
+static int s_caption_hover = 0;  // 0, HTMINBUTTON, HTMAXBUTTON, HTCLOSE
 
-// Cached tab titles (UTF-16 for DirectWrite)
-static wchar_t s_tab_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX];
+static wchar_t s_titles[16][ATTYX_NATIVE_TAB_TITLE_MAX];
 static int     s_title_lens[16];
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-static float ntab_scale(void) { return g_content_scale; }
+static float sc(void) { return g_content_scale; }
+float ntab_bar_height(void) { return BAR_H * sc(); }
+static float cap_w(void) { return CAP_BTN_W * CAP_COUNT * sc(); }
 
-float ntab_bar_height(void) {
-    return TAB_BAR_HEIGHT * ntab_scale();
-}
-
-static float ntab_caption_width(void) {
-    return CAPTION_TOTAL_W * ntab_scale();
-}
-
-static float ntab_tab_width(int tab_count, float bar_width) {
-    float available = bar_width - ntab_caption_width() - PLUS_BTN_WIDTH * ntab_scale();
-    float w = available / (float)(tab_count > 0 ? tab_count : 1);
-    float sc = ntab_scale();
-    if (w < TAB_MIN_WIDTH * sc) w = TAB_MIN_WIDTH * sc;
-    if (w > TAB_MAX_WIDTH * sc) w = TAB_MAX_WIDTH * sc;
+static float tw(int n, float vpW) {
+    float avail = vpW - cap_w() - PLUS_W * sc();
+    float w = avail / (float)(n > 0 ? n : 1);
+    float s = sc();
+    if (w < TAB_MIN_W * s) w = TAB_MIN_W * s;
+    if (w > TAB_MAX_W * s) w = TAB_MAX_W * s;
     return w;
 }
 
-static float ntab_tab_x(int idx, int tab_count, float bar_width) {
-    return idx * ntab_tab_width(tab_count, bar_width);
+static float tx(int i, int n, float vpW) { return i * tw(n, vpW); }
+
+// Emit a thin diagonal line as two triangles.
+static int emitLine(WinVertex* v, int vi,
+                    float x0, float y0, float x1, float y1, float thick,
+                    float r, float g, float b, float a) {
+    float dx = x1 - x0, dy = y1 - y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.01f) return vi;
+    float nx = -dy / len * thick * 0.5f, ny = dx / len * thick * 0.5f;
+    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x0-nx,y0-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x0+nx,y0+ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1-nx,y1-ny, 0,0, r,g,b,a};
+    v[vi++] = (WinVertex){x1+nx,y1+ny, 0,0, r,g,b,a};
+    return vi;
+}
+
+// Emit a rectangle with rounded top-left and top-right corners.
+// Bottom edge is flat (connects to content area).
+static int emitRoundTopRect(WinVertex* v, int vi,
+                            float x, float y, float w, float h, float rad,
+                            float r, float g, float b, float a) {
+    if (rad < 1.0f) return winEmitRect(v, vi, x, y, w, h, r, g, b, a);
+
+    float pts[4 + 2 * ARC_SEGS][2];
+    int n = 0;
+
+    // Bottom edge (flat)
+    pts[n][0] = x;     pts[n][1] = y + h; n++;
+    pts[n][0] = x + w; pts[n][1] = y + h; n++;
+    // Right side up to arc
+    pts[n][0] = x + w; pts[n][1] = y + rad; n++;
+    // Top-right arc
+    for (int i = 1; i <= ARC_SEGS; i++) {
+        float t = (float)i / (float)ARC_SEGS * PI_HALF;
+        pts[n][0] = (x + w - rad) + rad * cosf(t);
+        pts[n][1] = (y + rad) - rad * sinf(t);
+        n++;
+    }
+    // Top-left arc
+    for (int i = 1; i <= ARC_SEGS; i++) {
+        float t = PI_HALF + (float)i / (float)ARC_SEGS * PI_HALF;
+        pts[n][0] = (x + rad) + rad * cosf(t);
+        pts[n][1] = (y + rad) - rad * sinf(t);
+        n++;
+    }
+    // Left side closes back to bottom-left (pts[0])
+
+    // Fan triangulate from centroid
+    float cx = x + w * 0.5f, cy = y + h * 0.5f;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        v[vi++] = (WinVertex){cx, cy, 0, 0, r, g, b, a};
+        v[vi++] = (WinVertex){pts[i][0], pts[i][1], 0, 0, r, g, b, a};
+        v[vi++] = (WinVertex){pts[j][0], pts[j][1], 0, 0, r, g, b, a};
+    }
+    return vi;
 }
 
 // ---------------------------------------------------------------------------
 // Title sync
 // ---------------------------------------------------------------------------
 
-static void ntab_sync_titles(void) {
+static void sync_titles(void) {
     if (!g_native_tab_titles_changed) return;
     g_native_tab_titles_changed = 0;
-
     int cnt = g_native_tab_count;
     if (cnt < 1) cnt = 1;
     if (cnt > 16) cnt = 16;
-
     for (int i = 0; i < cnt; i++) {
         int len = MultiByteToWideChar(CP_UTF8, 0, g_native_tab_titles[i], -1,
-                                       s_tab_titles[i], ATTYX_NATIVE_TAB_TITLE_MAX - 1);
-        s_title_lens[i] = (len > 0) ? len - 1 : 0;  // exclude null
+                                       s_titles[i], ATTYX_NATIVE_TAB_TITLE_MAX - 1);
+        s_title_lens[i] = (len > 0) ? len - 1 : 0;
     }
 }
 
 // ---------------------------------------------------------------------------
-// Draw — called from windows_renderer.c draw_frame
+// Draw
 // ---------------------------------------------------------------------------
 
 void ntab_draw(float vpW, float vpH) {
     if (!g_native_tabs_enabled) return;
-
-    int tab_count = g_native_tab_count;
+    int count = g_native_tab_count;
     int active = g_native_tab_active;
-    if (tab_count < 1) tab_count = 1;
-    if (tab_count > 16) tab_count = 16;
+    if (count < 1) count = 1;
+    if (count > 16) count = 16;
     if (active < 0) active = 0;
-    if (active >= tab_count) active = tab_count - 1;
+    if (active >= count) active = count - 1;
+    if (count <= 1 && !g_tab_always_show) return;
 
-    // Show only when >1 tab or always-show is set
-    if (tab_count <= 1 && !g_tab_always_show) return;
+    sync_titles();
 
-    ntab_sync_titles();
-
-    float sc = ntab_scale();
+    float s = sc();
     float barH = ntab_bar_height();
-    float tabW = ntab_tab_width(tab_count, vpW);
-    float captionW = ntab_caption_width();
+    float tabW = tw(count, vpW);
+    float rad = CORNER_R * s;
 
-    // Bar colors (dark theme, matching Windows Terminal)
-    float barBgR = 0.12f, barBgG = 0.12f, barBgB = 0.12f;
-    float activeBgR = 0.20f, activeBgG = 0.20f, activeBgB = 0.20f;
-    float hoverBgR = 0.16f, hoverBgG = 0.16f, hoverBgB = 0.16f;
-    float activeFgR = 1.0f, activeFgG = 1.0f, activeFgB = 1.0f;
-    float inactiveFgR = 0.6f, inactiveFgG = 0.6f, inactiveFgB = 0.6f;
-    float sepR = 1.0f, sepG = 1.0f, sepB = 1.0f, sepA = 0.08f;
-    float closeHoverR = 1.0f, closeHoverG = 1.0f, closeHoverB = 1.0f, closeHoverA = 0.12f;
+    // Theme colors
+    float tR = g_theme_bg_r / 255.0f, tG = g_theme_bg_g / 255.0f, tB = g_theme_bg_b / 255.0f;
+    float lum = (tR + tG + tB) / 3.0f;
+    // Derive foreground: white on dark, dark on light
+    float fR = lum < 0.5f ? 1.0f : 0.1f;
+    float fG = fR, fB = fR;
 
-    // Use theme colors for bar background
-    float tBgR = g_theme_bg_r / 255.0f;
-    float tBgG = g_theme_bg_g / 255.0f;
-    float tBgB = g_theme_bg_b / 255.0f;
-    // Darken theme BG for bar
-    barBgR = tBgR * 0.55f;
-    barBgG = tBgG * 0.55f;
-    barBgB = tBgB * 0.55f;
-    // Active tab: slightly lighter
-    activeBgR = tBgR * 0.85f;
-    activeBgG = tBgG * 0.85f;
-    activeBgB = tBgB * 0.85f;
-    // Hover: between bar and active
-    hoverBgR = tBgR * 0.70f;
-    hoverBgG = tBgG * 0.70f;
-    hoverBgB = tBgB * 0.70f;
+    // Bar bg: darker than content. Active tab = content bg (seamless connection).
+    float bR, bG, bB;
+    if (lum < 0.5f) { bR = tR * 0.5f;  bG = tG * 0.5f;  bB = tB * 0.5f;  }
+    else             { bR = tR * 0.92f; bG = tG * 0.92f; bB = tB * 0.92f; }
+    float aR = tR, aG = tG, aB = tB;  // active tab = terminal bg
+    float hR = (bR + aR) * 0.5f, hG = (bG + aG) * 0.5f, hB = (bB + aB) * 0.5f;
 
-    // Solid vertices buffer (generous: bar bg + tabs + separators + buttons)
-    int maxVerts = (tab_count + 10) * 6;
-    WinVertex* verts = (WinVertex*)_alloca(maxVerts * sizeof(WinVertex));
+    // --- Solid pass: backgrounds ---
+    // Max verts: bar(6) + active(~42) + hover(~42) + capHover(6) + seps(count*6)
+    int maxV = 200 + count * 6;
+    WinVertex* v = (WinVertex*)_alloca(maxV * sizeof(WinVertex));
     int vi = 0;
 
-    // 1. Bar background (full width, barH height)
-    vi = winEmitRect(verts, vi, 0, 0, vpW, barH, barBgR, barBgG, barBgB, 1.0f);
+    // Bar background
+    vi = winEmitRect(v, vi, 0, 0, vpW, barH, bR, bG, bB, 1.0f);
 
-    // 2. Per-tab backgrounds
-    for (int i = 0; i < tab_count; i++) {
-        float tx = ntab_tab_x(i, tab_count, vpW);
-        int isActive = (i == active);
-        int isHovered = (i == s_hovered_tab && !s_hover_close);
+    // Active tab: rounded top corners, bottom flush with content
+    vi = emitRoundTopRect(v, vi, tx(active, count, vpW), 0, tabW, barH,
+                          rad, aR, aG, aB, 1.0f);
 
-        if (isActive) {
-            vi = winEmitRect(verts, vi, tx, 0, tabW, barH,
-                             activeBgR, activeBgG, activeBgB, 1.0f);
-        } else if (isHovered) {
-            vi = winEmitRect(verts, vi, tx, 0, tabW, barH,
-                             hoverBgR, hoverBgG, hoverBgB, 1.0f);
-        }
+    // Hover tab (not active)
+    if (s_hovered_tab >= 0 && s_hovered_tab < count && s_hovered_tab != active) {
+        vi = emitRoundTopRect(v, vi, tx(s_hovered_tab, count, vpW), 2*s,
+                              tabW, barH - 2*s, rad, hR, hG, hB, 0.5f);
     }
 
-    // 3. Separators between tabs
-    for (int i = 1; i < tab_count; i++) {
-        // Skip separator adjacent to active or hovered tab
+    // Plus button hover
+    if (s_hovered_tab == count) {
+        float px = count * tabW;
+        vi = emitRoundTopRect(v, vi, px, 2*s, PLUS_W * s, barH - 2*s,
+                              rad, hR, hG, hB, 0.5f);
+    }
+
+    // Separators
+    for (int i = 1; i < count; i++) {
         if (i - 1 == active || i == active) continue;
         if (i - 1 == s_hovered_tab || i == s_hovered_tab) continue;
-        float sx = ntab_tab_x(i, tab_count, vpW);
-        float sepH = barH * 0.55f;
-        float sepY = (barH - sepH) * 0.5f;
-        vi = winEmitRect(verts, vi, sx - 0.5f, sepY, 1.0f, sepH, sepR, sepG, sepB, sepA);
+        float sx = tx(i, count, vpW);
+        float sepH = barH * 0.5f, sepY = (barH - sepH) * 0.5f;
+        vi = winEmitRect(v, vi, sx - 0.5f, sepY, 1.0f, sepH, fR, fG, fB, 0.1f);
     }
 
-    // 4. Close button hover background (circle)
-    if (s_hovered_tab >= 0 && s_hovered_tab < tab_count && s_hover_close && tab_count > 1) {
-        float tx = ntab_tab_x(s_hovered_tab, tab_count, vpW);
-        float closeSize = CLOSE_BTN_SIZE * sc;
-        float cx = tx + tabW - closeSize - 8 * sc;
-        float cy = (barH - closeSize) * 0.5f;
-        vi = winEmitRect(verts, vi, cx, cy, closeSize, closeSize,
-                         closeHoverR, closeHoverG, closeHoverB, closeHoverA);
-    }
-
-    // 5. Plus button hover
+    // Caption button hover backgrounds
     {
-        float plusX = tab_count * tabW;
-        float plusW = PLUS_BTN_WIDTH * sc;
-        if (s_hovered_tab == tab_count) {
-            vi = winEmitRect(verts, vi, plusX, 0, plusW, barH,
-                             hoverBgR, hoverBgG, hoverBgB, 1.0f);
+        float capX = vpW - cap_w();
+        float bw = CAP_BTN_W * s;
+        if (s_caption_hover == HTMINBUTTON)
+            vi = winEmitRect(v, vi, capX, 0, bw, barH, fR, fG, fB, 0.08f);
+        else if (s_caption_hover == HTMAXBUTTON)
+            vi = winEmitRect(v, vi, capX + bw, 0, bw, barH, fR, fG, fB, 0.08f);
+        else if (s_caption_hover == HTCLOSE)
+            vi = winEmitRect(v, vi, capX + bw*2, 0, bw, barH,
+                             0.77f, 0.17f, 0.11f, 1.0f);  // #c42b1c
+    }
+
+    if (vi > 0) winDrawSolidVerts(v, vi);
+
+    // --- Icon pass: close ×, plus +, caption buttons ---
+    {
+        WinVertex iv[256]; int ii = 0;
+        float lw = 1.2f * s;
+
+        // Tab close buttons
+        for (int i = 0; i < count; i++) {
+            int isA = (i == active), isH = (i == s_hovered_tab);
+            if (count <= 1 || (!isA && !isH)) continue;
+            float tabX = tx(i, count, vpW);
+            float csz = CLOSE_SZ * s;
+            float cx = tabX + tabW - csz - 8 * s, cy = (barH - csz) * 0.5f;
+            float pad = CLOSE_ICON_PAD * s;
+            float alpha = (isH && s_hover_close) ? 0.9f : 0.35f;
+            if (isH && s_hover_close)
+                ii = winEmitRect(iv, ii, cx, cy, csz, csz, fR, fG, fB, 0.1f);
+            ii = emitLine(iv, ii, cx+pad, cy+pad, cx+csz-pad, cy+csz-pad,
+                          lw, fR, fG, fB, alpha);
+            ii = emitLine(iv, ii, cx+csz-pad, cy+pad, cx+pad, cy+csz-pad,
+                          lw, fR, fG, fB, alpha);
         }
-        // Separator before +
-        float sepH = barH * 0.55f;
-        float sepY = (barH - sepH) * 0.5f;
-        vi = winEmitRect(verts, vi, plusX - 0.5f, sepY, 1.0f, sepH, sepR, sepG, sepB, sepA);
-    }
 
-    // Draw solid pass
-    if (vi > 0) {
-        ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
-        winDrawVerts(verts, vi);
-    }
+        // Plus +
+        {
+            float px = count * tabW + PLUS_W * s * 0.5f;
+            float py = barH * 0.5f;
+            float arm = 5.0f * s;
+            ii = winEmitRect(iv, ii, px-arm, py-lw*0.5f, arm*2, lw, fR,fG,fB, 0.45f);
+            ii = winEmitRect(iv, ii, px-lw*0.5f, py-arm, lw, arm*2, fR,fG,fB, 0.45f);
+        }
 
-    // 6. Close button X marks (drawn as two thin lines = 4 rects each)
-    {
-        WinVertex xv[64]; int xi = 0;
-        for (int i = 0; i < tab_count; i++) {
-            int isActive = (i == active);
-            int isHovered = (i == s_hovered_tab);
-            if (tab_count <= 1) continue;
-            if (!isActive && !isHovered) continue;
+        // Caption icons: minimize (−), maximize (□/⧉), close (×)
+        {
+            float capX = vpW - cap_w();
+            float bw = CAP_BTN_W * s;
+            float isz = CAP_ICON_SZ * s;
+            float ci_lw = 1.0f * s;
+            float ciR = fR, ciG = fG, ciB = fB, ciA = 0.65f;
+            // Close hover → white on red
+            float clR = ciR, clG = ciG, clB = ciB, clA = ciA;
+            if (s_caption_hover == HTCLOSE) { clR=1; clG=1; clB=1; clA=1; }
 
-            float tx = ntab_tab_x(i, tab_count, vpW);
-            float closeSize = CLOSE_BTN_SIZE * sc;
-            float cx = tx + tabW - closeSize - 8 * sc;
-            float cy = (barH - closeSize) * 0.5f;
-            float m = CLOSE_BTN_PAD * sc * 0.5f;
-            float lw = 1.2f * sc;  // line width
+            // Minimize: horizontal line
+            float mx = capX + bw * 0.5f, my = barH * 0.5f;
+            ii = winEmitRect(iv, ii, mx - isz*0.5f, my - ci_lw*0.5f,
+                             isz, ci_lw, ciR, ciG, ciB, ciA);
 
-            float xAlpha = (isHovered && s_hover_close) ? 0.9f : 0.4f;
-
-            // Line 1: top-left to bottom-right
-            float x0 = cx + m, y0 = cy + m;
-            float x1 = cx + closeSize - m, y1 = cy + closeSize - m;
-            // Approximate diagonal line with a rotated thin rect
-            float dx = x1 - x0, dy = y1 - y0;
-            float len = sqrtf(dx*dx + dy*dy);
-            float nx = -dy / len * lw * 0.5f;
-            float ny = dx / len * lw * 0.5f;
-            if (xi + 6 <= 64) {
-                xv[xi++] = (WinVertex){x0+nx, y0+ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x0-nx, y0-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1-nx, y1-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x0+nx, y0+ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1-nx, y1-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1+nx, y1+ny, 0,0, 1,1,1,xAlpha};
+            // Maximize/Restore
+            float mmx = capX + bw * 1.5f, mmy = barH * 0.5f;
+            float half = isz * 0.5f;
+            if (IsZoomed(g_hwnd)) {
+                // Restore: two overlapping squares
+                float off = 2.0f * s, sz = isz - off;
+                // Back square (up-right)
+                float bx = mmx-half+off, by = mmy-half;
+                ii = winEmitRect(iv, ii, bx, by, sz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, bx, by+sz-ci_lw, sz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, bx, by, ci_lw, sz, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, bx+sz-ci_lw, by, ci_lw, sz, ciR,ciG,ciB,ciA);
+                // Front square (down-left)
+                float fx = mmx-half, fy = mmy-half+off;
+                ii = winEmitRect(iv, ii, fx, fy, sz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, fx, fy+sz-ci_lw, sz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, fx, fy, ci_lw, sz, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, fx+sz-ci_lw, fy, ci_lw, sz, ciR,ciG,ciB,ciA);
+            } else {
+                // Maximize: single square outline
+                float sx = mmx-half, sy = mmy-half;
+                ii = winEmitRect(iv, ii, sx, sy, isz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, sx, sy+isz-ci_lw, isz, ci_lw, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, sx, sy, ci_lw, isz, ciR,ciG,ciB,ciA);
+                ii = winEmitRect(iv, ii, sx+isz-ci_lw, sy, ci_lw, isz, ciR,ciG,ciB,ciA);
             }
 
-            // Line 2: top-right to bottom-left
-            x0 = cx + closeSize - m; y0 = cy + m;
-            x1 = cx + m; y1 = cy + closeSize - m;
-            dx = x1 - x0; dy = y1 - y0;
-            len = sqrtf(dx*dx + dy*dy);
-            nx = -dy / len * lw * 0.5f;
-            ny = dx / len * lw * 0.5f;
-            if (xi + 6 <= 64) {
-                xv[xi++] = (WinVertex){x0+nx, y0+ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x0-nx, y0-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1-nx, y1-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x0+nx, y0+ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1-nx, y1-ny, 0,0, 1,1,1,xAlpha};
-                xv[xi++] = (WinVertex){x1+nx, y1+ny, 0,0, 1,1,1,xAlpha};
-            }
+            // Close: ×
+            float clx = capX + bw * 2.5f, cly = barH * 0.5f;
+            ii = emitLine(iv, ii, clx-half, cly-half, clx+half, cly+half,
+                          ci_lw, clR, clG, clB, clA);
+            ii = emitLine(iv, ii, clx+half, cly-half, clx-half, cly+half,
+                          ci_lw, clR, clG, clB, clA);
         }
-        if (xi > 0) {
-            ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
-            winDrawVerts(xv, xi);
-        }
+
+        if (ii > 0) winDrawSolidVerts(iv, ii);
     }
 
-    // 7. Plus sign (two rects forming a +)
-    {
-        float plusX = tab_count * tabW;
-        float plusW = PLUS_BTN_WIDTH * sc;
-        float cx = plusX + plusW * 0.5f;
-        float cy = barH * 0.5f;
-        float armLen = 5.0f * sc;
-        float armThick = 1.4f * sc;
-        float pAlpha = 0.5f;
-
-        WinVertex pv[12]; int pi = 0;
-        // Horizontal arm
-        pi = winEmitRect(pv, pi, cx - armLen, cy - armThick * 0.5f,
-                         armLen * 2.0f, armThick, 1, 1, 1, pAlpha);
-        // Vertical arm
-        pi = winEmitRect(pv, pi, cx - armThick * 0.5f, cy - armLen,
-                         armThick, armLen * 2.0f, 1, 1, 1, pAlpha);
-        if (pi > 0) {
-            ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
-            winDrawVerts(pv, pi);
-        }
-    }
-
-    // 8. Tab title text (using glyph cache)
+    // --- Text pass: tab titles ---
     if (g_gc.texture_srv) {
-        int maxTextVerts = tab_count * 64 * 6;  // rough max
-        WinVertex* tv = (WinVertex*)_alloca(maxTextVerts * sizeof(WinVertex));
+        int maxTV = count * 64 * 6;
+        WinVertex* tv = (WinVertex*)_alloca(maxTV * sizeof(WinVertex));
         int tvi = 0;
+        float inactA = (lum < 0.5f) ? 0.5f : 0.55f;
 
-        for (int i = 0; i < tab_count; i++) {
-            float tx = ntab_tab_x(i, tab_count, vpW);
-            int isActive = (i == active);
-            float fgR = isActive ? activeFgR : inactiveFgR;
-            float fgG = isActive ? activeFgG : inactiveFgG;
-            float fgB = isActive ? activeFgB : inactiveFgB;
-            float fgA = 1.0f;
+        for (int i = 0; i < count; i++) {
+            float tabX = tx(i, count, vpW);
+            int isA = (i == active);
+            float tfR = fR, tfG = fG, tfB = fB;
+            float tfA = isA ? 1.0f : inactA;
 
-            // Text area: after left padding, before close button
-            float textLeft = tx + TAB_PAD_H * sc;
-            float closeSpace = (tab_count > 1) ? (CLOSE_BTN_SIZE + 12) * sc : TAB_PAD_H * sc;
-            float textRight = tx + tabW - closeSpace;
-            float maxTextW = textRight - textLeft;
-            if (maxTextW < 10) continue;
+            float textL = tabX + TAB_PAD * s;
+            float closeW = (count > 1) ? (CLOSE_SZ + 12) * s : TAB_PAD * s;
+            float textR = tabX + tabW - closeW;
+            if (textR - textL < 10) continue;
 
-            // Center text vertically
             float textY = (barH - g_gc.glyph_h) * 0.5f;
+            wchar_t* title = s_titles[i];
+            int tlen = s_title_lens[i];
+            if (tlen <= 0) { title = L"Tab"; tlen = 3; }
 
-            // Render glyphs
-            wchar_t* title = s_tab_titles[i];
-            int titleLen = s_title_lens[i];
-            if (titleLen <= 0) {
-                // Fallback: "Tab"
-                title = L"Tab";
-                titleLen = 3;
-            }
-
-            float curX = textLeft;
-            for (int ch = 0; ch < titleLen && curX + g_gc.glyph_w <= textRight; ch++) {
+            float cx = textL;
+            for (int ch = 0; ch < tlen && cx + g_gc.glyph_w <= textR; ch++) {
                 uint32_t cp = (uint32_t)title[ch];
                 if (cp == 0) break;
-
                 int slot = glyphCacheLookup(&g_gc, cp);
-                if (slot < 0) {
-                    slot = glyphCacheRasterize(&g_gc, cp);
-                    if (slot < 0) { curX += g_gc.glyph_w; continue; }
-                }
+                if (slot < 0) slot = glyphCacheRasterize(&g_gc, cp);
+                if (slot < 0) { cx += g_gc.glyph_w; continue; }
 
-                // Atlas UV
-                int atlasCol = slot % g_gc.atlas_cols;
-                int atlasRow = slot / g_gc.atlas_cols;
-                float u0 = (float)(atlasCol * (int)g_gc.glyph_w) / (float)g_gc.atlas_w;
-                float v0 = (float)(atlasRow * (int)g_gc.glyph_h) / (float)g_gc.atlas_h;
+                int ac = slot % g_gc.atlas_cols, ar = slot / g_gc.atlas_cols;
+                float u0 = (float)(ac * (int)g_gc.glyph_w) / (float)g_gc.atlas_w;
+                float v0 = (float)(ar * (int)g_gc.glyph_h) / (float)g_gc.atlas_h;
                 float u1 = u0 + g_gc.glyph_w / (float)g_gc.atlas_w;
                 float v1 = v0 + g_gc.glyph_h / (float)g_gc.atlas_h;
 
-                if (tvi + 6 <= maxTextVerts) {
-                    tvi = winEmitQuad(tv, tvi,
-                                      curX, textY, curX + g_gc.glyph_w, textY + g_gc.glyph_h,
-                                      u0, v0, u1, v1,
-                                      fgR, fgG, fgB, fgA);
-                }
-                curX += g_gc.glyph_w;
+                if (tvi + 6 <= maxTV)
+                    tvi = winEmitQuad(tv, tvi, cx, textY, cx + g_gc.glyph_w,
+                                     textY + g_gc.glyph_h, u0, v0, u1, v1,
+                                     tfR, tfG, tfB, tfA);
+                cx += g_gc.glyph_w;
             }
         }
-
-        if (tvi > 0) {
-            winDrawTextVerts(tv, tvi, &g_gc);
-        }
+        if (tvi > 0) winDrawTextVerts(tv, tvi, &g_gc);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Hit testing — called from WM_NCHITTEST in platform_windows.c
+// Hit testing
 // ---------------------------------------------------------------------------
 
-// Returns: HTCLIENT for tab area interaction, HTCLOSE/HTMAXBUTTON/HTMINBUTTON
-// for caption buttons, or 0 if not in tab bar area.
 int ntab_hit_test(int px, int py, int clientW) {
     if (!g_native_tabs_enabled) return 0;
-
-    int tab_count = g_native_tab_count;
-    if (tab_count < 1) tab_count = 1;
-    if (tab_count <= 1 && !g_tab_always_show) return 0;
+    int count = g_native_tab_count;
+    if (count < 1) count = 1;
+    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
     if (py < 0 || (float)py >= barH) return 0;
 
-    float sc = ntab_scale();
-    float captionW = ntab_caption_width();
-
-    // Caption buttons are on the right
-    float captionStart = (float)clientW - captionW;
-    if ((float)px >= captionStart) {
-        float btnW = CAPTION_BTN_WIDTH * sc;
-        float rel = (float)px - captionStart;
-        if (rel < btnW)     return HTMINBUTTON;
-        if (rel < btnW * 2) return HTMAXBUTTON;
+    float s = sc();
+    float capStart = (float)clientW - cap_w();
+    if ((float)px >= capStart) {
+        float bw = CAP_BTN_W * s;
+        float rel = (float)px - capStart;
+        if (rel < bw)     return HTMINBUTTON;
+        if (rel < bw * 2) return HTMAXBUTTON;
         return HTCLOSE;
     }
 
-    return HTCLIENT;  // In tab bar but not caption buttons
+    float tabW = tw(count, (float)clientW);
+    float tabsEnd = count * tabW;
+    float plusEnd = tabsEnd + PLUS_W * s;
+
+    if ((float)px < tabsEnd) return HTCLIENT;
+    if ((float)px < plusEnd)  return HTCLIENT;
+    return HTCAPTION;
 }
 
 // ---------------------------------------------------------------------------
-// Mouse interaction — called from WndProc for mouse messages in tab bar
+// Mouse interaction
 // ---------------------------------------------------------------------------
 
-// Update hover state. Returns 1 if state changed (needs redraw).
 int ntab_mouse_move(int px, int py, int clientW) {
     if (!g_native_tabs_enabled) return 0;
-
-    int tab_count = g_native_tab_count;
-    if (tab_count < 1) tab_count = 1;
-    if (tab_count <= 1 && !g_tab_always_show) return 0;
+    int count = g_native_tab_count;
+    if (count < 1) count = 1;
+    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
-    int prev_hovered = s_hovered_tab;
-    int prev_close = s_hover_close;
+    int prev_tab = s_hovered_tab, prev_cl = s_hover_close;
 
-    if ((float)py >= barH || py < 0 || (float)px >= (float)clientW - ntab_caption_width()) {
-        s_hovered_tab = -1;
-        s_hover_close = 0;
+    if ((float)py >= barH || py < 0 || (float)px >= (float)clientW - cap_w()) {
+        s_hovered_tab = -1; s_hover_close = 0;
     } else {
-        float sc = ntab_scale();
-        float tabW = ntab_tab_width(tab_count, (float)clientW);
-        float tabsEnd = tab_count * tabW;
-        float plusEnd = tabsEnd + PLUS_BTN_WIDTH * sc;
+        float s = sc();
+        float tabW = tw(count, (float)clientW);
+        float tabsEnd = count * tabW;
+        float plusEnd = tabsEnd + PLUS_W * s;
 
         if ((float)px < tabsEnd) {
             int idx = (int)((float)px / tabW);
-            if (idx >= tab_count) idx = tab_count - 1;
+            if (idx >= count) idx = count - 1;
             s_hovered_tab = idx;
-
-            // Check close button
-            if (tab_count > 1) {
-                float tx = ntab_tab_x(idx, tab_count, (float)clientW);
-                float closeSize = CLOSE_BTN_SIZE * sc;
-                float cx = tx + tabW - closeSize - 8 * sc;
-                float cy = (barH - closeSize) * 0.5f;
-                s_hover_close = ((float)px >= cx && (float)px <= cx + closeSize &&
-                                 (float)py >= cy && (float)py <= cy + closeSize);
-            } else {
-                s_hover_close = 0;
-            }
+            if (count > 1) {
+                float tabX = tx(idx, count, (float)clientW);
+                float csz = CLOSE_SZ * s;
+                float cx = tabX + tabW - csz - 8*s, cy = (barH - csz) * 0.5f;
+                s_hover_close = ((float)px >= cx && (float)px <= cx+csz &&
+                                 (float)py >= cy && (float)py <= cy+csz);
+            } else s_hover_close = 0;
         } else if ((float)px < plusEnd) {
-            s_hovered_tab = tab_count;  // plus button
-            s_hover_close = 0;
+            s_hovered_tab = count; s_hover_close = 0;
         } else {
-            s_hovered_tab = -1;
-            s_hover_close = 0;
+            s_hovered_tab = -1; s_hover_close = 0;
         }
     }
 
-    int changed = (s_hovered_tab != prev_hovered || s_hover_close != prev_close);
+    int changed = (s_hovered_tab != prev_tab || s_hover_close != prev_cl);
     if (changed) g_full_redraw = 1;
     return changed;
 }
 
-// Handle click. Returns 1 if consumed.
 int ntab_mouse_down(int px, int py, int clientW) {
     if (!g_native_tabs_enabled) return 0;
-
-    int tab_count = g_native_tab_count;
-    if (tab_count < 1) tab_count = 1;
-    if (tab_count <= 1 && !g_tab_always_show) return 0;
+    int count = g_native_tab_count;
+    if (count < 1) count = 1;
+    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
     if ((float)py >= barH || py < 0) return 0;
-    if ((float)px >= (float)clientW - ntab_caption_width()) return 0;  // caption buttons handled by DefWindowProc
+    if ((float)px >= (float)clientW - cap_w()) return 0;
 
-    float sc = ntab_scale();
-    float tabW = ntab_tab_width(tab_count, (float)clientW);
-    float tabsEnd = tab_count * tabW;
-    float plusEnd = tabsEnd + PLUS_BTN_WIDTH * sc;
+    float s = sc();
+    float tabW = tw(count, (float)clientW);
+    float tabsEnd = count * tabW;
 
     if ((float)px < tabsEnd) {
         int idx = (int)((float)px / tabW);
-        if (idx >= tab_count) idx = tab_count - 1;
-
-        // Check close button
-        if (tab_count > 1 && s_hover_close) {
-            // Close tab: switch to it first, then dispatch close action
+        if (idx >= count) idx = count - 1;
+        if (count > 1 && s_hover_close) {
             g_native_tab_click = idx;
-            attyx_dispatch_action(50);  // tab_close
+            attyx_dispatch_action(50);
             g_full_redraw = 1;
             return 1;
         }
-
-        // Tab click: switch to tab
         if (idx != g_native_tab_active) {
             g_native_tab_click = idx;
             g_full_redraw = 1;
         }
         return 1;
-    } else if ((float)px < plusEnd) {
-        // Plus button: new tab
-        attyx_dispatch_action(49);  // tab_new
+    } else if ((float)px < tabsEnd + PLUS_W * s) {
+        attyx_dispatch_action(49);
         g_full_redraw = 1;
         return 1;
     }
-
     return 0;
 }
 
 void ntab_mouse_leave(void) {
     if (s_hovered_tab != -1 || s_hover_close) {
-        s_hovered_tab = -1;
-        s_hover_close = 0;
+        s_hovered_tab = -1; s_hover_close = 0;
+        g_full_redraw = 1;
+    }
+}
+
+void ntab_set_caption_hover(int ht) {
+    if (s_caption_hover != ht) {
+        s_caption_hover = ht;
         g_full_redraw = 1;
     }
 }

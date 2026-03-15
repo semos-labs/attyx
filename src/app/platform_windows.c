@@ -471,16 +471,29 @@ static void win_apply_transparency(HWND hwnd) {
 // ---------------------------------------------------------------------------
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Let DWM handle caption button rendering (snap layouts on Win11, etc.)
+    if (g_native_tabs_enabled) {
+        LRESULT dwmResult;
+        if (DwmDefWindowProc(hwnd, msg, wParam, lParam, &dwmResult))
+            return dwmResult;
+    }
+
     switch (msg) {
     case WM_NCCALCSIZE:
         // Native tabs: extend client area into the title bar.
         // Borderless: expand client area to fill the entire window frame.
         if (g_native_tabs_enabled && wParam) {
-            // Let DefWindowProc calculate the default frame, then remove the
-            // title bar portion so our client area extends to the top.
+            // Extend client area into the title bar so we can draw our tab bar.
             LRESULT r = DefWindowProcW(hwnd, msg, wParam, lParam);
             NCCALCSIZE_PARAMS* p = (NCCALCSIZE_PARAMS*)lParam;
-            p->rgrc[0].top = p->rgrc[1].top;  // extend client into title bar
+            p->rgrc[0].top = p->rgrc[1].top;
+            // When maximized, the window extends past the screen by the frame
+            // thickness. Add the frame border back to avoid clipping.
+            if (IsZoomed(hwnd)) {
+                int frame = GetSystemMetrics(SM_CYFRAME)
+                          + GetSystemMetrics(SM_CXPADDEDBORDER);
+                p->rgrc[0].top += frame;
+            }
             return r;
         }
         if (!g_window_decorations && wParam) return 0;
@@ -565,15 +578,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (right)           return HTRIGHT;
 
             int ht = ntab_hit_test(pt.x, pt.y, cw);
-            if (ht == HTCLOSE || ht == HTMAXBUTTON || ht == HTMINBUTTON)
-                return ht;
-            if (ht == HTCLIENT) {
-                // Tab bar area: let mouse messages through for tab interaction
-                return HTCLIENT;
-            }
-            // In tab bar but outside tab area = drag
-            float barH = ntab_bar_height();
-            if ((float)pt.y < barH) return HTCAPTION;
+            if (ht != 0) return ht;  // HTCLIENT, HTCAPTION, or caption buttons
             return HTCLIENT;
         }
 
@@ -613,13 +618,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_native_tabs_enabled) {
             POINT mp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
             RECT mrc; GetClientRect(hwnd, &mrc);
-            if (ntab_mouse_move(mp.x, mp.y, mrc.right - mrc.left))
-                InvalidateRect(hwnd, NULL, FALSE);
+            ntab_mouse_move(mp.x, mp.y, mrc.right - mrc.left);
+            ntab_set_caption_hover(0);  // clear caption hover when in client area
         }
         break;
 
     case WM_MOUSELEAVE:
         if (g_native_tabs_enabled) ntab_mouse_leave();
+        break;
+
+    case WM_NCMOUSEMOVE:
+        if (g_native_tabs_enabled) {
+            int ht = (int)wParam;
+            if (ht == HTCLOSE || ht == HTMAXBUTTON || ht == HTMINBUTTON)
+                ntab_set_caption_hover(ht);
+            else
+                ntab_set_caption_hover(0);
+            ntab_mouse_leave();  // clear tab hover when in NC area
+        }
+        break;
+
+    case WM_NCMOUSELEAVE:
+        if (g_native_tabs_enabled) ntab_set_caption_hover(0);
         break;
 
     case WM_LBUTTONDOWN:
