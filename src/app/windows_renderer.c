@@ -517,11 +517,13 @@ int windows_renderer_draw_frame(void) {
     {
         float gridR = offX + cols * gw, gridB = offY + visibleRows * gh;
         WinVertex gv[24]; int gvc = 0;
-        int sb_top = (g_statusbar_visible && g_statusbar_position == 0);
-        int sb_bot = (g_statusbar_visible && g_statusbar_position == 1);
-        if (offY > 0.5f && !sb_top)
+        // When using per-pixel alpha (composition), skip top/bottom gap fill
+        // if an overlay occupies those rows — let the overlay control the bg.
+        int skip_top = (s_want_composition && g_grid_top_offset > 0);
+        int skip_bot = (s_want_composition && g_grid_bottom_offset > 0);
+        if (offY > 0.5f && !skip_top)
             gvc = winEmitRect(gv, gvc, 0, 0, vpW, offY, bgR, bgG, bgB, opacity);
-        if (gridB + 0.5f < vpH && !sb_bot)
+        if (gridB + 0.5f < vpH && !skip_bot)
             gvc = winEmitRect(gv, gvc, 0, gridB, vpW, vpH - gridB, bgR, bgG, bgB, opacity);
         if (offX > 0.5f)
             gvc = winEmitRect(gv, gvc, 0, offY, offX, visibleRows * gh, bgR, bgG, bgB, opacity);
