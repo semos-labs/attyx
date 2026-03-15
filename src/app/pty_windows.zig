@@ -241,6 +241,24 @@ const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
 const WIN_GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
 
+// ── Hidden console for MSYS2 fork() ──
+
+extern "kernel32" fn AllocConsole() callconv(.winapi) BOOL;
+extern "kernel32" fn GetConsoleWindow() callconv(.winapi) ?std.os.windows.HWND;
+extern "user32" fn ShowWindow(hWnd: std.os.windows.HWND, nCmdShow: i32) callconv(.winapi) BOOL;
+
+var hidden_console_ready: bool = false;
+
+fn ensureHiddenConsole() void {
+    if (hidden_console_ready) return;
+    hidden_console_ready = true;
+    if (AllocConsole() != 0) {
+        if (GetConsoleWindow()) |con_hwnd| {
+            _ = ShowWindow(con_hwnd, 0); // SW_HIDE
+        }
+    }
+}
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -384,14 +402,14 @@ pub const Pty = struct {
         // Inject attyx executable directory into PATH so child shells can use `attyx` CLI.
         win_shell.injectExeDirIntoPath();
 
+        // MSYS2's fork() emulation needs an inheritable console. Without one
+        // (Windows subsystem), each forked child allocates a new visible console
+        // window causing flash. Allocate a hidden console so children inherit it.
+        ensureHiddenConsole();
+
         // Set up STARTUPINFOEXW.
-        // STARTF_USESHOWWINDOW + SW_HIDE tells Windows to hide any console
-        // window the child creates, preventing flash from MSYS2/ConPTY.
-        const STARTF_USESHOWWINDOW: DWORD = 0x00000001;
         var si = std.mem.zeroes(STARTUPINFOEXW);
         si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
-        si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-        si.StartupInfo.wShowWindow = 0; // SW_HIDE
         si.lpAttributeList = attr_list;
 
         var pi: PROCESS_INFORMATION = undefined;
