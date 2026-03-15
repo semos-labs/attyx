@@ -89,13 +89,9 @@ void win_init_composition(HWND hwnd, IDXGISwapChain* swap_chain) {
     hr = s_dcomp_device->lpVtbl->CreateVisual(s_dcomp_device, &s_dcomp_visual);
     if (FAILED(hr)) { ATTYX_LOG_INFO("platform", "CreateVisual failed: 0x%08lX", hr); return; }
 
-    hr = s_dcomp_visual->lpVtbl->SetContent(s_dcomp_visual, (IUnknown*)swap_chain);
-    ATTYX_LOG_INFO("platform", "SetContent: 0x%08lX", hr);
-    hr = s_dcomp_target->lpVtbl->SetRoot(s_dcomp_target, s_dcomp_visual);
-    ATTYX_LOG_INFO("platform", "SetRoot: 0x%08lX", hr);
-    hr = s_dcomp_device->lpVtbl->Commit(s_dcomp_device);
-    ATTYX_LOG_INFO("platform", "Commit: 0x%08lX", hr);
-    ATTYX_LOG_INFO("platform", "DirectComposition initialized OK");
+    s_dcomp_visual->lpVtbl->SetContent(s_dcomp_visual, (IUnknown*)swap_chain);
+    s_dcomp_target->lpVtbl->SetRoot(s_dcomp_target, s_dcomp_visual);
+    s_dcomp_device->lpVtbl->Commit(s_dcomp_device);
 }
 
 // ---------------------------------------------------------------------------

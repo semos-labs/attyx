@@ -61,8 +61,6 @@ static double s_trail_last_time = 0;
 // Helpers
 // ---------------------------------------------------------------------------
 
-static int s_rtv_log_count = 0;
-
 static void create_render_target(void) {
     if (s_rtv) {
         ID3D11RenderTargetView_Release(s_rtv);
@@ -72,22 +70,12 @@ static void create_render_target(void) {
     HRESULT hr = IDXGISwapChain_GetBuffer(s_swap_chain, 0,
                                            &IID_ID3D11Texture2D,
                                            (void**)&back_buffer);
-    if (FAILED(hr) || !back_buffer) {
-        if (s_rtv_log_count < 5) {
-            ATTYX_LOG_ERR("renderer", "GetBuffer failed: 0x%08lX bb=%p", hr, (void*)back_buffer);
-            s_rtv_log_count++;
-        }
-        return;
+    if (SUCCEEDED(hr) && back_buffer) {
+        ID3D11Device_CreateRenderTargetView(g_d3d_device,
+                                            (ID3D11Resource*)back_buffer,
+                                            NULL, &s_rtv);
+        ID3D11Texture2D_Release(back_buffer);
     }
-    HRESULT hr2 = ID3D11Device_CreateRenderTargetView(g_d3d_device,
-                                        (ID3D11Resource*)back_buffer,
-                                        NULL, &s_rtv);
-    if (s_rtv_log_count < 5) {
-        ATTYX_LOG_INFO("renderer", "RTV create: GetBuffer=0x%08lX CreateRTV=0x%08lX rtv=%p",
-                       hr, hr2, (void*)s_rtv);
-        s_rtv_log_count++;
-    }
-    ID3D11Texture2D_Release(back_buffer);
 }
 
 static double perfTime(void) {
@@ -303,13 +291,11 @@ int windows_renderer_init(HWND hwnd) {
     sc1.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     sc1.AlphaMode   = want_alpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE;
 
-    ATTYX_LOG_INFO("renderer", "swap chain: want_alpha=%d opacity=%.2f", want_alpha, g_background_opacity);
     if (want_alpha) {
         hr = dxgi_factory->lpVtbl->CreateSwapChainForComposition(
             dxgi_factory, (IUnknown*)g_d3d_device,
             &sc1, NULL, (IDXGISwapChain1**)&s_swap_chain
         );
-        ATTYX_LOG_INFO("renderer", "CreateSwapChainForComposition: 0x%08lX", hr);
         if (SUCCEEDED(hr)) {
             win_init_composition(hwnd, s_swap_chain);
         }
@@ -319,10 +305,9 @@ int windows_renderer_init(HWND hwnd) {
             dxgi_factory, (IUnknown*)g_d3d_device, hwnd,
             &sc1, NULL, NULL, (IDXGISwapChain1**)&s_swap_chain
         );
-        ATTYX_LOG_INFO("renderer", "CreateSwapChainForHwnd: 0x%08lX", hr);
     }
     dxgi_factory->lpVtbl->Release(dxgi_factory);
-    if (FAILED(hr)) { ATTYX_LOG_INFO("renderer", "swap chain creation FAILED"); return 0; }
+    if (FAILED(hr)) return 0;
 
     create_render_target();
 
@@ -496,8 +481,6 @@ int windows_renderer_draw_frame(void) {
     if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_win_prev_cursor_row)
                      + abs(curCol - g_win_prev_cursor_col);
-        ATTYX_LOG_INFO("trail", "activate: dist=%d prev=(%d,%d) cur=(%d,%d)",
-                       cellDist, g_win_prev_cursor_row, g_win_prev_cursor_col, curRow, curCol);
         if (cellDist > 1) {
             s_trail_x = offX + g_win_prev_cursor_col * gw;
             s_trail_y = baseOffY + g_win_prev_cursor_row * gh;
@@ -514,12 +497,6 @@ int windows_renderer_draw_frame(void) {
     g_full_redraw = 0;
 
     // --- D3D11 draw ---
-    static int s_draw_log = 0;
-    if (s_draw_log < 3) {
-        ATTYX_LOG_INFO("renderer", "draw: rtv=%p bgVerts=%d textVerts=%d comp=%d vp=%.0fx%.0f",
-                       (void*)s_rtv, bgVertCount, g_win_total_text_verts, s_want_composition, vpW, vpH);
-        s_draw_log++;
-    }
     float opacity = g_background_opacity;
     float bgR = g_theme_bg_r / 255.0f;
     float bgG = g_theme_bg_g / 255.0f;
@@ -544,10 +521,7 @@ int windows_renderer_draw_frame(void) {
     float bf[4] = {0,0,0,0};
     ID3D11DeviceContext_OMSetBlendState(g_d3d_context, g_d3d_blend_alpha, bf, 0xFFFFFFFF);
 
-    // Gap fill — margins around the grid.
-    // When the statusbar is active and positioned at top/bottom, skip the
-    // gap fill in that area so the overlay controls the bg (important for
-    // transparent windows where stacking would compound alpha).
+    // Gap fill — margins around the grid
     {
         float gridR = offX + cols * gw, gridB = offY + visibleRows * gh;
         WinVertex gv[24]; int gvc = 0;
@@ -637,8 +611,6 @@ int windows_renderer_draw_frame(void) {
                     tv[ti*3+1] = (WinVertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr_t,cg_t,cb_t,1.0f };
                     tv[ti*3+2] = (WinVertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr_t,cg_t,cb_t,1.0f };
                 }
-                ATTYX_LOG_INFO("trail", "draw: dt=%.4f dist=%.1f trail=(%.0f,%.0f) tgt=(%.0f,%.0f)",
-                               dt, dist, s_trail_x, s_trail_y, targetX, targetY);
                 ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
                 upload_and_draw(tv, 12);
                 g_full_redraw = 1;
