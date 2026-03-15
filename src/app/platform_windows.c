@@ -10,13 +10,15 @@
 #include <dwmapi.h>
 
 // DirectComposition — dynamically loaded for per-pixel alpha transparency.
-// We call DCompositionCreateDevice3 → CreateTarget → CreateVisual → SetContent.
-typedef HRESULT (WINAPI *PFN_DCompositionCreateDevice3)(IUnknown*, REFIID, void**);
+// We use DCompositionCreateDevice (not Device2/3) because IDCompositionDevice
+// has CreateTargetForHwnd at vtable slot 6.  IDCompositionDevice2/3 move it to
+// IDCompositionDesktopDevice (slot 10+), making our stub vtable wrong.
+typedef HRESULT (WINAPI *PFN_DCompositionCreateDevice)(IDXGIDevice*, REFIID, void**);
 
 // Minimal COM vtable stubs for IDCompositionDevice, IDCompositionTarget, IDCompositionVisual
 typedef struct IDCompositionVisual IDCompositionVisual;
 typedef struct IDCompositionTarget IDCompositionTarget;
-typedef struct IDCompositionDevice3 IDCompositionDevice3;
+typedef struct IDCompositionDevice IDCompositionDevice;
 
 typedef struct IDCompositionVisualVtbl {
     HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionVisual*, REFIID, void**);
@@ -47,36 +49,39 @@ typedef struct IDCompositionTargetVtbl {
 } IDCompositionTargetVtbl;
 struct IDCompositionTarget { IDCompositionTargetVtbl *lpVtbl; };
 
-typedef struct IDCompositionDevice3Vtbl {
-    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionDevice3*, REFIID, void**);
-    ULONG   (STDMETHODCALLTYPE *AddRef)(IDCompositionDevice3*);
-    ULONG   (STDMETHODCALLTYPE *Release)(IDCompositionDevice3*);
-    HRESULT (STDMETHODCALLTYPE *Commit)(IDCompositionDevice3*);
-    HRESULT (STDMETHODCALLTYPE *WaitForCommitCompletion)(IDCompositionDevice3*);
-    HRESULT (STDMETHODCALLTYPE *GetFrameStatistics)(IDCompositionDevice3*, void*);
-    HRESULT (STDMETHODCALLTYPE *CreateTargetForHwnd)(IDCompositionDevice3*, HWND, BOOL, IDCompositionTarget**);
-    HRESULT (STDMETHODCALLTYPE *CreateVisual)(IDCompositionDevice3*, IDCompositionVisual**);
-} IDCompositionDevice3Vtbl;
-struct IDCompositionDevice3 { IDCompositionDevice3Vtbl *lpVtbl; };
+typedef struct IDCompositionDeviceVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionDevice*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDCompositionDevice*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *Commit)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *WaitForCommitCompletion)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *GetFrameStatistics)(IDCompositionDevice*, void*);
+    HRESULT (STDMETHODCALLTYPE *CreateTargetForHwnd)(IDCompositionDevice*, HWND, BOOL, IDCompositionTarget**);
+    HRESULT (STDMETHODCALLTYPE *CreateVisual)(IDCompositionDevice*, IDCompositionVisual**);
+} IDCompositionDeviceVtbl;
+struct IDCompositionDevice { IDCompositionDeviceVtbl *lpVtbl; };
 
-static IDCompositionDevice3* s_dcomp_device = NULL;
+static IDCompositionDevice* s_dcomp_device = NULL;
 static IDCompositionTarget*  s_dcomp_target = NULL;
 static IDCompositionVisual*  s_dcomp_visual = NULL;
 
 void win_init_composition(HWND hwnd, IDXGISwapChain* swap_chain) {
     HMODULE dcomp = LoadLibraryW(L"dcomp.dll");
     if (!dcomp) { ATTYX_LOG_INFO("platform", "dcomp.dll not found"); return; }
-    PFN_DCompositionCreateDevice3 createDev =
-        (PFN_DCompositionCreateDevice3)GetProcAddress(dcomp, "DCompositionCreateDevice3");
-    if (!createDev) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice3 not found"); FreeLibrary(dcomp); return; }
+    PFN_DCompositionCreateDevice createDev =
+        (PFN_DCompositionCreateDevice)GetProcAddress(dcomp, "DCompositionCreateDevice");
+    if (!createDev) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice not found"); FreeLibrary(dcomp); return; }
 
     IDXGIDevice* dxgi_dev = NULL;
     ID3D11Device_QueryInterface(g_d3d_device, &IID_IDXGIDevice, (void**)&dxgi_dev);
     if (!dxgi_dev) { ATTYX_LOG_INFO("platform", "QueryInterface IDXGIDevice failed"); return; }
 
-    HRESULT hr = createDev((IUnknown*)dxgi_dev, &IID_IUnknown, (void**)&s_dcomp_device);
+    // IDCompositionDevice IID: {C37EA93A-E7AA-450D-B16F-9746CB0407F3}
+    static const IID IID_IDCompositionDevice =
+        {0xC37EA93A, 0xE7AA, 0x450D, {0xB1,0x6F,0x97,0x46,0xCB,0x04,0x07,0xF3}};
+    HRESULT hr = createDev(dxgi_dev, &IID_IDCompositionDevice, (void**)&s_dcomp_device);
     IDXGIDevice_Release(dxgi_dev);
-    if (FAILED(hr) || !s_dcomp_device) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice3 failed: 0x%08lX", hr); return; }
+    if (FAILED(hr) || !s_dcomp_device) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice failed: 0x%08lX", hr); return; }
 
     hr = s_dcomp_device->lpVtbl->CreateTargetForHwnd(s_dcomp_device, hwnd, TRUE, &s_dcomp_target);
     if (FAILED(hr)) { ATTYX_LOG_INFO("platform", "CreateTargetForHwnd failed: 0x%08lX", hr); return; }
@@ -84,9 +89,12 @@ void win_init_composition(HWND hwnd, IDXGISwapChain* swap_chain) {
     hr = s_dcomp_device->lpVtbl->CreateVisual(s_dcomp_device, &s_dcomp_visual);
     if (FAILED(hr)) { ATTYX_LOG_INFO("platform", "CreateVisual failed: 0x%08lX", hr); return; }
 
-    s_dcomp_visual->lpVtbl->SetContent(s_dcomp_visual, (IUnknown*)swap_chain);
-    s_dcomp_target->lpVtbl->SetRoot(s_dcomp_target, s_dcomp_visual);
-    s_dcomp_device->lpVtbl->Commit(s_dcomp_device);
+    hr = s_dcomp_visual->lpVtbl->SetContent(s_dcomp_visual, (IUnknown*)swap_chain);
+    ATTYX_LOG_INFO("platform", "SetContent: 0x%08lX", hr);
+    hr = s_dcomp_target->lpVtbl->SetRoot(s_dcomp_target, s_dcomp_visual);
+    ATTYX_LOG_INFO("platform", "SetRoot: 0x%08lX", hr);
+    hr = s_dcomp_device->lpVtbl->Commit(s_dcomp_device);
+    ATTYX_LOG_INFO("platform", "Commit: 0x%08lX", hr);
     ATTYX_LOG_INFO("platform", "DirectComposition initialized OK");
 }
 

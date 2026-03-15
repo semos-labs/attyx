@@ -56,6 +56,8 @@ static LARGE_INTEGER s_perf_freq;
 // Helpers
 // ---------------------------------------------------------------------------
 
+static int s_rtv_log_count = 0;
+
 static void create_render_target(void) {
     if (s_rtv) {
         ID3D11RenderTargetView_Release(s_rtv);
@@ -65,12 +67,22 @@ static void create_render_target(void) {
     HRESULT hr = IDXGISwapChain_GetBuffer(s_swap_chain, 0,
                                            &IID_ID3D11Texture2D,
                                            (void**)&back_buffer);
-    if (SUCCEEDED(hr) && back_buffer) {
-        ID3D11Device_CreateRenderTargetView(g_d3d_device,
-                                            (ID3D11Resource*)back_buffer,
-                                            NULL, &s_rtv);
-        ID3D11Texture2D_Release(back_buffer);
+    if (FAILED(hr) || !back_buffer) {
+        if (s_rtv_log_count < 5) {
+            ATTYX_LOG_ERR("renderer", "GetBuffer failed: 0x%08lX bb=%p", hr, (void*)back_buffer);
+            s_rtv_log_count++;
+        }
+        return;
     }
+    HRESULT hr2 = ID3D11Device_CreateRenderTargetView(g_d3d_device,
+                                        (ID3D11Resource*)back_buffer,
+                                        NULL, &s_rtv);
+    if (s_rtv_log_count < 5) {
+        ATTYX_LOG_INFO("renderer", "RTV create: GetBuffer=0x%08lX CreateRTV=0x%08lX rtv=%p",
+                       hr, hr2, (void*)s_rtv);
+        s_rtv_log_count++;
+    }
+    ID3D11Texture2D_Release(back_buffer);
 }
 
 static double perfTime(void) {
@@ -468,6 +480,12 @@ int windows_renderer_draw_frame(void) {
     g_full_redraw = 0;
 
     // --- D3D11 draw ---
+    static int s_draw_log = 0;
+    if (s_draw_log < 3) {
+        ATTYX_LOG_INFO("renderer", "draw: rtv=%p bgVerts=%d textVerts=%d comp=%d vp=%.0fx%.0f",
+                       (void*)s_rtv, bgVertCount, g_win_total_text_verts, s_want_composition, vpW, vpH);
+        s_draw_log++;
+    }
     float opacity = g_background_opacity;
     float bgR = g_theme_bg_r / 255.0f;
     float bgG = g_theme_bg_g / 255.0f;
