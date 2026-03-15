@@ -643,8 +643,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Build system menu bar (skip for borderless windows)
     HMENU hmenu = g_window_decorations ? windows_menu_create() : NULL;
 
-    // Compute window rect from desired client area
-    DWORD style = WS_OVERLAPPEDWINDOW;
+    // Compute window rect from desired client area.
+    // Borderless: keep WS_THICKFRAME for resize/snap but strip caption/menu
+    // bits so DWM doesn't render ghost caption buttons.
+    DWORD style = g_window_decorations
+        ? WS_OVERLAPPEDWINDOW
+        : (WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
     BOOL has_menu = (hmenu != NULL) ? TRUE : FALSE;
     RECT rect = { 0, 0, winW, winH };
     AdjustWindowRect(&rect, style, has_menu);
