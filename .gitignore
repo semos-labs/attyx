@@ -9,6 +9,8 @@ zig-out/
 installer/dist/
 installer/output/
 installer/.innosetup/
+installer/zig-out/
+installer/.zig-cache/
 *.app
 worktrees
 tasks
