@@ -28,6 +28,9 @@ const session_win = @import("session_windows.zig");
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
 
+// Debug file logger (defined in platform_windows.c)
+extern fn dbglog(msg: [*:0]const u8) void;
+
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
 pub fn run(
@@ -123,9 +126,11 @@ pub fn run(
     const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
     // Spawn initial pane via TabManager
+    dbglog("zig: spawning initial pane...");
     const initial_pane = try allocator.create(Pane);
     errdefer allocator.destroy(initial_pane);
     initial_pane.* = try Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines);
+    dbglog("zig: pane spawned OK");
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&theme);
@@ -212,5 +217,7 @@ pub fn run(
     defer reader_thread.join();
 
     // Enter Win32 message loop + D3D11 rendering
+    dbglog("zig: calling attyx_run...");
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
+    dbglog("zig: attyx_run returned");
 }

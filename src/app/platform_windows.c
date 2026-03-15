@@ -8,6 +8,20 @@
 
 #include "windows_internal.h"
 #include <dwmapi.h>
+// Debug file logger — writes to %LocalAppData%\Attyx\debug.log
+void dbglog(const char* msg) {
+    static char path[MAX_PATH] = {0};
+    if (!path[0]) {
+        DWORD len = GetEnvironmentVariableA("LOCALAPPDATA", path, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) { path[0] = 0; return; }
+        strcat(path, "\\Attyx\\debug.log");
+    }
+    FILE* f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "%s\n", msg);
+    fflush(f);
+    fclose(f);
+}
 
 // DirectComposition — dynamically loaded for per-pixel alpha transparency.
 // We use DCompositionCreateDevice (not Device2/3) because IDCompositionDevice
@@ -708,7 +722,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 // ---------------------------------------------------------------------------
 
 void attyx_run(AttyxCell* cells, int cols, int rows) {
-    MessageBoxA(NULL, "DEBUG: attyx_run entered", "Attyx Debug", MB_OK);
+    dbglog("attyx_run entered");
     // Console already detached by main() before reaching here.
     g_cells = cells;
     g_cols  = cols;
@@ -788,7 +802,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         NULL, hmenu, hInstance, NULL
     );
 
-    if (!g_hwnd) return;
+    if (!g_hwnd) { dbglog("FAIL: CreateWindowExW failed"); return; }
+    dbglog("window created");
 
     // Apply dark mode title bar
     win_apply_dark_mode(g_hwnd);
@@ -798,11 +813,14 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     // Initialize D3D11 renderer
     if (!windows_renderer_init(g_hwnd)) {
+        dbglog("FAIL: D3D11 renderer init failed");
         DestroyWindow(g_hwnd);
         return;
     }
+    dbglog("D3D11 init OK");
 
     // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
+    dbglog("font init...");
     if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
         g_cell_px_w = g_gc.glyph_w;
         g_cell_px_h = g_gc.glyph_h;
@@ -820,8 +838,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                      SWP_NOMOVE | SWP_NOZORDER);
     }
 
+    dbglog("font init done");
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
+    dbglog("window visible, entering msg loop");
 
     // Apply window title if set
     if (g_title_len > 0) {
