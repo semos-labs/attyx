@@ -151,6 +151,11 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
     int alt   = (GetKeyState(VK_MENU)    & 0x8000) != 0;
     int shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
 
+    if (alt && vk != VK_MENU && vk != VK_LMENU && vk != VK_RMENU) {
+        ATTYX_LOG_INFO("input", "handleKeyDown: vk=0x%02X ctrl=%d alt=%d shift=%d",
+                       (unsigned)vk, ctrl, alt, shift);
+    }
+
     // Overlay interaction keys (contextual, not user-configurable)
     if (g_overlay_has_actions) {
         if (vk == VK_ESCAPE)                         { attyx_overlay_esc(); g_suppress_char = 1; return 0; }
