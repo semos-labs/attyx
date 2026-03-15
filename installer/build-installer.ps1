@@ -72,18 +72,16 @@ Write-Host ">> Compiling installer..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $setupExe = Join-Path $output "attyx-$Version-setup.exe"
 
-$installerDir = Join-Path $root "installer"
-Push-Location $installerDir
-zig build
+Push-Location $root
+zig build installer
 Pop-Location
 
-$builtExe = Join-Path $installerDir "zig-out\bin\attyx-setup.exe"
+$builtExe = Join-Path $root "zig-out\bin\attyx-setup.exe"
 if (-not (Test-Path $builtExe)) {
     Write-Error "Installer compilation failed."
     exit 1
 }
 Copy-Item $builtExe $setupExe -Force
-Remove-Item (Join-Path $installerDir "zig-out") -Recurse -Force -ErrorAction SilentlyContinue
 
 # Step 4: Copy dist/ next to setup exe
 Write-Host ">> Copying payload next to installer..." -ForegroundColor Yellow

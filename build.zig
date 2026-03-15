@@ -234,6 +234,34 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
+    // Windows installer (zig build installer)
+    if (target.result.os.tag == .windows) {
+        const setup = b.addExecutable(.{
+            .name = "attyx-setup",
+            .root_module = b.createModule(.{
+                .root_source_file = null,
+                .target = target,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        setup.subsystem = .Windows;
+        setup.addCSourceFile(.{ .file = b.path("installer/installer.c"), .flags = &.{} });
+        setup.addWin32ResourceFile(.{ .file = b.path("installer/installer.rc") });
+        setup.root_module.linkSystemLibrary("kernel32", .{});
+        setup.root_module.linkSystemLibrary("user32", .{});
+        setup.root_module.linkSystemLibrary("gdi32", .{});
+        setup.root_module.linkSystemLibrary("shell32", .{});
+        setup.root_module.linkSystemLibrary("ole32", .{});
+        setup.root_module.linkSystemLibrary("advapi32", .{});
+        setup.root_module.linkSystemLibrary("shlwapi", .{});
+        setup.root_module.linkSystemLibrary("uuid", .{});
+        setup.root_module.linkSystemLibrary("c", .{});
+
+        const install_setup = b.addInstallArtifact(setup, .{});
+        const installer_step = b.step("installer", "Build the Windows installer");
+        installer_step.dependOn(&install_setup.step);
+    }
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.
