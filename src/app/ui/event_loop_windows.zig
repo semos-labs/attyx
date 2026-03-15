@@ -614,10 +614,31 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
         switch (action) {
             .tab_new => {
                 const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-                ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
-                    logging.err("tabs", "addTab failed: {}", .{err});
-                    return;
-                };
+                if (ctx.session_client) |sc| {
+                    // Session mode: daemon owns the PTY.
+                    sc.sendCreatePane(rows, ctx.grid_cols, "") catch {
+                        logging.err("tabs", "send create_pane failed", .{});
+                        return;
+                    };
+                    const pane_id = sc.waitForPaneCreated(5000) catch |err| {
+                        logging.err("tabs", "create daemon pane failed: {}", .{err});
+                        return;
+                    };
+                    const new_pane = ctx.tab_mgr.addDaemonTab(rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch |err| {
+                        logging.err("tabs", "addDaemonTab failed: {}", .{err});
+                        return;
+                    };
+                    new_pane.daemon_pane_id = pane_id;
+                    // Tell daemon to start sending output for this pane.
+                    sc.sendFocusPanes(&.{pane_id}) catch {};
+                    logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
+                } else {
+                    // No daemon: spawn local ConPTY.
+                    ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
+                        logging.err("tabs", "addTab failed: {}", .{err});
+                        return;
+                    };
+                }
                 updateGridOffsets(ctx);
                 ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
                 switchActiveTab(ctx);
