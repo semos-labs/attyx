@@ -9,7 +9,7 @@ const session_connect = @import("app/session_connect.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
-fn debugToFile(msg: []const u8) void {
+pub fn debugToFile(msg: []const u8) void {
     var path_buf: [256]u8 = undefined;
     const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
     const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
@@ -151,13 +151,6 @@ pub fn main() !void {
             debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
             debugToFile("main: about to call daemon.run");
-            // TEMPORARY: test if daemon process survives without actual daemon code
-            if (is_windows) {
-                debugToFile("main: daemon alive, sleeping 10s as test");
-                std.Thread.sleep(10 * std.time.ns_per_s);
-                debugToFile("main: daemon sleep done, exiting");
-                return;
-            }
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
