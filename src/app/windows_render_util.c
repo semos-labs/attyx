@@ -121,12 +121,16 @@ void winCellBgColor(const AttyxCell* cell, int row, int col,
         } else {
             *r = 0.20f; *g = 0.40f; *b = 0.70f;
         }
-        *a = 1.0f;
+        *a = g_background_opacity < 1.0f ? g_background_opacity : 1.0f;
     } else {
         *r = cell->bg_r / 255.0f;
         *g = cell->bg_g / 255.0f;
         *b = cell->bg_b / 255.0f;
         *a = (cell->flags & 4) ? g_background_opacity : 1.0f;
+        // With DirectComposition the swap chain alpha IS the window
+        // transparency — cap all bg alpha so nothing is more opaque
+        // than the configured window opacity.
+        if (*a > g_background_opacity) *a = g_background_opacity;
     }
 }
 

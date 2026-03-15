@@ -38,6 +38,8 @@ void drawOverlays(float offX, float offY, float gw, float gh,
             }
             // Draw full-screen dim rect
             float ba = desc.backdrop_alpha / 255.0f;
+            if (g_background_opacity < 1.0f)
+                ba *= g_background_opacity;
             WinVertex dimVerts[6];
             winEmitRect(dimVerts, 0, 0, 0, (float)vpW, (float)vpH,
                         0, 0, 0, ba);
@@ -61,6 +63,10 @@ void drawOverlays(float offX, float offY, float gw, float gh,
 
             AttyxOverlayCell cell = g_overlay_cells[layer][ci];
             float alpha = cell.bg_alpha / 255.0f;
+            // Composition swap chains use per-pixel alpha for window transparency.
+            // Scale overlay bg alpha by window opacity so overlays aren't fully opaque.
+            if (g_background_opacity < 1.0f)
+                alpha *= g_background_opacity;
             uint8_t flags = cell.flags;
 
             // Background quad
