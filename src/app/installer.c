@@ -28,18 +28,18 @@
 
 #define WIN_W       560
 #define WIN_H       440
-#define BG           RGB(14, 14, 14)       // #0e0e0e
-#define CARD_BG      RGB(22, 22, 22)       // #161616
-#define CARD_BORDER  RGB(38, 38, 38)       // #262626
-#define TEXT_PRI     RGB(240, 240, 240)    // #f0f0f0
-#define TEXT_SEC     RGB(120, 120, 120)    // #787878
-#define TEXT_TER     RGB(70, 70, 70)       // #464646
-#define ACCENT       RGB(100, 200, 180)   // #64c8b4  teal
-#define ACCENT_HOV   RGB(120, 220, 200)   // brighter teal
-#define ACCENT_DIM   RGB(60, 140, 120)    // muted teal
+#define BG           RGB(18, 18, 18)       // #121212
+#define CARD_BG      RGB(24, 24, 24)       // #181818
+#define CARD_BORDER  RGB(42, 42, 42)       // #2a2a2a
+#define TEXT_PRI     RGB(230, 230, 230)    // #e6e6e6
+#define TEXT_SEC     RGB(110, 110, 110)    // #6e6e6e
+#define TEXT_TER     RGB(60, 60, 60)       // #3c3c3c
+#define ACCENT       RGB(230, 230, 230)   // white — matches website
+#define ACCENT_HOV   RGB(255, 255, 255)   // bright white
+#define ACCENT_DIM   RGB(160, 160, 160)   // muted
 #define INPUT_BG     RGB(28, 28, 28)      // #1c1c1c
 #define INPUT_BORDER RGB(50, 50, 50)      // #323232
-#define ERR_COLOR    RGB(220, 80, 80)     // red
+#define ERR_COLOR    RGB(200, 80, 80)     // red
 #define PROGRESS_BG  RGB(34, 34, 34)      // #222222
 #define CHECK_BG     RGB(34, 34, 34)
 #define PAD          40                    // outer padding
@@ -112,24 +112,33 @@ static void StrokeRoundRect(HDC hdc, RECT* rc, int r, COLORREF color) {
 }
 
 static void DrawBtn(HDC hdc, RECT* rc, const wchar_t* text, bool hover, bool filled) {
-    COLORREF bg = filled ? (hover ? ACCENT_HOV : ACCENT) : (hover ? RGB(40,40,40) : RGB(30,30,30));
-    COLORREF fg = filled ? RGB(10, 10, 10) : TEXT_PRI;
-    COLORREF border = filled ? bg : (hover ? RGB(80,80,80) : RGB(55,55,55));
+    COLORREF bg, fg, border;
+    if (filled) {
+        bg = hover ? ACCENT_HOV : ACCENT;
+        fg = RGB(18, 18, 18);
+        border = bg;
+    } else {
+        bg = BG;
+        fg = hover ? TEXT_PRI : TEXT_SEC;
+        border = hover ? RGB(80,80,80) : CARD_BORDER;
+    }
     FillRoundRect(hdc, rc, RADIUS, bg);
-    if (!filled) StrokeRoundRect(hdc, rc, RADIUS, border);
+    StrokeRoundRect(hdc, rc, RADIUS, border);
     SelectObject(hdc, g_font_btn);
     SetTextColor(hdc, fg);
     DrawTextW(hdc, text, -1, rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
-static void DrawCheck(HDC hdc, int x, int y, const wchar_t* text, bool checked, RECT* hit) {
-    *hit = (RECT){ x, y, x + 420, y + LINE_H + 4 };
-    int by = y + 2;
+static void DrawCheck(HDC hdc, int x, int y, const wchar_t* text, bool checked, RECT* hit, int maxRight) {
+    *hit = (RECT){ x, y, maxRight, y + LINE_H + 4 };
+    int by = y + 1;
     RECT box = { x, by, x + CHECK_SZ, by + CHECK_SZ };
     if (checked) {
-        FillRoundRect(hdc, &box, 4, ACCENT);
-        // Draw checkmark
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(10,10,10));
+        HBRUSH br = CreateSolidBrush(ACCENT);
+        FillRect(hdc, &box, br);
+        DeleteObject(br);
+        // Checkmark
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(14,14,14));
         HGDIOBJ old = SelectObject(hdc, pen);
         MoveToEx(hdc, x + 4, by + CHECK_SZ/2, NULL);
         LineTo(hdc, x + CHECK_SZ/2 - 1, by + CHECK_SZ - 4);
@@ -137,11 +146,16 @@ static void DrawCheck(HDC hdc, int x, int y, const wchar_t* text, bool checked, 
         SelectObject(hdc, old);
         DeleteObject(pen);
     } else {
-        StrokeRoundRect(hdc, &box, 4, INPUT_BORDER);
+        HPEN pen = CreatePen(PS_SOLID, 1, INPUT_BORDER);
+        HGDIOBJ old = SelectObject(hdc, pen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, box.left, box.top, box.right, box.bottom);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
     }
     SelectObject(hdc, g_font_body);
     SetTextColor(hdc, TEXT_PRI);
-    RECT lr = { x + CHECK_SZ + 10, y + 1, x + 420, y + 1 + LINE_H };
+    RECT lr = { x + CHECK_SZ + 10, y + 1, maxRight, y + 1 + LINE_H };
     DrawTextW(hdc, text, -1, &lr, DT_LEFT | DT_SINGLELINE);
 }
 
@@ -194,24 +208,25 @@ static void DoPaint(HWND hwnd) {
     // ── Header area ──
     int y = PAD;
 
-    // Icon (larger, centered vertically with title)
+    // Icon
+    int iconSz = 48;
     if (g_icon)
-        DrawIconEx(mem, PAD, y - 2, g_icon, 40, 40, 0, NULL, DI_NORMAL);
+        DrawIconEx(mem, PAD, y, g_icon, iconSz, iconSz, 0, NULL, DI_NORMAL);
 
-    // Title
+    // Title — vertically centered with icon
     SelectObject(mem, g_font_hero);
     SetTextColor(mem, TEXT_PRI);
-    RECT tr = { PAD + 52, y, W - PAD, y + 42 };
-    DrawTextW(mem, L"Attyx", -1, &tr, DT_LEFT | DT_SINGLELINE);
+    RECT tr = { PAD + iconSz + 14, y + 6, W - PAD, y + iconSz };
+    DrawTextW(mem, L"Attyx", -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    // Version badge next to title
+    // Version badge
     if (g_version[0]) {
         SelectObject(mem, g_font_small);
         SetTextColor(mem, TEXT_TER);
-        RECT vr = { PAD + 136, y + 12, PAD + 260, y + 30 };
+        RECT vr = { PAD + iconSz + 120, y + 18, W - PAD, y + 36 };
         DrawTextW(mem, g_version, -1, &vr, DT_LEFT | DT_SINGLELINE);
     }
-    y += 48;
+    y += iconSz + 8;
 
     // Tagline
     SelectObject(mem, g_font_body);
@@ -317,7 +332,7 @@ static void DoPaint(HWND hwnd) {
 
         // Success message
         SelectObject(mem, g_font_title);
-        SetTextColor(mem, ACCENT);
+        SetTextColor(mem, TEXT_PRI);
         RECT sr = { PAD, sy, W - PAD, sy + 30 };
         DrawTextW(mem, L"Installed successfully", -1, &sr, DT_LEFT | DT_SINGLELINE);
         sy += 40;
@@ -329,11 +344,11 @@ static void DoPaint(HWND hwnd) {
         DrawTextW(mem, L"OPTIONS", -1, &ol, DT_LEFT | DT_SINGLELINE);
         sy += LINE_H + 8;
 
-        DrawCheck(mem, PAD, sy, L"Add to PATH", g_opt_path, &g_rc_chk_path);
+        DrawCheck(mem, PAD, sy, L"Add to PATH", g_opt_path, &g_rc_chk_path, W - PAD);
         sy += LINE_H + 8;
-        DrawCheck(mem, PAD, sy, L"Create desktop shortcut", g_opt_desktop, &g_rc_chk_desktop);
+        DrawCheck(mem, PAD, sy, L"Create desktop shortcut", g_opt_desktop, &g_rc_chk_desktop, W - PAD);
         sy += LINE_H + 8;
-        DrawCheck(mem, PAD, sy, L"Add \"Open Attyx Here\" to context menu", g_opt_context, &g_rc_chk_context);
+        DrawCheck(mem, PAD, sy, L"Add \"Open Attyx Here\" to context menu", g_opt_context, &g_rc_chk_context, W - PAD);
         sy += LINE_H + 24;
 
         // Buttons
@@ -678,7 +693,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_font_btn   = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    g_icon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
+    // Load high-res icon (48x48) from the embedded ICO resource
+    g_icon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR);
+    if (!g_icon) g_icon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
 
     WNDCLASSEXW wc = {
         .cbSize = sizeof(wc),
