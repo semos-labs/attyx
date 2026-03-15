@@ -56,6 +56,7 @@ pub var g_ipc_shutdown: i32 = 0;
 var pipe_name_buf: [128]u16 = undefined;
 var pipe_name_len: usize = 0;
 var started: bool = false;
+var g_listen_pipe: HANDLE = INVALID_HANDLE_VALUE;
 
 pub fn isStarted() bool {
     return started;
@@ -93,7 +94,7 @@ pub fn run() void {
             PIPE_UNLIMITED_INSTANCES,
             4096,
             4096,
-            200, // 200ms timeout (so ConnectNamedPipe doesn't block forever)
+            200,
             null,
         );
         if (pipe == INVALID_HANDLE_VALUE) {
@@ -101,16 +102,21 @@ pub fn run() void {
             continue;
         }
 
-        // Wait for a client to connect (blocking, but timeout is 200ms)
+        // Store handle so shutdown() can close it to unblock ConnectNamedPipe.
+        @atomicStore(HANDLE, &g_listen_pipe, pipe, .seq_cst);
+
+        // Wait for a client to connect (blocks until connect or pipe closed).
         if (ConnectNamedPipe(pipe, null) == 0) {
-            // ERROR_PIPE_CONNECTED (535) means client already connected — that's ok
             const err = std.os.windows.GetLastError();
             if (err != .PIPE_CONNECTED) {
+                // Clear the stored handle (shutdown may have already closed it).
+                _ = @atomicRmw(HANDLE, &g_listen_pipe, .Xchg, INVALID_HANDLE_VALUE, .seq_cst);
                 _ = CloseHandle(pipe);
                 if (@atomicLoad(i32, &g_ipc_shutdown, .seq_cst) != 0) break;
                 continue;
             }
         }
+        @atomicStore(HANDLE, &g_listen_pipe, INVALID_HANDLE_VALUE, .seq_cst);
 
         handleClient(pipe);
     }
@@ -198,6 +204,9 @@ fn handleClient(pipe: HANDLE) void {
 pub fn shutdown() void {
     @atomicStore(i32, &g_ipc_shutdown, 1, .seq_cst);
     started = false;
+    // Close the listen pipe to unblock ConnectNamedPipe on the accept thread.
+    const h = @atomicRmw(HANDLE, &g_listen_pipe, .Xchg, INVALID_HANDLE_VALUE, .seq_cst);
+    if (h != INVALID_HANDLE_VALUE) _ = CloseHandle(h);
 }
 
 fn readExactPipe(pipe: HANDLE, out: []u8) !void {
