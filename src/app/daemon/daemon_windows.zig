@@ -179,7 +179,7 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                 .pty_buf = pty_buf_slice[0..65536],
                 .allocator = alloc,
             };
-            state.pipe_name_buf[0..wlen].* = wide_buf[0..wlen].*;
+            @memcpy(state.pipe_name_buf[0..wlen], wide_buf[0..wlen]);
             state.pipe_name_buf[wlen] = 0;
             state.pipe_name_len = wlen;
 
