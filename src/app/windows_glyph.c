@@ -219,19 +219,20 @@ static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLe
     if (scale < 1.0f) {
         D2D1_MATRIX_3X2_F xform = { scale, 0, 0, scale, 0, 0 };
         ID2D1RenderTarget_SetTransform(gc->d2d_rt, &xform);
-        // Center the scaled glyph in the cell
         float scaledW = (float)renderW / scale;
         float scaledH = (float)gh / scale;
         D2D1_RECT_F layoutRect = { 0, 0, scaledW, scaledH };
         ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
                                     &layoutRect, (ID2D1Brush*)gc->d2d_brush,
-                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
                                     DWRITE_MEASURING_MODE_NATURAL);
         D2D1_MATRIX_3X2_F identity = { 1, 0, 0, 1, 0, 0 };
         ID2D1RenderTarget_SetTransform(gc->d2d_rt, &identity);
     } else {
+        // Use a large layout rect so DrawText doesn't clip oversized glyphs.
+        // The WIC bitmap size is the real boundary.
         D2D1_RECT_F layoutRect = { posX, gc->baseline_y_offset,
-                                    (float)renderW, (float)gh };
+                                    (float)renderW * 4.0f, (float)gh * 4.0f };
         ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
                                     &layoutRect, (ID2D1Brush*)gc->d2d_brush,
                                     D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -454,25 +455,36 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
         float posX = wide ? 0.0f : gc->x_offset;
 
         // Check if glyph ink overflows cell — scale down to fit (like macOS).
-        // Uses design glyph metrics from the font face for accurate bounds.
+        // Uses design glyph metrics bounding box from the font face.
         float glyphScale = 1.0f;
         if (haveGlyph && !wide) {
             DWRITE_GLYPH_METRICS gm;
             IDWriteFontFace_GetDesignGlyphMetrics(face, &glyphIndex, 1, &gm, FALSE);
             DWRITE_FONT_METRICS fm;
             IDWriteFontFace_GetMetrics(face, &fm);
-            float emPx = (float)gc->font_size;
-            float upem = (float)fm.designUnitsPerEm;
-            // Compute ink rect in pixels
-            float inkW = (float)gm.advanceWidth / upem * emPx;
-            float inkH = (float)(gm.verticalOriginY
-                         ? (int)gm.advanceHeight
-                         : (int)(fm.ascent + fm.descent)) / upem * emPx;
-            if (inkW > (float)gw + 0.5f || inkH > (float)gh + 0.5f) {
+            float s = (float)gc->font_size / (float)fm.designUnitsPerEm;
+            // Ink bounding box in design units
+            int bbW = (int)gm.advanceWidth - gm.leftSideBearing - gm.rightSideBearing;
+            int bbH = (int)(fm.ascent + fm.descent) - gm.topSideBearing - gm.bottomSideBearing;
+            // Convert to pixels
+            float inkW = (float)bbW * s;
+            float inkH = (float)bbH * s;
+            // Also check if ink origin extends beyond cell edges
+            float inkL = posX + (float)gm.leftSideBearing * s;
+            float inkR = inkL + inkW;
+            float inkT = gc->baseline_y_offset + (gc->ascender - (float)fm.ascent * s)
+                         + (float)(fm.ascent - gm.topSideBearing) * s - inkH;
+            // Nerd Font icons are not actually clipped by ink-bounds though.
+            // The real issue: DrawText clips to layoutRect. Use CLIP option + wider rect,
+            // or scale if ink is bigger than cell.
+            bool overflows = (inkW > (float)gw + 0.5f) || (inkH > (float)gh + 0.5f) ||
+                             (inkL < -0.5f) || (inkR > (float)gw + 0.5f);
+            if (overflows && inkW > 0.5f && inkH > 0.5f) {
                 float sx = (float)gw / inkW;
                 float sy = (float)gh / inkH;
-                float s = sx < sy ? sx : sy;
-                if (s < 1.0f) glyphScale = s;
+                float sc = sx < sy ? sx : sy;
+                if (sc > 1.0f) sc = 1.0f;
+                glyphScale = sc;
             }
         }
 
