@@ -17,12 +17,17 @@ const picker_state_mod = attyx.overlay_session_picker;
 const SessionPickerState = picker_state_mod.SessionPickerState;
 const SessionEntry = picker_state_mod.SessionEntry;
 const picker_panel = attyx.overlay_session_picker_panel;
+const logging = @import("../../logging/log.zig");
 
 var g_picker_state: ?SessionPickerState = null;
 var g_finder_state: ?FinderState = null;
 
 pub fn openSessionPicker(ctx: *WinCtx) void {
-    const smgr = ctx.session_mgr orelse return;
+    logging.info("session", "openSessionPicker called, has_mgr={}", .{ctx.session_mgr != null});
+    const smgr = ctx.session_mgr orelse {
+        logging.warn("session", "session_mgr is null, aborting", .{});
+        return;
+    };
 
     const panel_h = @as(u16, @intCast(@max(3, ctx.grid_rows))) / 2;
     const visible = if (panel_h > 4) @as(u8, @intCast(panel_h - 4)) else 3;
