@@ -157,6 +157,15 @@ fn writeIntegrationScript(comptime rel_path: []const u8, content: []const u8) ?[
         };
     }
 
+    // Skip write if the file already exists with identical content.
+    if (std.fs.openFileAbsolute(utf8_path[0..utf8_len], .{})) |existing| {
+        defer existing.close();
+        const stat = existing.stat() catch null;
+        if (stat) |s| {
+            if (s.size == content.len) return &S.path_buf;
+        }
+    } else |_| {}
+
     const file = std.fs.createFileAbsolute(utf8_path[0..utf8_len], .{}) catch return null;
     defer file.close();
     file.writeAll(content) catch return null;

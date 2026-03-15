@@ -800,8 +800,12 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         return;
     }
 
-    // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
+    // Show window immediately after renderer init so the user sees something fast.
+    // Font init may resize it shortly after, but a black window is better than nothing.
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
 
+    // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
     if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
         g_cell_px_w = g_gc.glyph_w;
         g_cell_px_h = g_gc.glyph_h;
@@ -818,9 +822,6 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                      newRect.bottom - newRect.top,
                      SWP_NOMOVE | SWP_NOZORDER);
     }
-
-    ShowWindow(g_hwnd, SW_SHOW);
-    UpdateWindow(g_hwnd);
 
     // Apply window title if set
     if (g_title_len > 0) {
