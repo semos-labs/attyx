@@ -148,6 +148,7 @@ pub fn main() !void {
             if (is_windows) _ = win32.FreeConsole();
             debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
+            debugToFile("main: about to call daemon.run");
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
