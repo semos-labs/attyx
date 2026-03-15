@@ -30,7 +30,38 @@ pub const std_options: std.Options = .{
     .logFn = logging.stdLogFn,
 };
 
+// Windows API imports for console management and error dialogs.
+const win32 = if (is_windows) struct {
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
+    extern "kernel32" fn AttachConsole(dwProcessId: u32) callconv(.c) i32;
+    extern "kernel32" fn AllocConsole() callconv(.c) i32;
+    extern "kernel32" fn FreeConsole() callconv(.c) i32;
+    extern "user32" fn MessageBoxA(
+        hWnd: ?*anyopaque,
+        lpText: [*:0]const u8,
+        lpCaption: [*:0]const u8,
+        uType: u32,
+    ) callconv(.c) i32;
+} else struct {};
+
+/// Show a Windows MessageBox for fatal errors (GUI path has no console).
+fn winFatal(msg: []const u8) noreturn {
+    if (is_windows) {
+        var buf: [512]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "{s}\x00", .{msg}) catch "Fatal error\x00";
+        _ = win32.MessageBoxA(null, text[0 .. text.len - 1 :0], "Attyx Error", 0x10);
+    }
+    std.process.exit(1);
+}
+
 pub fn main() !void {
+    // On Windows (subsystem=Windows), attach to parent console for CLI paths.
+    // This gives subcommands (login, device, etc.) stdout/stderr when run from
+    // a terminal. GUI path doesn't need a console — no flash, no window.
+    if (is_windows) {
+        _ = win32.AttachConsole(win32.ATTACH_PARENT_PROCESS);
+    }
+
     // Migrate runtime files from config dir to state dir (one-time, idempotent).
     session_connect.migrateToStateDir();
 
@@ -116,19 +147,19 @@ pub fn main() !void {
         .run => {},
     }
 
-    // Only the GUI path reaches here — detach from the console window.
-    // CLI subcommands (login, device, etc.) return above and keep their console.
+    // GUI path — detach from any inherited console (we don't need it).
     if (is_windows) {
-        const win32 = struct {
-            extern "kernel32" fn FreeConsole() callconv(.c) i32;
-        };
         _ = win32.FreeConsole();
     }
 
     // Silently update installed skills (e.g. Claude Code /attyx) to match this build
     cli_commands.autoUpdateSkills();
 
-    var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
+    var merged = loadMergedConfig(allocator, result.no_config, result.config_path, args) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to load config: {s}", .{@errorName(err)}) catch "Failed to load config";
+        winFatal(msg);
+    };
     defer merged.deinit();
 
     const log_level = if (merged.log_level) |s|
@@ -141,7 +172,11 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
-    try terminal.run(merged, result.no_config, result.config_path, args);
+    terminal.run(merged, result.no_config, result.config_path, args) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Terminal failed: {s}", .{@errorName(err)}) catch "Terminal failed";
+        winFatal(msg);
+    };
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.
