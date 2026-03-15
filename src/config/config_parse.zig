@@ -37,19 +37,31 @@ pub fn tomlOptU16(v: ?toml.TomlValue) ?u16 {
 }
 
 pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []const u8, config: *AppConfig) !void {
-    // Debug: dump raw [keybindings] section content
-    if (std.mem.indexOf(u8, content, "[keybindings]")) |kb_start| {
-        const section = content[kb_start..@min(kb_start + 500, content.len)];
-        logging.info("config", "raw [keybindings] section ({d} bytes from offset {d}):", .{ section.len, kb_start });
-        // Log line by line
-        var line_it = std.mem.splitScalar(u8, section, '\n');
+    // Debug: search for session_switcher in raw content
+    logging.info("config", "raw content length: {d}", .{content.len});
+    if (std.mem.indexOf(u8, content, "session_switcher")) |pos| {
+        // Show 80 chars before and after
+        const start = if (pos > 80) pos - 80 else 0;
+        const end = @min(pos + 80, content.len);
+        logging.info("config", "found 'session_switcher' at offset {d}, context:", .{pos});
+        var line_it = std.mem.splitScalar(u8, content[start..end], '\n');
         var line_n: usize = 0;
         while (line_it.next()) |line| {
             logging.info("config", "  [{d}] \"{s}\"", .{ line_n, line });
             line_n += 1;
-            if (line_n > 15) break;
         }
+    } else {
+        logging.info("config", "'session_switcher' NOT FOUND in raw content at all!", .{});
     }
+    // Also check for multiple [keybindings] sections
+    var kb_count_raw: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_from, "[keybindings]")) |pos| {
+        kb_count_raw += 1;
+        logging.info("config", "[keybindings] occurrence #{d} at offset {d}", .{ kb_count_raw, pos });
+        search_from = pos + 1;
+    }
+    logging.info("config", "total [keybindings] sections: {d}", .{kb_count_raw});
 
     const parser = toml.Parser.init(allocator) catch {
         std.debug.print("error: failed to initialize TOML parser\n", .{});

@@ -348,10 +348,28 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8, config: *App
     else
         file_content;
 
+    // Debug: check raw file content
+    const logging = @import("../logging/log.zig");
+    logging.info("config", "raw file: {d} bytes, has_bom={s}", .{
+        file_content.len,
+        if (after_bom.ptr != file_content.ptr) "yes" else "no",
+    });
+    if (std.mem.indexOf(u8, after_bom, "session_switcher")) |pos| {
+        logging.info("config", "BEFORE stripCr: 'session_switcher' at offset {d}", .{pos});
+    } else {
+        logging.info("config", "BEFORE stripCr: 'session_switcher' NOT FOUND!", .{});
+    }
+
     // Strip \r (the TOML parser doesn't treat \r as whitespace, so \r\n
     // line endings from Windows editors cause parse failures).
     const content = stripCr(allocator, after_bom) catch after_bom;
     defer if (content.ptr != after_bom.ptr) allocator.free(content);
+
+    if (std.mem.indexOf(u8, content, "session_switcher")) |pos| {
+        logging.info("config", "AFTER stripCr: 'session_switcher' at offset {d}", .{pos});
+    } else {
+        logging.info("config", "AFTER stripCr: 'session_switcher' NOT FOUND!", .{});
+    }
 
     return config_parse.applyToml(allocator, content, path, config);
 }
