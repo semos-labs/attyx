@@ -8,6 +8,7 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 
 // D3DCompile loaded dynamically (avoids static link to d3dcompiler_47.dll)
 typedef HRESULT (WINAPI *PFN_D3DCompile)(
@@ -236,28 +237,42 @@ int windows_renderer_init(HWND hwnd) {
     if (w <= 0) w = 800;
     if (h <= 0) h = 600;
 
-    DXGI_SWAP_CHAIN_DESC sc_desc;
-    memset(&sc_desc, 0, sizeof(sc_desc));
-    sc_desc.BufferCount        = 1;
-    sc_desc.BufferDesc.Width   = (UINT)w;
-    sc_desc.BufferDesc.Height  = (UINT)h;
-    sc_desc.BufferDesc.Format  = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sc_desc.BufferDesc.RefreshRate.Numerator   = 60;
-    sc_desc.BufferDesc.RefreshRate.Denominator = 1;
-    sc_desc.BufferUsage        = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sc_desc.OutputWindow       = hwnd;
-    sc_desc.SampleDesc.Count   = 1;
-    sc_desc.SampleDesc.Quality = 0;
-    sc_desc.Windowed           = TRUE;
-
     D3D_FEATURE_LEVEL feature_level;
     D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1 };
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    HRESULT hr = D3D11CreateDevice(
         NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0,
         levels, 2, D3D11_SDK_VERSION,
-        &sc_desc, &s_swap_chain, &g_d3d_device, &feature_level, &g_d3d_context
+        &g_d3d_device, &feature_level, &g_d3d_context
     );
+    if (FAILED(hr)) return 0;
+
+    // Create swap chain via IDXGIFactory2 for per-pixel alpha support
+    IDXGIDevice* dxgi_device = NULL;
+    IDXGIAdapter* dxgi_adapter = NULL;
+    IDXGIFactory2* dxgi_factory = NULL;
+    ID3D11Device_QueryInterface(g_d3d_device, &IID_IDXGIDevice, (void**)&dxgi_device);
+    IDXGIDevice_GetAdapter(dxgi_device, &dxgi_adapter);
+    IDXGIAdapter_GetParent(dxgi_adapter, &IID_IDXGIFactory2, (void**)&dxgi_factory);
+    IDXGIDevice_Release(dxgi_device);
+    IDXGIAdapter_Release(dxgi_adapter);
+
+    int want_alpha = (g_background_opacity < 1.0f);
+    DXGI_SWAP_CHAIN_DESC1 sc1 = {0};
+    sc1.Width       = (UINT)w;
+    sc1.Height      = (UINT)h;
+    sc1.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sc1.SampleDesc.Count   = 1;
+    sc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sc1.BufferCount = 2;
+    sc1.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    sc1.AlphaMode   = want_alpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE;
+
+    hr = IDXGIFactory2_CreateSwapChainForHwnd(
+        dxgi_factory, (IUnknown*)g_d3d_device, hwnd,
+        &sc1, NULL, NULL, (IDXGISwapChain1**)&s_swap_chain
+    );
+    IDXGIFactory2_Release(dxgi_factory);
     if (FAILED(hr)) return 0;
 
     create_render_target();
@@ -298,9 +313,9 @@ void windows_renderer_resize(int width, int height) {
     if (!s_swap_chain || width <= 0 || height <= 0) return;
     if (s_rtv) { ID3D11RenderTargetView_Release(s_rtv); s_rtv = NULL; }
     ID3D11DeviceContext_OMSetRenderTargets(g_d3d_context, 0, NULL, NULL);
-    HRESULT hr = IDXGISwapChain_ResizeBuffers(s_swap_chain, 0,
+    HRESULT hr = IDXGISwapChain_ResizeBuffers(s_swap_chain, 2,
                                                (UINT)width, (UINT)height,
-                                               DXGI_FORMAT_UNKNOWN, 0);
+                                               DXGI_FORMAT_R8G8B8A8_UNORM, 0);
     if (SUCCEEDED(hr)) create_render_target();
     g_full_redraw = 1;
 }

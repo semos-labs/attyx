@@ -345,22 +345,38 @@ static void win_apply_dark_mode(HWND hwnd) {
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
+// Undocumented Windows API for acrylic blur (Win10 1803+)
+typedef enum { ACCENT_DISABLED = 0, ACCENT_ENABLE_BLURBEHIND = 3, ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 } ACCENT_STATE;
+typedef struct { ACCENT_STATE AccentState; DWORD AccentFlags; DWORD GradientColor; DWORD AnimationId; } ACCENT_POLICY;
+typedef struct { DWORD Attribute; PVOID pData; ULONG cbData; } WINCOMPATTRDATA;
+typedef BOOL (WINAPI *PFN_SetWindowCompositionAttribute)(HWND, WINCOMPATTRDATA*);
+
 static void win_apply_transparency(HWND hwnd) {
     float opacity = g_background_opacity;
-    if (opacity >= 1.0f) return;
+    if (opacity >= 1.0f && g_background_blur <= 0) return;
 
-    // Method 1: DWM frame extension (glass/acrylic effect)
-    // Extending margins to -1 makes the entire client area render through DWM
+    // Extend DWM frame so our alpha channel composites with the desktop
     MARGINS margins = { -1, -1, -1, -1 };
-    HRESULT hr = DwmExtendFrameIntoClientArea(hwnd, &margins);
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-    if (FAILED(hr)) {
-        // Fallback: layered window for basic transparency
-        LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        SetWindowLongW(hwnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
-        BYTE alpha = (BYTE)(opacity * 255.0f);
-        if (alpha < 1) alpha = 1;
-        SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+    // Apply blur if requested
+    if (g_background_blur > 0) {
+        // Try Windows 11 Mica/Acrylic first (DWMWA_SYSTEMBACKDROP_TYPE = 38)
+        int backdrop = 3;  // DWMSBT_TRANSIENTWINDOW = acrylic
+        HRESULT hr = DwmSetWindowAttribute(hwnd, 38, &backdrop, sizeof(backdrop));
+        if (FAILED(hr)) {
+            // Fallback: undocumented SetWindowCompositionAttribute (Win10 1803+)
+            HMODULE user32 = GetModuleHandleW(L"user32.dll");
+            PFN_SetWindowCompositionAttribute pSetWCA =
+                (PFN_SetWindowCompositionAttribute)GetProcAddress(user32, "SetWindowCompositionAttribute");
+            if (pSetWCA) {
+                ACCENT_POLICY accent = {0};
+                accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+                accent.GradientColor = 0x01000000;  // nearly transparent tint
+                WINCOMPATTRDATA data = { 19, &accent, sizeof(accent) };  // WCA_ACCENT_POLICY = 19
+                pSetWCA(hwnd, &data);
+            }
+        }
     }
 }
 
