@@ -530,6 +530,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     RegisterClassExW(&wc);
 
     // Build system menu bar (skip for borderless windows)
+    ATTYX_LOG_INFO("platform", "g_window_decorations=%d", g_window_decorations);
     HMENU hmenu = g_window_decorations ? windows_menu_create() : NULL;
 
     // Compute window rect from desired client area
