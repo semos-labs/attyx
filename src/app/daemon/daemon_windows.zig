@@ -152,248 +152,240 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     if (run_err) return error.DaemonFailed;
 }
 
+/// Daemon state — heap-allocated to keep function stack frames small.
+/// On aarch64 Windows, Zig debug mode can exceed the stack probe limit
+/// if too many locals are in a single function.
+const DaemonState = struct {
+    sessions: *[max_sessions]?DaemonSession,
+    clients: *[max_clients]?DaemonClient,
+    pty_buf: *[65536]u8,
+    session_count: usize = 0,
+    next_session_id: u32 = 1,
+    next_pane_id: u32 = 1,
+    client_count: usize = 0,
+    proc_name_tick: u32 = 0,
+    upgrade_requested: bool = false,
+    listen_pipe: ?HANDLE = null,
+    connect_overlap: OVERLAPPED = .{},
+    pipe_name_buf: [256]u16 = undefined,
+    pipe_name_len: usize = 0,
+    allocator: std.mem.Allocator,
+
+    fn getPipeName(self: *DaemonState) LPCWSTR {
+        return @ptrCast(self.pipe_name_buf[0..self.pipe_name_len :0]);
+    }
+};
+
 fn runImpl(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     daemonLog("daemon starting");
-
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
 
+    // Get pipe path
     var path_buf: [256]u8 = undefined;
-    const pipe_path_utf8 = session_connect.getSocketPath(&path_buf) orelse {
-        daemonLog("ERROR: getSocketPath returned null (no LOCALAPPDATA?)");
+    const pipe_path = session_connect.getSocketPath(&path_buf) orelse {
+        daemonLog("ERROR: getSocketPath returned null");
         return error.NoHome;
     };
+    daemonLog(pipe_path);
 
-    daemonLog(pipe_path_utf8);
-
-    // Convert pipe path to UTF-16 for Windows API
-    var wide_buf: [256]u16 = undefined;
-    const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path_utf8) catch return error.PathTooLong;
-    wide_buf[wlen] = 0;
-    const pipe_name: LPCWSTR = @ptrCast(wide_buf[0..wlen :0]);
-
-    // Ensure state directory exists
     ensureStateDir();
-    daemonLog("state dir ensured");
-
-    // Write daemon version file
     writeVersionFile();
 
-    daemonLog("creating named pipe");
+    // Allocate all state on the heap
+    const state = try allocator.create(DaemonState);
+    defer allocator.destroy(state);
 
-    // Sessions array is heap-allocated because DaemonPane.pty contains a 64KB
-    // async buffer, making each ?DaemonSession ~2MB. 32 sessions = ~67MB,
-    // far exceeding the default stack size.
     const sessions_ptr = allocator.create([max_sessions]?DaemonSession) catch {
-        daemonLog("ERROR: failed to allocate sessions array");
+        daemonLog("ERROR: failed to allocate sessions");
         return error.OutOfMemory;
     };
-    defer allocator.destroy(sessions_ptr);
     sessions_ptr.* = .{null} ** max_sessions;
-    const sessions: *[max_sessions]?DaemonSession = sessions_ptr;
 
-    var session_count: usize = 0;
-    var next_session_id: u32 = 1;
-    var next_pane_id: u32 = 1;
+    const clients_ptr = allocator.create([max_clients]?DaemonClient) catch {
+        daemonLog("ERROR: failed to allocate clients");
+        return error.OutOfMemory;
+    };
+    clients_ptr.* = .{null} ** max_clients;
 
-    // Load persisted dead sessions from previous daemon run.
-    state_persist.load(sessions, &next_session_id, &next_pane_id);
-    for (sessions.*) |slot| {
-        if (slot != null) session_count += 1;
+    const pty_buf_ptr = try allocator.alloc(u8, 65536);
+
+    state.* = .{
+        .sessions = sessions_ptr,
+        .clients = clients_ptr,
+        .pty_buf = pty_buf_ptr[0..65536],
+        .allocator = allocator,
+    };
+
+    // Convert pipe path to UTF-16
+    const wlen = std.unicode.utf8ToUtf16Le(&state.pipe_name_buf, pipe_path) catch return error.PathTooLong;
+    state.pipe_name_buf[wlen] = 0;
+    state.pipe_name_len = wlen;
+
+    // Load persisted sessions
+    state_persist.load(state.sessions, &state.next_session_id, &state.next_pane_id);
+    for (state.sessions.*) |slot| {
+        if (slot != null) state.session_count += 1;
     }
 
-    // Clients array is heap-allocated (same reason as sessions — each
-    // DaemonClient has ~128KB of buffers, 16 clients = ~2MB).
-    const clients_ptr = allocator.create([max_clients]?DaemonClient) catch {
-        daemonLog("ERROR: failed to allocate clients array");
-        return error.OutOfMemory;
-    };
-    defer allocator.destroy(clients_ptr);
-    clients_ptr.* = .{null} ** max_clients;
-    const clients: *[max_clients]?DaemonClient = clients_ptr;
-    var client_count: usize = 0;
-
-    // Create a pipe instance with overlapped I/O for async accept
-    var connect_overlap = OVERLAPPED{};
-    connect_overlap.hEvent = CreateEventW(null, 1, 0, null); // manual-reset
-    var listen_pipe: ?HANDLE = createPipeInstance(pipe_name);
-
-    if (listen_pipe) |_| {
-        daemonLog("pipe created successfully, starting async connect");
+    // Create named pipe
+    state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
+    state.listen_pipe = createPipeInstance(state.getPipeName());
+    if (state.listen_pipe) |lp| {
+        daemonLog("pipe created, starting async connect");
+        startAsyncConnect(lp, &state.connect_overlap);
     } else {
         daemonLog("ERROR: CreateNamedPipeW failed!");
     }
 
-    if (listen_pipe) |lp| {
-        startAsyncConnect(lp, &connect_overlap);
-    }
-
-    daemonLog("entering main loop");
-
     defer {
-        state_persist.save(sessions, next_session_id, next_pane_id);
-        for (sessions) |*slot| {
-            if (slot.*) |*s| {
-                s.deinit();
-                slot.* = null;
-            }
+        state_persist.save(state.sessions, state.next_session_id, state.next_pane_id);
+        for (state.sessions) |*slot| {
+            if (slot.*) |*s| { s.deinit(); slot.* = null; }
         }
-        for (clients) |*slot| {
-            if (slot.*) |*cl| {
-                cl.deinit();
-                slot.* = null;
-            }
+        for (state.clients) |*slot| {
+            if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
         }
-        if (listen_pipe) |lp| _ = CloseHandle(lp);
-        if (connect_overlap.hEvent) |ev| _ = CloseHandle(ev);
+        if (state.listen_pipe) |lp| _ = CloseHandle(lp);
+        if (state.connect_overlap.hEvent) |ev| _ = CloseHandle(ev);
+        allocator.destroy(sessions_ptr);
+        allocator.destroy(clients_ptr);
+        allocator.free(pty_buf_ptr);
         deleteVersionFile();
     }
 
-    const pty_buf_ptr = try allocator.alloc(u8, 65536);
-    defer allocator.free(pty_buf_ptr);
-    const pty_buf: *[65536]u8 = pty_buf_ptr[0..65536];
-    var proc_name_tick: u32 = 0;
-    var g_upgrade_requested: bool = false;
-
+    daemonLog("entering main loop");
     while (g_running) {
-        // 1. Check for new connections (non-blocking via overlapped connect)
-        if (listen_pipe != null) {
-            if (connect_overlap.hEvent) |ev| {
-                if (WaitForSingleObject(ev, 0) == WAIT_OBJECT_0) {
-                    // Client connected
-                    const client_pipe = listen_pipe.?;
-                    acceptClient(client_pipe, clients, &client_count);
-                    _ = ResetEvent(ev);
-                    // Create new pipe instance for next client
-                    listen_pipe = createPipeInstance(pipe_name);
-                    if (listen_pipe) |lp| startAsyncConnect(lp, &connect_overlap);
-                }
-            }
-        }
-
-        // 2. Read PTY output from all alive panes, forward to clients.
-        //
-        // ConPTY only flushes its internal buffer when there's a pending
-        // ReadFile on the output pipe — PeekNamedPipe alone won't trigger
-        // it. We use the async read pattern: check if a previous async
-        // read completed, drain any additional data via peek+read, then
-        // start a new async read to keep ConPTY flushing.
-        for (sessions) |*slot| {
-            if (slot.*) |*s| {
-                for (&s.panes) |*pslot| {
-                    if (pslot.*) |*pane| {
-                        if (pane.alive) {
-                            // Check async read completion first (non-blocking).
-                            var n: usize = 0;
-                            if (pane.pty.checkAsyncRead()) |data| {
-                                n = pane.absorbPtyData(data, pty_buf);
-                            }
-                            // Drain any additional data available via peek.
-                            while (pane.pty.peekAvail() > 0) {
-                                const extra = pane.readPty(pty_buf[n..]) catch break;
-                                if (extra == 0) break;
-                                n += extra;
-                            }
-                            // Keep an async read pending so ConPTY flushes.
-                            pane.pty.startAsyncRead();
-                            if (n > 0) {
-                                for (clients) |*cslot| {
-                                    if (cslot.*) |*cl| {
-                                        if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
-                                            cl.sendPaneOutput(pane.id, pty_buf[0..n]);
-                                        }
-                                    }
-                                }
-                            }
-                            // Check for process exit
-                            if (pane.checkExit()) |exit_code| {
-                                pane.drainCapturedStdout();
-                                var any_alive = false;
-                                for (s.panes) |ps| {
-                                    if (ps) |p| if (p.alive) {
-                                        any_alive = true;
-                                        break;
-                                    };
-                                }
-                                if (!any_alive) s.alive = false;
-                                const stdout_data = pane.getCapturedStdout();
-                                for (clients) |*cslot| {
-                                    if (cslot.*) |*cl| {
-                                        if (cl.attached_session == s.id) {
-                                            cl.sendPaneDiedWithStdout(pane.id, exit_code, stdout_data);
-                                            if (!s.alive) cl.attached_session = null;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Read client messages
-        for (clients, 0..) |*slot, ci| {
-            if (slot.*) |*cl| {
-                if (!cl.recvData()) {
-                    cl.deinit();
-                    slot.* = null;
-                    client_count -= 1;
-                    _ = ci;
-                    continue;
-                }
-                while (cl.nextMessage()) |msg| {
-                    handler.handleMessage(cl, msg, sessions, &session_count, &next_session_id, &next_pane_id, allocator, clients, &g_upgrade_requested);
-                }
-                if (cl.dead) {
-                    cl.deinit();
-                    slot.* = null;
-                    client_count -= 1;
-                }
-            }
-        }
-
-        // 4. Periodic process name check (~1s interval, every 20 ticks)
-        proc_name_tick += 1;
-        if (proc_name_tick >= 20) {
-            proc_name_tick = 0;
-            for (sessions) |*slot| {
-                if (slot.*) |*s| {
-                    for (&s.panes) |*pslot| {
-                        if (pslot.*) |*pane| {
-                            if (pane.alive) {
-                                if (pane.checkProcNameChanged()) |name| {
-                                    for (clients) |*cslot| {
-                                        if (cslot.*) |*cl| {
-                                            if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
-                                                cl.sendPaneProcName(pane.id, name);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. Check for dead sessions
-        for (sessions) |*slot| {
-            if (slot.*) |*s| {
-                if (s.alive) {
-                    if (s.checkExit()) |_| {
-                        for (clients) |*cslot| {
-                            if (cslot.*) |*cl| {
-                                if (cl.attached_session == s.id) cl.attached_session = null;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 6. Sleep for poll interval (50ms, matching POSIX daemon)
+        pollAccept(state);
+        pollPtyOutput(state);
+        pollClients(state);
+        pollProcNames(state);
+        pollDeadSessions(state);
         Sleep(50);
+    }
+}
+
+// ── Loop body split into small functions (aarch64 stack probe workaround) ──
+
+fn pollAccept(st: *DaemonState) void {
+    if (st.listen_pipe == null) return;
+    const ev = st.connect_overlap.hEvent orelse return;
+    if (WaitForSingleObject(ev, 0) != WAIT_OBJECT_0) return;
+    const client_pipe = st.listen_pipe.?;
+    acceptClient(client_pipe, st.clients, &st.client_count);
+    _ = ResetEvent(ev);
+    st.listen_pipe = createPipeInstance(st.getPipeName());
+    if (st.listen_pipe) |lp| startAsyncConnect(lp, &st.connect_overlap);
+}
+
+fn pollPtyOutput(st: *DaemonState) void {
+    for (st.sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*pane| {
+                    if (pane.alive) pollSinglePane(st, s, pane);
+                }
+            }
+        }
+    }
+}
+
+fn pollSinglePane(st: *DaemonState, s: *DaemonSession, pane: *DaemonPane) void {
+    var n: usize = 0;
+    if (pane.pty.checkAsyncRead()) |data| {
+        n = pane.absorbPtyData(data, st.pty_buf);
+    }
+    while (pane.pty.peekAvail() > 0) {
+        const extra = pane.readPty(st.pty_buf[n..]) catch break;
+        if (extra == 0) break;
+        n += extra;
+    }
+    pane.pty.startAsyncRead();
+    if (n > 0) {
+        for (st.clients) |*cslot| {
+            if (cslot.*) |*cl| {
+                if (cl.attached_session == s.id and cl.isPaneActive(pane.id))
+                    cl.sendPaneOutput(pane.id, st.pty_buf[0..n]);
+            }
+        }
+    }
+    if (pane.checkExit()) |exit_code| {
+        pane.drainCapturedStdout();
+        var any_alive = false;
+        for (s.panes) |ps| {
+            if (ps) |p| if (p.alive) { any_alive = true; break; };
+        }
+        if (!any_alive) s.alive = false;
+        const stdout_data = pane.getCapturedStdout();
+        for (st.clients) |*cslot| {
+            if (cslot.*) |*cl| {
+                if (cl.attached_session == s.id) {
+                    cl.sendPaneDiedWithStdout(pane.id, exit_code, stdout_data);
+                    if (!s.alive) cl.attached_session = null;
+                }
+            }
+        }
+    }
+}
+
+fn pollClients(st: *DaemonState) void {
+    for (st.clients, 0..) |*slot, ci| {
+        if (slot.*) |*cl| {
+            if (!cl.recvData()) {
+                cl.deinit();
+                slot.* = null;
+                st.client_count -= 1;
+                _ = ci;
+                continue;
+            }
+            while (cl.nextMessage()) |msg| {
+                handler.handleMessage(cl, msg, st.sessions, &st.session_count, &st.next_session_id, &st.next_pane_id, st.allocator, st.clients, &st.upgrade_requested);
+            }
+            if (cl.dead) {
+                cl.deinit();
+                slot.* = null;
+                st.client_count -= 1;
+            }
+        }
+    }
+}
+
+fn pollProcNames(st: *DaemonState) void {
+    st.proc_name_tick += 1;
+    if (st.proc_name_tick < 20) return;
+    st.proc_name_tick = 0;
+    for (st.sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*pane| {
+                    if (pane.alive) {
+                        if (pane.checkProcNameChanged()) |name| {
+                            for (st.clients) |*cslot| {
+                                if (cslot.*) |*cl| {
+                                    if (cl.attached_session == s.id and cl.isPaneActive(pane.id))
+                                        cl.sendPaneProcName(pane.id, name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn pollDeadSessions(st: *DaemonState) void {
+    for (st.sessions) |*slot| {
+        if (slot.*) |*s| {
+            if (s.alive) {
+                if (s.checkExit()) |_| {
+                    for (st.clients) |*cslot| {
+                        if (cslot.*) |*cl| {
+                            if (cl.attached_session == s.id) cl.attached_session = null;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
