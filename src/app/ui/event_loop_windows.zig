@@ -219,15 +219,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             // All panes (including active): drain via PeekNamedPipe.
             drainAllPanes(ctx, &buf, &got_data);
 
-            // Adaptive coalescing: ConPTY often splits a shell's line-redraw
-            // (e.g. Ctrl+W → CR + erase + reprint) across multiple pipe writes.
-            // Drain in short rounds so we publish the final state, not an
-            // intermediate cursor-at-column-0 snapshot.  Stops as soon as a
-            // round produces no data (max ~8ms additional latency).
-            if (got_data) {
+            // Adaptive coalescing: ConPTY only flushes its internal buffer
+            // when there's a pending ReadFile.  After checkAsyncRead consumed
+            // the data above, async_pending is false — ConPTY holds back any
+            // remaining output (e.g. the prompt redraw after a CR).  We must
+            // re-post the async read each round so ConPTY keeps flushing.
+            if (got_data and active_pane.daemon_pane_id == null) {
                 var rounds: u32 = 0;
                 while (rounds < 4) : (rounds += 1) {
+                    active_pane.pty.startAsyncRead();
                     Sleep(2);
+                    // Check async completion on active pane
+                    if (active_pane.pty.checkAsyncRead()) |data| {
+                        active_pane.feed(data);
+                    }
                     var more = false;
                     drainAllPanes(ctx, &buf, &more);
                     if (!more) break;
