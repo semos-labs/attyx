@@ -149,6 +149,13 @@ pub fn main() !void {
             debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
             debugToFile("main: about to call daemon.run");
+            // TEMPORARY: test if daemon process survives without actual daemon code
+            if (is_windows) {
+                debugToFile("main: daemon alive, sleeping 10s as test");
+                std.time.sleep(10 * std.time.ns_per_s);
+                debugToFile("main: daemon sleep done, exiting");
+                return;
+            }
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
