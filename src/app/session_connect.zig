@@ -12,6 +12,13 @@ const platform = @import("../platform/platform.zig");
 const spawn = @import("spawn.zig");
 const logging = @import("../logging/log.zig");
 
+/// Direct stderr debug print — works even before logging is fully initialized.
+fn dbg(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "[session_connect] " ++ fmt ++ "\n", args) catch return;
+    std.fs.File.stderr().writeAll(msg) catch {};
+}
+
 // Windows API imports — only resolved when targeting Windows.
 const win32 = if (is_windows) struct {
     const windows = std.os.windows;
@@ -153,7 +160,7 @@ fn connectToSocketWindows() !std.posix.fd_t {
     var path_buf: [256]u8 = undefined;
     const pipe_path = getSocketPath(&path_buf) orelse return error.NoHome;
 
-    logging.info("session", "connecting to daemon pipe: {s}", .{pipe_path});
+    dbg("connecting to daemon pipe: {s}", .{pipe_path});
 
     // First attempt — probe checks daemon is alive, then we open a fresh
     // connection so no stale response data pollutes the client buffer.
@@ -161,13 +168,13 @@ fn connectToSocketWindows() !std.posix.fd_t {
         const alive = probeAliveWindows(h);
         _ = win32.CloseHandle(h);
         if (alive) {
-            logging.info("session", "existing daemon is alive, opening fresh connection", .{});
+            dbg("existing daemon is alive, opening fresh connection", .{});
             if (tryConnectWindows(pipe_path)) |fresh| return fresh;
         } else {
-            logging.info("session", "existing daemon pipe not alive", .{});
+            dbg("existing daemon pipe not alive", .{});
         }
     } else {
-        logging.info("session", "no existing daemon pipe found", .{});
+        dbg("no existing daemon pipe found", .{});
     }
 
     if (isUpgradeInProgress()) {
@@ -184,16 +191,17 @@ fn connectToSocketWindows() !std.posix.fd_t {
     try startDaemon();
 
     var delay_ms: u32 = 100;
-    for (0..5) |_| {
+    for (0..5) |attempt| {
         win32.Sleep(delay_ms);
         if (tryConnectWindows(pipe_path)) |h| {
-            logging.info("session", "connected to daemon after spawn", .{});
+            dbg("connected to daemon after spawn", .{});
             return h;
         }
+        dbg("retry {d}/5 failed, delay={d}ms", .{ attempt + 1, delay_ms });
         delay_ms *= 2;
     }
 
-    logging.err("session", "daemon connect failed after 5 retries", .{});
+    dbg("daemon connect FAILED after 5 retries", .{});
     return error.DaemonConnectFailed;
 }
 
@@ -322,7 +330,7 @@ fn startDaemon() !void {
     var exe_z_buf: [1024]u8 = undefined;
     const exe_z: [*:0]const u8 = std.fmt.bufPrintZ(&exe_z_buf, "{s}", .{exe}) catch return error.SpawnFailed;
 
-    logging.info("daemon", "starting daemon: {s}", .{std.mem.sliceTo(exe_z, 0)});
+    dbg("starting daemon: {s}", .{std.mem.sliceTo(exe_z, 0)});
 
     const daemon_str: [*:0]const u8 = "daemon";
     const argv: [3:null]?[*:0]const u8 = .{ exe_z, daemon_str, null };
@@ -330,10 +338,10 @@ fn startDaemon() !void {
     // posix_spawn instead of fork+exec — safe in multithreaded processes.
     const result = spawn.spawnp(exe_z, &argv, true);
     if (!result.ok) {
-        logging.err("daemon", "CreateProcessW failed for daemon", .{});
+        dbg("CreateProcessW FAILED for daemon", .{});
         return error.SpawnFailed;
     }
-    logging.info("daemon", "daemon spawned with pid {d}", .{result.pid});
+    dbg("daemon spawned with pid {d}", .{result.pid});
 }
 
 pub fn getExePath(buf: *[1024]u8) ?[]const u8 {
