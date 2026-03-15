@@ -411,7 +411,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
         swprintf(msg, 512, L"Error: could not create %s (code %d). Try a different path or run as admin.",
                  g_install_dir, dirErr);
         SetStatus(msg);
-        g_failed = true; g_done = true;
+        g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
 
@@ -426,7 +426,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
         wchar_t msg[512];
         swprintf(msg, 512, L"Error: could not copy attyx.exe (code %lu)", err);
         SetStatus(msg);
-        g_failed = true; g_done = true;
+        g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
 
@@ -497,6 +497,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     g_progress = 100;
 
     g_done = true;
+    g_installing = false;
     SetStatus(L"Installation complete!");
     return 0;
 }
