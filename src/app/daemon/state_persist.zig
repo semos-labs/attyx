@@ -11,7 +11,8 @@ pub fn getStatePath(buf: *[512]u8) ?[]const u8 {
 }
 
 fn ensureParentDir(path: []const u8) void {
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| {
+    const sep: u8 = if (@import("builtin").os.tag == .windows) '\\' else '/';
+    if (std.mem.lastIndexOfScalar(u8, path, sep)) |i| {
         std.fs.makeDirAbsolute(path[0..i]) catch {};
     }
 }

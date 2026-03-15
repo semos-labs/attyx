@@ -89,7 +89,9 @@ fn winFatal(msg: []const u8) noreturn {
 pub fn main() !void {
     // On Windows (subsystem=Windows), attach to parent console for CLI paths.
     // This gives subcommands (login, device, etc.) stdout/stderr when run from
-    // a terminal. GUI path doesn't need a console — no flash, no window.
+    // a terminal. GUI and daemon paths don't need a console.
+    // Skip for daemon: if AttachConsole succeeds, the daemon gets
+    // CTRL_CLOSE_EVENT when the console owner exits → kills the daemon.
     if (is_windows) {
         _ = win32.AttachConsole(win32.ATTACH_PARENT_PROCESS);
     }
@@ -139,6 +141,11 @@ pub fn main() !void {
             return;
         },
         .daemon => {
+            // Daemon must not be attached to any console — if main()
+            // attached to the parent's console above, detach now.
+            // Otherwise CTRL_CLOSE_EVENT kills the daemon when the
+            // console owner exits.
+            if (is_windows) _ = win32.FreeConsole();
             debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
             daemon.run(allocator, null) catch |err| {
@@ -151,6 +158,7 @@ pub fn main() !void {
             return;
         },
         .daemon_restore => {
+            if (is_windows) _ = win32.FreeConsole();
             // Extract restore path from args: attyx daemon --restore <path>
             const restore_path: ?[]const u8 = if (args.len > 3) args[3] else null;
             daemon.run(allocator, restore_path) catch |err| {

@@ -43,6 +43,7 @@ pub fn run(
     no_config: bool,
     config_path: ?[]const u8,
     args: []const [:0]const u8,
+    _: bool, // headless (not yet implemented on Windows)
 ) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
