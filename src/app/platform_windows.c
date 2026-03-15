@@ -418,6 +418,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         break;
 
+    case WM_SYSCOMMAND:
+        // Block Alt-key menu activation so Alt combos work as keybinds
+        if ((wParam & 0xFFF0) == SC_KEYMENU)
+            return 0;
+        break;
+
     case WM_CLOSE:
         g_should_quit = 1;
         DestroyWindow(hwnd);

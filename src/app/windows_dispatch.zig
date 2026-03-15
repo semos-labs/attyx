@@ -135,11 +135,7 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         .debug_toggle => { attyx_toggle_debug_overlay(); return 1; },
         .anchor_demo_toggle => { attyx_toggle_anchor_demo(); return 1; },
         .ai_demo_toggle => { attyx_toggle_ai_demo(); return 1; },
-        .session_switcher_toggle => {
-            std.log.info("dispatch: session_switcher_toggle", .{});
-            attyx_toggle_session_switcher();
-            return 1;
-        },
+        .session_switcher_toggle => { attyx_toggle_session_switcher(); return 1; },
         .command_palette_toggle => { attyx_toggle_command_palette(); return 1; },
         .theme_picker_toggle => { attyx_toggle_theme_picker(); return 1; },
         .session_create => {

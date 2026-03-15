@@ -18,7 +18,6 @@ const Theme = @import("../../theme/registry.zig").Theme;
 const commands = @import("../../config/commands.zig");
 const keybinds = @import("../../config/keybinds.zig");
 const platform = @import("../../platform/platform.zig");
-const logging = @import("../../logging/log.zig");
 const toml_edit = @import("../../config/toml_edit.zig");
 const win_session_picker = @import("win_session_picker.zig");
 // Note: can't import actions.zig (depends on terminal.zig/POSIX).
@@ -544,7 +543,6 @@ pub fn processToggles(ctx: *WinCtx) void {
     }
 
     if (@atomicRmw(i32, &ws.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
-        logging.info("session", "toggle_session_switcher fired, active={d}", .{ws.g_session_picker_active});
         if (ws.g_session_picker_active != 0) {
             win_session_picker.close(ctx);
         } else {
