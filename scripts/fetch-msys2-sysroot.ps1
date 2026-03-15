@@ -70,7 +70,13 @@ foreach ($pkg in $packages) {
     Invoke-WebRequest -Uri $url -OutFile $localPath -UseBasicParsing
 
     Write-Host "  Decompressing ..."
-    & $zstdExe -d $localPath -o $tarPath --force 2>&1 | Out-Null
+    $ErrorActionPreference = "Continue"
+    & $zstdExe -d $localPath -o $tarPath --force 2>$null
+    $ErrorActionPreference = "Stop"
+    if (-not (Test-Path $tarPath)) {
+        Write-Host "ERROR: Failed to decompress $pkg" -ForegroundColor Red
+        exit 1
+    }
 
     Write-Host "  Extracting ..."
     tar -xf $tarPath -C $extractDir
