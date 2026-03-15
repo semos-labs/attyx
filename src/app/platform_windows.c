@@ -370,6 +370,12 @@ static void win_apply_transparency(HWND hwnd) {
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_NCCALCSIZE:
+        // Borderless: expand client area to fill the entire window frame.
+        // Keeps WS_OVERLAPPEDWINDOW for proper minimize/maximize animations and snap.
+        if (!g_window_decorations && wParam) return 0;
+        break;
+
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED) {
             int w = LOWORD(lParam);
@@ -530,13 +536,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     RegisterClassExW(&wc);
 
     // Build system menu bar (skip for borderless windows)
-    ATTYX_LOG_INFO("platform", "g_window_decorations=%d", g_window_decorations);
     HMENU hmenu = g_window_decorations ? windows_menu_create() : NULL;
 
     // Compute window rect from desired client area
     DWORD style = WS_OVERLAPPEDWINDOW;
-    if (!g_window_decorations)
-        style &= ~(WS_CAPTION | WS_THICKFRAME);
     BOOL has_menu = (hmenu != NULL) ? TRUE : FALSE;
     RECT rect = { 0, 0, winW, winH };
     AdjustWindowRect(&rect, style, has_menu);
