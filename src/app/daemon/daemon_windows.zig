@@ -131,6 +131,17 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
 }
 
 fn runImpl(allocator: std.mem.Allocator, _: ?[]const u8) !void {
+    _ = allocator;
+    daemonLog("runImpl: MINIMAL entered");
+    _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
+    daemonLog("runImpl: sleeping in loop");
+    while (g_running) {
+        Sleep(50);
+    }
+    return;
+}
+
+fn runImpl_DISABLED(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     daemonLog("runImpl: entered");
     daemonLog("daemon starting");
 
