@@ -70,24 +70,20 @@ Write-Host "  Payload ready: $dist"
 # Step 3: Compile custom installer
 Write-Host ">> Compiling installer..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$installerC = Join-Path $root "installer\installer.c"
-$installerRc = Join-Path $root "installer\installer.rc"
 $setupExe = Join-Path $output "attyx-$Version-setup.exe"
 
-Push-Location (Join-Path $root "installer")
-zig cc $installerC $installerRc `
-    -o $setupExe `
-    -target x86_64-windows-gnu `
-    -lkernel32 -luser32 -lgdi32 -lshell32 -lole32 `
-    -ladvapi32 -lshlwapi -luuid `
-    "-Wl,--subsystem,windows" `
-    -O2
+$installerDir = Join-Path $root "installer"
+Push-Location $installerDir
+zig build --prefix "$output\zig-out"
 Pop-Location
 
-if (-not (Test-Path $setupExe)) {
+$builtExe = Join-Path $output "zig-out\bin\attyx-setup.exe"
+if (-not (Test-Path $builtExe)) {
     Write-Error "Installer compilation failed."
     exit 1
 }
+Move-Item $builtExe $setupExe -Force
+Remove-Item (Join-Path $output "zig-out") -Recurse -Force -ErrorAction SilentlyContinue
 
 # Step 4: Copy dist/ next to setup exe
 Write-Host ">> Copying payload next to installer..." -ForegroundColor Yellow
