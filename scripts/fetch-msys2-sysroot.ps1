@@ -153,7 +153,7 @@ if [ -d /etc/profile.d ]; then
     done
 fi
 '@
-Set-Content -Path $profilePath -Value $minimalProfile -Encoding UTF8 -Force
+[System.IO.File]::WriteAllText($profilePath, $minimalProfile, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "  Wrote minimal /etc/profile"
 
 # Also write a minimal /etc/zsh/zprofile that just sources /etc/profile.
@@ -163,7 +163,7 @@ $minimalZprofile = @'
 emulate sh -c 'source /etc/profile'
 '@
 New-Item -ItemType Directory -Force (Split-Path $zprofilePath) | Out-Null
-Set-Content -Path $zprofilePath -Value $minimalZprofile -Encoding UTF8 -Force
+[System.IO.File]::WriteAllText($zprofilePath, $minimalZprofile, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "  Wrote minimal /etc/zsh/zprofile"
 
 # Cleanup temp files.
