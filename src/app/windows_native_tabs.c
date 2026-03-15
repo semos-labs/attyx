@@ -541,7 +541,6 @@ int ntab_mouse_down(int px, int py, int clientW) {
         s_drag_start_x = (float)px; s_drag_start_y = (float)py;
         s_drag_off_x = (float)px - tx(idx, count, (float)clientW);
         s_drag_x = (float)px;
-        SetCapture(g_hwnd);
         return 1;
     } else if ((float)px < tabsEnd + PLUS_W * s) {
         attyx_dispatch_action(49);
