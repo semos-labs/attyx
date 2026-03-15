@@ -90,6 +90,8 @@ fn spawnWindows(
         const BYTE = u8;
 
         const DETACHED_PROCESS: DWORD = 0x00000008;
+        const CREATE_BREAKAWAY_FROM_JOB: DWORD = 0x01000000;
+        const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 
         const STARTUPINFOW = extern struct {
             cb: DWORD,
@@ -150,18 +152,14 @@ fn spawnWindows(
     si.cb = @sizeOf(win.STARTUPINFOW);
 
     var pi: win.PROCESS_INFORMATION = undefined;
-    if (win.CreateProcessW(
-        null,
-        @ptrCast(&cmd_buf),
-        null,
-        null,
-        0, // don't inherit handles
-        win.DETACHED_PROCESS,
-        null,
-        null,
-        &si,
-        &pi,
-    ) == 0) return .{ .pid = 0, .ok = false };
+    // Try to break out of any Job object so the daemon survives parent exit.
+    // If the Job doesn't allow breakaway, fall back without that flag.
+    const flags_with_breakaway = win.DETACHED_PROCESS | win.CREATE_BREAKAWAY_FROM_JOB | win.CREATE_NEW_PROCESS_GROUP;
+    const flags_without = win.DETACHED_PROCESS | win.CREATE_NEW_PROCESS_GROUP;
+    if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_with_breakaway, null, null, &si, &pi) == 0) {
+        if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_without, null, null, &si, &pi) == 0)
+            return .{ .pid = 0, .ok = false };
+    }
 
     // Close handles — the daemon runs independently.
     _ = win.CloseHandle(pi.hProcess);

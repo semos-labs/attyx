@@ -152,10 +152,14 @@ fn connectToSocketWindows() !std.posix.fd_t {
     var path_buf: [256]u8 = undefined;
     const pipe_path = getSocketPath(&path_buf) orelse return error.NoHome;
 
-    // First attempt
+    // First attempt — probe checks daemon is alive, then we open a fresh
+    // connection so no stale response data pollutes the client buffer.
     if (tryConnectWindows(pipe_path)) |h| {
-        if (probeAliveWindows(h)) return h;
+        const alive = probeAliveWindows(h);
         _ = win32.CloseHandle(h);
+        if (alive) {
+            if (tryConnectWindows(pipe_path)) |fresh| return fresh;
+        }
     }
 
     if (isUpgradeInProgress()) {
