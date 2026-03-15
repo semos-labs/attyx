@@ -708,6 +708,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 // ---------------------------------------------------------------------------
 
 void attyx_run(AttyxCell* cells, int cols, int rows) {
+    // Hide the console window that Windows creates for console-subsystem apps.
+    // We keep console subsystem so CLI subcommands (attyx login, etc.) work,
+    // but hide it immediately for the GUI path.
+    FreeConsole();
+
     g_cells = cells;
     g_cols  = cols;
     g_rows  = rows;
