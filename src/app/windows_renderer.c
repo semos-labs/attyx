@@ -262,7 +262,7 @@ int windows_renderer_init(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC1 sc1 = {0};
     sc1.Width       = (UINT)w;
     sc1.Height      = (UINT)h;
-    sc1.Format      = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sc1.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;
     sc1.SampleDesc.Count   = 1;
     sc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sc1.BufferCount = 2;

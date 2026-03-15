@@ -244,6 +244,29 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    // window.opacity / window.blur — aliases for background.opacity / background.blur
+    if (Lookup.get(root, "window", "opacity")) |v| {
+        const raw: f64 = if (v == .float) v.float
+            else if (v == .int) @floatFromInt(v.int)
+            else {
+                std.debug.print("error: {s}: window.opacity must be a number\n", .{path});
+                return error.ConfigValidationError;
+            };
+        if (raw < 0.0 or raw > 1.0) {
+            std.debug.print("error: {s}: window.opacity must be between 0.0 and 1.0\n", .{path});
+            return error.ConfigValidationError;
+        }
+        config.background_opacity = @floatCast(raw);
+    }
+    if (Lookup.get(root, "window", "blur")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: window.blur must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.background_blur = @intCast(@min(v.int, 100));
+        }
+    }
     // Padding shorthand: apply in increasing-specificity order so more-specific
     // keys override less-specific ones regardless of file ordering.
     if (Lookup.get(root, "window", "padding")) |v| {
