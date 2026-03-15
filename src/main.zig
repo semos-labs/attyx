@@ -9,7 +9,7 @@ const session_connect = @import("app/session_connect.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
-pub fn debugToFile(msg: []const u8) void {
+fn debugToFile(msg: []const u8) void {
     var path_buf: [256]u8 = undefined;
     const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
     const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
@@ -148,21 +148,13 @@ pub fn main() !void {
             // Otherwise CTRL_CLOSE_EVENT kills the daemon when the
             // console owner exits.
             if (is_windows) _ = win32.FreeConsole();
-            debugToFile("main: daemon action dispatched");
             if (is_windows) installDaemonPanicHandler();
-            debugToFile("main: about to call daemon.run");
-            // Test: call daemonLog directly to see if the module works
-            if (is_windows) {
-                daemon.testLog();
-                debugToFile("main: testLog returned, now calling daemon.run");
-            }
             daemon.run(allocator, null) catch |err| {
                 var ebuf: [256]u8 = undefined;
-                const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
+                const emsg = std.fmt.bufPrint(&ebuf, "daemon failed: {s}", .{@errorName(err)}) catch "daemon failed";
                 debugToFile(emsg);
                 std.process.exit(1);
             };
-            debugToFile("main: daemon.run returned normally");
             return;
         },
         .daemon_restore => {
@@ -223,14 +215,11 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
-    debugToFile("main: calling terminal.run");
     terminal.run(merged, result.no_config, result.config_path, args, result.headless) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Terminal failed: {s}", .{@errorName(err)}) catch "Terminal failed";
-        debugToFile(msg);
         winFatal(msg);
     };
-    debugToFile("main: terminal.run returned normally");
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.

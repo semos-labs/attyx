@@ -121,57 +121,34 @@ fn ctrlHandler(ctrl_type: DWORD) callconv(.winapi) BOOL {
     }
 }
 
-pub fn testLog() void {
-    daemonLog("testLog: daemon module is reachable");
-}
-
-pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
-    // Windows default stack is 1MB — too small for runImpl in debug mode
-    // (deeply nested loops + debug metadata). Spawn on a thread with 8MB
-    // stack to match macOS/Linux defaults.
-    daemonLog("run: spawning daemon thread (8MB stack)");
-    var run_err: bool = false;
+pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
+    // Zig debug mode on aarch64 Windows generates stack frames that exceed
+    // the default 1MB stack. Calling a separate function (even a small one)
+    // triggers a stack probe crash. Work around by running the daemon loop
+    // directly inside a thread entry with an 8MB stack.
     const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, struct {
-        fn entry(alloc: std.mem.Allocator, _: ?[]const u8, _: *bool) void {
-            daemonLog("thread: entry point reached");
-            // Test: bypass runImpl entirely, just run the daemon inline
+        fn entry(alloc: std.mem.Allocator) void {
             _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
-            daemonLog("thread: SetConsoleCtrlHandler done");
 
             var path_buf: [256]u8 = undefined;
             const pipe_path = session_connect.getSocketPath(&path_buf) orelse {
                 daemonLog("ERROR: no socket path");
                 return;
             };
-            daemonLog(pipe_path);
             ensureStateDir();
+            writeVersionFile();
 
             var wide_buf: [256]u16 = undefined;
-            const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch {
-                daemonLog("ERROR: utf16 conversion failed");
-                return;
-            };
+            const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch return;
             wide_buf[wlen] = 0;
             const pipe_name: LPCWSTR = @ptrCast(wide_buf[0..wlen :0]);
 
-            const state = alloc.create(DaemonState) catch {
-                daemonLog("ERROR: alloc DaemonState failed");
-                return;
-            };
-            const sessions_ptr = alloc.create([max_sessions]?DaemonSession) catch {
-                daemonLog("ERROR: alloc sessions failed");
-                return;
-            };
+            const state = alloc.create(DaemonState) catch return;
+            const sessions_ptr = alloc.create([max_sessions]?DaemonSession) catch return;
             sessions_ptr.* = .{null} ** max_sessions;
-            const clients_ptr = alloc.create([max_clients]?DaemonClient) catch {
-                daemonLog("ERROR: alloc clients failed");
-                return;
-            };
+            const clients_ptr = alloc.create([max_clients]?DaemonClient) catch return;
             clients_ptr.* = .{null} ** max_clients;
-            const pty_buf_slice = alloc.alloc(u8, 65536) catch {
-                daemonLog("ERROR: alloc pty_buf failed");
-                return;
-            };
+            const pty_buf_slice = alloc.alloc(u8, 65536) catch return;
 
             state.* = .{
                 .sessions = sessions_ptr,
@@ -183,17 +160,22 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             state.pipe_name_buf[wlen] = 0;
             state.pipe_name_len = wlen;
 
+            // Load persisted dead sessions from previous daemon run.
+            state_persist.load(state.sessions, &state.next_session_id, &state.next_pane_id);
+            for (state.sessions.*) |slot| {
+                if (slot != null) state.session_count += 1;
+            }
+
             state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
             state.listen_pipe = createPipeInstance(pipe_name);
             if (state.listen_pipe) |lp| {
-                daemonLog("pipe created OK");
                 startAsyncConnect(lp, &state.connect_overlap);
             } else {
-                daemonLog("ERROR: pipe creation failed");
+                daemonLog("ERROR: CreateNamedPipeW failed");
             }
 
-            writeVersionFile();
-            daemonLog("entering main loop");
+            const label = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): listening\n" else "attyx daemon: listening\n";
+            daemonLog(label);
 
             while (g_running) {
                 pollAccept(state);
@@ -203,16 +185,28 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                 pollDeadSessions(state);
                 Sleep(50);
             }
-            daemonLog("loop exited");
+
+            // Cleanup
+            state_persist.save(state.sessions, state.next_session_id, state.next_pane_id);
+            for (state.sessions) |*slot| {
+                if (slot.*) |*s| { s.deinit(); slot.* = null; }
+            }
+            for (state.clients) |*slot| {
+                if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
+            }
+            if (state.listen_pipe) |lp| _ = CloseHandle(lp);
+            if (state.connect_overlap.hEvent) |ev| _ = CloseHandle(ev);
+            alloc.destroy(sessions_ptr);
+            alloc.destroy(clients_ptr);
+            alloc.free(pty_buf_slice);
+            alloc.destroy(state);
+            deleteVersionFile();
         }
-    }.entry, .{ allocator, restore_path, &run_err }) catch {
+    }.entry, .{allocator}) catch {
         daemonLog("ERROR: failed to spawn daemon thread");
         return error.SpawnFailed;
     };
-    daemonLog("run: thread spawned, joining");
     thread.join();
-    daemonLog("run: thread joined");
-    if (run_err) return error.DaemonFailed;
 }
 
 /// Daemon state — heap-allocated to keep function stack frames small.
@@ -238,94 +232,6 @@ const DaemonState = struct {
         return @ptrCast(self.pipe_name_buf[0..self.pipe_name_len :0]);
     }
 };
-
-fn runImpl(allocator: std.mem.Allocator, _: ?[]const u8) !void {
-    daemonLog("daemon starting");
-    _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
-
-    // Get pipe path
-    var path_buf: [256]u8 = undefined;
-    const pipe_path = session_connect.getSocketPath(&path_buf) orelse {
-        daemonLog("ERROR: getSocketPath returned null");
-        return error.NoHome;
-    };
-    daemonLog(pipe_path);
-
-    ensureStateDir();
-    writeVersionFile();
-
-    // Allocate all state on the heap
-    const state = try allocator.create(DaemonState);
-    defer allocator.destroy(state);
-
-    const sessions_ptr = allocator.create([max_sessions]?DaemonSession) catch {
-        daemonLog("ERROR: failed to allocate sessions");
-        return error.OutOfMemory;
-    };
-    sessions_ptr.* = .{null} ** max_sessions;
-
-    const clients_ptr = allocator.create([max_clients]?DaemonClient) catch {
-        daemonLog("ERROR: failed to allocate clients");
-        return error.OutOfMemory;
-    };
-    clients_ptr.* = .{null} ** max_clients;
-
-    const pty_buf_ptr = try allocator.alloc(u8, 65536);
-
-    state.* = .{
-        .sessions = sessions_ptr,
-        .clients = clients_ptr,
-        .pty_buf = pty_buf_ptr[0..65536],
-        .allocator = allocator,
-    };
-
-    // Convert pipe path to UTF-16
-    const wlen = std.unicode.utf8ToUtf16Le(&state.pipe_name_buf, pipe_path) catch return error.PathTooLong;
-    state.pipe_name_buf[wlen] = 0;
-    state.pipe_name_len = wlen;
-
-    // Load persisted sessions
-    state_persist.load(state.sessions, &state.next_session_id, &state.next_pane_id);
-    for (state.sessions.*) |slot| {
-        if (slot != null) state.session_count += 1;
-    }
-
-    // Create named pipe
-    state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
-    state.listen_pipe = createPipeInstance(state.getPipeName());
-    if (state.listen_pipe) |lp| {
-        daemonLog("pipe created, starting async connect");
-        startAsyncConnect(lp, &state.connect_overlap);
-    } else {
-        daemonLog("ERROR: CreateNamedPipeW failed!");
-    }
-
-    defer {
-        state_persist.save(state.sessions, state.next_session_id, state.next_pane_id);
-        for (state.sessions) |*slot| {
-            if (slot.*) |*s| { s.deinit(); slot.* = null; }
-        }
-        for (state.clients) |*slot| {
-            if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
-        }
-        if (state.listen_pipe) |lp| _ = CloseHandle(lp);
-        if (state.connect_overlap.hEvent) |ev| _ = CloseHandle(ev);
-        allocator.destroy(sessions_ptr);
-        allocator.destroy(clients_ptr);
-        allocator.free(pty_buf_ptr);
-        deleteVersionFile();
-    }
-
-    daemonLog("entering main loop");
-    while (g_running) {
-        pollAccept(state);
-        pollPtyOutput(state);
-        pollClients(state);
-        pollProcNames(state);
-        pollDeadSessions(state);
-        Sleep(50);
-    }
-}
 
 // ── Loop body split into small functions (aarch64 stack probe workaround) ──
 

@@ -35,18 +35,6 @@ const layout_codec = @import("layout_codec.zig");
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
 
-/// Debug-to-file helper for Windows GUI (no console available).
-fn debugWin(msg: []const u8) void {
-    var path_buf: [256]u8 = undefined;
-    const path = conn.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
-    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
-    defer file.close();
-    file.seekFromEnd(0) catch {};
-    file.writeAll("[gui] ") catch {};
-    file.writeAll(msg) catch {};
-    file.writeAll("\n") catch {};
-}
-
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
 pub fn run(
@@ -56,8 +44,6 @@ pub fn run(
     args: []const [:0]const u8,
     _: bool, // headless (not yet implemented on Windows)
 ) !void {
-    debugWin("terminal_windows.run: entered");
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -150,7 +136,6 @@ pub fn run(
 
     // On Windows, always use daemon sessions for persistence (unless a custom
     // argv was specified, which means the user wants a one-shot command).
-    debugWin("connecting to daemon");
     if (config.argv == null) {
         if (SessionClient.connect(allocator)) |sc_val| {
             session_client = sc_val;
@@ -258,7 +243,6 @@ pub fn run(
         .finder_show_hidden = config.session_finder_show_hidden,
     };
 
-    debugWin("built initial tabs, entering event loop");
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
     // Start IPC control server (named pipe)
@@ -289,9 +273,7 @@ pub fn run(
     }
 
     // Enter Win32 message loop + D3D11 rendering
-    debugWin("calling attyx_run");
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
-    debugWin("attyx_run returned");
 }
 
 const AttachResult = struct { session_id: u32, pane_id: u32 };
