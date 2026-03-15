@@ -1,9 +1,7 @@
 # fetch-msys2-sysroot.ps1
 # Downloads a minimal MSYS2 sysroot with zsh for bundling with Attyx.
 # No external dependencies required - bootstraps zstd automatically.
-#
-# Usage:  powershell -ExecutionPolicy Bypass -File scripts/fetch-msys2-sysroot.ps1
-# Output: share/msys2/ (or -OutputDir)
+# Package versions resolved dynamically from the MSYS2 repo.
 
 param(
     [string]$OutputDir = "share\msys2",
@@ -44,23 +42,53 @@ if (-not $zstdCmd) {
     Write-Host "  Using $zstdExe"
 }
 
-# Minimal package set for zsh to work.
-$packages = @(
-    "zsh-5.9-3-x86_64.pkg.tar.zst"
-    "msys2-runtime-3.5.7-1-x86_64.pkg.tar.zst"
-    "coreutils-8.32-5-x86_64.pkg.tar.zst"
-    "ncurses-6.5-1-x86_64.pkg.tar.zst"
-    "libreadline-8.2.013-1-x86_64.pkg.tar.zst"
-    "pcre2-10.44-1-x86_64.pkg.tar.zst"
-    "libiconv-1.17-1-x86_64.pkg.tar.zst"
-    "libintl-0.22.4-1-x86_64.pkg.tar.zst"
-    "bash-5.2.037-1-x86_64.pkg.tar.zst"
-    "filesystem-2024.02.25-1-x86_64.pkg.tar.zst"
-    "grep-3.11-1-x86_64.pkg.tar.zst"
-    "sed-4.9-1-x86_64.pkg.tar.zst"
-    "gawk-5.3.1-1-x86_64.pkg.tar.zst"
+# --- Resolve package versions from repo listing ---
+Write-Host "Fetching package listing from $MirrorBase ..."
+$listing = (Invoke-WebRequest -Uri "$MirrorBase/" -UseBasicParsing).Content
+
+# Package base names (without version). Script finds latest .pkg.tar.zst for each.
+$packageNames = @(
+    "zsh"
+    "msys2-runtime"
+    "coreutils"
+    "ncurses"
+    "libreadline"
+    "pcre2"
+    "libiconv"
+    "libintl"
+    "bash"
+    "filesystem"
+    "grep"
+    "sed"
+    "gawk"
 )
 
+function Find-Package($name, $listing) {
+    # Match: href="<name>-<version>-x86_64.pkg.tar.zst"
+    # Use word boundary after name to avoid partial matches (e.g. "ncurses" vs "libncursesw")
+    $pattern = "href=""($([regex]::Escape($name))-[0-9][^""]*-x86_64\.pkg\.tar\.zst)"""
+    $matches = [regex]::Matches($listing, $pattern)
+    if ($matches.Count -eq 0) { return $null }
+    # Return the last match (latest version in directory listing)
+    return $matches[$matches.Count - 1].Groups[1].Value
+}
+
+$packages = @()
+foreach ($name in $packageNames) {
+    $pkg = Find-Package $name $listing
+    if (-not $pkg) {
+        Write-Host "WARNING: Could not find package '$name' in repo - skipping" -ForegroundColor Yellow
+        continue
+    }
+    $packages += $pkg
+}
+
+if ($packages.Count -lt 5) {
+    Write-Host "ERROR: Too few packages resolved ($($packages.Count)) - check mirror URL" -ForegroundColor Red
+    exit 1
+}
+
+# --- Download and extract packages ---
 foreach ($pkg in $packages) {
     $url = "$MirrorBase/$pkg"
     $localPath = Join-Path $tempDir $pkg
@@ -82,48 +110,25 @@ foreach ($pkg in $packages) {
     tar -xf $tarPath -C $extractDir
 }
 
-# Assemble output sysroot with only needed parts.
+# --- Assemble output sysroot ---
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 
-# usr/bin (executables + DLLs)
-$srcBin = Join-Path $extractDir "usr\bin"
-$dstBin = Join-Path $OutputDir "usr\bin"
-if (Test-Path $srcBin) {
-    New-Item -ItemType Directory -Force $dstBin | Out-Null
-    Copy-Item -Path "$srcBin\*" -Destination $dstBin -Recurse -Force
-}
+$copyDirs = @(
+    @("usr\bin",           "usr\bin")
+    @("usr\lib\zsh",       "usr\lib\zsh")
+    @("usr\share\terminfo","usr\share\terminfo")
+    @("usr\share\zsh",     "usr\share\zsh")
+    @("etc",               "etc")
+)
 
-# usr/lib/zsh (modules)
-$srcZshLib = Join-Path $extractDir "usr\lib\zsh"
-$dstZshLib = Join-Path $OutputDir "usr\lib\zsh"
-if (Test-Path $srcZshLib) {
-    New-Item -ItemType Directory -Force $dstZshLib | Out-Null
-    Copy-Item -Path "$srcZshLib\*" -Destination $dstZshLib -Recurse -Force
-}
-
-# usr/share/terminfo (ncurses needs this)
-$srcTerminfo = Join-Path $extractDir "usr\share\terminfo"
-$dstTerminfo = Join-Path $OutputDir "usr\share\terminfo"
-if (Test-Path $srcTerminfo) {
-    New-Item -ItemType Directory -Force $dstTerminfo | Out-Null
-    Copy-Item -Path "$srcTerminfo\*" -Destination $dstTerminfo -Recurse -Force
-}
-
-# etc/ (profile, zsh default configs)
-$srcEtc = Join-Path $extractDir "etc"
-$dstEtc = Join-Path $OutputDir "etc"
-if (Test-Path $srcEtc) {
-    New-Item -ItemType Directory -Force $dstEtc | Out-Null
-    Copy-Item -Path "$srcEtc\*" -Destination $dstEtc -Recurse -Force
-}
-
-# usr/share/zsh (functions, completions)
-$srcZshShare = Join-Path $extractDir "usr\share\zsh"
-$dstZshShare = Join-Path $OutputDir "usr\share\zsh"
-if (Test-Path $srcZshShare) {
-    New-Item -ItemType Directory -Force $dstZshShare | Out-Null
-    Copy-Item -Path "$srcZshShare\*" -Destination $dstZshShare -Recurse -Force
+foreach ($pair in $copyDirs) {
+    $src = Join-Path $extractDir $pair[0]
+    $dst = Join-Path $OutputDir $pair[1]
+    if (Test-Path $src) {
+        New-Item -ItemType Directory -Force $dst | Out-Null
+        Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
+    }
 }
 
 # Cleanup temp files.
