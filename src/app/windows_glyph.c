@@ -207,41 +207,9 @@ static void extract_grayscale(GlyphCache* gc, int w, int h, uint8_t* pixels) {
 
 static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLen,
                                     IDWriteTextFormat* fmt, int renderW, int gh,
-                                    float posX, uint8_t* pixels) {
+                                    float posX, uint8_t* pixels,
+                                    float scale) {
     ensure_wic_size(gc, renderW, gh);
-
-    // Measure the glyph's actual ink bounds via IDWriteTextLayout
-    IDWriteTextLayout* layout = NULL;
-    HRESULT hr = IDWriteFactory_CreateTextLayout(gc->dw_factory, str, (UINT32)strLen, fmt,
-                                                  10000.0f, 10000.0f, &layout);
-    float scale = 1.0f;
-    float drawX = posX, drawY = gc->baseline_y_offset;
-    if (SUCCEEDED(hr) && layout) {
-        DWRITE_OVERHANG_METRICS overhang;
-        hr = IDWriteTextLayout_GetOverhangMetrics(layout, &overhang);
-        DWRITE_TEXT_METRICS tm;
-        IDWriteTextLayout_GetMetrics(layout, &tm);
-        if (SUCCEEDED(hr)) {
-            // Compute actual ink rect
-            float inkW = tm.widthIncludingTrailingWhitespace + overhang.left + overhang.right;
-            float inkH = tm.height + overhang.top + overhang.bottom;
-            if (inkW < tm.widthIncludingTrailingWhitespace) inkW = tm.widthIncludingTrailingWhitespace;
-            if (inkH < tm.height) inkH = tm.height;
-            // Scale down if glyph overflows cell (like macOS does)
-            if (inkW > 0.5f && inkH > 0.5f) {
-                float sx = (float)renderW / inkW;
-                float sy = (float)gh / inkH;
-                float s = sx < sy ? sx : sy;
-                if (s < 1.0f) {
-                    scale = s;
-                    // Center the scaled glyph
-                    drawX = ((float)renderW / scale - inkW) * 0.5f + overhang.left;
-                    drawY = ((float)gh / scale - inkH) * 0.5f + overhang.top;
-                }
-            }
-        }
-        IDWriteTextLayout_Release(layout);
-    }
 
     // Clear and draw
     ID2D1RenderTarget_BeginDraw(gc->d2d_rt);
@@ -249,16 +217,16 @@ static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLe
     ID2D1RenderTarget_Clear(gc->d2d_rt, &black);
 
     if (scale < 1.0f) {
-        // Apply uniform scale transform
         D2D1_MATRIX_3X2_F xform = { scale, 0, 0, scale, 0, 0 };
         ID2D1RenderTarget_SetTransform(gc->d2d_rt, &xform);
-        D2D1_RECT_F layoutRect = { drawX, drawY,
-                                    (float)renderW / scale, (float)gh / scale };
+        // Center the scaled glyph in the cell
+        float scaledW = (float)renderW / scale;
+        float scaledH = (float)gh / scale;
+        D2D1_RECT_F layoutRect = { 0, 0, scaledW, scaledH };
         ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
                                     &layoutRect, (ID2D1Brush*)gc->d2d_brush,
                                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                                     DWRITE_MEASURING_MODE_NATURAL);
-        // Reset transform
         D2D1_MATRIX_3X2_F identity = { 1, 0, 0, 1, 0, 0 };
         ID2D1RenderTarget_SetTransform(gc->d2d_rt, &identity);
     } else {
@@ -416,7 +384,8 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
             // Fall back to DirectWrite glyph
             if (haveGlyph) {
                 float posX = gc->x_offset;
-                render_glyph_to_pixels(gc, utf16, utf16Len, fmt, renderW, gh, posX, pixels);
+                render_glyph_to_pixels(gc, utf16, utf16Len, fmt, renderW, gh, posX, pixels,
+                                    1.0f);
             }
         }
     } else if (isBlock) {
@@ -483,7 +452,32 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     } else {
         // Normal/wide/Powerline glyph: render via DirectWrite + D2D
         float posX = wide ? 0.0f : gc->x_offset;
-        render_glyph_to_pixels(gc, utf16, utf16Len, fmt, renderW, gh, posX, pixels);
+
+        // Check if glyph ink overflows cell — scale down to fit (like macOS).
+        // Uses design glyph metrics from the font face for accurate bounds.
+        float glyphScale = 1.0f;
+        if (haveGlyph && !wide) {
+            DWRITE_GLYPH_METRICS gm;
+            IDWriteFontFace_GetDesignGlyphMetrics(face, &glyphIndex, 1, &gm, FALSE);
+            DWRITE_FONT_METRICS fm;
+            IDWriteFontFace_GetMetrics(face, &fm);
+            float emPx = (float)gc->font_size;
+            float upem = (float)fm.designUnitsPerEm;
+            // Compute ink rect in pixels
+            float inkW = (float)gm.advanceWidth / upem * emPx;
+            float inkH = (float)(gm.verticalOriginY
+                         ? (int)gm.advanceHeight
+                         : (int)(fm.ascent + fm.descent)) / upem * emPx;
+            if (inkW > (float)gw + 0.5f || inkH > (float)gh + 0.5f) {
+                float sx = (float)gw / inkW;
+                float sy = (float)gh / inkH;
+                float s = sx < sy ? sx : sy;
+                if (s < 1.0f) glyphScale = s;
+            }
+        }
+
+        render_glyph_to_pixels(gc, utf16, utf16Len, fmt, renderW, gh, posX, pixels,
+                                    glyphScale);
     }
 
     // Upload to atlas
@@ -526,7 +520,7 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
 
     // Render combined string
     uint8_t* pixels = (uint8_t*)calloc(gw * gh, 1);
-    render_glyph_to_pixels(gc, str, strLen, gc->dw_format, gw, gh, gc->x_offset, pixels);
+    render_glyph_to_pixels(gc, str, strLen, gc->dw_format, gw, gh, gc->x_offset, pixels, 1.0f);
 
     // Upload to atlas
     upload_to_atlas(gc, ac, ar, gw, gh, pixels);
