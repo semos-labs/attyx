@@ -2,6 +2,7 @@ const std = @import("std");
 const windows = std.os.windows;
 const win_shell = @import("pty_windows_shell.zig");
 const bundled_shell = @import("bundled_shell.zig");
+extern fn dbglog(msg: [*:0]const u8) void;
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -400,8 +401,11 @@ pub const Pty = struct {
             cwd_wide,
             &si,
             &pi,
-        ) == 0)
+        ) == 0) {
+            dbglog("CreateProcessW FAILED");
             return error.CreateProcessFailed;
+        }
+        dbglog("CreateProcessW OK");
 
         // Close pipe ends that belong to the ConPTY side.
         _ = CloseHandle(pty_in_read);
@@ -667,22 +671,26 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         bundled_shell.setupMsysEnv();
         @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
         S.buf[zsh.zsh_len] = 0;
+        dbglog("shell: bundled zsh");
         return &S.buf;
     }
 
     // Try Git Bash — best fallback terminal experience on Windows.
     if (findGitBash(&S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
+        dbglog("shell: git bash");
         return &S.buf;
     }
 
     // Try PowerShell: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
     if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
+        dbglog("shell: pwsh");
         return &S.buf;
     }
     if (findOnPath("powershell.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
+        dbglog("shell: powershell");
         return &S.buf;
     }
 

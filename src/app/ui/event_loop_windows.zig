@@ -8,6 +8,7 @@ const Engine = attyx.Engine;
 const logging = @import("../../logging/log.zig");
 const publish = @import("publish.zig");
 const c = publish.c;
+extern fn dbglog(msg: [*:0]const u8) void;
 const ws = @import("../windows_stubs.zig");
 const split_layout_mod = @import("../split_layout.zig");
 const split_render = @import("../split_render.zig");
@@ -198,7 +199,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Pane exit detection ──
         checkPaneExits(ctx);
-        if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+        if (ctx.tab_mgr.count == 0) {
+            dbglog("all panes exited, quitting");
+            c.attyx_request_quit();
+            break;
+        }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
