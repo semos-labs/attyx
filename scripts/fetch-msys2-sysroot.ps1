@@ -110,37 +110,20 @@ foreach ($pkg in $packages) {
     tar -xf $tarPath -C $extractDir
 }
 
-# --- Debug: show what was extracted ---
-Write-Host ""
-Write-Host "Extracted directory structure:"
-Get-ChildItem -Path $extractDir -Recurse -Name | Where-Object { $_ -like "*zsh*" -or $_ -like "*bin*exe" } | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
-Write-Host ""
-
 # --- Assemble output sysroot ---
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 
-$copyDirs = @(
-    @("usr\bin",           "usr\bin")
-    @("usr\lib\zsh",       "usr\lib\zsh")
-    @("usr\share\terminfo","usr\share\terminfo")
-    @("usr\share\zsh",     "usr\share\zsh")
-    @("etc",               "etc")
-)
-
-foreach ($pair in $copyDirs) {
-    $src = Join-Path $extractDir $pair[0]
-    $dst = Join-Path $OutputDir $pair[1]
+$srcDirs = @("usr\bin", "usr\lib\zsh", "usr\share\terminfo", "usr\share\zsh", "etc")
+foreach ($rel in $srcDirs) {
+    $src = Join-Path $extractDir $rel
+    $dst = Join-Path $OutputDir $rel
     if (Test-Path $src) {
         New-Item -ItemType Directory -Force $dst | Out-Null
         Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
+        Write-Host "  Copied $rel"
     }
 }
-
-# Debug: show output dir contents
-Write-Host "Output directory contents:"
-Get-ChildItem -Path $OutputDir -Recurse -Name | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
-Write-Host ""
 
 # Cleanup temp files.
 Remove-Item -Recurse -Force $tempDir
