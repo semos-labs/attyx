@@ -379,6 +379,9 @@ fn drainAllPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
         const lc = lay.collectLeaves(&leaves);
         for (leaves[0..lc]) |leaf| {
             if (leaf.pane.daemon_pane_id != null) continue;
+            // Ensure every local pane always has a pending async read —
+            // ConPTY only flushes output when there's a pending ReadFile().
+            if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
             while (leaf.pane.pty.peekAvail() > 0) {
                 const n = leaf.pane.pty.read(buf) catch break;
                 if (n == 0) break;
@@ -719,6 +722,10 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     ws.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    // Kick off an async read on the new active pane — ConPTY only flushes
+    // output when there's a pending ReadFile(), so without this, switching
+    // to a tab whose pane has no pending read shows a blank screen.
+    pane.pty.startAsyncRead();
     // Force full repaint so the renderer picks up the new tab's content.
     c.attyx_mark_all_dirty();
 }
