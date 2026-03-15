@@ -31,6 +31,7 @@ const win_search = @import("win_search.zig");
 const win_overlays = @import("win_overlays.zig");
 const win_popup = @import("win_popup.zig");
 const win_session_picker = @import("win_session_picker.zig");
+const win_daemon = @import("win_daemon.zig");
 const popup_mod = @import("../popup.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
@@ -65,6 +66,7 @@ pub const WinCtx = struct {
     popup_configs: [32]popup_mod.PopupConfig = undefined,
     popup_config_count: u8 = 0,
     session_mgr: ?*WinSessionManager = null,
+    session_client: ?*@import("../session_client.zig").SessionClient = null,
     finder_root: []const u8 = "~",
     finder_depth: u8 = 4,
     finder_show_hidden: bool = false,
@@ -217,6 +219,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 active_pane.pty.startAsyncRead();
             }
         }
+
+        // ── Daemon socket drain ──
+        if (win_daemon.drainDaemon(ctx)) got_data = true;
 
         // ── Title change detection ──
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {

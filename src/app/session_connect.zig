@@ -181,7 +181,7 @@ fn connectToSocketWindows() !std.posix.fd_t {
     return error.DaemonConnectFailed;
 }
 
-fn tryConnectWindows(path: []const u8) ?std.posix.fd_t {
+pub fn tryConnectWindows(path: []const u8) ?std.posix.fd_t {
     if (comptime !is_windows) return null;
     var wide_buf: [256]u16 = undefined;
     const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, path) catch return null;

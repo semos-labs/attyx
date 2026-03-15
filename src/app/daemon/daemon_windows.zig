@@ -177,12 +177,6 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     var proc_name_tick: u32 = 0;
     var g_upgrade_requested: bool = false;
 
-    // Idle exit: if no clients connected and no alive sessions for 5 seconds, exit.
-    // This prevents orphaned daemon processes when the last window closes.
-    const idle_exit_ticks: u32 = 100; // 100 × 50ms = 5s
-    var idle_ticks: u32 = 0;
-    var had_client: bool = false; // only start idle timer after first client disconnects
-
     while (g_running) {
         // 1. Check for new connections (non-blocking via overlapped connect)
         if (listen_pipe != null) {
@@ -304,23 +298,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
             }
         }
 
-        // 6. Idle exit — shut down only if no clients AND no sessions at all.
-        // Sessions (even dead/detached) keep the daemon alive so they can be
-        // reattached later. The daemon only exits when truly empty.
-        if (client_count > 0) {
-            had_client = true;
-            idle_ticks = 0;
-        } else if (had_client and session_count == 0) {
-            idle_ticks += 1;
-            if (idle_ticks >= idle_exit_ticks) {
-                stderr.writeAll("daemon: no clients or sessions, exiting\n") catch {};
-                break;
-            }
-        } else {
-            idle_ticks = 0;
-        }
-
-        // 7. Sleep for poll interval (50ms, matching POSIX daemon)
+        // 6. Sleep for poll interval (50ms, matching POSIX daemon)
         Sleep(50);
     }
 }

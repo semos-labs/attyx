@@ -29,6 +29,11 @@ pub var g_popup_pty_handle: ?std.os.windows.HANDLE = null;
 pub var g_engine: ?*attyx.Engine = null;
 pub var g_popup_engine: ?*attyx.Engine = null;
 
+// Session daemon client (null = local PTY mode, no daemon)
+const SessionClient = @import("session_client.zig").SessionClient;
+pub var g_session_client: ?*SessionClient = null;
+pub var g_active_daemon_pane_id: u32 = 0;
+
 fn writeHandle(handle: ?std.os.windows.HANDLE, data: []const u8) void {
     const h = handle orelse {
         logging.warn("pty", "writeHandle: null handle, dropping {d} bytes", .{data.len});
@@ -47,7 +52,12 @@ fn writeHandle(handle: ?std.os.windows.HANDLE, data: []const u8) void {
 
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
-    writeHandle(g_pty_handle, bytes[0..@intCast(@as(c_uint, @bitCast(len)))]);
+    const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
+    if (g_session_client) |sc| {
+        sc.sendPaneInput(g_active_daemon_pane_id, data) catch {};
+        return;
+    }
+    writeHandle(g_pty_handle, data);
 }
 
 pub var g_clear_screen_pending: i32 = 0;
@@ -72,7 +82,13 @@ export fn attyx_handle_key(k: u16, m: u8, e: u8, cp: u32) void {
         },
         &buf,
     );
-    if (encoded.len > 0) writeHandle(g_pty_handle, encoded);
+    if (encoded.len > 0) {
+        if (g_session_client) |sc| {
+            sc.sendPaneInput(g_active_daemon_pane_id, encoded) catch {};
+        } else {
+            writeHandle(g_pty_handle, encoded);
+        }
+    }
 }
 
 export fn attyx_get_link_uri(link_id: u32, buf: [*]u8, buf_len: c_int) c_int {

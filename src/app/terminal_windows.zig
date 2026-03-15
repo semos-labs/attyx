@@ -3,6 +3,10 @@
 //
 // This replaces terminal.zig on Windows. terminal.zig is deeply POSIX
 // (Unix sockets, signals, fork/exec) and cannot compile on Windows.
+//
+// Session mode: when sessions are enabled, connects to the daemon process
+// for PTY persistence across window restarts. Falls back to local ConPTY
+// when the daemon is unavailable.
 
 const std = @import("std");
 const attyx = @import("attyx");
@@ -24,6 +28,8 @@ const WinCtx = event_loop.WinCtx;
 const statusbar_mod = @import("statusbar.zig");
 const popup_mod = @import("popup.zig");
 const session_win = @import("session_windows.zig");
+const SessionClient = @import("session_client.zig").SessionClient;
+const conn = @import("session_connect.zig");
 
 // Use publish.zig's c namespace to avoid cimport type mismatch.
 const c = publish.c;
@@ -123,19 +129,63 @@ pub fn run(
     }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
-    // Spawn initial pane via TabManager
+    // Session mode: connect to daemon for PTY persistence.
+    var session_client: ?SessionClient = null;
+    defer if (session_client) |*sc| sc.deinit();
+
+    if (config.sessions_enabled and config.argv == null) {
+        if (SessionClient.connect(allocator)) |sc_val| {
+            session_client = sc_val;
+            if (sc_val.legacy_daemon) {
+                logging.warn("session", "daemon is running an older version", .{});
+            } else {
+                logging.info("session", "connected to daemon", .{});
+            }
+        } else |err| {
+            logging.err("session", "daemon connect failed (falling back to local PTY): {}", .{err});
+        }
+    }
+
+    // Attach-or-create: if daemon connected, get a session with panes.
+    var daemon_pane_id: ?u32 = null;
+    if (session_client) |*sc| daemon_blk: {
+        const result = attachOrCreate(sc, pty_rows, config.cols) catch |err| {
+            logging.err("session", "attach-or-create failed: {}", .{err});
+            sc.deinit();
+            session_client = null;
+            break :daemon_blk;
+        };
+        conn.saveLastSession(result.session_id);
+        if (result.pane_id != 0) daemon_pane_id = result.pane_id;
+    }
+
+    // Spawn initial pane — local ConPTY (always needed for Engine).
+    // In daemon mode, I/O routes through the daemon socket instead.
     const initial_pane = try allocator.create(Pane);
     errdefer allocator.destroy(initial_pane);
     initial_pane.* = try Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines);
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&theme);
+    if (daemon_pane_id) |dpid| initial_pane.daemon_pane_id = dpid;
+
+    // Transfer SessionClient to heap so it outlives this scope.
+    var heap_session_client: ?*SessionClient = null;
+    if (session_client) |sc_val| {
+        const heap_sc = try allocator.create(SessionClient);
+        heap_sc.* = sc_val;
+        heap_session_client = heap_sc;
+        session_client = null; // prevent defer double-close
+    }
+    defer if (heap_session_client) |hsc| {
+        hsc.deinit();
+        allocator.destroy(hsc);
+    };
 
     const tab_mgr = try allocator.create(TabManager);
     tab_mgr.* = TabManager.init(allocator, initial_pane);
 
     // Session manager wraps the initial TabManager (takes ownership).
-    // Derive initial session name from CWD (e.g. "C:\Users\nick\Projects\foo" → "foo").
     const initial_name = session_win.cwdSessionName() orelse "main";
     var session_mgr = session_win.WinSessionManager.init(allocator, tab_mgr, initial_name);
     defer session_mgr.deinit();
@@ -143,9 +193,13 @@ pub fn run(
     // Wire up stubs so input dispatch can write to PTY and read engine state
     ws.g_engine = &tab_mgr.activePane().engine;
     ws.g_pty_handle = tab_mgr.activePane().pty.pipe_in_write;
+    ws.g_session_client = heap_session_client;
+    ws.g_active_daemon_pane_id = initial_pane.daemon_pane_id orelse 0;
     defer {
         ws.g_engine = null;
         ws.g_pty_handle = null;
+        ws.g_session_client = null;
+        ws.g_active_daemon_pane_id = 0;
     }
 
     // Allocate render cells
@@ -183,6 +237,7 @@ pub fn run(
         .popup_configs = popup_configs,
         .popup_config_count = popup_count,
         .session_mgr = &session_mgr,
+        .session_client = heap_session_client,
         .finder_root = config.session_finder_root,
         .finder_depth = config.session_finder_depth,
         .finder_show_hidden = config.session_finder_show_hidden,
@@ -212,6 +267,73 @@ pub fn run(
     const reader_thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer reader_thread.join();
 
+    // Send focus_panes so daemon starts streaming output for our pane.
+    if (heap_session_client) |hsc| {
+        if (initial_pane.daemon_pane_id) |dpid| {
+            hsc.sendFocusPanes(&.{dpid}) catch {};
+        }
+    }
+
     // Enter Win32 message loop + D3D11 rendering
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
+}
+
+const AttachResult = struct { session_id: u32, pane_id: u32 };
+
+/// Try to attach to an existing alive session, or create a new one.
+fn attachOrCreate(sc: *SessionClient, rows: u16, cols: u16) !AttachResult {
+    // Try listing existing sessions first.
+    sc.requestListSync(2000) catch {
+        const sid = try sc.createSession("main", rows, cols, "", "");
+        return doAttach(sc, sid, rows, cols);
+    };
+
+    // Look for an alive session — prefer the last-used one, skip "default".
+    const found_alive = findAliveSession(sc);
+
+    if (found_alive) |sid| {
+        const result = doAttach(sc, sid, rows, cols) catch {
+            // Attach failed — create new.
+            const new_sid = try sc.createSession("main", rows, cols, "", "");
+            return doAttach(sc, new_sid, rows, cols);
+        };
+        logging.info("session", "reattached to session {d}", .{sid});
+        return result;
+    }
+
+    // No alive sessions — create a new one.
+    const sid = try sc.createSession("main", rows, cols, "", "");
+    const result = try doAttach(sc, sid, rows, cols);
+    logging.info("session", "created and attached to session {d}", .{sid});
+    return result;
+}
+
+fn doAttach(sc: *SessionClient, sid: u32, rows: u16, cols: u16) !AttachResult {
+    try sc.attach(sid, rows, cols);
+    const resp = sc.waitForAttach(5000) catch {
+        return AttachResult{ .session_id = sid, .pane_id = 0 };
+    };
+    const pane_id: u32 = if (resp.pane_count > 0) resp.pane_ids[0] else 0;
+    return AttachResult{ .session_id = sid, .pane_id = pane_id };
+}
+
+fn findAliveSession(sc: *SessionClient) ?u32 {
+    // Prefer last-used session, skip "default".
+    if (conn.loadLastSession()) |last_id| {
+        for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+            if (entry.alive and entry.id == last_id and !isDefaultSession(entry.getName())) return last_id;
+        }
+    }
+    for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+        if (entry.alive and !isDefaultSession(entry.getName())) return entry.id;
+    }
+    // Last resort: any alive session including "default".
+    for (sc.pending_list[0..sc.pending_list_count]) |entry| {
+        if (entry.alive) return entry.id;
+    }
+    return null;
+}
+
+fn isDefaultSession(name: []const u8) bool {
+    return std.mem.eql(u8, name, "default");
 }
