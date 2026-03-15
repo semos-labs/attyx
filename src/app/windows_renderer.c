@@ -653,7 +653,9 @@ void windows_renderer_present(void) {
         if (s_rtv) { ID3D11RenderTargetView_Release(s_rtv); s_rtv = NULL; }
     }
 
-    IDXGISwapChain_Present(s_swap_chain, 1, 0);
+    // Present without vsync (0 = immediate) for lowest latency.
+    // Frame pacing is handled by the render loop in platform_windows.c.
+    IDXGISwapChain_Present(s_swap_chain, 0, 0);
 }
 
 #endif // _WIN32

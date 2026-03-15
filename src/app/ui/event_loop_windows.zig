@@ -84,19 +84,24 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
     // Startup drain: give shell time to produce initial prompt.
-    for (0..20) |_| {
+    // Wait up to 500ms total, but stop early once we get data.
+    {
         const pane = ctx.tab_mgr.activePane();
-        // Start async read to trigger ConPTY flush, then wait a bit.
-        pane.pty.startAsyncRead();
-        Sleep(50);
-        if (pane.pty.checkAsyncRead()) |data| {
-            pane.feed(data);
-            // Drain any remaining data.
-            while (pane.pty.peekAvail() > 0) {
-                const n = pane.pty.read(&buf) catch break;
-                if (n == 0) break;
-                pane.feed(buf[0..n]);
+        var got_any = false;
+        for (0..50) |_| {
+            pane.pty.startAsyncRead();
+            Sleep(10);
+            if (pane.pty.checkAsyncRead()) |data| {
+                pane.feed(data);
+                got_any = true;
+                while (pane.pty.peekAvail() > 0) {
+                    const n = pane.pty.read(&buf) catch break;
+                    if (n == 0) break;
+                    pane.feed(buf[0..n]);
+                }
             }
+            // Once we've received data and no more is pending, we're done.
+            if (got_any and pane.pty.peekAvail() == 0) break;
         }
     }
     // Compute initial grid offsets and publish initial cells after startup drain.
