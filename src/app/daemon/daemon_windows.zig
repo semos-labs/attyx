@@ -148,14 +148,25 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     writeVersionFile();
 
     daemonLog("creating named pipe");
-    var sessions: [max_sessions]?DaemonSession = .{null} ** max_sessions;
+
+    // Sessions array is heap-allocated because DaemonPane.pty contains a 64KB
+    // async buffer, making each ?DaemonSession ~2MB. 32 sessions = ~67MB,
+    // far exceeding the default stack size.
+    const sessions_ptr = allocator.create([max_sessions]?DaemonSession) catch {
+        daemonLog("ERROR: failed to allocate sessions array");
+        return error.OutOfMemory;
+    };
+    defer allocator.destroy(sessions_ptr);
+    sessions_ptr.* = .{null} ** max_sessions;
+    const sessions: *[max_sessions]?DaemonSession = sessions_ptr;
+
     var session_count: usize = 0;
     var next_session_id: u32 = 1;
     var next_pane_id: u32 = 1;
 
     // Load persisted dead sessions from previous daemon run.
-    state_persist.load(&sessions, &next_session_id, &next_pane_id);
-    for (sessions) |slot| {
+    state_persist.load(sessions, &next_session_id, &next_pane_id);
+    for (sessions.*) |slot| {
         if (slot != null) session_count += 1;
     }
 
@@ -180,8 +191,8 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     daemonLog("entering main loop");
 
     defer {
-        state_persist.save(&sessions, next_session_id, next_pane_id);
-        for (&sessions) |*slot| {
+        state_persist.save(sessions, next_session_id, next_pane_id);
+        for (sessions) |*slot| {
             if (slot.*) |*s| {
                 s.deinit();
                 slot.* = null;
@@ -219,7 +230,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         }
 
         // 2. Read PTY output from all alive panes, forward to clients
-        for (&sessions) |*slot| {
+        for (sessions) |*slot| {
             if (slot.*) |*s| {
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*pane| {
@@ -273,7 +284,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
                     continue;
                 }
                 while (cl.nextMessage()) |msg| {
-                    handler.handleMessage(cl, msg, &sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients, &g_upgrade_requested);
+                    handler.handleMessage(cl, msg, sessions, &session_count, &next_session_id, &next_pane_id, allocator, &clients, &g_upgrade_requested);
                 }
                 if (cl.dead) {
                     cl.deinit();
@@ -287,7 +298,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         proc_name_tick += 1;
         if (proc_name_tick >= 20) {
             proc_name_tick = 0;
-            for (&sessions) |*slot| {
+            for (sessions) |*slot| {
                 if (slot.*) |*s| {
                     for (&s.panes) |*pslot| {
                         if (pslot.*) |*pane| {
@@ -309,7 +320,7 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
         }
 
         // 5. Check for dead sessions
-        for (&sessions) |*slot| {
+        for (sessions) |*slot| {
             if (slot.*) |*s| {
                 if (s.alive) {
                     if (s.checkExit()) |_| {
