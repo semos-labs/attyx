@@ -215,25 +215,15 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("winmm", .{});
 
         // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
-        // `zig build fetch-msys2` downloads it; default build installs if present.
+        // On native Windows: auto-fetch + install on every build (idempotent).
         if (builtin.os.tag == .windows) {
-            const fetch_msys2 = b.addSystemCommand(&.{
+            const fetch_and_install = b.addSystemCommand(&.{
                 "powershell", "-ExecutionPolicy", "Bypass", "-File",
                 "scripts\\fetch-msys2-sysroot.ps1",
+                "-OutputDir", "zig-out\\bin\\share\\msys2",
             });
-            fetch_msys2.has_side_effects = true;
-            const fetch_step = b.step("fetch-msys2", "Download MSYS2 sysroot for bundled zsh");
-            fetch_step.dependOn(&fetch_msys2.step);
-        }
-        // Install sysroot next to binary if it has been fetched.
-        const sysroot_exists = if (b.build_root.handle.access("share/msys2/usr/bin/zsh.exe", .{})) |_| true else |_| false;
-        if (sysroot_exists) {
-            const install_msys2 = b.addInstallDirectory(.{
-                .source_dir = b.path("share/msys2"),
-                .install_dir = .{ .custom = "bin/share/msys2" },
-                .install_subdir = "",
-            });
-            b.getInstallStep().dependOn(&install_msys2.step);
+            fetch_and_install.has_side_effects = true;
+            b.getInstallStep().dependOn(&fetch_and_install.step);
         }
     }
 
