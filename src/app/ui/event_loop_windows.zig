@@ -217,18 +217,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             }
 
             // All panes (including active): drain via PeekNamedPipe.
-            for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
-                const lay = &(maybe_layout.* orelse continue);
-                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const lc = lay.collectLeaves(&leaves);
-                for (leaves[0..lc]) |leaf| {
-                    if (leaf.pane.daemon_pane_id != null) continue;
-                    while (leaf.pane.pty.peekAvail() > 0) {
-                        const n = leaf.pane.pty.read(&buf) catch break;
-                        if (n == 0) break;
-                        leaf.pane.feed(buf[0..n]);
-                        if (tab_idx == ctx.tab_mgr.active) got_data = true;
-                    }
+            drainAllPanes(ctx, &buf, &got_data);
+
+            // Adaptive coalescing: ConPTY often splits a shell's line-redraw
+            // (e.g. Ctrl+W → CR + erase + reprint) across multiple pipe writes.
+            // Drain in short rounds so we publish the final state, not an
+            // intermediate cursor-at-column-0 snapshot.  Stops as soon as a
+            // round produces no data (max ~8ms additional latency).
+            if (got_data) {
+                var rounds: u32 = 0;
+                while (rounds < 4) : (rounds += 1) {
+                    Sleep(2);
+                    var more = false;
+                    drainAllPanes(ctx, &buf, &more);
+                    if (!more) break;
                 }
             }
 
@@ -291,12 +293,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
             c.attyx_begin_cell_update();
 
-            // Defer cursor position updates while data is still arriving.
-            // Shells redraw lines via CR + erase + reprint, so intermediate
-            // states briefly show cursor at column 0.  Updating the cursor
-            // only on quiet frames avoids the flicker.
-            const update_cursor = !got_data;
-
             if (layout.pane_count > 1 and !layout.isZoomed()) {
                 split_render.fillCellsSplit(
                     @ptrCast(ctx.cells),
@@ -305,19 +301,17 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     ctx.grid_cols,
                     ctx.theme,
                 );
-                if (update_cursor) {
-                    const rect = layout.pool[layout.focused].rect;
-                    const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
-                    c.attyx_set_cursor(
-                        @intCast(eng.state.cursor.row + vp + rect.row + @as(usize, @intCast(grid_top))),
-                        @intCast(eng.state.cursor.col + rect.col),
-                    );
-                }
+                const rect = layout.pool[layout.focused].rect;
+                const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
+                c.attyx_set_cursor(
+                    @intCast(eng.state.cursor.row + vp + rect.row + @as(usize, @intCast(grid_top))),
+                    @intCast(eng.state.cursor.col + rect.col),
+                );
                 // Set focused pane rect for copy mode
-                ws.g_pane_rect_row = @intCast(layout.pool[layout.focused].rect.row);
-                ws.g_pane_rect_col = @intCast(layout.pool[layout.focused].rect.col);
-                ws.g_pane_rect_rows = @intCast(layout.pool[layout.focused].rect.rows);
-                ws.g_pane_rect_cols = @intCast(layout.pool[layout.focused].rect.cols);
+                ws.g_pane_rect_row = @intCast(rect.row);
+                ws.g_pane_rect_col = @intCast(rect.col);
+                ws.g_pane_rect_rows = @intCast(rect.rows);
+                ws.g_pane_rect_cols = @intCast(rect.cols);
                 c.attyx_mark_all_dirty();
             } else {
                 const total: usize = @as(usize, pty_rows) * @as(usize, ctx.grid_cols);
@@ -329,7 +323,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     c.attyx_set_dirty(&eng.state.dirty.bits);
                 }
                 eng.state.dirty.clear();
-                if (update_cursor) setCursorFromEngine(eng, grid_top);
+                setCursorFromEngine(eng, grid_top);
             }
 
             generateTabBar(ctx);
@@ -358,6 +352,23 @@ const theme_mod = @import("../../theme/theme.zig");
 
 fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
+}
+
+fn drainAllPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
+        const lay = &(maybe_layout.* orelse continue);
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = lay.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            if (leaf.pane.daemon_pane_id != null) continue;
+            while (leaf.pane.pty.peekAvail() > 0) {
+                const n = leaf.pane.pty.read(buf) catch break;
+                if (n == 0) break;
+                leaf.pane.feed(buf[0..n]);
+                if (tab_idx == ctx.tab_mgr.active) got_data.* = true;
+            }
+        }
+    }
 }
 
 fn setCursorFromEngine(eng: *Engine, grid_top: i32) void {
