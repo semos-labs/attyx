@@ -118,6 +118,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         publishState(eng);
     }
 
+    // Track last published cursor column so we can suppress the brief
+    // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
+    var prev_cursor_col: usize = 0;
+
     while (c.attyx_should_quit() == 0) {
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
@@ -219,26 +223,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             // All panes (including active): drain via PeekNamedPipe.
             drainAllPanes(ctx, &buf, &got_data);
 
-            // Adaptive coalescing: ConPTY only flushes its internal buffer
-            // when there's a pending ReadFile.  After checkAsyncRead consumed
-            // the data above, async_pending is false — ConPTY holds back any
-            // remaining output (e.g. the prompt redraw after a CR).  We must
-            // re-post the async read each round so ConPTY keeps flushing.
-            if (got_data and active_pane.daemon_pane_id == null) {
-                var rounds: u32 = 0;
-                while (rounds < 4) : (rounds += 1) {
-                    active_pane.pty.startAsyncRead();
-                    Sleep(2);
-                    // Check async completion on active pane
-                    if (active_pane.pty.checkAsyncRead()) |data| {
-                        active_pane.feed(data);
-                    }
-                    var more = false;
-                    drainAllPanes(ctx, &buf, &more);
-                    if (!more) break;
-                }
-            }
-
             // Keep an async read pending on active pane so ConPTY flushes output.
             if (active_pane.daemon_pane_id == null) {
                 active_pane.pty.startAsyncRead();
@@ -298,6 +282,13 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
             c.attyx_begin_cell_update();
 
+            // Suppress cursor-at-col-0 flicker: when data just arrived and
+            // cursor jumped to col 0 from a non-zero column, the shell is
+            // mid-redraw (CR + erase + reprint).  Skip the cursor update
+            // this frame — the correct position arrives in the next chunk.
+            const cur_col = eng.state.cursor.col;
+            const skip_cursor = got_data and cur_col == 0 and prev_cursor_col > 1;
+
             if (layout.pane_count > 1 and !layout.isZoomed()) {
                 split_render.fillCellsSplit(
                     @ptrCast(ctx.cells),
@@ -306,17 +297,20 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     ctx.grid_cols,
                     ctx.theme,
                 );
-                const rect = layout.pool[layout.focused].rect;
-                const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
-                c.attyx_set_cursor(
-                    @intCast(eng.state.cursor.row + vp + rect.row + @as(usize, @intCast(grid_top))),
-                    @intCast(eng.state.cursor.col + rect.col),
-                );
+                if (!skip_cursor) {
+                    const rect = layout.pool[layout.focused].rect;
+                    const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
+                    c.attyx_set_cursor(
+                        @intCast(eng.state.cursor.row + vp + rect.row + @as(usize, @intCast(grid_top))),
+                        @intCast(eng.state.cursor.col + rect.col),
+                    );
+                    prev_cursor_col = cur_col;
+                }
                 // Set focused pane rect for copy mode
-                ws.g_pane_rect_row = @intCast(rect.row);
-                ws.g_pane_rect_col = @intCast(rect.col);
-                ws.g_pane_rect_rows = @intCast(rect.rows);
-                ws.g_pane_rect_cols = @intCast(rect.cols);
+                ws.g_pane_rect_row = @intCast(layout.pool[layout.focused].rect.row);
+                ws.g_pane_rect_col = @intCast(layout.pool[layout.focused].rect.col);
+                ws.g_pane_rect_rows = @intCast(layout.pool[layout.focused].rect.rows);
+                ws.g_pane_rect_cols = @intCast(layout.pool[layout.focused].rect.cols);
                 c.attyx_mark_all_dirty();
             } else {
                 const total: usize = @as(usize, pty_rows) * @as(usize, ctx.grid_cols);
@@ -328,7 +322,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     c.attyx_set_dirty(&eng.state.dirty.bits);
                 }
                 eng.state.dirty.clear();
-                setCursorFromEngine(eng, grid_top);
+                if (!skip_cursor) {
+                    setCursorFromEngine(eng, grid_top);
+                    prev_cursor_col = cur_col;
+                }
             }
 
             generateTabBar(ctx);
