@@ -25,6 +25,11 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Clean stale cache (Windows linker workaround)
+        if: runner.os == 'Windows'
+        run: if (Test-Path .zig-cache) { Remove-Item -Recurse -Force .zig-cache }
+        shell: pwsh
+
       - name: Run tests
         run: zig build test --summary all
 
