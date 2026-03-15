@@ -496,6 +496,35 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
     if (root.get("keybindings")) |kb_val| {
         if (kb_val == .table) {
             const commands = @import("commands.zig");
+            const logging = @import("../logging/log.zig");
+
+            // Debug: dump raw TOML table contents via iterator
+            var dbg_it = kb_val.table.table.iterator();
+            var dbg_n: usize = 0;
+            while (dbg_it.next()) |e| {
+                const vtype: []const u8 = switch (e.value_ptr.*) {
+                    .string => "str",
+                    .table => "tbl",
+                    .array => "arr",
+                    .int => "int",
+                    else => "oth",
+                };
+                logging.info("config", "kb[{d}] key=\"{s}\" type={s}", .{ dbg_n, e.key_ptr.*, vtype });
+                dbg_n += 1;
+            }
+            logging.info("config", "kb table: {d} entries via iterator, count()={d}", .{ dbg_n, kb_val.table.table.count() });
+
+            // Debug: try direct get for session_switcher_toggle
+            if (kb_val.table.get("session_switcher_toggle")) |v| {
+                if (v == .string) {
+                    logging.info("config", "direct get session_switcher_toggle = \"{s}\"", .{v.string});
+                } else {
+                    logging.info("config", "direct get session_switcher_toggle = non-string", .{});
+                }
+            } else {
+                logging.info("config", "direct get session_switcher_toggle = NOT FOUND", .{});
+            }
+
             var kb_count: usize = 0;
             // First pass: count valid entries by looking up each known action name
             for (commands.registry) |cmd| {
