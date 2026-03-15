@@ -162,46 +162,31 @@ void glyphCacheGrow(GlyphCache* gc) {
 // Render a glyph string into the WIC bitmap, extract grayscale pixels
 // ---------------------------------------------------------------------------
 
-static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLen,
-                                    IDWriteTextFormat* fmt, int renderW, int gh,
-                                    float posX, uint8_t* pixels) {
-    // Resize WIC bitmap if needed
+static void ensure_wic_size(GlyphCache* gc, int needW, int needH) {
     UINT bmpW = 0, bmpH = 0;
     IWICBitmap_GetSize(gc->wic_bitmap, &bmpW, &bmpH);
-    if ((int)bmpW < renderW || (int)bmpH < gh) {
-        // Recreate bitmap and render target at larger size
-        int newW = renderW > (int)bmpW ? renderW : (int)bmpW;
-        int newH = gh > (int)bmpH ? gh : (int)bmpH;
-        ID2D1SolidColorBrush_Release(gc->d2d_brush);
-        ID2D1RenderTarget_Release(gc->d2d_rt);
-        IWICBitmap_Release(gc->wic_bitmap);
-        IWICImagingFactory_CreateBitmap(gc->wic_factory, (UINT)newW, (UINT)newH,
-                                         &GUID_WICPixelFormat32bppPBGRA,
-                                         WICBitmapCacheOnLoad, &gc->wic_bitmap);
-        D2D1_RENDER_TARGET_PROPERTIES rtProps = {
-            .type = D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            .pixelFormat = { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED },
-            .dpiX = 96.0f, .dpiY = 96.0f,
-        };
-        ID2D1Factory_CreateWicBitmapRenderTarget(gc->d2d_factory, gc->wic_bitmap,
-                                                  &rtProps, &gc->d2d_rt);
-        D2D1_COLOR_F white = { 1,1,1,1 };
-        ID2D1RenderTarget_CreateSolidColorBrush(gc->d2d_rt, &white, NULL, &gc->d2d_brush);
-    }
+    if ((int)bmpW >= needW && (int)bmpH >= needH) return;
+    int newW = needW > (int)bmpW ? needW : (int)bmpW;
+    int newH = needH > (int)bmpH ? needH : (int)bmpH;
+    ID2D1SolidColorBrush_Release(gc->d2d_brush);
+    ID2D1RenderTarget_Release(gc->d2d_rt);
+    IWICBitmap_Release(gc->wic_bitmap);
+    IWICImagingFactory_CreateBitmap(gc->wic_factory, (UINT)newW, (UINT)newH,
+                                     &GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapCacheOnLoad, &gc->wic_bitmap);
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = {
+        .type = D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        .pixelFormat = { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED },
+        .dpiX = 96.0f, .dpiY = 96.0f,
+    };
+    ID2D1Factory_CreateWicBitmapRenderTarget(gc->d2d_factory, gc->wic_bitmap,
+                                              &rtProps, &gc->d2d_rt);
+    D2D1_COLOR_F white = { 1,1,1,1 };
+    ID2D1RenderTarget_CreateSolidColorBrush(gc->d2d_rt, &white, NULL, &gc->d2d_brush);
+}
 
-    // Clear and draw
-    ID2D1RenderTarget_BeginDraw(gc->d2d_rt);
-    D2D1_COLOR_F black = { 0, 0, 0, 0 };
-    ID2D1RenderTarget_Clear(gc->d2d_rt, &black);
-    D2D1_RECT_F layoutRect = { posX, gc->baseline_y_offset, (float)renderW, (float)gh };
-    ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
-                                &layoutRect, (ID2D1Brush*)gc->d2d_brush,
-                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                DWRITE_MEASURING_MODE_NATURAL);
-    ID2D1RenderTarget_EndDraw(gc->d2d_rt, NULL, NULL);
-
-    // Lock WIC bitmap and extract grayscale
-    WICRect lockRect = { 0, 0, renderW, gh };
+static void extract_grayscale(GlyphCache* gc, int w, int h, uint8_t* pixels) {
+    WICRect lockRect = { 0, 0, w, h };
     IWICBitmapLock* lock = NULL;
     IWICBitmap_Lock(gc->wic_bitmap, &lockRect, WICBitmapLockRead, &lock);
     if (lock) {
@@ -210,15 +195,83 @@ static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLe
         UINT stride = 0;
         IWICBitmapLock_GetStride(lock, &stride);
         IWICBitmapLock_GetDataPointer(lock, &bufSize, &data);
-        // Convert BGRA premultiplied to grayscale (use alpha channel as coverage)
-        for (int y = 0; y < gh; y++) {
-            for (int x = 0; x < renderW; x++) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
                 int si = y * (int)stride + x * 4;
-                pixels[y * renderW + x] = data[si + 3]; // alpha = coverage
+                pixels[y * w + x] = data[si + 3]; // alpha = coverage
             }
         }
         IWICBitmapLock_Release(lock);
     }
+}
+
+static void render_glyph_to_pixels(GlyphCache* gc, const wchar_t* str, int strLen,
+                                    IDWriteTextFormat* fmt, int renderW, int gh,
+                                    float posX, uint8_t* pixels) {
+    ensure_wic_size(gc, renderW, gh);
+
+    // Measure the glyph's actual ink bounds via IDWriteTextLayout
+    IDWriteTextLayout* layout = NULL;
+    HRESULT hr = IDWriteFactory_CreateTextLayout(gc->dw_factory, str, (UINT32)strLen, fmt,
+                                                  10000.0f, 10000.0f, &layout);
+    float scale = 1.0f;
+    float drawX = posX, drawY = gc->baseline_y_offset;
+    if (SUCCEEDED(hr) && layout) {
+        DWRITE_OVERHANG_METRICS overhang;
+        hr = IDWriteTextLayout_GetOverhangMetrics(layout, &overhang);
+        DWRITE_TEXT_METRICS tm;
+        IDWriteTextLayout_GetMetrics(layout, &tm);
+        if (SUCCEEDED(hr)) {
+            // Compute actual ink rect
+            float inkW = tm.widthIncludingTrailingWhitespace + overhang.left + overhang.right;
+            float inkH = tm.height + overhang.top + overhang.bottom;
+            if (inkW < tm.widthIncludingTrailingWhitespace) inkW = tm.widthIncludingTrailingWhitespace;
+            if (inkH < tm.height) inkH = tm.height;
+            // Scale down if glyph overflows cell (like macOS does)
+            if (inkW > 0.5f && inkH > 0.5f) {
+                float sx = (float)renderW / inkW;
+                float sy = (float)gh / inkH;
+                float s = sx < sy ? sx : sy;
+                if (s < 1.0f) {
+                    scale = s;
+                    // Center the scaled glyph
+                    drawX = ((float)renderW / scale - inkW) * 0.5f + overhang.left;
+                    drawY = ((float)gh / scale - inkH) * 0.5f + overhang.top;
+                }
+            }
+        }
+        IDWriteTextLayout_Release(layout);
+    }
+
+    // Clear and draw
+    ID2D1RenderTarget_BeginDraw(gc->d2d_rt);
+    D2D1_COLOR_F black = { 0, 0, 0, 0 };
+    ID2D1RenderTarget_Clear(gc->d2d_rt, &black);
+
+    if (scale < 1.0f) {
+        // Apply uniform scale transform
+        D2D1_MATRIX_3X2_F xform = { scale, 0, 0, scale, 0, 0 };
+        ID2D1RenderTarget_SetTransform(gc->d2d_rt, &xform);
+        D2D1_RECT_F layoutRect = { drawX, drawY,
+                                    (float)renderW / scale, (float)gh / scale };
+        ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
+                                    &layoutRect, (ID2D1Brush*)gc->d2d_brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    DWRITE_MEASURING_MODE_NATURAL);
+        // Reset transform
+        D2D1_MATRIX_3X2_F identity = { 1, 0, 0, 1, 0, 0 };
+        ID2D1RenderTarget_SetTransform(gc->d2d_rt, &identity);
+    } else {
+        D2D1_RECT_F layoutRect = { posX, gc->baseline_y_offset,
+                                    (float)renderW, (float)gh };
+        ID2D1RenderTarget_DrawText(gc->d2d_rt, str, (UINT32)strLen, fmt,
+                                    &layoutRect, (ID2D1Brush*)gc->d2d_brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    DWRITE_MEASURING_MODE_NATURAL);
+    }
+    ID2D1RenderTarget_EndDraw(gc->d2d_rt, NULL, NULL);
+
+    extract_grayscale(gc, renderW, gh, pixels);
 }
 
 // ---------------------------------------------------------------------------
