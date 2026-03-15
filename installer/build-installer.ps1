@@ -38,16 +38,34 @@ if (-not $SkipBuild) {
 Write-Host ">> Assembling payload in installer\dist\" -ForegroundColor Yellow
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
-Copy-Item (Join-Path $root "zig-out\bin\attyx.exe") $dist
-if (Test-Path (Join-Path $root "zig-out\bin\attyx.pdb")) {
-    Copy-Item (Join-Path $root "zig-out\bin\attyx.pdb") $dist
+
+$srcExe = Join-Path $root "zig-out\bin\attyx.exe"
+if (-not (Test-Path $srcExe)) {
+    Write-Error "zig-out\bin\attyx.exe not found. Run zig build first."
+    exit 1
 }
+Copy-Item $srcExe -Destination $dist
+Write-Host "  Copied attyx.exe"
+
+$srcPdb = Join-Path $root "zig-out\bin\attyx.pdb"
+if (Test-Path $srcPdb) {
+    Copy-Item $srcPdb -Destination $dist
+    Write-Host "  Copied attyx.pdb"
+}
+
 $sysroot = Join-Path $root "zig-out\bin\share\msys2"
 if (Test-Path $sysroot) {
-    $destSysroot = Join-Path $dist "share\msys2"
-    New-Item -ItemType Directory -Path $destSysroot -Force | Out-Null
-    xcopy /E /I /Q "$sysroot" "$destSysroot" | Out-Null
+    Copy-Item $sysroot -Destination (Join-Path $dist "share\msys2") -Recurse -Force
+    Write-Host "  Copied share\msys2\"
 }
+
+# Verify
+$distExe = Join-Path $dist "attyx.exe"
+if (-not (Test-Path $distExe)) {
+    Write-Error "Failed to assemble dist: attyx.exe missing from $dist"
+    exit 1
+}
+Write-Host "  Payload ready: $dist"
 
 # Step 3: Compile custom installer
 Write-Host ">> Compiling installer..." -ForegroundColor Yellow
@@ -56,7 +74,6 @@ $installerC = Join-Path $root "installer\installer.c"
 $installerRc = Join-Path $root "installer\installer.rc"
 $setupExe = Join-Path $output "attyx-$Version-setup.exe"
 
-# Use zig cc to compile the installer (works without MSVC)
 Push-Location (Join-Path $root "installer")
 zig cc $installerC $installerRc `
     -o $setupExe `
@@ -72,11 +89,19 @@ if (-not (Test-Path $setupExe)) {
     exit 1
 }
 
-# Step 4: Copy dist/ next to the setup exe (installer expects it)
+# Step 4: Copy dist/ next to setup exe
+Write-Host ">> Copying payload next to installer..." -ForegroundColor Yellow
 $setupDist = Join-Path $output "dist"
 if (Test-Path $setupDist) { Remove-Item $setupDist -Recurse -Force }
-xcopy /E /I /Q "$dist" "$setupDist" | Out-Null
+Copy-Item $dist -Destination $setupDist -Recurse -Force
+
+# Final verify
+$finalCheck = Join-Path $setupDist "attyx.exe"
+if (-not (Test-Path $finalCheck)) {
+    Write-Error "Failed to copy payload to output\dist\"
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Done! Installer: $setupExe" -ForegroundColor Green
-Write-Host "  Distribute the entire 'output' folder (setup exe + dist/)." -ForegroundColor DarkGray
+Write-Host "  Payload:   $setupDist" -ForegroundColor DarkGray
