@@ -12,9 +12,9 @@
 
 // Try to find a font matching the given family name in the system collection.
 // Returns a font face or NULL. Caller must release.
-static IDWriteFontFace* find_font_face(IDWriteFactory* factory, const wchar_t* family,
-                                        DWRITE_FONT_WEIGHT weight,
-                                        DWRITE_FONT_STYLE style) {
+IDWriteFontFace* find_font_face(IDWriteFactory* factory, const wchar_t* family,
+                                DWRITE_FONT_WEIGHT weight,
+                                DWRITE_FONT_STYLE style) {
     IDWriteFontCollection* collection = NULL;
     HRESULT hr = IDWriteFactory_GetSystemFontCollection(factory, &collection, FALSE);
     if (FAILED(hr) || !collection) return NULL;
@@ -45,10 +45,10 @@ static IDWriteFontFace* find_font_face(IDWriteFactory* factory, const wchar_t* f
 }
 
 // Create a text format for a given family/weight/style at the specified size.
-static IDWriteTextFormat* create_format(IDWriteFactory* factory, const wchar_t* family,
-                                         float fontSize,
-                                         DWRITE_FONT_WEIGHT weight,
-                                         DWRITE_FONT_STYLE style) {
+IDWriteTextFormat* create_format(IDWriteFactory* factory, const wchar_t* family,
+                                  float fontSize,
+                                  DWRITE_FONT_WEIGHT weight,
+                                  DWRITE_FONT_STYLE style) {
     IDWriteTextFormat* fmt = NULL;
     HRESULT hr = IDWriteFactory_CreateTextFormat(
         factory, family, NULL, weight, style,

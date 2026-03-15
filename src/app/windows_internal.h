@@ -299,6 +299,13 @@ int  windows_font_init(GlyphCache* gc, ID3D11Device* device, float scale);
 int  windows_font_init_ui(GlyphCache* gc, ID3D11Device* device, float scale, float ptSize);
 void windows_font_cleanup(GlyphCache* gc);
 
+// Font discovery helpers (used by windows_glyph.c for fallback chain)
+IDWriteFontFace*   find_font_face(IDWriteFactory* factory, const wchar_t* family,
+                                   DWRITE_FONT_WEIGHT weight, DWRITE_FONT_STYLE style);
+IDWriteTextFormat*  create_format(IDWriteFactory* factory, const wchar_t* family,
+                                   float fontSize, DWRITE_FONT_WEIGHT weight,
+                                   DWRITE_FONT_STYLE style);
+
 // ---------------------------------------------------------------------------
 // Glyph rasterization (windows_glyph.c)
 // ---------------------------------------------------------------------------

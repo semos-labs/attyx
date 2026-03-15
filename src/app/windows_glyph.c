@@ -318,9 +318,40 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     int ac = slot % gc->atlas_cols;
     int ar = slot / gc->atlas_cols;
 
+    // Try user-configured fallback fonts if primary doesn't have the glyph
+    IDWriteFontFace* fallbackFace = NULL;
+    IDWriteTextFormat* fallbackFmt = NULL;
+    if (!haveGlyph && !isBlock && !isBoxDraw) {
+        for (int fi = 0; fi < g_font_fallback_count; fi++) {
+            wchar_t fbWide[ATTYX_FONT_FAMILY_MAX];
+            int fbLen = MultiByteToWideChar(CP_UTF8, 0, g_font_fallback[fi],
+                (int)strlen(g_font_fallback[fi]), fbWide, ATTYX_FONT_FAMILY_MAX - 1);
+            fbWide[fbLen] = 0;
+            IDWriteFontFace* candidate = find_font_face(gc->dw_factory, fbWide,
+                styleBold ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_REGULAR,
+                styleItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL);
+            if (!candidate) continue;
+            UINT16 fbIdx = 0;
+            hr = IDWriteFontFace_GetGlyphIndices(candidate, codepoints32, 1, &fbIdx);
+            if (SUCCEEDED(hr) && fbIdx != 0) {
+                fallbackFace = candidate;
+                fallbackFmt = create_format(gc->dw_factory, fbWide,
+                    (float)gc->font_size,
+                    styleBold ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_REGULAR,
+                    styleItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL);
+                haveGlyph = true;
+                face = candidate;
+                if (fallbackFmt) fmt = fallbackFmt;
+                break;
+            }
+            IDWriteFontFace_Release(candidate);
+        }
+    }
+
     // No glyph and not a geometry-drawn char: blank slot
     if (!haveGlyph && !isBlock && !isBoxDraw) {
         glyphCacheInsert(gc, cp, slot);
+        if (fallbackFmt) IDWriteTextFormat_Release(fallbackFmt);
         return slot;
     }
 
@@ -405,6 +436,10 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     // Upload to atlas
     upload_to_atlas(gc, ac, ar, renderW, gh, pixels);
     free(pixels);
+
+    // Clean up fallback resources
+    if (fallbackFmt) IDWriteTextFormat_Release(fallbackFmt);
+    if (fallbackFace) IDWriteFontFace_Release(fallbackFace);
 
     int encoded = wide ? (slot | GLYPH_WIDE_BIT) : slot;
     glyphCacheInsert(gc, cp, encoded);
