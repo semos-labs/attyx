@@ -65,30 +65,29 @@ static IDCompositionVisual*  s_dcomp_visual = NULL;
 
 void win_init_composition(HWND hwnd, IDXGISwapChain* swap_chain) {
     HMODULE dcomp = LoadLibraryW(L"dcomp.dll");
-    if (!dcomp) return;
+    if (!dcomp) { ATTYX_LOG_INFO("platform", "dcomp.dll not found"); return; }
     PFN_DCompositionCreateDevice3 createDev =
         (PFN_DCompositionCreateDevice3)GetProcAddress(dcomp, "DCompositionCreateDevice3");
-    if (!createDev) { FreeLibrary(dcomp); return; }
+    if (!createDev) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice3 not found"); FreeLibrary(dcomp); return; }
 
-    // Get IDXGIDevice from the swap chain's device
     IDXGIDevice* dxgi_dev = NULL;
     ID3D11Device_QueryInterface(g_d3d_device, &IID_IDXGIDevice, (void**)&dxgi_dev);
-    if (!dxgi_dev) return;
+    if (!dxgi_dev) { ATTYX_LOG_INFO("platform", "QueryInterface IDXGIDevice failed"); return; }
 
-    // DCompositionCreateDevice3 accepts IUnknown* (the DXGI device)
     HRESULT hr = createDev((IUnknown*)dxgi_dev, &IID_IUnknown, (void**)&s_dcomp_device);
     IDXGIDevice_Release(dxgi_dev);
-    if (FAILED(hr) || !s_dcomp_device) return;
+    if (FAILED(hr) || !s_dcomp_device) { ATTYX_LOG_INFO("platform", "DCompositionCreateDevice3 failed: 0x%08lX", hr); return; }
 
     hr = s_dcomp_device->lpVtbl->CreateTargetForHwnd(s_dcomp_device, hwnd, TRUE, &s_dcomp_target);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { ATTYX_LOG_INFO("platform", "CreateTargetForHwnd failed: 0x%08lX", hr); return; }
 
     hr = s_dcomp_device->lpVtbl->CreateVisual(s_dcomp_device, &s_dcomp_visual);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { ATTYX_LOG_INFO("platform", "CreateVisual failed: 0x%08lX", hr); return; }
 
     s_dcomp_visual->lpVtbl->SetContent(s_dcomp_visual, (IUnknown*)swap_chain);
     s_dcomp_target->lpVtbl->SetRoot(s_dcomp_target, s_dcomp_visual);
     s_dcomp_device->lpVtbl->Commit(s_dcomp_device);
+    ATTYX_LOG_INFO("platform", "DirectComposition initialized OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -642,8 +641,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     RECT rect = { 0, 0, winW, winH };
     AdjustWindowRect(&rect, style, has_menu);
 
+    // DirectComposition requires WS_EX_NOREDIRECTIONBITMAP for per-pixel alpha
+    DWORD exStyle = (g_background_opacity < 1.0f) ? 0x00200000L : 0;  // WS_EX_NOREDIRECTIONBITMAP
     g_hwnd = CreateWindowExW(
-        0,
+        exStyle,
         L"AttyxWindow",
         L"Attyx",
         style,

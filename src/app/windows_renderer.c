@@ -269,12 +269,13 @@ int windows_renderer_init(HWND hwnd) {
     sc1.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     sc1.AlphaMode   = want_alpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE;
 
+    ATTYX_LOG_INFO("renderer", "swap chain: want_alpha=%d opacity=%.2f", want_alpha, g_background_opacity);
     if (want_alpha) {
-        // Per-pixel alpha requires CreateSwapChainForComposition + DirectComposition
         hr = dxgi_factory->lpVtbl->CreateSwapChainForComposition(
             dxgi_factory, (IUnknown*)g_d3d_device,
             &sc1, NULL, (IDXGISwapChain1**)&s_swap_chain
         );
+        ATTYX_LOG_INFO("renderer", "CreateSwapChainForComposition: 0x%08lX", hr);
         if (SUCCEEDED(hr)) {
             win_init_composition(hwnd, s_swap_chain);
         }
@@ -284,9 +285,10 @@ int windows_renderer_init(HWND hwnd) {
             dxgi_factory, (IUnknown*)g_d3d_device, hwnd,
             &sc1, NULL, NULL, (IDXGISwapChain1**)&s_swap_chain
         );
+        ATTYX_LOG_INFO("renderer", "CreateSwapChainForHwnd: 0x%08lX", hr);
     }
     dxgi_factory->lpVtbl->Release(dxgi_factory);
-    if (FAILED(hr)) return 0;
+    if (FAILED(hr)) { ATTYX_LOG_INFO("renderer", "swap chain creation FAILED"); return 0; }
 
     create_render_target();
 
