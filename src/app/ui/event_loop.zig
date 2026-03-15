@@ -217,6 +217,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             ipc_handler.handle(cmd, ctx);
             ipc_queue.advance();
         }
+        // IPC handlers may call waitForPaneCreated/requestListSync
+        switch (drainBufferedDeaths(ctx)) {
+            .quit => return,
+            .switched => continue :outer,
+            .ok => {},
+        }
 
         // Tick statusbar widgets (skip if quitting — widget ticks fork child
         // processes which crash if the parent is mid-teardown).
@@ -315,6 +321,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Publish session list for native tab bar dropdown
         if (ctx.sessions_enabled and c.g_native_tabs_enabled != 0) {
             publishSessionList(ctx);
+            // requestListSync may have buffered pane_died events
+            switch (drainBufferedDeaths(ctx)) {
+                .quit => return,
+                .switched => continue :outer,
+                .ok => {},
+            }
         }
 
         // Tick AI (auth/SSE state + streaming reveal)
@@ -479,9 +491,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             while (ti < ctx.tab_mgr.count) {
                 if (ctx.tab_mgr.tabs[ti]) |*lay| {
                     if (lay.findExitedPane()) |exited_idx| {
+                        logging.info("tabs", "pane exited: tab {d}, pool idx {d}, count {d}", .{ ti, exited_idx, ctx.tab_mgr.count });
                         const result = lay.closePaneAt(exited_idx, ctx.allocator);
                         if (result == .last_pane) {
                             ctx.tab_mgr.closeTab(ti);
+                            logging.info("tabs", "closed tab {d}, remaining {d}", .{ ti, ctx.tab_mgr.count });
                             if (ctx.tab_mgr.count == 0) {
                                 if (session_actions.switchToNextSession(ctx)) continue :outer;
                                 c.attyx_request_quit();
@@ -572,139 +586,140 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // fullScreenScroll's viewport_offset bump is not overwritten.
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
-        // Drain session socket — route pane_output by daemon_pane_id
+        // Drain session socket — route pane_output by daemon_pane_id.
+        // First read new data from the socket, then process all buffered
+        // messages (including leftovers from a previous continue :outer).
         if (session_fd_idx) |si| {
             if (fds[si].revents & (POLLIN | POLLHUP) != 0) {
-                if (ctx.session_client) |sc| {
-                    if (!sc.recvData()) {
-                        // Daemon disconnected — reconnect or fall back.
-                        // Must restart the loop: tab_mgr, fds, and
-                        // active_focused_pane are all potentially stale.
+                if (ctx.session_client) |sc_recv| {
+                    if (!sc_recv.recvData()) {
                         handleDaemonDeath(ctx);
                         continue :outer;
-                    } else {
-                        while (sc.readMessage()) |msg| {
-                            switch (msg) {
-                                .pane_output => |out| {
-                                    if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
-                                        // Deferred engine reinit: if the daemon is replaying
-                                        // scrollback for a newly-focused pane, reinit the
-                                        // engine NOW (right before feeding data) to prevent
-                                        // blank-screen gap and duplicate content.
-                                        if (result.pane.needs_engine_reinit) {
-                                            const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
-                                            const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
-                                            const new_engine = @import("attyx").Engine.init(
-                                                result.pane.allocator,
-                                                rows,
-                                                cols,
-                                                ctx.applied_scrollback_lines,
-                                            ) catch continue;
-                                            result.pane.engine.deinit();
-                                            result.pane.engine = new_engine;
-                                            result.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-                                            result.pane.needs_engine_reinit = false;
-                                        }
-                                        if (result.pane == active_focused_pane) {
-                                            ctx.session.appendOutput(out.data);
-                                            ctx.throughput.add(out.data.len);
-                                        }
-                                        if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
-                                        result.pane.engine.feed(out.data);
-                                        // Discard engine responses — the daemon intercepts
-                                        // all queries (DA1, DECRPM, kitty keyboard, OSC
-                                        // color queries, etc.) and responds directly to
-                                        // avoid round-trip latency and duplicate responses.
-                                        _ = result.pane.engine.state.drainResponse();
+                    }
+                }
+            }
+        }
+        if (ctx.session_client) |sc| {
+            while (sc.readMessage()) |msg| {
+                switch (msg) {
+                    .pane_output => |out| {
+                        if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
+                            // Deferred engine reinit: if the daemon is replaying
+                            // scrollback for a newly-focused pane, reinit the
+                            // engine NOW (right before feeding data) to prevent
+                            // blank-screen gap and duplicate content.
+                            if (result.pane.needs_engine_reinit) {
+                                const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                                const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+                                const new_engine = @import("attyx").Engine.init(
+                                    result.pane.allocator,
+                                    rows,
+                                    cols,
+                                    ctx.applied_scrollback_lines,
+                                ) catch continue;
+                                result.pane.engine.deinit();
+                                result.pane.engine = new_engine;
+                                result.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                                result.pane.needs_engine_reinit = false;
+                            }
+                            if (result.pane == active_focused_pane) {
+                                ctx.session.appendOutput(out.data);
+                                ctx.throughput.add(out.data.len);
+                            }
+                            if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                            result.pane.engine.feed(out.data);
+                            // Discard engine responses — the daemon intercepts
+                            // all queries (DA1, DECRPM, kitty keyboard, OSC
+                            // color queries, etc.) and responds directly to
+                            // avoid round-trip latency and duplicate responses.
+                            _ = result.pane.engine.state.drainResponse();
+                        }
+                    },
+                    .pane_died => |died| {
+                        logging.info("tabs", "daemon pane_died: pane_id={d}", .{died.pane_id});
+                        if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
+                            logging.info("tabs", "pane_died: found pane at tab={d} pool={d} pane_count={d}", .{ result.tab_idx, result.pool_idx, ctx.tab_mgr.tabs[result.tab_idx].?.pane_count });
+                            // Store exit code so pane.deinit() can notify --wait clients.
+                            result.pane.stored_exit_code = died.exit_code;
+                            // Store captured stdout for --wait panes
+                            if (died.stdout.len > 0 and result.pane.ipc_wait_fd != -1) {
+                                if (result.pane.captured_stdout == null) {
+                                    const new_cs = ctx.allocator.create(std.ArrayList(u8)) catch null;
+                                    if (new_cs) |ncs| {
+                                        ncs.* = .empty;
+                                        result.pane.captured_stdout = ncs;
                                     }
-                                },
-                                .pane_died => |died| {
-                                    if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
-                                        // Store exit code so pane.deinit() can notify --wait clients.
-                                        result.pane.stored_exit_code = died.exit_code;
-                                        // Store captured stdout for --wait panes
-                                        if (died.stdout.len > 0 and result.pane.ipc_wait_fd != -1) {
-                                            if (result.pane.captured_stdout == null) {
-                                                const new_cs = ctx.allocator.create(std.ArrayList(u8)) catch null;
-                                                if (new_cs) |ncs| {
-                                                    ncs.* = .empty;
-                                                    result.pane.captured_stdout = ncs;
-                                                }
-                                            }
-                                            if (result.pane.captured_stdout) |cs| {
-                                                cs.appendSlice(ctx.allocator, died.stdout) catch {};
-                                            }
-                                        }
-                                        // Close pane BEFORE clearing daemon_pane_id to avoid
-                                        // waitpid(0) reaping random children.
-                                        if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
-                                            const close_result = lay.closePaneAt(result.pool_idx, ctx.allocator);
-                                            if (close_result == .last_pane) {
-                                                ctx.tab_mgr.closeTab(result.tab_idx);
-                                                if (ctx.tab_mgr.count == 0) {
-                                                    if (session_actions.switchToNextSession(ctx)) continue :outer;
-                                                    c.attyx_request_quit();
-                                                    return;
-                                                }
-                                                publish.updateGridTopOffset(ctx);
-                                            }
-                                            // Re-layout and resize surviving daemon panes.
-                                            // After closeTab, result.tab_idx is stale (tabs shifted
-                                            // left), so only access it when the tab wasn't removed.
-                                            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                                            if (close_result != .last_pane) {
-                                                if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
-                                                    l.layout(pty_rows, ctx.grid_cols);
-                                                    var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                                                    const rlc = l.collectLeaves(&rl);
-                                                    for (rl[0..rlc]) |leaf| {
-                                                        if (leaf.pane.daemon_pane_id) |dpid|
-                                                            sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
-                                                    }
-                                                }
-                                            }
-                                            actions.updateSplitActive(ctx);
-                                            actions.switchActiveTab(ctx);
-                                            session_actions.sendActiveFocusPanes(ctx);
-                                            session_actions.saveSessionLayout(ctx);
-                                            actions.g_force_full_redraw = true;
+                                }
+                                if (result.pane.captured_stdout) |cs| {
+                                    cs.appendSlice(ctx.allocator, died.stdout) catch {};
+                                }
+                            }
+                            // Close pane BEFORE clearing daemon_pane_id to avoid
+                            // waitpid(0) reaping random children.
+                            if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
+                                const close_result = lay.closePaneAt(result.pool_idx, ctx.allocator);
+                                if (close_result == .last_pane) {
+                                    ctx.tab_mgr.closeTab(result.tab_idx);
+                                    if (ctx.tab_mgr.count == 0) {
+                                        if (session_actions.switchToNextSession(ctx)) continue :outer;
+                                        c.attyx_request_quit();
+                                        return;
+                                    }
+                                    publish.updateGridTopOffset(ctx);
+                                }
+                                // Re-layout and resize surviving daemon panes.
+                                // After closeTab, result.tab_idx is stale (tabs shifted
+                                // left), so only access it when the tab wasn't removed.
+                                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                                if (close_result != .last_pane) {
+                                    if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
+                                        l.layout(pty_rows, ctx.grid_cols);
+                                        var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                                        const rlc = l.collectLeaves(&rl);
+                                        for (rl[0..rlc]) |leaf| {
+                                            if (leaf.pane.daemon_pane_id) |dpid|
+                                                sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
                                         }
                                     }
-                                },
-                                .pane_proc_name => |pn| {
-                                    if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
-                                        const len: u8 = @intCast(@min(pn.name.len, 64));
-                                        @memcpy(result.pane.daemon_proc_name[0..len], pn.name[0..len]);
-                                        result.pane.daemon_proc_name_len = len;
-                                        if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
-                                    }
-                                },
-                                .replay_end => |pane_id| {
-                                    // Force a SIGWINCH so the shell/TUI repaints at
-                                    // the correct size. Send shrink-then-restore
-                                    // back-to-back — the daemon processes both ioctls
-                                    // in sequence, so the shell sees the final correct
-                                    // size. This avoids the old approach where the
-                                    // daemon bumped cols+1 and the shell drew at the
-                                    // wrong width during the round-trip.
-                                    if (findPaneByDaemonId(ctx, pane_id)) |result| {
-                                        const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
-                                        const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
-                                        if (ctx.session_client) |scc| {
-                                            const nudged = if (cols > 1) cols - 1 else cols + 1;
-                                            scc.sendPaneResize(pane_id, rows, nudged) catch {};
-                                            scc.sendPaneResize(pane_id, rows, cols) catch {};
-                                        }
-                                    }
-                                },
-                                .layout_sync => |sync| {
-                                    session_actions.handleLayoutSync(ctx, sync.layout);
-                                    got_data = true;
-                                },
-                                else => {},
+                                }
+                                logging.info("tabs", "pane_died: close_result={s}, remaining tabs={d}", .{ if (close_result == .last_pane) "last_pane" else "closed", ctx.tab_mgr.count });
+                                actions.updateSplitActive(ctx);
+                                actions.switchActiveTab(ctx);
+                                session_actions.sendActiveFocusPanes(ctx);
+                                session_actions.saveSessionLayout(ctx);
+                                // Restart event loop: fds/fd_panes arrays
+                                // are stale after tab close and must be
+                                // rebuilt before the next poll.
+                                continue :outer;
+                            }
+                        } else {
+                            logging.info("tabs", "pane_died: pane_id={d} NOT FOUND in any tab", .{died.pane_id});
+                        }
+                    },
+                    .pane_proc_name => |pn| {
+                        if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
+                            const len: u8 = @intCast(@min(pn.name.len, 64));
+                            @memcpy(result.pane.daemon_proc_name[0..len], pn.name[0..len]);
+                            result.pane.daemon_proc_name_len = len;
+                            if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                        }
+                    },
+                    .replay_end => |pane_id| {
+                        if (findPaneByDaemonId(ctx, pane_id)) |result| {
+                            const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                            const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+                            if (ctx.session_client) |scc| {
+                                const nudged = if (cols > 1) cols - 1 else cols + 1;
+                                scc.sendPaneResize(pane_id, rows, nudged) catch {};
+                                scc.sendPaneResize(pane_id, rows, cols) catch {};
                             }
                         }
-                    }
+                    },
+                    .layout_sync => |sync| {
+                        session_actions.handleLayoutSync(ctx, sync.layout);
+                        got_data = true;
+                    },
+                    else => {},
                 }
             }
         }
@@ -885,6 +900,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if ((statusbar_refreshed or copy_search_dirty) and !need_update_final) {
             publish.generateStatusbar(ctx);
             publish.publishOverlays(ctx);
+        }
+
+        // Periodically refresh tab titles for background tabs (~1s).
+        // Process name changes in inactive tabs aren't detected by the
+        // normal data-driven render path, so poll them on a timer.
+        if (ctx.tab_mgr.count > 1 and !need_update_final) {
+            tab_title_tick +%= 1;
+            if (tab_title_tick % 60 == 0) { // ~1s at 16ms poll
+                publish.generateTabBar(ctx);
+                publish.generateStatusbar(ctx);
+                publish.publishNativeTabTitles(ctx);
+                publish.publishOverlays(ctx);
+            }
         }
 
         hup_mod.handleActiveHup(ctx, fds[0..nfds], fd_panes[0..nfds], nfds, popup_fd_idx);
@@ -1142,6 +1170,7 @@ const DrainResult = enum { ok, quit, switched };
 fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
     const sc = ctx.session_client orelse return .ok;
     while (sc.popBufferedDeath()) |death| {
+        logging.info("tabs", "draining buffered pane_died: pane_id={d}", .{death.pane_id});
         if (findPaneByDaemonId(ctx, death.pane_id)) |result| {
             result.pane.stored_exit_code = death.exit_code;
             if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
@@ -1176,6 +1205,13 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
             }
         }
     }
+    // Also drain buffered proc name updates
+    while (sc.popBufferedProcName()) |pn| {
+        if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
+            @memcpy(result.pane.daemon_proc_name[0..pn.name_len], pn.name[0..pn.name_len]);
+            result.pane.daemon_proc_name_len = pn.name_len;
+        }
+    }
     return .ok;
 }
 
@@ -1197,6 +1233,7 @@ fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import
 /// Publish session list to bridge globals for the native tab bar dropdown.
 /// Called each tick when sessions are enabled and native tabs are active.
 /// Uses requestListSync with a short timeout; skips if list request fails.
+var tab_title_tick: u32 = 0;
 var session_list_tick: u32 = 0;
 fn publishSessionList(ctx: *PtyThreadCtx) void {
     const SessionClient = @import("../session_client.zig").SessionClient;

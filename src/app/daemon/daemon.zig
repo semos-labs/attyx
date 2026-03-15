@@ -291,13 +291,56 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                     }
                                 }
                             }
+                            // Free the slot so it can be reused by addPane.
+                            pane.deinit();
+                            s.panes[entry.pane_idx] = null;
+                            s.pane_count -= 1;
                         }
                     }
                 }
             }
         }
 
-        // Periodically check foreground process name for active panes (~1s interval)
+        // Check all alive panes for child exit every tick (~50ms).
+        // This catches exits that POLLHUP missed due to the brief race
+        // between PTY slave close and process termination, or when a
+        // background process still holds the slave fd open.
+        for (&sessions) |*slot| {
+            if (slot.*) |*s| {
+                for (&s.panes) |*pslot| {
+                    if (pslot.*) |*pane| {
+                        if (pane.alive) {
+                            if (pane.checkExit()) |exit_code| {
+                                pane.drainCapturedStdout();
+                                var any_alive = false;
+                                for (s.panes) |s_slot| {
+                                    if (s_slot) |p| if (p.alive) {
+                                        any_alive = true;
+                                        break;
+                                    };
+                                }
+                                if (!any_alive) s.alive = false;
+                                const stdout_data = pane.getCapturedStdout();
+                                for (&clients) |*cslot| {
+                                    if (cslot.*) |*cl| {
+                                        if (cl.attached_session == s.id) {
+                                            cl.sendPaneDiedWithStdout(pane.id, exit_code, stdout_data);
+                                            if (!s.alive) cl.attached_session = null;
+                                        }
+                                    }
+                                }
+                                // Free the slot so it can be reused by addPane.
+                                pane.deinit();
+                                pslot.* = null;
+                                s.pane_count -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Periodically check foreground process name for active panes (~1s).
         proc_name_tick += 1;
         if (proc_name_tick >= 20) {
             proc_name_tick = 0;
@@ -375,22 +418,6 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             g_upgrade_requested = false;
         }
 
-        // Check for dead sessions (child exit without POLLHUP)
-        for (&sessions) |*slot| {
-            if (slot.*) |*s| {
-                if (s.alive) {
-                    if (s.checkExit()) |_| {
-                        for (&clients) |*cslot| {
-                            if (cslot.*) |*cl| {
-                                if (cl.attached_session == s.id) {
-                                    cl.attached_session = null;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
