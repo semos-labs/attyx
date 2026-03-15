@@ -424,6 +424,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         break;
 
+    case WM_NCHITTEST: {
+        if (g_window_decorations) break;  // decorated windows use default hit-testing
+        // Borderless: enable edge resize + top-area drag
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ScreenToClient(hwnd, &pt);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        enum { EDGE = 6 };  // resize grip in pixels
+        BOOL top    = pt.y < EDGE;
+        BOOL bottom = pt.y >= rc.bottom - EDGE;
+        BOOL left   = pt.x < EDGE;
+        BOOL right  = pt.x >= rc.right - EDGE;
+        if (top && left)     return HTTOPLEFT;
+        if (top && right)    return HTTOPRIGHT;
+        if (bottom && left)  return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (top)             return HTTOP;
+        if (bottom)          return HTBOTTOM;
+        if (left)            return HTLEFT;
+        if (right)           return HTRIGHT;
+        // Drag zone: statusbar area at top (if present), else first cell row
+        int drag_h = g_grid_top_offset > 0
+            ? (int)(g_grid_top_offset * g_cell_px_h)
+            : (int)(g_cell_px_h);
+        if (pt.y < drag_h) return HTCAPTION;
+        return HTCLIENT;
+    }
+
     case WM_CLOSE:
         g_should_quit = 1;
         DestroyWindow(hwnd);
@@ -501,13 +529,16 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     wc.lpszClassName  = L"AttyxWindow";
     RegisterClassExW(&wc);
 
-    // Build system menu bar
-    HMENU hmenu = windows_menu_create();
+    // Build system menu bar (skip for borderless windows)
+    HMENU hmenu = g_window_decorations ? windows_menu_create() : NULL;
 
-    // Compute window rect from desired client area (TRUE = has menu)
+    // Compute window rect from desired client area
     DWORD style = WS_OVERLAPPEDWINDOW;
+    if (!g_window_decorations)
+        style &= ~(WS_CAPTION | WS_THICKFRAME);
+    BOOL has_menu = (hmenu != NULL) ? TRUE : FALSE;
     RECT rect = { 0, 0, winW, winH };
-    AdjustWindowRect(&rect, style, TRUE);
+    AdjustWindowRect(&rect, style, has_menu);
 
     g_hwnd = CreateWindowExW(
         0,
