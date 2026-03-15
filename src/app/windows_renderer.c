@@ -219,6 +219,21 @@ static int create_pipeline(void) {
     bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     ID3D11Device_CreateBlendState(g_d3d_device, &bd, &g_d3d_blend_alpha);
 
+    // Rasterizer — disable back-face culling (2D quads, winding varies)
+    {
+        D3D11_RASTERIZER_DESC rd;
+        memset(&rd, 0, sizeof(rd));
+        rd.FillMode = D3D11_FILL_SOLID;
+        rd.CullMode = D3D11_CULL_NONE;
+        rd.DepthClipEnable = TRUE;
+        ID3D11RasterizerState* rs = NULL;
+        ID3D11Device_CreateRasterizerState(g_d3d_device, &rd, &rs);
+        if (rs) {
+            ID3D11DeviceContext_RSSetState(g_d3d_context, rs);
+            ID3D11RasterizerState_Release(rs);
+        }
+    }
+
     // Sampler
     D3D11_SAMPLER_DESC sd;
     memset(&sd, 0, sizeof(sd));
