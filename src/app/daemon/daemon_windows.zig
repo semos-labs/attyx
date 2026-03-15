@@ -125,8 +125,13 @@ pub fn testLog() void {
     daemonLog("testLog: daemon module is reachable");
 }
 
-pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
-    daemonLog("daemon_windows.run: ENTERED");
+pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
+    daemonLog("run: wrapper entered");
+    return @call(.auto, runImpl, .{ allocator, restore_path });
+}
+
+fn runImpl(allocator: std.mem.Allocator, _: ?[]const u8) !void {
+    daemonLog("runImpl: entered");
     daemonLog("daemon starting");
 
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
