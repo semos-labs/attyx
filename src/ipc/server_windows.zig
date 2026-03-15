@@ -44,19 +44,41 @@ extern "kernel32" fn DuplicateHandle(
 ) callconv(.winapi) BOOL;
 extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
 
+const OVERLAPPED = extern struct {
+    Internal: usize = 0,
+    InternalHigh: usize = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+
+extern "kernel32" fn CreateEventW(
+    lpEventAttributes: ?*const anyopaque,
+    bManualReset: BOOL,
+    bInitialState: BOOL,
+    lpName: ?[*:0]const u16,
+) callconv(.winapi) ?HANDLE;
+extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
+extern "kernel32" fn GetOverlappedResult(hFile: HANDLE, lpOverlapped: *OVERLAPPED, lpBytesTransferred: *DWORD, bWait: BOOL) callconv(.winapi) BOOL;
+extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.winapi) BOOL;
+
 const PIPE_ACCESS_DUPLEX: DWORD = 0x00000003;
+const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
 const PIPE_TYPE_BYTE: DWORD = 0x00000000;
 const PIPE_READMODE_BYTE: DWORD = 0x00000000;
 const PIPE_WAIT: DWORD = 0x00000000;
 const PIPE_UNLIMITED_INSTANCES: DWORD = 255;
 const DUPLICATE_SAME_ACCESS: DWORD = 0x00000002;
+const WAIT_OBJECT_0: DWORD = 0;
+const WAIT_TIMEOUT: DWORD = 258;
+const ERROR_IO_PENDING: DWORD = 997;
+const ERROR_PIPE_CONNECTED: DWORD = 535;
 
 pub var g_ipc_shutdown: i32 = 0;
 
 var pipe_name_buf: [128]u16 = undefined;
 var pipe_name_len: usize = 0;
 var started: bool = false;
-var g_listen_pipe: HANDLE = INVALID_HANDLE_VALUE;
 
 pub fn isStarted() bool {
     return started;
@@ -82,14 +104,18 @@ pub fn start() !void {
 }
 
 /// Accept loop — run on a dedicated thread.
+/// Uses overlapped ConnectNamedPipe so shutdown can interrupt it.
 pub fn run() void {
     if (!started) return;
 
+    const evt = CreateEventW(null, 1, 0, null) orelse return; // manual-reset
+    defer _ = CloseHandle(evt);
+
     while (@atomicLoad(i32, &g_ipc_shutdown, .seq_cst) == 0) {
-        // Create a new pipe instance for each client
+        // Create a new pipe instance for each client (overlapped for async accept)
         const pipe = CreateNamedPipeW(
             pipe_name_buf[0..pipe_name_len :0],
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
             4096,
@@ -102,21 +128,33 @@ pub fn run() void {
             continue;
         }
 
-        // Store handle so shutdown() can close it to unblock ConnectNamedPipe.
-        @atomicStore(HANDLE, &g_listen_pipe, pipe, .seq_cst);
-
-        // Wait for a client to connect (blocks until connect or pipe closed).
-        if (ConnectNamedPipe(pipe, null) == 0) {
-            const err = std.os.windows.GetLastError();
-            if (err != .PIPE_CONNECTED) {
-                // Clear the stored handle (shutdown may have already closed it).
-                _ = @atomicRmw(HANDLE, &g_listen_pipe, .Xchg, INVALID_HANDLE_VALUE, .seq_cst);
-                _ = CloseHandle(pipe);
-                if (@atomicLoad(i32, &g_ipc_shutdown, .seq_cst) != 0) break;
-                continue;
+        // Start overlapped connect
+        var overlap = OVERLAPPED{ .hEvent = evt };
+        var connected = false;
+        if (ConnectNamedPipe(pipe, @ptrCast(&overlap)) != 0) {
+            connected = true;
+        } else {
+            const err = windows.kernel32.GetLastError();
+            if (err == .PIPE_CONNECTED) {
+                connected = true;
+            } else if (@intFromEnum(err) == ERROR_IO_PENDING) {
+                // Poll with 200ms timeout until connected or shutdown
+                while (@atomicLoad(i32, &g_ipc_shutdown, .seq_cst) == 0) {
+                    if (WaitForSingleObject(evt, 200) == WAIT_OBJECT_0) {
+                        connected = true;
+                        break;
+                    }
+                }
             }
         }
-        @atomicStore(HANDLE, &g_listen_pipe, INVALID_HANDLE_VALUE, .seq_cst);
+
+        if (!connected) {
+            _ = CancelIo(pipe);
+            var dummy: DWORD = 0;
+            _ = GetOverlappedResult(pipe, &overlap, &dummy, 1);
+            _ = CloseHandle(pipe);
+            break;
+        }
 
         handleClient(pipe);
     }
@@ -204,9 +242,6 @@ fn handleClient(pipe: HANDLE) void {
 pub fn shutdown() void {
     @atomicStore(i32, &g_ipc_shutdown, 1, .seq_cst);
     started = false;
-    // Close the listen pipe to unblock ConnectNamedPipe on the accept thread.
-    const h = @atomicRmw(HANDLE, &g_listen_pipe, .Xchg, INVALID_HANDLE_VALUE, .seq_cst);
-    if (h != INVALID_HANDLE_VALUE) _ = CloseHandle(h);
 }
 
 fn readExactPipe(pipe: HANDLE, out: []u8) !void {
