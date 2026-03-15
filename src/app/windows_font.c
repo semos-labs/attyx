@@ -273,6 +273,71 @@ int windows_font_init(GlyphCache* gc, ID3D11Device* device, float scale) {
 }
 
 // ---------------------------------------------------------------------------
+// UI font init (for tab bar etc — uses terminal font family at fixed size)
+// ---------------------------------------------------------------------------
+
+int windows_font_init_ui(GlyphCache* gc, ID3D11Device* device, float scale, float ptSize) {
+    memset(gc, 0, sizeof(*gc));
+    for (int i = 0; i < GLYPH_CACHE_CAP; i++) gc->map[i].slot = -1;
+    gc->d3d_device = device;
+    gc->scale = scale;
+    float fontSize = ptSize * scale;
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                     &IID_IDWriteFactory, (IUnknown**)&gc->dw_factory);
+    if (FAILED(hr)) return 0;
+
+    const wchar_t* family = family_to_wide(g_font_family, g_font_family_len);
+    IDWriteFontFace* testFace = find_font_face(gc->dw_factory, family,
+                                    DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL);
+    if (!testFace) {
+        static const wchar_t* fb[] = { L"Cascadia Mono", L"Consolas", L"Courier New" };
+        for (int i = 0; i < 3; i++) {
+            testFace = find_font_face(gc->dw_factory, fb[i],
+                           DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL);
+            if (testFace) { family = fb[i]; break; }
+        }
+    }
+    if (!testFace) return 0;
+    gc->dw_face = testFace;
+
+    gc->dw_format = create_format(gc->dw_factory, family, fontSize,
+                        DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL);
+    if (!gc->dw_format) return 0;
+
+    float gw, gh, asc;
+    measure_cell(gc->dw_factory, gc->dw_format, &gw, &gh, &asc);
+    gc->glyph_w = gw; gc->glyph_h = gh;
+    gc->font_size = (int)fontSize;
+    gc->ascender = asc;
+    gc->baseline_y_offset = 0; gc->x_offset = 0;
+
+    int cols = 32, rows = 16;
+    gc->atlas_cols = cols;
+    gc->atlas_w = (int)(gw * cols); gc->atlas_h = (int)(gh * rows);
+    gc->next_slot = 0; gc->max_slots = cols * rows;
+
+    D3D11_TEXTURE2D_DESC td = {
+        .Width = (UINT)gc->atlas_w, .Height = (UINT)gc->atlas_h,
+        .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R8_UNORM,
+        .SampleDesc = { .Count = 1 }, .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE,
+    };
+    hr = ID3D11Device_CreateTexture2D(device, &td, NULL, &gc->texture);
+    if (FAILED(hr)) return 0;
+    hr = ID3D11Device_CreateShaderResourceView(device,
+             (ID3D11Resource*)gc->texture, NULL, &gc->texture_srv);
+    if (FAILED(hr)) return 0;
+
+    int bmpW = (int)(gw * 2), bmpH = (int)gh;
+    if (!init_d2d_offscreen(gc, bmpW, bmpH)) return 0;
+
+    for (uint32_t ch = 32; ch < 127; ch++) glyphCacheRasterize(gc, ch);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
 

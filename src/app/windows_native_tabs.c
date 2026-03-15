@@ -57,110 +57,10 @@ static float s_drag_x;          // current drag position
 static GlyphCache s_tab_gc;
 static int        s_tab_gc_ready = 0;
 
-// Tab font: terminal font family at fixed small size
 static void tab_gc_init(void) {
     if (s_tab_gc_ready) return;
-    float scale = g_content_scale, fontSize = TAB_FONT_PT * scale;
-    memset(&s_tab_gc, 0, sizeof(s_tab_gc));
-    for (int i = 0; i < GLYPH_CACHE_CAP; i++) s_tab_gc.map[i].slot = -1;
-    s_tab_gc.d3d_device = g_d3d_device;
-    s_tab_gc.scale = scale;
-    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
-                     &IID_IDWriteFactory, (IUnknown**)&s_tab_gc.dw_factory);
-    if (FAILED(hr)) return;
-    // Use the terminal's configured font family (monospace) at fixed small size
-    static wchar_t family[ATTYX_FONT_FAMILY_MAX];
-    if (g_font_family_len > 0) {
-        int n = MultiByteToWideChar(CP_UTF8, 0, g_font_family, g_font_family_len,
-                                     family, ATTYX_FONT_FAMILY_MAX - 1);
-        family[n] = 0;
-    } else {
-        wcscpy(family, L"Consolas");
-    }
-    IDWriteTextFormat* fmt = NULL;
-    hr = IDWriteFactory_CreateTextFormat(s_tab_gc.dw_factory, family, NULL,
-             DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
-             DWRITE_FONT_STRETCH_NORMAL, fontSize, L"en-us", &fmt);
-    if (FAILED(hr)) return;
-    IDWriteTextFormat_SetWordWrapping(fmt, DWRITE_WORD_WRAPPING_NO_WRAP);
-    s_tab_gc.dw_format = fmt;
-    // Font face for glyph index lookups
-    IDWriteFontCollection* coll = NULL;
-    IDWriteFactory_GetSystemFontCollection(s_tab_gc.dw_factory, &coll, FALSE);
-    if (coll) {
-        UINT32 fi = 0; BOOL exists = FALSE;
-        IDWriteFontCollection_FindFamilyName(coll, family, &fi, &exists);
-        if (exists) {
-            IDWriteFontFamily* fam = NULL;
-            IDWriteFontCollection_GetFontFamily(coll, fi, &fam);
-            if (fam) {
-                IDWriteFont* font = NULL;
-                IDWriteFontFamily_GetFirstMatchingFont(fam,
-                    DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STRETCH_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL, &font);
-                if (font) { IDWriteFont_CreateFontFace(font, &s_tab_gc.dw_face); IDWriteFont_Release(font); }
-                IDWriteFontFamily_Release(fam);
-            }
-        }
-        IDWriteFontCollection_Release(coll);
-    }
-    // Measure cell size
-    IDWriteTextLayout* layout = NULL;
-    hr = IDWriteFactory_CreateTextLayout(s_tab_gc.dw_factory, L"M", 1, fmt, 1000, 1000, &layout);
-    float gw = 8, gh = 16, asc = 12;
-    if (SUCCEEDED(hr) && layout) {
-        DWRITE_TEXT_METRICS tm; IDWriteTextLayout_GetMetrics(layout, &tm);
-        DWRITE_LINE_METRICS lm; UINT32 lc = 0;
-        IDWriteTextLayout_GetLineMetrics(layout, &lm, 1, &lc);
-        gw = roundf(tm.widthIncludingTrailingWhitespace);
-        gh = roundf(lm.height); asc = roundf(lm.baseline);
-        IDWriteTextLayout_Release(layout);
-    }
-    s_tab_gc.glyph_w = gw; s_tab_gc.glyph_h = gh;
-    s_tab_gc.font_size = (int)fontSize;
-    s_tab_gc.ascender = asc;
-    s_tab_gc.baseline_y_offset = 0; s_tab_gc.x_offset = 0;
-    // Atlas texture (32×16 grid)
-    int cols = 32, rows = 16;
-    s_tab_gc.atlas_cols = cols;
-    s_tab_gc.atlas_w = (int)(gw * cols); s_tab_gc.atlas_h = (int)(gh * rows);
-    s_tab_gc.next_slot = 0; s_tab_gc.max_slots = cols * rows;
-    D3D11_TEXTURE2D_DESC td = {
-        .Width = (UINT)s_tab_gc.atlas_w, .Height = (UINT)s_tab_gc.atlas_h,
-        .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R8_UNORM,
-        .SampleDesc = { .Count = 1 }, .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_SHADER_RESOURCE,
-    };
-    hr = ID3D11Device_CreateTexture2D(g_d3d_device, &td, NULL, &s_tab_gc.texture);
-    if (FAILED(hr)) return;
-    hr = ID3D11Device_CreateShaderResourceView(g_d3d_device,
-             (ID3D11Resource*)s_tab_gc.texture, NULL, &s_tab_gc.texture_srv);
-    if (FAILED(hr)) return;
-    // D2D offscreen for glyph rasterization
-    int bmpW = (int)(gw * 2), bmpH = (int)gh;
-    hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-                           &IID_IWICImagingFactory, (void**)&s_tab_gc.wic_factory);
-    if (FAILED(hr)) return;
-    hr = IWICImagingFactory_CreateBitmap(s_tab_gc.wic_factory, (UINT)bmpW, (UINT)bmpH,
-             &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &s_tab_gc.wic_bitmap);
-    if (FAILED(hr)) return;
-    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                            &IID_ID2D1Factory, NULL, (void**)&s_tab_gc.d2d_factory);
-    if (FAILED(hr)) return;
-    D2D1_RENDER_TARGET_PROPERTIES rtp = {
-        .type = D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-        .pixelFormat = { .format = DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED },
-        .dpiX = 96, .dpiY = 96,
-    };
-    hr = ID2D1Factory_CreateWicBitmapRenderTarget(s_tab_gc.d2d_factory,
-             s_tab_gc.wic_bitmap, &rtp, &s_tab_gc.d2d_rt);
-    if (FAILED(hr)) return;
-    D2D1_COLOR_F white = { 1, 1, 1, 1 };
-    hr = ID2D1RenderTarget_CreateSolidColorBrush(s_tab_gc.d2d_rt, &white, NULL, &s_tab_gc.d2d_brush);
-    if (FAILED(hr)) return;
-    for (uint32_t ch = 32; ch < 127; ch++) glyphCacheRasterize(&s_tab_gc, ch);
-    s_tab_gc_ready = 1;
+    if (windows_font_init_ui(&s_tab_gc, g_d3d_device, g_content_scale, TAB_FONT_PT))
+        s_tab_gc_ready = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +173,6 @@ void ntab_draw(float vpW, float vpH) {
     if (count > 16) count = 16;
     if (active < 0) active = 0;
     if (active >= count) active = count - 1;
-    if (count <= 1 && !g_tab_always_show) return;
 
     sync_titles();
     tab_gc_init();
@@ -491,23 +390,23 @@ void ntab_draw(float vpW, float vpH) {
             float tfR = fR, tfG = fG, tfB = fB;
             float tfA = isA ? 1.0f : inactA;
 
-            float textL = tabX + TAB_PAD * s;
+            float textL = floorf(tabX + TAB_PAD * s);
             float closeW = (count > 1) ? (CLOSE_SZ + 12) * s : TAB_PAD * s;
             float textR = tabX + tabW - closeW;
             if (textR - textL < 10) continue;
 
-            float textY = pT + (tabH - tgc->glyph_h) * 0.5f;
+            float textY = floorf(pT + (tabH - tgc->glyph_h) * 0.5f);
             wchar_t* title = s_titles[i];
             int tlen = s_title_lens[i];
             if (tlen <= 0) { title = L"Tab"; tlen = 3; }
 
-            float cx = textL;
-            for (int ch = 0; ch < tlen && cx + tgc->glyph_w <= textR; ch++) {
+            float gx = textL;
+            for (int ch = 0; ch < tlen && gx + tgc->glyph_w <= textR; ch++) {
                 uint32_t cp = (uint32_t)title[ch];
                 if (cp == 0) break;
                 int slot = glyphCacheLookup(tgc, cp);
                 if (slot < 0) slot = glyphCacheRasterize(tgc, cp);
-                if (slot < 0) { cx += tgc->glyph_w; continue; }
+                if (slot < 0) { gx += tgc->glyph_w; continue; }
 
                 int ac = slot % tgc->atlas_cols, ar = slot / tgc->atlas_cols;
                 float u0 = (float)(ac * (int)tgc->glyph_w) / (float)tgc->atlas_w;
@@ -515,11 +414,12 @@ void ntab_draw(float vpW, float vpH) {
                 float u1 = u0 + tgc->glyph_w / (float)tgc->atlas_w;
                 float v1 = v0 + tgc->glyph_h / (float)tgc->atlas_h;
 
+                float sx = floorf(gx);  // snap each glyph to pixel grid
                 if (tvi + 6 <= maxTV)
-                    tvi = winEmitQuad(tv, tvi, cx, textY, cx + tgc->glyph_w,
+                    tvi = winEmitQuad(tv, tvi, sx, textY, sx + tgc->glyph_w,
                                      textY + tgc->glyph_h, u0, v0, u1, v1,
                                      tfR, tfG, tfB, tfA);
-                cx += tgc->glyph_w;
+                gx += tgc->glyph_w;
             }
         }
         if (tvi > 0) winDrawTextVerts(tv, tvi, tgc);
@@ -534,7 +434,6 @@ int ntab_hit_test(int px, int py, int clientW) {
     if (!g_native_tabs_enabled) return 0;
     int count = g_native_tab_count;
     if (count < 1) count = 1;
-    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
     if (py < 0 || (float)py >= barH) return 0;
@@ -568,7 +467,6 @@ int ntab_mouse_move(int px, int py, int clientW) {
     if (!g_native_tabs_enabled || s_drag_on) return 0;
     int count = g_native_tab_count;
     if (count < 1) count = 1;
-    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
     int prev_tab = s_hovered_tab, prev_cl = s_hover_close;
@@ -611,7 +509,6 @@ int ntab_mouse_down(int px, int py, int clientW) {
     if (!g_native_tabs_enabled) return 0;
     int count = g_native_tab_count;
     if (count < 1) count = 1;
-    if (count <= 1 && !g_tab_always_show) return 0;
 
     float barH = ntab_bar_height();
     if ((float)py >= barH || py < 0) return 0;

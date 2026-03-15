@@ -296,6 +296,7 @@ extern GlyphCache g_gc;
 // ---------------------------------------------------------------------------
 
 int  windows_font_init(GlyphCache* gc, ID3D11Device* device, float scale);
+int  windows_font_init_ui(GlyphCache* gc, ID3D11Device* device, float scale, float ptSize);
 void windows_font_cleanup(GlyphCache* gc);
 
 // ---------------------------------------------------------------------------
