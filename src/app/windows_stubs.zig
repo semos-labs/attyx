@@ -30,9 +30,15 @@ pub var g_engine: ?*attyx.Engine = null;
 pub var g_popup_engine: ?*attyx.Engine = null;
 
 fn writeHandle(handle: ?std.os.windows.HANDLE, data: []const u8) void {
-    const h = handle orelse return;
+    const h = handle orelse {
+        logging.warn("pty", "writeHandle: null handle, dropping {d} bytes", .{data.len});
+        return;
+    };
     var written: std.os.windows.DWORD = 0;
-    _ = std.os.windows.kernel32.WriteFile(h, data.ptr, @intCast(data.len), &written, null);
+    const ok = std.os.windows.kernel32.WriteFile(h, data.ptr, @intCast(data.len), &written, null);
+    if (ok == 0) {
+        logging.warn("pty", "writeHandle: WriteFile failed, err={d}", .{@intFromEnum(std.os.windows.kernel32.GetLastError())});
+    }
 }
 
 // ---------------------------------------------------------------------------

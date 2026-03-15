@@ -280,7 +280,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
-            if (!viewport_changed and (now - last_publish_ns) < min_frame_ns) {
+            if (!viewport_changed and !tabs_changed and (now - last_publish_ns) < min_frame_ns) {
                 Sleep(0); // Yield timeslice but don't wait — keep draining PTY data
                 continue;
             }
@@ -613,6 +613,9 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     ws.g_pty_handle = pane.pty.pipe_in_write;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
+    // Force full repaint so the renderer picks up the new tab's content.
+    c.g_full_redraw = 1;
+    c.attyx_mark_all_dirty();
 }
 
 /// Switch the active session — update tab_mgr and bridge globals.
