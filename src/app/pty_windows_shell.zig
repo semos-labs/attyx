@@ -98,6 +98,7 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             // ZDOTDIR redirect: write a shadow .zshenv that restores real ZDOTDIR,
             // sources user configs, then injects OSC 7/7337 hooks.
             setupZshZdotdirRedirect();
+            appendLoginFlag(cmd_line);
         },
         else => {},
     }

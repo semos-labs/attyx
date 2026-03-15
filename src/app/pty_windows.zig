@@ -662,13 +662,11 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
     }
 
     // Bundled zsh is the highest priority — built-in MSYS2 sysroot.
+    // Return just the path; setupShellIntegration adds --login.
     if (bundled_shell.findBundledZsh()) |zsh| {
         bundled_shell.setupMsysEnv();
         @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
-        // Append " --login" so zsh sources /etc/profile and user rc files.
-        const login_flag = comptime toUtf16Literal(" --login");
-        @memcpy(S.buf[zsh.zsh_len .. zsh.zsh_len + login_flag.len], &login_flag);
-        S.buf[zsh.zsh_len + login_flag.len] = 0;
+        S.buf[zsh.zsh_len] = 0;
         return &S.buf;
     }
 
