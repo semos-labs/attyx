@@ -116,6 +116,15 @@ pub fn main() !void {
         .run => {},
     }
 
+    // Only the GUI path reaches here — detach from the console window.
+    // CLI subcommands (login, device, etc.) return above and keep their console.
+    if (is_windows) {
+        const win32 = struct {
+            extern "kernel32" fn FreeConsole() callconv(.c) i32;
+        };
+        _ = win32.FreeConsole();
+    }
+
     // Silently update installed skills (e.g. Claude Code /attyx) to match this build
     cli_commands.autoUpdateSkills();
 
