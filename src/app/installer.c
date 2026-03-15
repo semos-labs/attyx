@@ -186,16 +186,7 @@ static void DoPaint(HWND hwnd) {
         // Browse button
         g_rc_browse = (RECT){ W - MARGIN - 72, y, W - MARGIN, y + 30 };
         DrawButton(mem, &g_rc_browse, L"Browse", g_hover_btn == 2, false);
-        y += 40;
-
-        // Checkboxes
-        SelectObject(mem, g_font_body);
-        DrawCheckbox(mem, MARGIN, y, L"Add to PATH", g_opt_path, &g_rc_chk_path);
-        y += LINE_H + 4;
-        DrawCheckbox(mem, MARGIN, y, L"Desktop shortcut", g_opt_desktop, &g_rc_chk_desktop);
-        y += LINE_H + 4;
-        DrawCheckbox(mem, MARGIN, y, L"\"Open Attyx Here\" context menu", g_opt_context, &g_rc_chk_context);
-        y += LINE_H + 20;
+        y += 46;
 
         if (!g_installing) {
             // Install button
@@ -227,14 +218,23 @@ static void DoPaint(HWND hwnd) {
         DrawTextW(mem, g_status, -1, &sr, DT_LEFT | DT_SINGLELINE);
 
         if (g_done && !g_failed) {
-            int by = py + 40;
-            g_rc_launch = (RECT){ MARGIN, by, MARGIN + 160, by + BTN_H };
+            // Post-install options
+            int oy = py + 20;
+            SelectObject(mem, g_font_body);
+            DrawCheckbox(mem, MARGIN, oy, L"Add to PATH", g_opt_path, &g_rc_chk_path);
+            oy += LINE_H + 2;
+            DrawCheckbox(mem, MARGIN, oy, L"Desktop shortcut", g_opt_desktop, &g_rc_chk_desktop);
+            oy += LINE_H + 2;
+            DrawCheckbox(mem, MARGIN, oy, L"\"Open Attyx Here\" context menu", g_opt_context, &g_rc_chk_context);
+            oy += LINE_H + 16;
+
+            g_rc_launch = (RECT){ MARGIN, oy, MARGIN + 160, oy + BTN_H };
             DrawButton(mem, &g_rc_launch, L"Launch Attyx", g_hover_btn == 3, true);
 
             // Close text link
             SelectObject(mem, g_font_body);
             SetTextColor(mem, DIM_COLOR);
-            RECT clr = { MARGIN + 180, by + 8, W - MARGIN, by + 8 + LINE_H };
+            RECT clr = { MARGIN + 180, oy + 8, W - MARGIN, oy + 8 + LINE_H };
             DrawTextW(mem, L"Close", -1, &clr, DT_LEFT | DT_SINGLELINE);
         }
     }
@@ -346,22 +346,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         if (hit == 3) {
-            // Launch attyx
+            // Apply user-selected options, then launch
+            ApplyPostInstallOptions();
             wchar_t exe[MAX_PATH];
             swprintf(exe, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
             ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
             PostQuitMessage(0);
         }
-        // Checkbox toggles
-        if (!g_installing && !g_done) {
+        // Checkbox toggles (post-install options screen)
+        if (g_done && !g_failed) {
             if (PtInRect(&g_rc_chk_path, pt))    { g_opt_path = !g_opt_path; InvalidateRect(hwnd, NULL, FALSE); }
             if (PtInRect(&g_rc_chk_desktop, pt))  { g_opt_desktop = !g_opt_desktop; InvalidateRect(hwnd, NULL, FALSE); }
             if (PtInRect(&g_rc_chk_context, pt))  { g_opt_context = !g_opt_context; InvalidateRect(hwnd, NULL, FALSE); }
         }
         // Close link
-        if (g_done) {
+        if (g_done && !g_failed) {
             RECT closeRc = { MARGIN + 180, 0, MARGIN + 280, 9999 };
-            if (PtInRect(&closeRc, pt)) PostQuitMessage(0);
+            if (PtInRect(&closeRc, pt)) {
+                ApplyPostInstallOptions();
+                PostQuitMessage(0);
+            }
         }
         return 0;
     }
@@ -444,30 +448,9 @@ static DWORD WINAPI InstallThread(LPVOID param) {
         CreateDirectoryW(shareDir, NULL);
         CopyDirRecursive(src, dst);
     }
-    g_progress = 60;
-
-    // Step 5: Add to PATH
-    if (g_opt_path) {
-        SetStatus(L"Adding to PATH...");
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ | KEY_WRITE, &hKey) == ERROR_SUCCESS) {
-            wchar_t path[8192] = L"";
-            DWORD sz = sizeof(path), type = 0;
-            RegQueryValueExW(hKey, L"Path", NULL, &type, (BYTE*)path, &sz);
-            if (!wcsstr(path, g_install_dir)) {
-                if (wcslen(path) > 0) wcscat(path, L";");
-                wcscat(path, g_install_dir);
-                RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ, (BYTE*)path,
-                               (DWORD)((wcslen(path) + 1) * sizeof(wchar_t)));
-                SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-                                    (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
-            }
-            RegCloseKey(hKey);
-        }
-    }
     g_progress = 70;
 
-    // Step 6: Start Menu shortcut
+    // Start Menu shortcut (always created)
     SetStatus(L"Creating shortcuts...");
     {
         wchar_t startMenu[MAX_PATH];
@@ -480,56 +463,9 @@ static DWORD WINAPI InstallThread(LPVOID param) {
             CreateShortcutLink(lnk, dst, L"Attyx Terminal", dst);
         }
     }
-    g_progress = 80;
-
-    // Step 7: Desktop shortcut
-    if (g_opt_desktop) {
-        wchar_t desktop[MAX_PATH];
-        if (SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) == S_OK) {
-            wchar_t lnk[MAX_PATH];
-            swprintf(lnk, MAX_PATH, L"%s\\Attyx.lnk", desktop);
-            swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
-            CreateShortcutLink(lnk, dst, L"Attyx Terminal", dst);
-        }
-    }
-
-    // Step 8: Context menu
-    if (g_opt_context) {
-        SetStatus(L"Registering context menu...");
-        HKEY hKey;
-        swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" \"%%V\"", g_install_dir);
-        // Folder background
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
-                       (DWORD)(16 * sizeof(wchar_t)));
-        wchar_t iconVal[MAX_PATH];
-        swprintf(iconVal, MAX_PATH, L"\"%s\\attyx.exe\"", g_install_dir);
-        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
-                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx\\command",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        // Folder right-click
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
-                       (DWORD)(16 * sizeof(wchar_t)));
-        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
-                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx\\command",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-    }
     g_progress = 90;
 
-    // Step 9: Add/Remove Programs entry
+    // Add/Remove Programs entry
     SetStatus(L"Registering uninstaller...");
     {
         HKEY hKey;
@@ -562,6 +498,78 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     g_done = true;
     SetStatus(L"Installation complete!");
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Post-install options (applied on Launch/Close)
+// ---------------------------------------------------------------------------
+
+static void ApplyPostInstallOptions(void) {
+    wchar_t dst[MAX_PATH];
+
+    // Add to PATH
+    if (g_opt_path) {
+        HKEY hKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ | KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+            wchar_t path[8192] = L"";
+            DWORD sz = sizeof(path), type = 0;
+            RegQueryValueExW(hKey, L"Path", NULL, &type, (BYTE*)path, &sz);
+            if (!wcsstr(path, g_install_dir)) {
+                if (wcslen(path) > 0) wcscat(path, L";");
+                wcscat(path, g_install_dir);
+                RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ, (BYTE*)path,
+                               (DWORD)((wcslen(path) + 1) * sizeof(wchar_t)));
+                SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                                    (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+            }
+            RegCloseKey(hKey);
+        }
+    }
+
+    // Desktop shortcut
+    if (g_opt_desktop) {
+        wchar_t desktop[MAX_PATH];
+        if (SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) == S_OK) {
+            wchar_t lnk[MAX_PATH];
+            swprintf(lnk, MAX_PATH, L"%s\\Attyx.lnk", desktop);
+            swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
+            CreateShortcutLink(lnk, dst, L"Attyx Terminal", dst);
+        }
+    }
+
+    // Context menu
+    if (g_opt_context) {
+        HKEY hKey;
+        swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" \"%%V\"", g_install_dir);
+        wchar_t iconVal[MAX_PATH];
+        swprintf(iconVal, MAX_PATH, L"\"%s\\attyx.exe\"", g_install_dir);
+        // Folder background
+        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx",
+                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
+                       (DWORD)(16 * sizeof(wchar_t)));
+        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
+                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx\\command",
+                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
+                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+        // Folder right-click
+        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx",
+                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
+                       (DWORD)(16 * sizeof(wchar_t)));
+        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
+                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx\\command",
+                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
+                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
 }
 
 // ---------------------------------------------------------------------------
