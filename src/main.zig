@@ -215,11 +215,14 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
+    debugToFile("main: calling terminal.run");
     terminal.run(merged, result.no_config, result.config_path, args, result.headless) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Terminal failed: {s}", .{@errorName(err)}) catch "Terminal failed";
+        debugToFile(msg);
         winFatal(msg);
     };
+    debugToFile("main: terminal.run returned normally");
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.
