@@ -54,8 +54,10 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
     if (g_session_client) |sc| {
-        sc.sendPaneInput(g_active_daemon_pane_id, data) catch {};
-        return;
+        if (g_active_daemon_pane_id != 0) {
+            sc.sendPaneInput(g_active_daemon_pane_id, data) catch {};
+            return;
+        }
     }
     writeHandle(g_pty_handle, data);
 }
@@ -84,7 +86,11 @@ export fn attyx_handle_key(k: u16, m: u8, e: u8, cp: u32) void {
     );
     if (encoded.len > 0) {
         if (g_session_client) |sc| {
-            sc.sendPaneInput(g_active_daemon_pane_id, encoded) catch {};
+            if (g_active_daemon_pane_id != 0) {
+                sc.sendPaneInput(g_active_daemon_pane_id, encoded) catch {};
+            } else {
+                writeHandle(g_pty_handle, encoded);
+            }
         } else {
             writeHandle(g_pty_handle, encoded);
         }
