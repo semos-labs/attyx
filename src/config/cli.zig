@@ -10,6 +10,7 @@ pub const CliResult = struct {
     action: Action,
     config_path: ?[]const u8 = null,
     no_config: bool = false,
+    headless: bool = false,
 };
 
 pub const Action = enum {
@@ -84,6 +85,8 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, arg, "--print-config")) {
             result.action = .print_config;
+        } else if (std.mem.eql(u8, arg, "--headless")) {
+            result.headless = true;
         } else if (std.mem.eql(u8, arg, "--config")) {
             result.config_path = requireArg(args, &i, "--config");
         } else if (std.mem.eql(u8, arg, "--no-config")) {
@@ -352,6 +355,7 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
         } else if (std.mem.eql(u8, arg, "--config") or
             std.mem.eql(u8, arg, "--no-config") or
             std.mem.eql(u8, arg, "--print-config") or
+            std.mem.eql(u8, arg, "--headless") or
             std.mem.eql(u8, arg, "--help") or
             std.mem.eql(u8, arg, "-h") or
             std.mem.eql(u8, arg, "--decorations") or

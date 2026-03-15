@@ -301,11 +301,31 @@ pub const TerminalState = struct {
     const isZeroWidth = unicode.isZeroWidth;
     const charDisplayWidth = unicode.charDisplayWidth;
 
+    const isTextDefaultEmoji = unicode.isTextDefaultEmoji;
+
     fn printChar(self: *TerminalState, char: u21) void {
         if (isZeroWidth(char) or isCombiningMark(char)) {
             if (self.cursor.col > 0) {
                 const prev_col = self.cursor.col - 1;
                 const row_cells = self.ring.getScreenRowMut(self.cursor.row);
+
+                // VS16 (U+FE0F): upgrade text-default emoji to 2-cell width.
+                // Write a spacer into the current cell and advance the cursor
+                // so the renderer sees a wide emoji.
+                if (char == 0xFE0F and isTextDefaultEmoji(row_cells[prev_col].char)) {
+                    if (self.cursor.col < self.ring.cols) {
+                        row_cells[self.cursor.col] = .{
+                            .char = ' ',
+                            .style = self.pen,
+                            .link_id = self.pen_link_id,
+                        };
+                        self.cursor.col += 1;
+                        if (self.cursor.col >= self.ring.cols) {
+                            self.wrap_next = self.auto_wrap;
+                        }
+                    }
+                }
+
                 if (row_cells[prev_col].combining[0] == 0) {
                     row_cells[prev_col].combining[0] = char;
                 } else if (row_cells[prev_col].combining[1] == 0) {

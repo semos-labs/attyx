@@ -158,7 +158,6 @@ pub fn pickerCmd(cmd: c_int) void {
 // ---------------------------------------------------------------------------
 
 pub var g_tab_action_request: i32 = 0;
-pub var g_tab_count: i32 = 1;
 pub var g_tab_click_index: i32 = -1;
 
 pub fn tabAction(action: c_int) void {
@@ -169,7 +168,7 @@ pub fn tabBarClick(col: c_int, grid_cols: c_int) void {
     if (terminal.g_grid_top_offset <= 0) return;
     const idx = tab_bar_mod.tabIndexAtCol(
         @intCast(@max(0, col)),
-        @intCast(@atomicLoad(i32, &g_tab_count, .seq_cst)),
+        @intCast(@atomicLoad(i32, &terminal.g_tab_count, .seq_cst)),
         @intCast(@max(1, grid_cols)),
     ) orelse return;
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
@@ -185,7 +184,7 @@ pub fn statusbarTabClick(col: c_int, grid_cols: c_int) void {
     const remaining: u16 = @intCast(@max(1, grid_cols) -| offset);
     const idx = tab_bar_mod.tabIndexAtCol(
         adjusted_col,
-        @intCast(@atomicLoad(i32, &g_tab_count, .seq_cst)),
+        @intCast(@atomicLoad(i32, &terminal.g_tab_count, .seq_cst)),
         remaining,
     ) orelse return;
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);

@@ -67,7 +67,27 @@
         } else if (g_popup_active) {
             attyx_popup_send_input((const uint8_t*)utf8, (int)strlen(utf8));
         } else {
-            attyx_send_input((const uint8_t*)utf8, (int)strlen(utf8));
+            int blen = (int)strlen(utf8);
+            // Wrap multi-codepoint input in bracketed paste so the shell
+            // processes it atomically.  This prevents zsh-syntax-highlighting
+            // cursor desync with multi-cell characters like flag emoji.
+            int codepoints = 0;
+            const uint8_t* cp = (const uint8_t*)utf8;
+            const uint8_t* cpend = cp + blen;
+            while (cp < cpend) {
+                if (*cp < 0x80) cp += 1;
+                else if ((*cp & 0xE0) == 0xC0) cp += 2;
+                else if ((*cp & 0xF0) == 0xE0) cp += 3;
+                else cp += 4;
+                codepoints++;
+            }
+            if (g_bracketed_paste && codepoints > 1) {
+                attyx_send_input((const uint8_t*)"\x1b[200~", 6);
+                attyx_send_input((const uint8_t*)utf8, blen);
+                attyx_send_input((const uint8_t*)"\x1b[201~", 6);
+            } else {
+                attyx_send_input((const uint8_t*)utf8, blen);
+            }
         }
     }
 }

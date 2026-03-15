@@ -100,6 +100,29 @@ attyx session kill 3                   # kill session 3
 
 ## Critical Rules
 
+### Always Pin Your Session
+The user can switch sessions at any time. If you send commands without `-s`, they'll hit whatever session is currently focused — which may not be yours.
+
+**At the start of every interaction**, discover your session and pane IDs and use them for all subsequent commands:
+```bash
+# Step 1: Find your session and pane from the full tree
+attyx list
+# Output:
+# Session 1 "myapp" *          ← your session (marked *)
+#   1	bash	*	80x24        ← your pane (marked *)
+#   3	python		40x24
+# Session 2 "server"
+#   4	bash	*	80x24
+
+# Step 2: Use -s <session_id> on EVERY command from now on
+attyx -s 1 split v --cmd htop
+attyx -s 1 send-keys -p 3 "print('hi'){Enter}"
+attyx -s 1 get-text -p 3
+attyx -s 1 tab create
+```
+
+**Never omit `-s`** after the initial discovery. Even if you think you're still in the same session, always be explicit — the user may have switched focus between your commands.
+
 ### Don't Close Yourself
 Before closing a pane, use targeted close with `--pane` / `-p`:
 ```bash
@@ -236,11 +259,11 @@ Without `--pane`, `send-keys` and `get-text` operate on the focused pane:
 
 ## Argument Handling
 
-If the user provides arguments, interpret them as a natural language instruction:
-- `/attyx open a split with htop` → `attyx split v --cmd htop`
-- `/attyx send "hello" to the other pane` → `attyx send-keys -p <id> "hello{Enter}"`
-- `/attyx close the other pane` → `attyx split close -p <id>`
-- `/attyx what's on screen in the right pane` → `attyx get-text -p <id>`
+If the user provides arguments, interpret them as a natural language instruction. Remember to always use `-s <session_id>` (discovered via `attyx list` at start):
+- `/attyx open a split with htop` → `attyx -s <sid> split v --cmd htop`
+- `/attyx send "hello" to the other pane` → `attyx -s <sid> send-keys -p <id> "hello{Enter}"`
+- `/attyx close the other pane` → `attyx -s <sid> split close -p <id>`
+- `/attyx what's on screen in the right pane` → `attyx -s <sid> get-text -p <id>`
 - `/attyx create a background session for ~/Projects/api` → `attyx session create ~/Projects/api -b`
 - `/attyx list sessions` → `attyx session list`
 - `/attyx create a tab in session 5` → `attyx -s 5 tab create`
