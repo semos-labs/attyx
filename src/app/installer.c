@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 
 #define WIN_W       520
-#define WIN_H       420
+#define WIN_H       500
 #define BG_COLOR    RGB(26, 26, 26)      // #1a1a1a
 #define TEXT_COLOR   RGB(224, 224, 224)   // #e0e0e0
 #define DIM_COLOR    RGB(128, 128, 128)  // #808080
@@ -198,7 +198,7 @@ static void DoPaint(HWND hwnd) {
 
     // Progress bar + status
     if (g_installing || g_done) {
-        int py = H - 90;
+        int py = H - 170;
         if (g_progress > 0 || g_installing) {
             RECT pbg = { MARGIN, py, W - MARGIN, py + 6 };
             HBRUSH pBg = CreateSolidBrush(PROGRESS_BG);
