@@ -135,6 +135,27 @@ pub const DaemonPane = struct {
         return pane;
     }
 
+    /// Process already-read PTY data (from async read completion).
+    /// Copies into `out_buf`, updates replay buffer and mode tracking.
+    /// Returns the number of bytes copied.
+    pub fn absorbPtyData(self: *DaemonPane, data: []const u8, out_buf: []u8) usize {
+        const n = @min(data.len, out_buf.len);
+        @memcpy(out_buf[0..n], data[0..n]);
+        if (n > 0) {
+            const slice = out_buf[0..n];
+            if (findLastEraseScrollback(slice)) |pos| {
+                self.replay.clear();
+                self.replay.write(slice[pos..]);
+            } else {
+                self.replay.write(slice);
+            }
+            self.trackModes(slice);
+            self.trackOsc(slice);
+            self.interceptQueries(slice);
+        }
+        return n;
+    }
+
     /// Non-blocking read from PTY master. Stores data in replay buffer.
     /// Returns number of bytes read, or 0 if nothing available.
     pub fn readPty(self: *DaemonPane, buf: []u8) !usize {

@@ -239,14 +239,31 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
             }
         }
 
-        // 2. Read PTY output from all alive panes, forward to clients
+        // 2. Read PTY output from all alive panes, forward to clients.
+        //
+        // ConPTY only flushes its internal buffer when there's a pending
+        // ReadFile on the output pipe — PeekNamedPipe alone won't trigger
+        // it. We use the async read pattern: check if a previous async
+        // read completed, drain any additional data via peek+read, then
+        // start a new async read to keep ConPTY flushing.
         for (sessions) |*slot| {
             if (slot.*) |*s| {
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*pane| {
                         if (pane.alive) {
-                            // Try reading PTY output (non-blocking via ConPTY)
-                            const n = pane.readPty(pty_buf) catch 0;
+                            // Check async read completion first (non-blocking).
+                            var n: usize = 0;
+                            if (pane.pty.checkAsyncRead()) |data| {
+                                n = pane.absorbPtyData(data, pty_buf);
+                            }
+                            // Drain any additional data available via peek.
+                            while (pane.pty.peekAvail() > 0) {
+                                const extra = pane.readPty(pty_buf[n..]) catch break;
+                                if (extra == 0) break;
+                                n += extra;
+                            }
+                            // Keep an async read pending so ConPTY flushes.
+                            pane.pty.startAsyncRead();
                             if (n > 0) {
                                 for (clients) |*cslot| {
                                     if (cslot.*) |*cl| {
