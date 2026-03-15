@@ -287,12 +287,17 @@ fn sigusr1Handler(_: c_int) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
+/// Whether we are running in headless mode (no UI, IPC-only).
+pub var g_headless: bool = false;
+
 pub fn run(
     config: AppConfig,
     no_config: bool,
     config_path: ?[]const u8,
     args: []const [:0]const u8,
+    headless: bool,
 ) !void {
+    g_headless = headless;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -744,7 +749,33 @@ pub fn run(
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer thread.join();
 
-    c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
+    if (headless) {
+        // Install SIGTERM/SIGINT handlers so headless can be stopped cleanly.
+        const sa_term = posix.Sigaction{
+            .handler = .{ .handler = headlessSignalHandler },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        posix.sigaction(posix.SIG.TERM, &sa_term, null);
+        posix.sigaction(posix.SIG.INT, &sa_term, null);
+
+        const pid = std.c.getpid();
+        const stderr = std.fs.File.stderr();
+        var banner_buf: [256]u8 = undefined;
+        const banner = std.fmt.bufPrint(&banner_buf, "attyx: headless mode (pid {d})\n", .{pid}) catch "attyx: headless mode\n";
+        stderr.writeAll(banner) catch {};
+
+        // Block until quit signal (from PTY thread on last pane exit, or SIGTERM/SIGINT).
+        while (c.attyx_should_quit() == 0) {
+            posix.nanosleep(0, 50_000_000); // 50ms
+        }
+    } else {
+        c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
+    }
+}
+
+fn headlessSignalHandler(_: c_int) callconv(.c) void {
+    c.attyx_request_quit();
 }
 
 fn buildProgramArgv(

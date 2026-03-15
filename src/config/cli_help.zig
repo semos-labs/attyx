@@ -154,6 +154,7 @@ const options =
     opt("--padding-x / --padding-y  ", "Horizontal / vertical padding") ++
     opt("--log-level <level>        ", "Log level: err, warn, info, debug, trace") ++
     opt("--log-file <path>          ", "Append logs to file (default: stderr)") ++
+    opt("--headless                  ", "Run without UI, controlled via IPC only") ++
     opt("--print-config             ", "Print merged config and exit") ++
     opt("--help, -h                 ", "Show this help") ++
     "\n";

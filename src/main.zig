@@ -120,7 +120,7 @@ pub fn main() !void {
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
 
-    try terminal.run(merged, result.no_config, result.config_path, args);
+    try terminal.run(merged, result.no_config, result.config_path, args, result.headless);
 }
 
 /// Load config with correct precedence: Defaults < ConfigFile < CLI.
