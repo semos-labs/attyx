@@ -132,15 +132,78 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     daemonLog("run: spawning daemon thread (8MB stack)");
     var run_err: bool = false;
     const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, struct {
-        fn entry(alloc: std.mem.Allocator, rpath: ?[]const u8, err_flag: *bool) void {
+        fn entry(alloc: std.mem.Allocator, _: ?[]const u8, _: *bool) void {
             daemonLog("thread: entry point reached");
-            runImpl(alloc, rpath) catch |err| {
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "thread: runImpl failed: {s}", .{@errorName(err)}) catch "thread: runImpl failed";
-                daemonLog(msg);
-                err_flag.* = true;
+            // Test: bypass runImpl entirely, just run the daemon inline
+            _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
+            daemonLog("thread: SetConsoleCtrlHandler done");
+
+            var path_buf: [256]u8 = undefined;
+            const pipe_path = session_connect.getSocketPath(&path_buf) orelse {
+                daemonLog("ERROR: no socket path");
+                return;
             };
-            daemonLog("thread: runImpl returned");
+            daemonLog(pipe_path);
+            ensureStateDir();
+
+            var wide_buf: [256]u16 = undefined;
+            const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch {
+                daemonLog("ERROR: utf16 conversion failed");
+                return;
+            };
+            wide_buf[wlen] = 0;
+            const pipe_name: LPCWSTR = @ptrCast(wide_buf[0..wlen :0]);
+
+            const state = alloc.create(DaemonState) catch {
+                daemonLog("ERROR: alloc DaemonState failed");
+                return;
+            };
+            const sessions_ptr = alloc.create([max_sessions]?DaemonSession) catch {
+                daemonLog("ERROR: alloc sessions failed");
+                return;
+            };
+            sessions_ptr.* = .{null} ** max_sessions;
+            const clients_ptr = alloc.create([max_clients]?DaemonClient) catch {
+                daemonLog("ERROR: alloc clients failed");
+                return;
+            };
+            clients_ptr.* = .{null} ** max_clients;
+            const pty_buf_slice = alloc.alloc(u8, 65536) catch {
+                daemonLog("ERROR: alloc pty_buf failed");
+                return;
+            };
+
+            state.* = .{
+                .sessions = sessions_ptr,
+                .clients = clients_ptr,
+                .pty_buf = pty_buf_slice[0..65536],
+                .allocator = alloc,
+            };
+            state.pipe_name_buf[0..wlen].* = wide_buf[0..wlen].*;
+            state.pipe_name_buf[wlen] = 0;
+            state.pipe_name_len = wlen;
+
+            state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
+            state.listen_pipe = createPipeInstance(pipe_name);
+            if (state.listen_pipe) |lp| {
+                daemonLog("pipe created OK");
+                startAsyncConnect(lp, &state.connect_overlap);
+            } else {
+                daemonLog("ERROR: pipe creation failed");
+            }
+
+            writeVersionFile();
+            daemonLog("entering main loop");
+
+            while (g_running) {
+                pollAccept(state);
+                pollPtyOutput(state);
+                pollClients(state);
+                pollProcNames(state);
+                pollDeadSessions(state);
+                Sleep(50);
+            }
+            daemonLog("loop exited");
         }
     }.entry, .{ allocator, restore_path, &run_err }) catch {
         daemonLog("ERROR: failed to spawn daemon thread");
