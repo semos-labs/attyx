@@ -1,7 +1,5 @@
 // Attyx — Custom Windows Installer
-// Dark-themed, single-page installer with branded UI.
-// Compile: zig cc installer.c installer.rc -o attyx-setup.exe -lkernel32 -luser32
-//          -lgdi32 -lshell32 -lole32 -ladvapi32 -lshlwapi -mwindows
+// Dark-themed installer with branded UI.
 
 #ifndef UNICODE
 #define UNICODE
@@ -28,29 +26,34 @@
 // Layout & colors
 // ---------------------------------------------------------------------------
 
-#define WIN_W       520
-#define WIN_H       500
-#define BG_COLOR    RGB(26, 26, 26)      // #1a1a1a
-#define TEXT_COLOR   RGB(224, 224, 224)   // #e0e0e0
-#define DIM_COLOR    RGB(128, 128, 128)  // #808080
-#define BTN_BG       RGB(40, 40, 40)     // #282828
-#define BTN_BORDER   RGB(80, 80, 80)     // #505050
-#define BTN_HOVER    RGB(55, 55, 55)     // #373737
-#define BTN_ACTIVE   RGB(70, 130, 180)   // steel blue accent
-#define CHECK_COLOR  RGB(120, 200, 120)  // green check
-#define PROGRESS_BG  RGB(50, 50, 50)
-#define PROGRESS_FG  RGB(120, 200, 120)
-#define MARGIN       32
-#define BTN_H        38
-#define LINE_H       24
-#define CHECK_SZ     16
+#define WIN_W       560
+#define WIN_H       440
+#define BG           RGB(14, 14, 14)       // #0e0e0e
+#define CARD_BG      RGB(22, 22, 22)       // #161616
+#define CARD_BORDER  RGB(38, 38, 38)       // #262626
+#define TEXT_PRI     RGB(240, 240, 240)    // #f0f0f0
+#define TEXT_SEC     RGB(120, 120, 120)    // #787878
+#define TEXT_TER     RGB(70, 70, 70)       // #464646
+#define ACCENT       RGB(100, 200, 180)   // #64c8b4  teal
+#define ACCENT_HOV   RGB(120, 220, 200)   // brighter teal
+#define ACCENT_DIM   RGB(60, 140, 120)    // muted teal
+#define INPUT_BG     RGB(28, 28, 28)      // #1c1c1c
+#define INPUT_BORDER RGB(50, 50, 50)      // #323232
+#define ERR_COLOR    RGB(220, 80, 80)     // red
+#define PROGRESS_BG  RGB(34, 34, 34)      // #222222
+#define CHECK_BG     RGB(34, 34, 34)
+#define PAD          40                    // outer padding
+#define BTN_H        42
+#define LINE_H       22
+#define CHECK_SZ     18
+#define RADIUS       8
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 static HWND g_hwnd;
-static HFONT g_font_title, g_font_body, g_font_mono, g_font_btn;
+static HFONT g_font_hero, g_font_title, g_font_body, g_font_small, g_font_btn;
 static HICON g_icon;
 static wchar_t g_install_dir[MAX_PATH];
 static bool g_opt_path     = true;
@@ -59,16 +62,14 @@ static bool g_opt_context  = true;
 static bool g_installing   = false;
 static bool g_done         = false;
 static bool g_failed       = false;
-static int  g_progress     = 0;    // 0-100
+static int  g_progress     = 0;
 static wchar_t g_status[256] = L"";
-static int  g_hover_btn    = 0;    // 0=none, 1=install, 2=browse, 3=launch
+static int  g_hover_btn    = 0;    // 0=none 1=install 2=browse 3=launch 4=close
 static wchar_t g_version[32] = L"";
 
-// Hit rects
-static RECT g_rc_install, g_rc_browse, g_rc_launch;
+static RECT g_rc_install, g_rc_browse, g_rc_launch, g_rc_close;
 static RECT g_rc_chk_path, g_rc_chk_desktop, g_rc_chk_context;
 
-// Payload directory (next to installer exe)
 static wchar_t g_payload_dir[MAX_PATH];
 static wchar_t g_exe_dir[MAX_PATH];
 
@@ -79,13 +80,70 @@ static wchar_t g_exe_dir[MAX_PATH];
 static void DoPaint(HWND hwnd);
 static void DoInstall(void);
 static DWORD WINAPI InstallThread(LPVOID param);
-static void DrawButton(HDC hdc, RECT* rc, const wchar_t* text, bool hover, bool accent);
-static void DrawCheckbox(HDC hdc, int x, int y, const wchar_t* text, bool checked, RECT* hitOut);
 static int  HitTest(int x, int y);
 static bool CopyDirRecursive(const wchar_t* src, const wchar_t* dst);
 static bool CreateShortcutLink(const wchar_t* lnkPath, const wchar_t* target,
                                 const wchar_t* desc, const wchar_t* iconPath);
 static void ApplyPostInstallOptions(void);
+
+// ---------------------------------------------------------------------------
+// Drawing primitives
+// ---------------------------------------------------------------------------
+
+static void FillRoundRect(HDC hdc, RECT* rc, int r, COLORREF fill) {
+    HBRUSH br = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, fill);
+    HGDIOBJ oldBr = SelectObject(hdc, br);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    RoundRect(hdc, rc->left, rc->top, rc->right, rc->bottom, r, r);
+    SelectObject(hdc, oldBr);
+    SelectObject(hdc, oldPen);
+    DeleteObject(br);
+    DeleteObject(pen);
+}
+
+static void StrokeRoundRect(HDC hdc, RECT* rc, int r, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, rc->left, rc->top, rc->right, rc->bottom, r, r);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+}
+
+static void DrawBtn(HDC hdc, RECT* rc, const wchar_t* text, bool hover, bool filled) {
+    COLORREF bg = filled ? (hover ? ACCENT_HOV : ACCENT) : (hover ? RGB(40,40,40) : RGB(30,30,30));
+    COLORREF fg = filled ? RGB(10, 10, 10) : TEXT_PRI;
+    COLORREF border = filled ? bg : (hover ? RGB(80,80,80) : RGB(55,55,55));
+    FillRoundRect(hdc, rc, RADIUS, bg);
+    if (!filled) StrokeRoundRect(hdc, rc, RADIUS, border);
+    SelectObject(hdc, g_font_btn);
+    SetTextColor(hdc, fg);
+    DrawTextW(hdc, text, -1, rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+static void DrawCheck(HDC hdc, int x, int y, const wchar_t* text, bool checked, RECT* hit) {
+    *hit = (RECT){ x, y, x + 420, y + LINE_H + 4 };
+    int by = y + 2;
+    RECT box = { x, by, x + CHECK_SZ, by + CHECK_SZ };
+    if (checked) {
+        FillRoundRect(hdc, &box, 4, ACCENT);
+        // Draw checkmark
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(10,10,10));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, x + 4, by + CHECK_SZ/2, NULL);
+        LineTo(hdc, x + CHECK_SZ/2 - 1, by + CHECK_SZ - 4);
+        LineTo(hdc, x + CHECK_SZ - 3, by + 4);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    } else {
+        StrokeRoundRect(hdc, &box, 4, INPUT_BORDER);
+    }
+    SelectObject(hdc, g_font_body);
+    SetTextColor(hdc, TEXT_PRI);
+    RECT lr = { x + CHECK_SZ + 10, y + 1, x + 420, y + 1 + LINE_H };
+    DrawTextW(hdc, text, -1, &lr, DT_LEFT | DT_SINGLELINE);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,19 +158,11 @@ static void SetStatus(const wchar_t* fmt, ...) {
 }
 
 static void InitPaths(void) {
-    // Get installer exe directory
     GetModuleFileNameW(NULL, g_exe_dir, MAX_PATH);
     PathRemoveFileSpecW(g_exe_dir);
-
-    // Payload is in dist/ next to installer
     swprintf(g_payload_dir, MAX_PATH, L"%s\\dist", g_exe_dir);
-    if (!PathFileExistsW(g_payload_dir)) {
-        // Try same directory (flat layout)
+    if (!PathFileExistsW(g_payload_dir))
         wcscpy(g_payload_dir, g_exe_dir);
-    }
-
-
-    // Default install dir — use LocalAppData (no admin needed)
     wchar_t localApp[MAX_PATH];
     if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localApp) == S_OK)
         swprintf(g_install_dir, MAX_PATH, L"%s\\Attyx", localApp);
@@ -131,170 +181,174 @@ static void DoPaint(HWND hwnd) {
     GetClientRect(hwnd, &cr);
     int W = cr.right, H = cr.bottom;
 
-    // Double buffer
     HDC mem = CreateCompatibleDC(hdc);
     HBITMAP bmp = CreateCompatibleBitmap(hdc, W, H);
     SelectObject(mem, bmp);
+    SetBkMode(mem, TRANSPARENT);
 
     // Background
-    HBRUSH bgBr = CreateSolidBrush(BG_COLOR);
+    HBRUSH bgBr = CreateSolidBrush(BG);
     FillRect(mem, &cr, bgBr);
     DeleteObject(bgBr);
 
-    SetBkMode(mem, TRANSPARENT);
-    int y = MARGIN;
+    // ── Header area ──
+    int y = PAD;
 
-    // Icon + title
+    // Icon (larger, centered vertically with title)
     if (g_icon)
-        DrawIconEx(mem, MARGIN, y, g_icon, 36, 36, 0, NULL, DI_NORMAL);
-    SelectObject(mem, g_font_title);
-    SetTextColor(mem, TEXT_COLOR);
-    RECT tr = { MARGIN + 44, y + 4, W - MARGIN, y + 40 };
+        DrawIconEx(mem, PAD, y - 2, g_icon, 40, 40, 0, NULL, DI_NORMAL);
+
+    // Title
+    SelectObject(mem, g_font_hero);
+    SetTextColor(mem, TEXT_PRI);
+    RECT tr = { PAD + 52, y, W - PAD, y + 42 };
     DrawTextW(mem, L"Attyx", -1, &tr, DT_LEFT | DT_SINGLELINE);
-    y += 52;
+
+    // Version badge next to title
+    if (g_version[0]) {
+        SelectObject(mem, g_font_small);
+        SetTextColor(mem, TEXT_TER);
+        RECT vr = { PAD + 136, y + 12, PAD + 260, y + 30 };
+        DrawTextW(mem, g_version, -1, &vr, DT_LEFT | DT_SINGLELINE);
+    }
+    y += 48;
 
     // Tagline
-    SelectObject(mem, g_font_mono);
-    SetTextColor(mem, DIM_COLOR);
-    RECT tg = { MARGIN, y, W - MARGIN, y + LINE_H * 2 };
-    DrawTextW(mem, L"Your terminal, without the duct tape.", -1, &tg,
-              DT_LEFT | DT_WORDBREAK);
-    y += LINE_H * 2 + 12;
+    SelectObject(mem, g_font_body);
+    SetTextColor(mem, TEXT_SEC);
+    RECT tg = { PAD, y, W - PAD, y + LINE_H };
+    DrawTextW(mem, L"Your terminal, without the duct tape.", -1, &tg, DT_LEFT | DT_SINGLELINE);
+    y += LINE_H + 24;
 
-    if (!g_done) {
-        // Install path
+    // ── Separator ──
+    RECT sep = { PAD, y, W - PAD, y + 1 };
+    HBRUSH sepBr = CreateSolidBrush(CARD_BORDER);
+    FillRect(mem, &sep, sepBr);
+    DeleteObject(sepBr);
+    y += 24;
+
+    // ── Content area ──
+    if (!g_done && !g_installing) {
+        // INSTALL SCREEN
+        SelectObject(mem, g_font_small);
+        SetTextColor(mem, TEXT_SEC);
+        RECT lb = { PAD, y, W - PAD, y + LINE_H };
+        DrawTextW(mem, L"INSTALL LOCATION", -1, &lb, DT_LEFT | DT_SINGLELINE);
+        y += LINE_H + 6;
+
+        // Path input with card styling
+        int pathRight = W - PAD - 90;
+        RECT pathCard = { PAD, y, pathRight, y + 40 };
+        FillRoundRect(mem, &pathCard, 6, INPUT_BG);
+        StrokeRoundRect(mem, &pathCard, 6, INPUT_BORDER);
+
         SelectObject(mem, g_font_body);
-        SetTextColor(mem, DIM_COLOR);
-        RECT lb = { MARGIN, y, W - MARGIN, y + LINE_H };
-        DrawTextW(mem, L"Install to:", -1, &lb, DT_LEFT | DT_SINGLELINE);
-        y += LINE_H + 2;
-
-        // Path box
-        RECT pathRc = { MARGIN, y, W - MARGIN - 80, y + 30 };
-        HBRUSH pathBg = CreateSolidBrush(BTN_BG);
-        FillRect(mem, &pathRc, pathBg);
-        DeleteObject(pathBg);
-        HPEN borderPen = CreatePen(PS_SOLID, 1, BTN_BORDER);
-        SelectObject(mem, borderPen);
-        SelectObject(mem, GetStockObject(NULL_BRUSH));
-        Rectangle(mem, pathRc.left, pathRc.top, pathRc.right, pathRc.bottom);
-        DeleteObject(borderPen);
-        SetTextColor(mem, TEXT_COLOR);
-        RECT pathText = { MARGIN + 8, y + 6, W - MARGIN - 88, y + 26 };
+        SetTextColor(mem, TEXT_PRI);
+        RECT pathText = { PAD + 14, y + 10, pathRight - 8, y + 30 };
         DrawTextW(mem, g_install_dir, -1, &pathText,
                   DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         // Browse button
-        g_rc_browse = (RECT){ W - MARGIN - 72, y, W - MARGIN, y + 30 };
-        DrawButton(mem, &g_rc_browse, L"Browse", g_hover_btn == 2, false);
-        y += 46;
+        g_rc_browse = (RECT){ pathRight + 8, y, W - PAD, y + 40 };
+        DrawBtn(mem, &g_rc_browse, L"...", g_hover_btn == 2, false);
+        y += 60;
 
-        if (!g_installing) {
-            // Install button
-            g_rc_install = (RECT){ MARGIN, y, W - MARGIN, y + BTN_H };
-            DrawButton(mem, &g_rc_install, L"Install", g_hover_btn == 1, true);
-        }
+        // Install button (full width, prominent)
+        g_rc_install = (RECT){ PAD, y, W - PAD, y + BTN_H };
+        DrawBtn(mem, &g_rc_install, L"Install", g_hover_btn == 1, true);
+
+        // Disk space hint
+        y += BTN_H + 12;
+        SelectObject(mem, g_font_small);
+        SetTextColor(mem, TEXT_TER);
+        RECT hint = { PAD, y, W - PAD, y + LINE_H };
+        DrawTextW(mem, L"No admin rights required", -1, &hint, DT_LEFT | DT_SINGLELINE);
     }
 
-    // Progress bar + status
-    if (g_installing || g_done) {
-        int py = H - 170;
-        if (g_progress > 0 || g_installing) {
-            RECT pbg = { MARGIN, py, W - MARGIN, py + 6 };
-            HBRUSH pBg = CreateSolidBrush(PROGRESS_BG);
-            FillRect(mem, &pbg, pBg);
-            DeleteObject(pBg);
-            if (g_progress > 0) {
-                int pw = (W - 2 * MARGIN) * g_progress / 100;
-                RECT pfg = { MARGIN, py, MARGIN + pw, py + 6 };
-                HBRUSH pFg = CreateSolidBrush(g_failed ? RGB(200, 80, 80) : PROGRESS_FG);
-                FillRect(mem, &pfg, pFg);
-                DeleteObject(pFg);
-            }
-        }
-        // Status text
+    if (g_installing && !g_done) {
+        // PROGRESS SCREEN
+        int py = y + 40;
+
+        // Status text above progress
         SelectObject(mem, g_font_body);
-        SetTextColor(mem, g_failed ? RGB(200, 80, 80) : DIM_COLOR);
-        RECT sr = { MARGIN, py + 14, W - MARGIN, py + 14 + LINE_H };
+        SetTextColor(mem, TEXT_SEC);
+        RECT sr = { PAD, py, W - PAD, py + LINE_H };
         DrawTextW(mem, g_status, -1, &sr, DT_LEFT | DT_SINGLELINE);
+        py += LINE_H + 12;
 
-        if (g_done && !g_failed) {
-            // Post-install options
-            int oy = py + 20;
-            SelectObject(mem, g_font_body);
-            DrawCheckbox(mem, MARGIN, oy, L"Add to PATH", g_opt_path, &g_rc_chk_path);
-            oy += LINE_H + 2;
-            DrawCheckbox(mem, MARGIN, oy, L"Desktop shortcut", g_opt_desktop, &g_rc_chk_desktop);
-            oy += LINE_H + 2;
-            DrawCheckbox(mem, MARGIN, oy, L"\"Open Attyx Here\" context menu", g_opt_context, &g_rc_chk_context);
-            oy += LINE_H + 16;
-
-            g_rc_launch = (RECT){ MARGIN, oy, MARGIN + 160, oy + BTN_H };
-            DrawButton(mem, &g_rc_launch, L"Launch Attyx", g_hover_btn == 3, true);
-
-            // Close text link
-            SelectObject(mem, g_font_body);
-            SetTextColor(mem, DIM_COLOR);
-            RECT clr = { MARGIN + 180, oy + 8, W - MARGIN, oy + 8 + LINE_H };
-            DrawTextW(mem, L"Close", -1, &clr, DT_LEFT | DT_SINGLELINE);
+        // Progress bar (rounded, thick)
+        RECT pbg = { PAD, py, W - PAD, py + 8 };
+        FillRoundRect(mem, &pbg, 4, PROGRESS_BG);
+        if (g_progress > 0) {
+            int pw = (W - 2 * PAD) * g_progress / 100;
+            if (pw < 8) pw = 8;
+            RECT pfg = { PAD, py, PAD + pw, py + 8 };
+            FillRoundRect(mem, &pfg, 4, ACCENT);
         }
+
+        // Percentage
+        py += 20;
+        wchar_t pct[8];
+        swprintf(pct, 8, L"%d%%", g_progress);
+        SelectObject(mem, g_font_small);
+        SetTextColor(mem, TEXT_SEC);
+        RECT pr = { PAD, py, W - PAD, py + LINE_H };
+        DrawTextW(mem, pct, -1, &pr, DT_LEFT | DT_SINGLELINE);
     }
 
-    // Version at bottom-right
-    if (g_version[0]) {
+    if (g_done && g_failed) {
+        // ERROR SCREEN
+        int ey = y + 20;
+        SelectObject(mem, g_font_title);
+        SetTextColor(mem, ERR_COLOR);
+        RECT er = { PAD, ey, W - PAD, ey + 30 };
+        DrawTextW(mem, L"Installation failed", -1, &er, DT_LEFT | DT_SINGLELINE);
+        ey += 36;
+
         SelectObject(mem, g_font_body);
-        SetTextColor(mem, RGB(60, 60, 60));
-        RECT vr = { W - 120, H - 24, W - 8, H - 4 };
-        DrawTextW(mem, g_version, -1, &vr, DT_RIGHT | DT_SINGLELINE);
+        SetTextColor(mem, TEXT_SEC);
+        RECT sr = { PAD, ey, W - PAD, ey + LINE_H * 3 };
+        DrawTextW(mem, g_status, -1, &sr, DT_LEFT | DT_WORDBREAK);
+    }
+
+    if (g_done && !g_failed) {
+        // SUCCESS SCREEN
+        int sy = y;
+
+        // Success message
+        SelectObject(mem, g_font_title);
+        SetTextColor(mem, ACCENT);
+        RECT sr = { PAD, sy, W - PAD, sy + 30 };
+        DrawTextW(mem, L"Installed successfully", -1, &sr, DT_LEFT | DT_SINGLELINE);
+        sy += 40;
+
+        // Options
+        SelectObject(mem, g_font_small);
+        SetTextColor(mem, TEXT_SEC);
+        RECT ol = { PAD, sy, W - PAD, sy + LINE_H };
+        DrawTextW(mem, L"OPTIONS", -1, &ol, DT_LEFT | DT_SINGLELINE);
+        sy += LINE_H + 8;
+
+        DrawCheck(mem, PAD, sy, L"Add to PATH", g_opt_path, &g_rc_chk_path);
+        sy += LINE_H + 8;
+        DrawCheck(mem, PAD, sy, L"Create desktop shortcut", g_opt_desktop, &g_rc_chk_desktop);
+        sy += LINE_H + 8;
+        DrawCheck(mem, PAD, sy, L"Add \"Open Attyx Here\" to context menu", g_opt_context, &g_rc_chk_context);
+        sy += LINE_H + 24;
+
+        // Buttons
+        int btnW = (W - 2 * PAD - 12) / 2;
+        g_rc_launch = (RECT){ PAD, sy, PAD + btnW, sy + BTN_H };
+        DrawBtn(mem, &g_rc_launch, L"Launch Attyx", g_hover_btn == 3, true);
+
+        g_rc_close = (RECT){ PAD + btnW + 12, sy, W - PAD, sy + BTN_H };
+        DrawBtn(mem, &g_rc_close, L"Close", g_hover_btn == 4, false);
     }
 
     BitBlt(hdc, 0, 0, W, H, mem, 0, 0, SRCCOPY);
     DeleteObject(bmp);
     DeleteDC(mem);
     EndPaint(hwnd, &ps);
-}
-
-// ---------------------------------------------------------------------------
-// Drawing helpers
-// ---------------------------------------------------------------------------
-
-static void DrawButton(HDC hdc, RECT* rc, const wchar_t* text, bool hover, bool accent) {
-    COLORREF bg = hover ? BTN_HOVER : BTN_BG;
-    COLORREF border = accent ? BTN_ACTIVE : BTN_BORDER;
-    HBRUSH br = CreateSolidBrush(bg);
-    FillRect(hdc, rc, br);
-    DeleteObject(br);
-    HPEN pen = CreatePen(PS_SOLID, accent ? 2 : 1, border);
-    SelectObject(hdc, pen);
-    SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    RoundRect(hdc, rc->left, rc->top, rc->right, rc->bottom, 6, 6);
-    DeleteObject(pen);
-    SelectObject(hdc, g_font_btn);
-    SetTextColor(hdc, TEXT_COLOR);
-    DrawTextW(hdc, text, -1, rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
-static void DrawCheckbox(HDC hdc, int x, int y, const wchar_t* text, bool checked, RECT* hitOut) {
-    *hitOut = (RECT){ x, y, x + 300, y + LINE_H };
-    // Box
-    HPEN pen = CreatePen(PS_SOLID, 1, BTN_BORDER);
-    SelectObject(hdc, pen);
-    SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Rectangle(hdc, x, y + 3, x + CHECK_SZ, y + 3 + CHECK_SZ);
-    DeleteObject(pen);
-    if (checked) {
-        // Checkmark
-        HPEN chk = CreatePen(PS_SOLID, 2, CHECK_COLOR);
-        SelectObject(hdc, chk);
-        MoveToEx(hdc, x + 3, y + 3 + CHECK_SZ / 2, NULL);
-        LineTo(hdc, x + CHECK_SZ / 2, y + 3 + CHECK_SZ - 3);
-        LineTo(hdc, x + CHECK_SZ - 2, y + 5);
-        DeleteObject(chk);
-    }
-    // Label
-    SetTextColor(hdc, TEXT_COLOR);
-    RECT lr = { x + CHECK_SZ + 8, y + 2, x + 400, y + 2 + LINE_H };
-    DrawTextW(hdc, text, -1, &lr, DT_LEFT | DT_SINGLELINE);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +360,7 @@ static int HitTest(int x, int y) {
     if (!g_installing && !g_done && PtInRect(&g_rc_install, pt)) return 1;
     if (!g_installing && !g_done && PtInRect(&g_rc_browse, pt))  return 2;
     if (g_done && !g_failed && PtInRect(&g_rc_launch, pt))       return 3;
+    if (g_done && !g_failed && PtInRect(&g_rc_close, pt))        return 4;
     return 0;
 }
 
@@ -325,6 +380,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_hover_btn != old) InvalidateRect(hwnd, NULL, FALSE);
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
+        // Cursor: hand on buttons
+        SetCursor(LoadCursorW(NULL, g_hover_btn ? IDC_HAND : IDC_ARROW));
         return 0;
     }
     case WM_MOUSELEAVE:
@@ -336,7 +393,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int hit = HitTest(pt.x, pt.y);
         if (hit == 1) DoInstall();
         if (hit == 2) {
-            // Browse for folder
             BROWSEINFOW bi = { .hwndOwner = hwnd, .lpszTitle = L"Select install folder",
                                .ulFlags = BIF_NEWDIALOGSTYLE };
             LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
@@ -347,35 +403,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         if (hit == 3) {
-            // Apply user-selected options, then launch
             ApplyPostInstallOptions();
             wchar_t exe[MAX_PATH];
             swprintf(exe, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
             ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
             PostQuitMessage(0);
         }
-        // Checkbox toggles (post-install options screen)
+        if (hit == 4) {
+            ApplyPostInstallOptions();
+            PostQuitMessage(0);
+        }
+        // Checkbox toggles
         if (g_done && !g_failed) {
             if (PtInRect(&g_rc_chk_path, pt))    { g_opt_path = !g_opt_path; InvalidateRect(hwnd, NULL, FALSE); }
             if (PtInRect(&g_rc_chk_desktop, pt))  { g_opt_desktop = !g_opt_desktop; InvalidateRect(hwnd, NULL, FALSE); }
             if (PtInRect(&g_rc_chk_context, pt))  { g_opt_context = !g_opt_context; InvalidateRect(hwnd, NULL, FALSE); }
         }
-        // Close link
-        if (g_done && !g_failed) {
-            RECT closeRc = { MARGIN + 180, 0, MARGIN + 280, 9999 };
-            if (PtInRect(&closeRc, pt)) {
-                ApplyPostInstallOptions();
-                PostQuitMessage(0);
-            }
-        }
         return 0;
     }
 
     case WM_ERASEBKGND:
-        return 1; // Prevent flicker
+        return 1;
 
     case WM_CLOSE:
-        if (g_installing) return 0; // Don't close during install
+        if (g_installing) return 0;
         PostQuitMessage(0);
         return 0;
 
@@ -400,23 +451,20 @@ static void DoInstall(void) {
 static DWORD WINAPI InstallThread(LPVOID param) {
     (void)param;
 
-    // Step 1: Create install directory (may need to create parent too)
     SetStatus(L"Creating directory...");
     g_progress = 5;
-    // SHCreateDirectoryExW creates intermediate dirs and succeeds if exists
     int dirErr = SHCreateDirectoryExW(NULL, g_install_dir, NULL);
     if (dirErr != ERROR_SUCCESS && dirErr != ERROR_ALREADY_EXISTS
         && dirErr != ERROR_FILE_EXISTS) {
         wchar_t msg[512];
-        swprintf(msg, 512, L"Error: could not create %s (code %d). Try a different path or run as admin.",
+        swprintf(msg, 512, L"Could not create %s (error %d). Try a different path or run as admin.",
                  g_install_dir, dirErr);
         SetStatus(msg);
         g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
 
-    // Step 2: Copy attyx.exe
-    SetStatus(L"Copying attyx.exe...");
+    SetStatus(L"Copying files...");
     g_progress = 10;
     wchar_t src[MAX_PATH], dst[MAX_PATH];
     swprintf(src, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
@@ -424,13 +472,12 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     if (!CopyFileW(src, dst, FALSE)) {
         DWORD err = GetLastError();
         wchar_t msg[512];
-        swprintf(msg, 512, L"Error: could not copy attyx.exe (code %lu)", err);
+        swprintf(msg, 512, L"Could not copy attyx.exe (error %lu)", err);
         SetStatus(msg);
         g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
 
-    // Step 3: Copy PDB if present
     swprintf(src, MAX_PATH, L"%s\\attyx.pdb", g_payload_dir);
     if (PathFileExistsW(src)) {
         swprintf(dst, MAX_PATH, L"%s\\attyx.pdb", g_install_dir);
@@ -438,12 +485,10 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     }
     g_progress = 20;
 
-    // Step 4: Copy MSYS2 sysroot
-    SetStatus(L"Copying shell environment...");
+    SetStatus(L"Setting up shell environment...");
     swprintf(src, MAX_PATH, L"%s\\share\\msys2", g_payload_dir);
     if (PathFileExistsW(src)) {
         swprintf(dst, MAX_PATH, L"%s\\share\\msys2", g_install_dir);
-        CreateDirectoryW(g_install_dir, NULL);
         wchar_t shareDir[MAX_PATH];
         swprintf(shareDir, MAX_PATH, L"%s\\share", g_install_dir);
         CreateDirectoryW(shareDir, NULL);
@@ -451,7 +496,6 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     }
     g_progress = 70;
 
-    // Start Menu shortcut (always created)
     SetStatus(L"Creating shortcuts...");
     {
         wchar_t startMenu[MAX_PATH];
@@ -466,8 +510,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     }
     g_progress = 90;
 
-    // Add/Remove Programs entry
-    SetStatus(L"Registering uninstaller...");
+    SetStatus(L"Registering...");
     {
         HKEY hKey;
         RegCreateKeyExW(HKEY_CURRENT_USER,
@@ -483,10 +526,9 @@ static DWORD WINAPI InstallThread(LPVOID param) {
                        (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
         RegSetValueExW(hKey, L"Publisher", 0, REG_SZ, (BYTE*)L"Attyx",
                        6 * sizeof(wchar_t));
-        if (g_version[0]) {
+        if (g_version[0])
             RegSetValueExW(hKey, L"DisplayVersion", 0, REG_SZ, (BYTE*)g_version,
                            (DWORD)((wcslen(g_version) + 1) * sizeof(wchar_t)));
-        }
         DWORD noModify = 1;
         RegSetValueExW(hKey, L"NoModify", 0, REG_DWORD, (BYTE*)&noModify, sizeof(DWORD));
         RegSetValueExW(hKey, L"NoRepair", 0, REG_DWORD, (BYTE*)&noModify, sizeof(DWORD));
@@ -495,21 +537,19 @@ static DWORD WINAPI InstallThread(LPVOID param) {
         RegCloseKey(hKey);
     }
     g_progress = 100;
-
     g_done = true;
     g_installing = false;
-    SetStatus(L"Installation complete!");
+    SetStatus(L"");
     return 0;
 }
 
 // ---------------------------------------------------------------------------
-// Post-install options (applied on Launch/Close)
+// Post-install options
 // ---------------------------------------------------------------------------
 
 static void ApplyPostInstallOptions(void) {
     wchar_t dst[MAX_PATH];
 
-    // Add to PATH
     if (g_opt_path) {
         HKEY hKey;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ | KEY_WRITE, &hKey) == ERROR_SUCCESS) {
@@ -528,7 +568,6 @@ static void ApplyPostInstallOptions(void) {
         }
     }
 
-    // Desktop shortcut
     if (g_opt_desktop) {
         wchar_t desktop[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) == S_OK) {
@@ -539,37 +578,30 @@ static void ApplyPostInstallOptions(void) {
         }
     }
 
-    // Context menu
     if (g_opt_context) {
         HKEY hKey;
         swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" \"%%V\"", g_install_dir);
         wchar_t iconVal[MAX_PATH];
         swprintf(iconVal, MAX_PATH, L"\"%s\\attyx.exe\"", g_install_dir);
-        // Folder background
         RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx",
                         0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
-                       (DWORD)(16 * sizeof(wchar_t)));
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here", 16 * sizeof(wchar_t));
         RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
                        (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
         RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx\\command",
                         0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst, (DWORD)((wcslen(dst)+1)*sizeof(wchar_t)));
         RegCloseKey(hKey);
-        // Folder right-click
         RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx",
                         0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here",
-                       (DWORD)(16 * sizeof(wchar_t)));
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here", 16 * sizeof(wchar_t));
         RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
                        (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
         RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx\\command",
                         0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
+        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst, (DWORD)((wcslen(dst)+1)*sizeof(wchar_t)));
         RegCloseKey(hKey);
     }
 }
@@ -586,8 +618,7 @@ static bool CopyDirRecursive(const wchar_t* src, const wchar_t* dst) {
     HANDLE hFind = FindFirstFileW(search, &fd);
     if (hFind == INVALID_HANDLE_VALUE) return false;
     do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
-            continue;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
         wchar_t srcPath[MAX_PATH], dstPath[MAX_PATH];
         swprintf(srcPath, MAX_PATH, L"%s\\%s", src, fd.cFileName);
         swprintf(dstPath, MAX_PATH, L"%s\\%s", dst, fd.cFileName);
@@ -628,7 +659,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     LPWSTR cmdLine = GetCommandLineW();
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-    // Parse /version=X.Y.Z from command line
     if (cmdLine && wcsstr(cmdLine, L"/version=")) {
         const wchar_t* v = wcsstr(cmdLine, L"/version=") + 9;
         int i = 0;
@@ -638,18 +668,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
 
     InitPaths();
 
-    // Fonts
-    g_font_title = CreateFontW(-24, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_hero  = CreateFontW(-30, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    g_font_body = CreateFontW(-14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_title = CreateFontW(-20, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    g_font_mono = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-        0, 0, CLEARTYPE_QUALITY, 0, L"Cascadia Mono");
-    g_font_btn = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_body  = CreateFontW(-14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_font_small = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_font_btn   = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_icon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
 
-    // Window class
     WNDCLASSEXW wc = {
         .cbSize = sizeof(wc),
         .lpfnWndProc = WndProc,
@@ -661,27 +691,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     };
     RegisterClassExW(&wc);
 
-    // Center on screen
     int sx = GetSystemMetrics(SM_CXSCREEN);
     int sy = GetSystemMetrics(SM_CYSCREEN);
     RECT wr = { 0, 0, WIN_W, WIN_H };
-    AdjustWindowRect(&wr, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+    AdjustWindowRect(&wr, style, FALSE);
     int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
 
-    g_hwnd = CreateWindowExW(0, L"AttyxInstaller",
-        L"Attyx Setup",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+    g_hwnd = CreateWindowExW(0, L"AttyxInstaller", L"Attyx Setup", style,
         (sx - ww) / 2, (sy - wh) / 2, ww, wh,
         NULL, NULL, hInst, NULL);
 
-    // Dark title bar (Windows 10 1809+)
+    // Dark title bar
     HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
     if (dwm) {
         typedef HRESULT (WINAPI *PFN)(HWND, DWORD, const void*, DWORD);
         PFN fn = (PFN)GetProcAddress(dwm, "DwmSetWindowAttribute");
         if (fn) {
             BOOL dark = TRUE;
-            fn(g_hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
+            fn(g_hwnd, 20, &dark, sizeof(dark));
         }
     }
 
@@ -694,9 +722,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
         DispatchMessageW(&msg);
     }
 
+    DeleteObject(g_font_hero);
     DeleteObject(g_font_title);
     DeleteObject(g_font_body);
-    DeleteObject(g_font_mono);
+    DeleteObject(g_font_small);
     DeleteObject(g_font_btn);
     CoUninitialize();
     return 0;
