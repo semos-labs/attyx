@@ -9,6 +9,16 @@ const session_connect = @import("app/session_connect.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
+fn debugToFile(msg: []const u8) void {
+    var path_buf: [256]u8 = undefined;
+    const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+    file.writeAll(msg) catch {};
+    file.writeAll("\n") catch {};
+}
+
 // These modules are deeply POSIX (Unix sockets, signals, poll, fork/exec).
 // On Windows they'll need complete rewrites (Phase 1+), so avoid importing
 // them at all to prevent type-checking failures on POSIX-only types.
@@ -107,12 +117,14 @@ pub fn main() !void {
             return;
         },
         .daemon => {
+            debugToFile("main: daemon action dispatched");
             daemon.run(allocator, null) catch |err| {
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "error: daemon failed: {s}\n", .{@errorName(err)}) catch "error: daemon failed\n";
-                std.fs.File.stderr().writeAll(msg) catch {};
+                var ebuf: [256]u8 = undefined;
+                const emsg = std.fmt.bufPrint(&ebuf, "main: daemon.run failed: {s}", .{@errorName(err)}) catch "main: daemon.run failed";
+                debugToFile(emsg);
                 std.process.exit(1);
             };
+            debugToFile("main: daemon.run returned normally");
             return;
         },
         .daemon_restore => {

@@ -17,6 +17,18 @@ const handler = @import("handler.zig");
 const session_connect = @import("../session_connect.zig");
 const state_persist = @import("state_persist.zig");
 
+/// File-based debug logging for daemon (no console available).
+fn daemonLog(msg: []const u8) void {
+    var path_buf: [256]u8 = undefined;
+    const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+    file.writeAll("[daemon] ") catch {};
+    file.writeAll(msg) catch {};
+    file.writeAll("\n") catch {};
+}
+
 const windows = std.os.windows;
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
@@ -110,10 +122,17 @@ fn ctrlHandler(ctrl_type: DWORD) callconv(.winapi) BOOL {
 }
 
 pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
+    daemonLog("daemon starting");
+
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
 
     var path_buf: [256]u8 = undefined;
-    const pipe_path_utf8 = session_connect.getSocketPath(&path_buf) orelse return error.NoHome;
+    const pipe_path_utf8 = session_connect.getSocketPath(&path_buf) orelse {
+        daemonLog("ERROR: getSocketPath returned null (no LOCALAPPDATA?)");
+        return error.NoHome;
+    };
+
+    daemonLog(pipe_path_utf8);
 
     // Convert pipe path to UTF-16 for Windows API
     var wide_buf: [256]u16 = undefined;
@@ -123,14 +142,12 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
 
     // Ensure state directory exists
     ensureStateDir();
+    daemonLog("state dir ensured");
 
     // Write daemon version file
     writeVersionFile();
 
-    const stderr = std.fs.File.stderr();
-    const label = if (comptime @import("builtin").mode == .Debug) "attyx daemon (dev): listening on named pipe\n" else "attyx daemon: listening on named pipe\n";
-    stderr.writeAll(label) catch {};
-
+    daemonLog("creating named pipe");
     var sessions: [max_sessions]?DaemonSession = .{null} ** max_sessions;
     var session_count: usize = 0;
     var next_session_id: u32 = 1;
@@ -150,9 +167,17 @@ pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
     connect_overlap.hEvent = CreateEventW(null, 1, 0, null); // manual-reset
     var listen_pipe: ?HANDLE = createPipeInstance(pipe_name);
 
+    if (listen_pipe) |_| {
+        daemonLog("pipe created successfully, starting async connect");
+    } else {
+        daemonLog("ERROR: CreateNamedPipeW failed!");
+    }
+
     if (listen_pipe) |lp| {
         startAsyncConnect(lp, &connect_overlap);
     }
+
+    daemonLog("entering main loop");
 
     defer {
         state_persist.save(&sessions, next_session_id, next_pane_id);
