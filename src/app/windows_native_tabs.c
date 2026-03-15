@@ -26,9 +26,9 @@
 #define ARC_SEGS        5
 
 // Padding: tabs float inside the bar with margins
-#define BAR_PAD_TOP     4   // top margin above tabs
+#define BAR_PAD_TOP     6   // top margin above tabs
 #define BAR_PAD_LEFT    8   // left margin before first tab
-#define TAB_FONT_PT     12  // fixed UI font size (Segoe UI)
+#define TAB_FONT_PT     11  // fixed tab title font size (uses terminal font family)
 
 // ---------------------------------------------------------------------------
 // State
@@ -45,7 +45,7 @@ static int     s_title_lens[16];
 static GlyphCache s_tab_gc;
 static int        s_tab_gc_ready = 0;
 
-// Tab font: Segoe UI at fixed size, independent of terminal config
+// Tab font: terminal font family at fixed small size
 static void tab_gc_init(void) {
     if (s_tab_gc_ready) return;
     float scale = g_content_scale, fontSize = TAB_FONT_PT * scale;
@@ -57,7 +57,15 @@ static void tab_gc_init(void) {
     HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                      &IID_IDWriteFactory, (IUnknown**)&s_tab_gc.dw_factory);
     if (FAILED(hr)) return;
-    const wchar_t* family = L"Segoe UI";
+    // Use the terminal's configured font family (monospace) at fixed small size
+    static wchar_t family[ATTYX_FONT_FAMILY_MAX];
+    if (g_font_family_len > 0) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, g_font_family, g_font_family_len,
+                                     family, ATTYX_FONT_FAMILY_MAX - 1);
+        family[n] = 0;
+    } else {
+        wcscpy(family, L"Consolas");
+    }
     IDWriteTextFormat* fmt = NULL;
     hr = IDWriteFactory_CreateTextFormat(s_tab_gc.dw_factory, family, NULL,
              DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
