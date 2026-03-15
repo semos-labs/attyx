@@ -126,23 +126,26 @@ pub fn testLog() void {
 }
 
 pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
-    daemonLog("run: wrapper entered");
-    return @call(.auto, runImpl, .{ allocator, restore_path });
+    // Windows default stack is 1MB — too small for runImpl in debug mode
+    // (deeply nested loops + debug metadata). Spawn on a thread with 8MB
+    // stack to match macOS/Linux defaults.
+    daemonLog("run: spawning daemon thread (8MB stack)");
+    var run_err: bool = false;
+    const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, struct {
+        fn entry(alloc: std.mem.Allocator, rpath: ?[]const u8, err_flag: *bool) void {
+            runImpl(alloc, rpath) catch {
+                err_flag.* = true;
+            };
+        }
+    }.entry, .{ allocator, restore_path, &run_err }) catch {
+        daemonLog("ERROR: failed to spawn daemon thread");
+        return error.SpawnFailed;
+    };
+    thread.join();
+    if (run_err) return error.DaemonFailed;
 }
 
 fn runImpl(allocator: std.mem.Allocator, _: ?[]const u8) !void {
-    _ = allocator;
-    daemonLog("runImpl: MINIMAL entered");
-    _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
-    daemonLog("runImpl: sleeping in loop");
-    while (g_running) {
-        Sleep(50);
-    }
-    return;
-}
-
-fn runImpl_DISABLED(allocator: std.mem.Allocator, _: ?[]const u8) !void {
-    daemonLog("runImpl: entered");
     daemonLog("daemon starting");
 
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
