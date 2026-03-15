@@ -110,6 +110,15 @@ static void InitPaths(void) {
         wcscpy(g_payload_dir, g_exe_dir);
     }
 
+    // Debug: show resolved payload path
+    wchar_t dbg[512];
+    wchar_t exeCheck[MAX_PATH];
+    swprintf(exeCheck, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
+    swprintf(dbg, 512, L"exe_dir: %s\npayload: %s\nattyx.exe exists: %s",
+             g_exe_dir, g_payload_dir,
+             PathFileExistsW(exeCheck) ? L"YES" : L"NO");
+    MessageBoxW(NULL, dbg, L"Debug", MB_OK);
+
     // Default install dir
     wchar_t pf[MAX_PATH];
     if (SHGetFolderPathW(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf) == S_OK)
