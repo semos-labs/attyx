@@ -395,7 +395,7 @@ pub const Pty = struct {
             null,
             null,
             0, // don't inherit handles
-            EXTENDED_STARTUPINFO_PRESENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
             null,
             cwd_wide,
             &si,
