@@ -110,19 +110,11 @@ static void InitPaths(void) {
         wcscpy(g_payload_dir, g_exe_dir);
     }
 
-    // Debug: show resolved payload path
-    wchar_t dbg[512];
-    wchar_t exeCheck[MAX_PATH];
-    swprintf(exeCheck, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
-    swprintf(dbg, 512, L"exe_dir: %s\npayload: %s\nattyx.exe exists: %s",
-             g_exe_dir, g_payload_dir,
-             PathFileExistsW(exeCheck) ? L"YES" : L"NO");
-    MessageBoxW(NULL, dbg, L"Debug", MB_OK);
 
-    // Default install dir
-    wchar_t pf[MAX_PATH];
-    if (SHGetFolderPathW(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf) == S_OK)
-        swprintf(g_install_dir, MAX_PATH, L"%s\\Attyx", pf);
+    // Default install dir — use LocalAppData (no admin needed)
+    wchar_t localApp[MAX_PATH];
+    if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localApp) == S_OK)
+        swprintf(g_install_dir, MAX_PATH, L"%s\\Attyx", localApp);
     else
         wcscpy(g_install_dir, L"C:\\Program Files\\Attyx");
 }
@@ -403,10 +395,20 @@ static void DoInstall(void) {
 static DWORD WINAPI InstallThread(LPVOID param) {
     (void)param;
 
-    // Step 1: Create install directory
+    // Step 1: Create install directory (may need to create parent too)
     SetStatus(L"Creating directory...");
     g_progress = 5;
-    CreateDirectoryW(g_install_dir, NULL);
+    // SHCreateDirectoryExW creates intermediate dirs and succeeds if exists
+    int dirErr = SHCreateDirectoryExW(NULL, g_install_dir, NULL);
+    if (dirErr != ERROR_SUCCESS && dirErr != ERROR_ALREADY_EXISTS
+        && dirErr != ERROR_FILE_EXISTS) {
+        wchar_t msg[512];
+        swprintf(msg, 512, L"Error: could not create %s (code %d). Try a different path or run as admin.",
+                 g_install_dir, dirErr);
+        SetStatus(msg);
+        g_failed = true; g_done = true;
+        return 1;
+    }
 
     // Step 2: Copy attyx.exe
     SetStatus(L"Copying attyx.exe...");
@@ -415,7 +417,10 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     swprintf(src, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
     swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
     if (!CopyFileW(src, dst, FALSE)) {
-        SetStatus(L"Error: could not copy attyx.exe");
+        DWORD err = GetLastError();
+        wchar_t msg[512];
+        swprintf(msg, 512, L"Error: could not copy attyx.exe (code %lu)", err);
+        SetStatus(msg);
         g_failed = true; g_done = true;
         return 1;
     }
