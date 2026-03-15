@@ -12,11 +12,17 @@ const platform = @import("../platform/platform.zig");
 const spawn = @import("spawn.zig");
 const logging = @import("../logging/log.zig");
 
-/// Direct stderr debug print — works even before logging is fully initialized.
+/// Direct debug print to a file — works even when stderr is detached.
 fn dbg(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "[session_connect] " ++ fmt ++ "\n", args) catch return;
-    std.fs.File.stderr().writeAll(msg) catch {};
+    // Write to a known debug log file in the state directory.
+    var path_buf: [256]u8 = undefined;
+    const path = statePath(&path_buf, "session-debug{s}.log") orelse return;
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+    file.writeAll(msg) catch {};
 }
 
 // Windows API imports — only resolved when targeting Windows.
