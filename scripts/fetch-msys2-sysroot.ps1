@@ -2,13 +2,9 @@
 # Downloads a minimal MSYS2 sysroot with zsh for bundling with Attyx.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts/fetch-msys2-sysroot.ps1
-# Output: share/msys2/  (relative to repo root or --output-dir)
+# Output: share/msys2/ (relative to repo root)
 #
-# The resulting sysroot is ~15-20 MB and contains:
-#   usr/bin/zsh.exe, coreutils, ls, cat, grep, sed, etc.
-#   usr/bin/msys-2.0.dll + runtime DLLs
-#   usr/lib/zsh/ (modules)
-#   etc/profile, etc/zsh/ (default configs)
+# The sysroot contains zsh, coreutils, and runtime DLLs (~15-20 MB).
 
 param(
     [string]$OutputDir = "share\msys2",
@@ -17,28 +13,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Skip if sysroot already exists and has zsh.exe.
+# Skip if sysroot already exists.
 $existingZsh = Join-Path $OutputDir "usr\bin\zsh.exe"
 if (Test-Path $existingZsh) {
-    Write-Host "MSYS2 sysroot already exists at $OutputDir — skipping download."
+    Write-Host "MSYS2 sysroot already present - skipping download."
     exit 0
 }
 
-# Packages to download (name + version — update these when bumping).
-# These are the minimal set needed for zsh to work.
+# Minimal package set for zsh to work.
 $packages = @(
-    "zsh-5.9-3-x86_64.pkg.tar.zst",
-    "msys2-runtime-3.5.7-1-x86_64.pkg.tar.zst",
-    "coreutils-8.32-5-x86_64.pkg.tar.zst",
-    "ncurses-6.5-1-x86_64.pkg.tar.zst",
-    "libreadline-8.2.013-1-x86_64.pkg.tar.zst",
-    "pcre2-10.44-1-x86_64.pkg.tar.zst",
-    "libiconv-1.17-1-x86_64.pkg.tar.zst",
-    "libintl-0.22.4-1-x86_64.pkg.tar.zst",
-    "bash-5.2.037-1-x86_64.pkg.tar.zst",
-    "filesystem-2024.02.25-1-x86_64.pkg.tar.zst",
-    "grep-3.11-1-x86_64.pkg.tar.zst",
-    "sed-4.9-1-x86_64.pkg.tar.zst",
+    "zsh-5.9-3-x86_64.pkg.tar.zst"
+    "msys2-runtime-3.5.7-1-x86_64.pkg.tar.zst"
+    "coreutils-8.32-5-x86_64.pkg.tar.zst"
+    "ncurses-6.5-1-x86_64.pkg.tar.zst"
+    "libreadline-8.2.013-1-x86_64.pkg.tar.zst"
+    "pcre2-10.44-1-x86_64.pkg.tar.zst"
+    "libiconv-1.17-1-x86_64.pkg.tar.zst"
+    "libintl-0.22.4-1-x86_64.pkg.tar.zst"
+    "bash-5.2.037-1-x86_64.pkg.tar.zst"
+    "filesystem-2024.02.25-1-x86_64.pkg.tar.zst"
+    "grep-3.11-1-x86_64.pkg.tar.zst"
+    "sed-4.9-1-x86_64.pkg.tar.zst"
     "gawk-5.3.1-1-x86_64.pkg.tar.zst"
 )
 
@@ -49,9 +44,9 @@ New-Item -ItemType Directory -Force $tempDir | Out-Null
 $extractDir = Join-Path $tempDir "extract"
 New-Item -ItemType Directory -Force $extractDir | Out-Null
 
-# Check for zstd — needed to decompress .pkg.tar.zst
-$zstd = Get-Command "zstd" -ErrorAction SilentlyContinue
-if (-not $zstd) {
+# Check for zstd (needed to decompress .pkg.tar.zst).
+$zstdCmd = Get-Command "zstd" -ErrorAction SilentlyContinue
+if (-not $zstdCmd) {
     Write-Host "zstd not found. Install it: winget install Facebook.zstd"
     Write-Host "Or: scoop install zstd"
     exit 1
@@ -72,11 +67,11 @@ foreach ($pkg in $packages) {
     tar -xf $tarPath -C $extractDir
 }
 
-# Build the output sysroot — copy only what we need.
+# Assemble output sysroot with only needed parts.
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 
-# Copy usr/bin (executables + DLLs)
+# usr/bin (executables + DLLs)
 $srcBin = Join-Path $extractDir "usr\bin"
 $dstBin = Join-Path $OutputDir "usr\bin"
 if (Test-Path $srcBin) {
@@ -84,7 +79,7 @@ if (Test-Path $srcBin) {
     Copy-Item -Path "$srcBin\*" -Destination $dstBin -Recurse -Force
 }
 
-# Copy usr/lib/zsh (zsh modules)
+# usr/lib/zsh (modules)
 $srcZshLib = Join-Path $extractDir "usr\lib\zsh"
 $dstZshLib = Join-Path $OutputDir "usr\lib\zsh"
 if (Test-Path $srcZshLib) {
@@ -92,7 +87,7 @@ if (Test-Path $srcZshLib) {
     Copy-Item -Path "$srcZshLib\*" -Destination $dstZshLib -Recurse -Force
 }
 
-# Copy usr/share/terminfo (needed for ncurses)
+# usr/share/terminfo (ncurses needs this)
 $srcTerminfo = Join-Path $extractDir "usr\share\terminfo"
 $dstTerminfo = Join-Path $OutputDir "usr\share\terminfo"
 if (Test-Path $srcTerminfo) {
@@ -100,7 +95,7 @@ if (Test-Path $srcTerminfo) {
     Copy-Item -Path "$srcTerminfo\*" -Destination $dstTerminfo -Recurse -Force
 }
 
-# Copy etc/ (profile, zsh configs)
+# etc/ (profile, zsh default configs)
 $srcEtc = Join-Path $extractDir "etc"
 $dstEtc = Join-Path $OutputDir "etc"
 if (Test-Path $srcEtc) {
@@ -108,7 +103,7 @@ if (Test-Path $srcEtc) {
     Copy-Item -Path "$srcEtc\*" -Destination $dstEtc -Recurse -Force
 }
 
-# Copy usr/share/zsh (zsh functions/completions)
+# usr/share/zsh (functions, completions)
 $srcZshShare = Join-Path $extractDir "usr\share\zsh"
 $dstZshShare = Join-Path $OutputDir "usr\share\zsh"
 if (Test-Path $srcZshShare) {
@@ -116,10 +111,10 @@ if (Test-Path $srcZshShare) {
     Copy-Item -Path "$srcZshShare\*" -Destination $dstZshShare -Recurse -Force
 }
 
-# Cleanup
+# Cleanup temp files.
 Remove-Item -Recurse -Force $tempDir
 
-# Verify
+# Verify.
 $zshExe = Join-Path $OutputDir "usr\bin\zsh.exe"
 if (Test-Path $zshExe) {
     $size = (Get-ChildItem -Recurse $OutputDir | Measure-Object -Property Length -Sum).Sum / 1MB

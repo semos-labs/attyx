@@ -215,23 +215,24 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("winmm", .{});
 
         // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
-        // Native Windows build: auto-download if missing, then install.
-        // Cross-compile: skip download (user must pre-populate share/msys2/).
-        const native_windows = builtin.os.tag == .windows;
-        if (native_windows) {
-            // Auto-fetch the sysroot on first build.
+        // `zig build fetch-msys2` downloads it; default build installs if present.
+        if (builtin.os.tag == .windows) {
             const fetch_msys2 = b.addSystemCommand(&.{
                 "powershell", "-ExecutionPolicy", "Bypass", "-File",
                 "scripts\\fetch-msys2-sysroot.ps1",
             });
             fetch_msys2.has_side_effects = true;
-
+            const fetch_step = b.step("fetch-msys2", "Download MSYS2 sysroot for bundled zsh");
+            fetch_step.dependOn(&fetch_msys2.step);
+        }
+        // Install sysroot next to binary if it has been fetched.
+        const sysroot_exists = if (b.build_root.handle.access("share/msys2/usr/bin/zsh.exe", .{})) |_| true else |_| false;
+        if (sysroot_exists) {
             const install_msys2 = b.addInstallDirectory(.{
                 .source_dir = b.path("share/msys2"),
                 .install_dir = .{ .custom = "bin/share/msys2" },
                 .install_subdir = "",
             });
-            install_msys2.step.dependOn(&fetch_msys2.step);
             b.getInstallStep().dependOn(&install_msys2.step);
         }
     }
