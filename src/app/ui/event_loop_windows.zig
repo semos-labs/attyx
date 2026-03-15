@@ -674,6 +674,7 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     const layout = ctx.tab_mgr.activeLayout();
     ws.g_engine = &pane.engine;
     ws.g_pty_handle = pane.pty.pipe_in_write;
+    ws.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
     // Force full repaint so the renderer picks up the new tab's content.

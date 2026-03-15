@@ -133,7 +133,9 @@ pub fn run(
     var session_client: ?SessionClient = null;
     defer if (session_client) |*sc| sc.deinit();
 
-    if (config.sessions_enabled and config.argv == null) {
+    // On Windows, always use daemon sessions for persistence (unless a custom
+    // argv was specified, which means the user wants a one-shot command).
+    if (config.argv == null) {
         if (SessionClient.connect(allocator)) |sc_val| {
             session_client = sc_val;
             if (sc_val.legacy_daemon) {
@@ -188,6 +190,7 @@ pub fn run(
     // Session manager wraps the initial TabManager (takes ownership).
     const initial_name = session_win.cwdSessionName() orelse "main";
     var session_mgr = session_win.WinSessionManager.init(allocator, tab_mgr, initial_name);
+    session_mgr.session_client = heap_session_client;
     defer session_mgr.deinit();
 
     // Wire up stubs so input dispatch can write to PTY and read engine state

@@ -1,8 +1,9 @@
-// Windows in-process session manager.
+// Windows session manager.
 //
 // Each session wraps a TabManager with its own tabs and panes.
 // Switching sessions swaps which TabManager is active in WinCtx.
-// Sessions do not persist across process restarts (no daemon).
+// When a daemon SessionClient is available, new sessions are created
+// through the daemon for persistence across process restarts.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -13,6 +14,8 @@ const publish = @import("ui/publish.zig");
 const theme_registry_mod = @import("../theme/registry.zig");
 const Theme = theme_registry_mod.Theme;
 const logging = @import("../logging/log.zig");
+const SessionClient = @import("session_client.zig").SessionClient;
+const conn = @import("session_connect.zig");
 
 pub const max_sessions = 32;
 
@@ -51,6 +54,7 @@ pub const WinSessionManager = struct {
     next_id: u32 = 1,
     allocator: Allocator,
     scrollback_lines: u32 = 5000,
+    session_client: ?*SessionClient = null,
 
     /// Initialize with an existing TabManager as session 1.
     pub fn init(allocator: Allocator, initial_tab_mgr: *TabManager, name: []const u8) WinSessionManager {
@@ -78,7 +82,7 @@ pub const WinSessionManager = struct {
         return self.activeSession().tab_mgr;
     }
 
-    /// Create a new session. Returns the session ID.
+    /// Create a new session. Routes through daemon when available.
     pub fn createSession(
         self: *WinSessionManager,
         name: []const u8,
@@ -92,11 +96,28 @@ pub const WinSessionManager = struct {
             if (self.sessions[i] == null) break @as(u8, @intCast(i));
         } else return error.TooManySessions;
 
-        // Spawn initial pane
+        // Spawn initial pane (always local — needed for Engine)
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
         pane.* = try Pane.spawn(self.allocator, rows, cols, null, null, scrollback);
         pane.engine.state.theme_colors = publish.themeToEngineColors(theme);
+
+        // If daemon is available, create session there and get daemon pane ID
+        if (self.session_client) |sc| {
+            if (sc.createSession(name, rows, cols, "", "")) |daemon_sid| {
+                sc.attach(daemon_sid, rows, cols) catch {};
+                if (sc.waitForAttach(5000)) |resp| {
+                    if (resp.pane_count > 0) pane.daemon_pane_id = resp.pane_ids[0];
+                    conn.saveLastSession(daemon_sid);
+                } else |_| {}
+                // Send focus_panes so daemon streams output
+                if (pane.daemon_pane_id) |dpid| {
+                    sc.sendFocusPanes(&.{dpid}) catch {};
+                }
+            } else |err| {
+                logging.warn("session", "daemon create failed, using local: {}", .{err});
+            }
+        }
 
         // Create TabManager
         const tab_mgr = try self.allocator.create(TabManager);
@@ -124,6 +145,14 @@ pub const WinSessionManager = struct {
             if (self.sessions[i]) |*s| {
                 if (s.id == sid) {
                     self.active = @intCast(i);
+                    // Attach daemon to the new session
+                    if (self.session_client) |sc| {
+                        const rows: u16 = @intCast(s.tab_mgr.activePane().engine.state.ring.screen_rows);
+                        const cols: u16 = @intCast(s.tab_mgr.activePane().engine.state.ring.cols);
+                        sc.attach(sid, rows, cols) catch {};
+                        _ = sc.waitForAttach(2000) catch {};
+                        conn.saveLastSession(sid);
+                    }
                     logging.info("session", "switched to session {d} \"{s}\"", .{ sid, s.getName() });
                     return @intCast(i);
                 }
@@ -140,6 +169,8 @@ pub const WinSessionManager = struct {
             if (self.sessions[i]) |*s| {
                 if (s.id == sid) {
                     logging.info("session", "killing session {d} \"{s}\"", .{ sid, s.getName() });
+                    // Kill daemon session if connected
+                    if (self.session_client) |sc| sc.killSession(sid) catch {};
                     s.tab_mgr.deinit();
                     self.allocator.destroy(s.tab_mgr);
                     self.sessions[i] = null;
@@ -162,6 +193,8 @@ pub const WinSessionManager = struct {
             if (self.sessions[i]) |*s| {
                 if (s.id == sid) {
                     s.setName(new_name);
+                    // Rename daemon session if connected
+                    if (self.session_client) |sc| sc.renameSession(sid, new_name) catch {};
                     logging.info("session", "renamed session {d} to \"{s}\"", .{ sid, s.getName() });
                     return;
                 }
