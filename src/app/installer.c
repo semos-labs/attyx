@@ -85,6 +85,7 @@ static int  HitTest(int x, int y);
 static bool CopyDirRecursive(const wchar_t* src, const wchar_t* dst);
 static bool CreateShortcutLink(const wchar_t* lnkPath, const wchar_t* target,
                                 const wchar_t* desc, const wchar_t* iconPath);
+static void ApplyPostInstallOptions(void);
 
 // ---------------------------------------------------------------------------
 // Helpers
