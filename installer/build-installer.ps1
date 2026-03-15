@@ -63,7 +63,7 @@ zig cc $installerC $installerRc `
     -target x86_64-windows-gnu `
     -lkernel32 -luser32 -lgdi32 -lshell32 -lole32 `
     -ladvapi32 -lshlwapi -luuid `
-    -Wl,--subsystem,windows `
+    "-Wl,--subsystem,windows" `
     -O2
 Pop-Location
 
