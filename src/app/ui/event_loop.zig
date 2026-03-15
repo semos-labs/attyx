@@ -375,6 +375,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         actions.processTabActions(ctx);
         actions.processSplitActions(ctx);
+
+        // Drain pane_died events that were buffered during blocking waits
+        // inside processTabActions/processSplitActions (waitForPaneCreated).
+        switch (drainBufferedDeaths(ctx)) {
+            .quit => return,
+            .switched => continue :outer,
+            .ok => {},
+        }
+
         actions.processSplitDrag(ctx);
 
         // Split pane click focus
@@ -639,15 +648,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                                 }
                                                 publish.updateGridTopOffset(ctx);
                                             }
-                                            // Re-layout and resize surviving daemon panes
+                                            // Re-layout and resize surviving daemon panes.
+                                            // After closeTab, result.tab_idx is stale (tabs shifted
+                                            // left), so only access it when the tab wasn't removed.
                                             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                                            if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
-                                                l.layout(pty_rows, ctx.grid_cols);
-                                                var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                                                const rlc = l.collectLeaves(&rl);
-                                                for (rl[0..rlc]) |leaf| {
-                                                    if (leaf.pane.daemon_pane_id) |dpid|
-                                                        sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+                                            if (close_result != .last_pane) {
+                                                if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
+                                                    l.layout(pty_rows, ctx.grid_cols);
+                                                    var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                                                    const rlc = l.collectLeaves(&rl);
+                                                    for (rl[0..rlc]) |leaf| {
+                                                        if (leaf.pane.daemon_pane_id) |dpid|
+                                                            sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+                                                    }
                                                 }
                                             }
                                             actions.updateSplitActive(ctx);
@@ -1118,6 +1131,52 @@ fn showLegacyDaemonOverlay(ctx: *PtyThreadCtx) void {
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.update_notification)].action_bar = result.action_bar;
     mgr.show(.update_notification);
     publish.publishOverlays(ctx);
+}
+
+/// Process pane_died events that were buffered during blocking waits
+/// (e.g. waitForPaneCreated). Returns .quit if the last tab was closed
+/// and no session switch happened, .switched if a session switch occurred,
+/// or .ok if normal processing should continue.
+const DrainResult = enum { ok, quit, switched };
+
+fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
+    const sc = ctx.session_client orelse return .ok;
+    while (sc.popBufferedDeath()) |death| {
+        if (findPaneByDaemonId(ctx, death.pane_id)) |result| {
+            result.pane.stored_exit_code = death.exit_code;
+            if (ctx.tab_mgr.tabs[result.tab_idx]) |*lay| {
+                const close_result = lay.closePaneAt(result.pool_idx, ctx.allocator);
+                if (close_result == .last_pane) {
+                    ctx.tab_mgr.closeTab(result.tab_idx);
+                    if (ctx.tab_mgr.count == 0) {
+                        if (session_actions.switchToNextSession(ctx)) return .switched;
+                        c.attyx_request_quit();
+                        return .quit;
+                    }
+                    publish.updateGridTopOffset(ctx);
+                }
+                // Re-layout surviving panes (use active tab after potential shift)
+                const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                if (close_result == .last_pane) {
+                    // Tab was removed — don't access result.tab_idx (shifted).
+                } else if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
+                    l.layout(pty_rows, ctx.grid_cols);
+                    var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                    const rlc = l.collectLeaves(&rl);
+                    for (rl[0..rlc]) |leaf| {
+                        if (leaf.pane.daemon_pane_id) |dpid|
+                            sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
+                    }
+                }
+                actions.updateSplitActive(ctx);
+                actions.switchActiveTab(ctx);
+                session_actions.sendActiveFocusPanes(ctx);
+                session_actions.saveSessionLayout(ctx);
+                actions.g_force_full_redraw = true;
+            }
+        }
+    }
+    return .ok;
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {
