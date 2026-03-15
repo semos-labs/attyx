@@ -481,12 +481,8 @@ int windows_renderer_draw_frame(void) {
     if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_win_prev_cursor_row)
                      + abs(curCol - g_win_prev_cursor_col);
-        static int s_trail_dbg = 0;
-        if (s_trail_dbg < 5) {
-            ATTYX_LOG_INFO("trail", "cursor moved: dist=%d prev=(%d,%d) cur=(%d,%d) g_cursor_trail=%d",
-                           cellDist, g_win_prev_cursor_row, g_win_prev_cursor_col, curRow, curCol, g_cursor_trail);
-            s_trail_dbg++;
-        }
+        ATTYX_LOG_INFO("trail", "activate: dist=%d prev=(%d,%d) cur=(%d,%d)",
+                       cellDist, g_win_prev_cursor_row, g_win_prev_cursor_col, curRow, curCol);
         if (cellDist > 1) {
             s_trail_x = offX + g_win_prev_cursor_col * gw;
             s_trail_y = baseOffY + g_win_prev_cursor_row * gh;
@@ -626,12 +622,8 @@ int windows_renderer_draw_frame(void) {
                     tv[ti*3+1] = (WinVertex){ hex[ti+1][0],hex[ti+1][1], 0,0, cr_t,cg_t,cb_t,1.0f };
                     tv[ti*3+2] = (WinVertex){ hex[ti+2][0],hex[ti+2][1], 0,0, cr_t,cg_t,cb_t,1.0f };
                 }
-                static int s_trail_draw_dbg = 0;
-                if (s_trail_draw_dbg < 5) {
-                    ATTYX_LOG_INFO("trail", "draw: dt=%.4f t=%.3f dist=%.1f trail=(%.0f,%.0f) target=(%.0f,%.0f) color=(%.2f,%.2f,%.2f)",
-                                   dt, t, dist, s_trail_x, s_trail_y, targetX, targetY, cr_t, cg_t, cb_t);
-                    s_trail_draw_dbg++;
-                }
+                ATTYX_LOG_INFO("trail", "draw: dt=%.4f dist=%.1f trail=(%.0f,%.0f) tgt=(%.0f,%.0f)",
+                               dt, dist, s_trail_x, s_trail_y, targetX, targetY);
                 ID3D11DeviceContext_PSSetShader(g_d3d_context, g_d3d_ps_solid, NULL, 0);
                 upload_and_draw(tv, 12);
                 g_full_redraw = 1;
