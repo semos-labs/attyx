@@ -3,6 +3,12 @@
 // Compile: zig cc installer.c installer.rc -o attyx-setup.exe -lkernel32 -luser32
 //          -lgdi32 -lshell32 -lole32 -ladvapi32 -lshlwapi -mwindows
 
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,6 +16,7 @@
 #define COBJMACROS
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
