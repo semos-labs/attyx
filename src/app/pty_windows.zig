@@ -385,8 +385,13 @@ pub const Pty = struct {
         win_shell.injectExeDirIntoPath();
 
         // Set up STARTUPINFOEXW.
+        // STARTF_USESHOWWINDOW + SW_HIDE tells Windows to hide any console
+        // window the child creates, preventing flash from MSYS2/ConPTY.
+        const STARTF_USESHOWWINDOW: DWORD = 0x00000001;
         var si = std.mem.zeroes(STARTUPINFOEXW);
         si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
+        si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+        si.StartupInfo.wShowWindow = 0; // SW_HIDE
         si.lpAttributeList = attr_list;
 
         var pi: PROCESS_INFORMATION = undefined;
