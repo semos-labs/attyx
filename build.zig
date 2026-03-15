@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -213,16 +214,26 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("windowscodecs", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
 
-        // Bundle MSYS2 sysroot (zsh + coreutils) if present.
-        // Run `powershell scripts/fetch-msys2-sysroot.ps1` to populate share/msys2/.
-        // Install the sysroot tree next to the binary so bundled_shell.zig can find it.
-        const install_msys2 = b.addInstallDirectory(.{
-            .source_dir = b.path("share/msys2"),
-            .install_dir = .{ .custom = "bin/share/msys2" },
-            .install_subdir = "",
-        });
-        const install_msys2_step = b.step("install-msys2", "Install bundled MSYS2 sysroot (zsh)");
-        install_msys2_step.dependOn(&install_msys2.step);
+        // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
+        // Native Windows build: auto-download if missing, then install.
+        // Cross-compile: skip download (user must pre-populate share/msys2/).
+        const native_windows = builtin.os.tag == .windows;
+        if (native_windows) {
+            // Auto-fetch the sysroot on first build.
+            const fetch_msys2 = b.addSystemCommand(&.{
+                "powershell", "-ExecutionPolicy", "Bypass", "-File",
+                "scripts\\fetch-msys2-sysroot.ps1",
+            });
+            fetch_msys2.has_side_effects = true;
+
+            const install_msys2 = b.addInstallDirectory(.{
+                .source_dir = b.path("share/msys2"),
+                .install_dir = .{ .custom = "bin/share/msys2" },
+                .install_subdir = "",
+            });
+            install_msys2.step.dependOn(&fetch_msys2.step);
+            b.getInstallStep().dependOn(&install_msys2.step);
+        }
     }
 
     // This declares intent for the executable to be installed into the

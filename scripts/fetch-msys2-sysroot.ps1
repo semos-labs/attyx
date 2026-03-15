@@ -17,6 +17,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Skip if sysroot already exists and has zsh.exe.
+$existingZsh = Join-Path $OutputDir "usr\bin\zsh.exe"
+if (Test-Path $existingZsh) {
+    Write-Host "MSYS2 sysroot already exists at $OutputDir — skipping download."
+    exit 0
+}
+
 # Packages to download (name + version — update these when bumping).
 # These are the minimal set needed for zsh to work.
 $packages = @(
