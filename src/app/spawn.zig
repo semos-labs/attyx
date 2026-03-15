@@ -74,6 +74,8 @@ pub fn spawnpEnv(
 }
 
 /// Windows process spawn via CreateProcessW with DETACHED_PROCESS.
+/// Creates the child suspended, assigns it to a new unrestricted Job object
+/// (so it's removed from the parent's kill-on-close Job), then resumes.
 fn spawnWindows(
     file: [*:0]const u8,
     _: [*:null]const ?[*:0]const u8,
@@ -92,6 +94,7 @@ fn spawnWindows(
         const DETACHED_PROCESS: DWORD = 0x00000008;
         const CREATE_BREAKAWAY_FROM_JOB: DWORD = 0x01000000;
         const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
+        const CREATE_SUSPENDED: DWORD = 0x00000004;
 
         const STARTUPINFOW = extern struct {
             cb: DWORD,
@@ -121,6 +124,41 @@ fn spawnWindows(
             dwThreadId: DWORD,
         };
 
+        // JOBOBJECT_EXTENDED_LIMIT_INFORMATION for SetInformationJobObject
+        const JOBOBJECT_BASIC_LIMIT_INFORMATION = extern struct {
+            PerProcessUserTimeLimit: i64,
+            PerJobUserTimeLimit: i64,
+            LimitFlags: DWORD,
+            MinimumWorkingSetSize: usize,
+            MaximumWorkingSetSize: usize,
+            ActiveProcessLimit: DWORD,
+            Affinity: usize,
+            PriorityClass: DWORD,
+            SchedulingClass: DWORD,
+        };
+
+        const IO_COUNTERS = extern struct {
+            ReadOperationCount: u64,
+            WriteOperationCount: u64,
+            OtherOperationCount: u64,
+            ReadTransferCount: u64,
+            WriteTransferCount: u64,
+            OtherTransferCount: u64,
+        };
+
+        const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION,
+            IoInfo: IO_COUNTERS,
+            ProcessMemoryLimit: usize,
+            JobMemoryLimit: usize,
+            PeakProcessMemoryUsed: usize,
+            PeakJobMemoryUsed: usize,
+        };
+
+        const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: DWORD = 0x00002000;
+        const JOB_OBJECT_LIMIT_BREAKAWAY_OK: DWORD = 0x00000800;
+        const JobObjectExtendedLimitInformation: c_int = 9;
+
         extern "kernel32" fn CreateProcessW(
             lpApplicationName: ?LPCWSTR,
             lpCommandLine: ?[*:0]u16,
@@ -134,6 +172,10 @@ fn spawnWindows(
             lpProcessInformation: *PROCESS_INFORMATION,
         ) callconv(.winapi) BOOL;
         extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+        extern "kernel32" fn ResumeThread(hThread: HANDLE) callconv(.winapi) DWORD;
+        extern "kernel32" fn CreateJobObjectW(lpJobAttributes: ?*const anyopaque, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
+        extern "kernel32" fn SetInformationJobObject(hJob: HANDLE, JobObjectInformationClass: c_int, lpJobObjectInformation: *const anyopaque, cbJobObjectInformationLength: DWORD) callconv(.winapi) BOOL;
+        extern "kernel32" fn AssignProcessToJobObject(hJob: HANDLE, hProcess: HANDLE) callconv(.winapi) BOOL;
     };
 
     // Build command line: "exe_path daemon"
@@ -152,13 +194,41 @@ fn spawnWindows(
     si.cb = @sizeOf(win.STARTUPINFOW);
 
     var pi: win.PROCESS_INFORMATION = undefined;
-    // Try to break out of any Job object so the daemon survives parent exit.
-    // If the Job doesn't allow breakaway, fall back without that flag.
-    const flags_with_breakaway = win.DETACHED_PROCESS | win.CREATE_BREAKAWAY_FROM_JOB | win.CREATE_NEW_PROCESS_GROUP;
-    const flags_without = win.DETACHED_PROCESS | win.CREATE_NEW_PROCESS_GROUP;
-    if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_with_breakaway, null, null, &si, &pi) == 0) {
-        if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_without, null, null, &si, &pi) == 0)
+
+    // Strategy: create the child SUSPENDED + DETACHED, assign it to a new
+    // unrestricted Job (which removes it from the parent's kill-on-close Job),
+    // then resume. If breakaway is allowed we try that first (simpler path).
+    const flags_breakaway = win.DETACHED_PROCESS | win.CREATE_BREAKAWAY_FROM_JOB | win.CREATE_NEW_PROCESS_GROUP;
+    const flags_suspended = win.DETACHED_PROCESS | win.CREATE_SUSPENDED | win.CREATE_NEW_PROCESS_GROUP;
+
+    var used_suspended = false;
+    if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_breakaway, null, null, &si, &pi) == 0) {
+        // Breakaway not allowed — create suspended and reassign Job.
+        if (win.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, 0, flags_suspended, null, null, &si, &pi) == 0)
             return .{ .pid = 0, .ok = false };
+        used_suspended = true;
+    }
+
+    if (used_suspended) {
+        // Create a new Job object that does NOT kill children on close.
+        // Assigning the suspended process to this Job removes it from
+        // the parent's implicit kill-on-close Job (Windows 8+).
+        if (win.CreateJobObjectW(null, null)) |job| {
+            var info = std.mem.zeroes(win.JOBOBJECT_EXTENDED_LIMIT_INFORMATION);
+            // Explicitly do NOT set JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+            // Set BREAKAWAY_OK so grandchildren can also escape if needed.
+            info.BasicLimitInformation.LimitFlags = win.JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            _ = win.SetInformationJobObject(
+                job,
+                win.JobObjectExtendedLimitInformation,
+                @ptrCast(&info),
+                @sizeOf(win.JOBOBJECT_EXTENDED_LIMIT_INFORMATION),
+            );
+            _ = win.AssignProcessToJobObject(job, pi.hProcess);
+            // Don't close Job handle — it must stay alive while the daemon runs.
+            // The handle is leaked intentionally (one per daemon lifetime).
+        }
+        _ = win.ResumeThread(pi.hThread);
     }
 
     // Close handles — the daemon runs independently.

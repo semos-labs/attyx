@@ -159,6 +159,7 @@ pub fn run(
             break :daemon_blk;
         };
         conn.saveLastSession(result.session_id);
+        logging.info("session", "attached: session={d}, pane={d}", .{ result.session_id, result.pane_id });
         if (result.pane_id != 0) daemon_pane_id = result.pane_id;
     }
 
@@ -353,8 +354,10 @@ fn buildInitialTabs(
 ) !*Pane {
     // Try layout reconstruction from daemon.
     if (hsc) |sc| {
+        logging.info("session", "layout_len from daemon: {d}", .{sc.layout_len});
         if (sc.layout_len > 0) {
             if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
+                logging.info("session", "deserialized layout: {d} tabs, active={d}", .{ info.tab_count, info.active_tab });
                 if (info.tab_count > 0) {
                     // Create a throwaway initial pane for TabManager.init, then reset.
                     // Mark it daemon-backed so deinit() skips PTY cleanup.

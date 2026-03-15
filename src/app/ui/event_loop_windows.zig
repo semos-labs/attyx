@@ -352,8 +352,16 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 fn saveLayoutToDaemon(ctx: *WinCtx) void {
     const sc = ctx.session_client orelse return;
     var save_buf: [4096]u8 = undefined;
-    const len = ctx.tab_mgr.serializeLayout(&save_buf) catch return;
-    if (len > 0) sc.sendSaveLayout(save_buf[0..len]) catch {};
+    const len = ctx.tab_mgr.serializeLayout(&save_buf) catch |err| {
+        logging.err("layout", "serialize failed: {}", .{err});
+        return;
+    };
+    if (len > 0) {
+        logging.info("layout", "saving layout: {d} bytes, {d} tabs", .{ len, ctx.tab_mgr.count });
+        sc.sendSaveLayout(save_buf[0..len]) catch |err| {
+            logging.err("layout", "sendSaveLayout failed: {}", .{err});
+        };
+    }
 }
 
 // ── Helpers ──
