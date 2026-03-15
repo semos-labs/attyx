@@ -1,10 +1,9 @@
 # fetch-msys2-sysroot.ps1
 # Downloads a minimal MSYS2 sysroot with zsh for bundling with Attyx.
+# No external dependencies required - bootstraps zstd automatically.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts/fetch-msys2-sysroot.ps1
-# Output: share/msys2/ (relative to repo root)
-#
-# The sysroot contains zsh, coreutils, and runtime DLLs (~15-20 MB).
+# Output: share/msys2/ (or -OutputDir)
 
 param(
     [string]$OutputDir = "share\msys2",
@@ -18,6 +17,31 @@ $existingZsh = Join-Path $OutputDir "usr\bin\zsh.exe"
 if (Test-Path $existingZsh) {
     Write-Host "MSYS2 sysroot already present - skipping download."
     exit 0
+}
+
+$tempDir = Join-Path $env:TEMP "attyx-msys2-fetch"
+if (Test-Path $tempDir) { Remove-Item -Recurse -Force $tempDir }
+New-Item -ItemType Directory -Force $tempDir | Out-Null
+
+$extractDir = Join-Path $tempDir "extract"
+New-Item -ItemType Directory -Force $extractDir | Out-Null
+
+# --- Bootstrap zstd if not available ---
+$zstdExe = "zstd"
+$zstdCmd = Get-Command "zstd" -ErrorAction SilentlyContinue
+if (-not $zstdCmd) {
+    Write-Host "zstd not found - downloading standalone binary..."
+    $zstdVer = "1.5.6"
+    $zstdZip = Join-Path $tempDir "zstd.zip"
+    $zstdUrl = "https://github.com/facebook/zstd/releases/download/v$zstdVer/zstd-v$zstdVer-win64.zip"
+    Invoke-WebRequest -Uri $zstdUrl -OutFile $zstdZip -UseBasicParsing
+    Expand-Archive -Path $zstdZip -DestinationPath $tempDir -Force
+    $zstdExe = Join-Path $tempDir "zstd-v$zstdVer-win64\zstd.exe"
+    if (-not (Test-Path $zstdExe)) {
+        Write-Host "ERROR: Failed to bootstrap zstd" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Using $zstdExe"
 }
 
 # Minimal package set for zsh to work.
@@ -37,21 +61,6 @@ $packages = @(
     "gawk-5.3.1-1-x86_64.pkg.tar.zst"
 )
 
-$tempDir = Join-Path $env:TEMP "attyx-msys2-fetch"
-if (Test-Path $tempDir) { Remove-Item -Recurse -Force $tempDir }
-New-Item -ItemType Directory -Force $tempDir | Out-Null
-
-$extractDir = Join-Path $tempDir "extract"
-New-Item -ItemType Directory -Force $extractDir | Out-Null
-
-# Check for zstd (needed to decompress .pkg.tar.zst).
-$zstdCmd = Get-Command "zstd" -ErrorAction SilentlyContinue
-if (-not $zstdCmd) {
-    Write-Host "zstd not found. Install it: winget install Facebook.zstd"
-    Write-Host "Or: scoop install zstd"
-    exit 1
-}
-
 foreach ($pkg in $packages) {
     $url = "$MirrorBase/$pkg"
     $localPath = Join-Path $tempDir $pkg
@@ -61,7 +70,7 @@ foreach ($pkg in $packages) {
     Invoke-WebRequest -Uri $url -OutFile $localPath -UseBasicParsing
 
     Write-Host "  Decompressing ..."
-    & zstd -d $localPath -o $tarPath --force 2>&1 | Out-Null
+    & $zstdExe -d $localPath -o $tarPath --force 2>&1 | Out-Null
 
     Write-Host "  Extracting ..."
     tar -xf $tarPath -C $extractDir
