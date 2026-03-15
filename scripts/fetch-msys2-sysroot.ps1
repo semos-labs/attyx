@@ -110,6 +110,12 @@ foreach ($pkg in $packages) {
     tar -xf $tarPath -C $extractDir
 }
 
+# --- Debug: show what was extracted ---
+Write-Host ""
+Write-Host "Extracted directory structure:"
+Get-ChildItem -Path $extractDir -Recurse -Name | Where-Object { $_ -like "*zsh*" -or $_ -like "*bin*exe" } | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+Write-Host ""
+
 # --- Assemble output sysroot ---
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
@@ -130,6 +136,11 @@ foreach ($pair in $copyDirs) {
         Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
     }
 }
+
+# Debug: show output dir contents
+Write-Host "Output directory contents:"
+Get-ChildItem -Path $OutputDir -Recurse -Name | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
+Write-Host ""
 
 # Cleanup temp files.
 Remove-Item -Recurse -Force $tempDir
