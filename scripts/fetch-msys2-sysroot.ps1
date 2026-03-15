@@ -46,7 +46,7 @@ if (-not $zstdCmd) {
 Write-Host "Fetching package listing from $MirrorBase ..."
 $listing = (Invoke-WebRequest -Uri "$MirrorBase/" -UseBasicParsing).Content
 
-# Package base names (without version). Script finds latest .pkg.tar.zst for each.
+# Package base names. Script finds latest .pkg.tar.zst for each.
 $packageNames = @(
     "zsh"
     "msys2-runtime"
@@ -61,15 +61,13 @@ $packageNames = @(
     "grep"
     "sed"
     "gawk"
+    "gmp"
 )
 
 function Find-Package($name, $listing) {
-    # Match: href="<name>-<version>-x86_64.pkg.tar.zst"
-    # Use word boundary after name to avoid partial matches (e.g. "ncurses" vs "libncursesw")
     $pattern = "href=""($([regex]::Escape($name))-[0-9][^""]*-x86_64\.pkg\.tar\.zst)"""
     $matches = [regex]::Matches($listing, $pattern)
     if ($matches.Count -eq 0) { return $null }
-    # Return the last match (latest version in directory listing)
     return $matches[$matches.Count - 1].Groups[1].Value
 }
 
@@ -124,6 +122,49 @@ foreach ($rel in $srcDirs) {
         Write-Host "  Copied $rel"
     }
 }
+
+# --- Replace /etc/profile with a minimal version for embedded use ---
+# The MSYS2 default profile tries to create /dev/shm, init pacman keyring,
+# copy network configs, etc. None of that applies to our bundled sysroot.
+$profilePath = Join-Path $OutputDir "etc\profile"
+$minimalProfile = @'
+# Attyx bundled zsh - minimal /etc/profile
+# Replaces MSYS2 default profile (no pacman, no /dev setup, no keyring).
+
+# Basic PATH setup - our sysroot bin dir + inherited Windows PATH.
+if [ -n "$MSYS2_PATH_TYPE" ] && [ "$MSYS2_PATH_TYPE" = "inherit" ]; then
+    : # PATH already inherited from Windows
+fi
+
+# Set a sensible default SHELL if not set.
+export SHELL="${SHELL:-/usr/bin/zsh}"
+
+# HOME should already be set by attyx (bundled_shell.zig sets it).
+# Fall back to USERPROFILE converted to MSYS path if somehow missing.
+if [ -z "$HOME" ]; then
+    HOME="$(cygpath -u "$USERPROFILE" 2>/dev/null || echo /)"
+    export HOME
+fi
+
+# Source global zsh configs if they exist.
+if [ -d /etc/profile.d ]; then
+    for f in /etc/profile.d/*.sh; do
+        [ -r "$f" ] && . "$f"
+    done
+fi
+'@
+Set-Content -Path $profilePath -Value $minimalProfile -Encoding UTF8 -Force
+Write-Host "  Wrote minimal /etc/profile"
+
+# Also write a minimal /etc/zsh/zprofile that just sources /etc/profile.
+$zprofilePath = Join-Path $OutputDir "etc\zsh\zprofile"
+$minimalZprofile = @'
+# Source the main profile.
+emulate sh -c 'source /etc/profile'
+'@
+New-Item -ItemType Directory -Force (Split-Path $zprofilePath) | Out-Null
+Set-Content -Path $zprofilePath -Value $minimalZprofile -Encoding UTF8 -Force
+Write-Host "  Wrote minimal /etc/zsh/zprofile"
 
 # Cleanup temp files.
 Remove-Item -Recurse -Force $tempDir
