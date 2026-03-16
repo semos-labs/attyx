@@ -230,6 +230,11 @@ pub const Pane = struct {
     /// events for the debounce interval). Called from the event loop.
     pub fn flushPtyResize(self: *Pane) void {
         if (!self.pending_pty_resize) return;
+        // Daemon-backed panes: resize is handled by the daemon, not the local PTY.
+        if (self.daemon_pane_id != null) {
+            self.pending_pty_resize = false;
+            return;
+        }
         const now = std.time.nanoTimestamp();
         if (now - self.last_pty_resize_ns >= pty_resize_debounce_ns) {
             self.pty.resize(self.pending_pty_rows, self.pending_pty_cols) catch {};
