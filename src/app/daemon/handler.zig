@@ -92,19 +92,20 @@ fn handleCreate(
     };
     const id = next_id.*;
     next_id.* += 1;
-    // Null-terminate CWD for posix chdir
-    var cwd_z_buf: [4097]u8 = undefined;
-    const cwd_z: ?[*:0]const u8 = if (create.cwd.len > 0 and create.cwd.len < cwd_z_buf.len) blk: {
-        @memcpy(cwd_z_buf[0..create.cwd.len], create.cwd);
-        cwd_z_buf[create.cwd.len] = 0;
-        break :blk @ptrCast(&cwd_z_buf);
+    // Static buffers for null-terminating CWD/shell (aarch64 Windows stack workaround).
+    const ZBufs = struct {
+        var cwd_z_buf: [4097]u8 = undefined;
+        var shell_z_buf: [257]u8 = undefined;
+    };
+    const cwd_z: ?[*:0]const u8 = if (create.cwd.len > 0 and create.cwd.len < ZBufs.cwd_z_buf.len) blk: {
+        @memcpy(ZBufs.cwd_z_buf[0..create.cwd.len], create.cwd);
+        ZBufs.cwd_z_buf[create.cwd.len] = 0;
+        break :blk @ptrCast(&ZBufs.cwd_z_buf);
     } else null;
-    // Null-terminate shell program
-    var shell_z_buf: [257]u8 = undefined;
-    const shell_z: ?[*:0]const u8 = if (create.shell.len > 0 and create.shell.len < shell_z_buf.len) blk: {
-        @memcpy(shell_z_buf[0..create.shell.len], create.shell);
-        shell_z_buf[create.shell.len] = 0;
-        break :blk @ptrCast(&shell_z_buf);
+    const shell_z: ?[*:0]const u8 = if (create.shell.len > 0 and create.shell.len < ZBufs.shell_z_buf.len) blk: {
+        @memcpy(ZBufs.shell_z_buf[0..create.shell.len], create.shell);
+        ZBufs.shell_z_buf[create.shell.len] = 0;
+        break :blk @ptrCast(&ZBufs.shell_z_buf);
     } else null;
     const initial_pane_id = next_pane_id.*;
     next_pane_id.* += 1;
@@ -227,18 +228,20 @@ fn handleCreatePane(
     const pane_id_val = next_pane_id.*;
     next_pane_id.* += 1;
     // Use CWD from message if provided, otherwise fall back to session CWD.
-    var cwd_z_buf: [4097]u8 = undefined;
-    const cwd_z: ?[*:0]const u8 = if (msg.cwd.len > 0 and msg.cwd.len < cwd_z_buf.len) blk: {
-        @memcpy(cwd_z_buf[0..msg.cwd.len], msg.cwd);
-        cwd_z_buf[msg.cwd.len] = 0;
-        break :blk @ptrCast(&cwd_z_buf);
+    const PaneBufs = struct {
+        var cwd_z_buf: [4097]u8 = undefined;
+        var cmd_z_buf: [4097]u8 = undefined;
+    };
+    const cwd_z: ?[*:0]const u8 = if (msg.cwd.len > 0 and msg.cwd.len < PaneBufs.cwd_z_buf.len) blk: {
+        @memcpy(PaneBufs.cwd_z_buf[0..msg.cwd.len], msg.cwd);
+        PaneBufs.cwd_z_buf[msg.cwd.len] = 0;
+        break :blk @ptrCast(&PaneBufs.cwd_z_buf);
     } else null;
     // Optional command override (e.g. from `attyx run htop`).
-    var cmd_z_buf: [4097]u8 = undefined;
-    const cmd_z: ?[*:0]const u8 = if (msg.cmd.len > 0 and msg.cmd.len < cmd_z_buf.len) blk: {
-        @memcpy(cmd_z_buf[0..msg.cmd.len], msg.cmd);
-        cmd_z_buf[msg.cmd.len] = 0;
-        break :blk @ptrCast(&cmd_z_buf);
+    const cmd_z: ?[*:0]const u8 = if (msg.cmd.len > 0 and msg.cmd.len < PaneBufs.cmd_z_buf.len) blk: {
+        @memcpy(PaneBufs.cmd_z_buf[0..msg.cmd.len], msg.cmd);
+        PaneBufs.cmd_z_buf[msg.cmd.len] = 0;
+        break :blk @ptrCast(&PaneBufs.cmd_z_buf);
     } else null;
     const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, cmd_z, msg.capture_stdout) catch {
         cl.sendError(3, "create pane failed");
@@ -291,7 +294,11 @@ fn handleFocusPanes(
     // Drain pending PTY data for newly-active panes before replaying.
     // This closes the race where the shell is still outputting startup
     // sequences (e.g. zsh PROMPT_EOL_MARK) that haven't been read yet.
-    var drain_buf: [8192]u8 = undefined;
+    // Static drain buffer — avoids 8KB stack allocation that crashes
+    // on aarch64 Windows (missing __chkstk probes).
+    const DrainBuf = struct {
+        var buf: [8192]u8 = undefined;
+    };
     for (0..msg.count) |i| {
         const new_id = msg.pane_ids[i];
         var was_active = false;
@@ -305,7 +312,7 @@ fn handleFocusPanes(
             if (session.findPane(new_id)) |pane| {
                 // Drain any buffered PTY output into the ring buffer
                 while (true) {
-                    const n = pane.readPty(&drain_buf) catch break;
+                    const n = pane.readPty(&DrainBuf.buf) catch break;
                     if (n == 0) break;
                 }
                 cl.sendPaneReplay(pane);
