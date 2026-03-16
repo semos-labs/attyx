@@ -161,26 +161,23 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         handleResize(ctx);
 
         // ── Tab actions ──
-        Dbg.mark(3);
+        Dbg.mark(30);
         var tabs_changed = false;
         processTabActions(ctx, &tabs_changed);
         if (tabs_changed) saveLayoutToDaemon(ctx);
 
-        // ── Split actions ──
+        Dbg.mark(31);
         win_split.processSplitActions(ctx);
-
-        // ── Split click-to-focus ──
         win_split.processSplitClick(ctx);
-
-        // ── Split drag ──
         win_split.processSplitDrag(ctx);
 
-        // ── Overlay dismiss (Esc) + toggle detection ──
+        Dbg.mark(32);
         win_overlays.processOverlayDismiss(ctx);
         win_overlays.processToggles(ctx);
 
-        // ── Overlay input + finder tick ──
+        Dbg.mark(33);
         const overlay_input_changed = win_overlays.processInput(ctx);
+        Dbg.mark(34);
         win_session_picker.tickFinder(ctx);
 
         // Guard: an overlay action (e.g. close window) may have killed all tabs
