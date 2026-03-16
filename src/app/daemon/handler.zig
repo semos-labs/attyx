@@ -304,6 +304,11 @@ fn handleFocusPanes(
                     if (n == 0) break;
                 }
                 cl.sendPaneReplay(pane);
+                // Nudge the PTY size so TUI apps get a SIGWINCH and
+                // fully repaint. The client restores the correct size
+                // on replay_end, and the round-trip delay ensures the
+                // app processes this first SIGWINCH before the second.
+                pane.notifyRedraw();
                 cl.sendReplayEnd(new_id);
             }
         }

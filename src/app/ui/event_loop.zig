@@ -720,12 +720,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         }
                     },
                     .replay_end => |pane_id| {
+                        // The daemon already nudged the PTY size (cols+1)
+                        // before sending replay_end. Restore the correct
+                        // size so the app gets a second SIGWINCH at the
+                        // right dimensions — the round-trip delay ensures
+                        // the first SIGWINCH was processed.
                         if (findPaneByDaemonId(ctx, pane_id)) |result| {
                             const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
                             const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
                             if (ctx.session_client) |scc| {
-                                const nudged = if (cols > 1) cols - 1 else cols + 1;
-                                scc.sendPaneResize(pane_id, rows, nudged) catch {};
                                 scc.sendPaneResize(pane_id, rows, cols) catch {};
                             }
                         }
