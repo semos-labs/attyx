@@ -61,19 +61,19 @@ pub fn consumeInput(ctx: *WinCtx) bool {
         consumed = true;
 
         switch (cmd) {
-            1 => { // Up
+            9 => { // Up
                 if (g_selected > 0) g_selected -= 1;
             },
-            2 => { // Down
+            10 => { // Down
                 if (g_selected < entry_count - 1) g_selected += 1;
             },
-            4 => { // Enter / confirm
+            8 => { // Enter / confirm
                 const selected_shell = shell_entries[g_selected].shell;
                 close(ctx);
                 spawnShellTab(ctx, selected_shell);
                 return true;
             },
-            3, 5 => { // Esc / dismiss
+            7 => { // Esc
                 close(ctx);
                 return true;
             },

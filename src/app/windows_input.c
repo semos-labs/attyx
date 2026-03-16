@@ -262,7 +262,7 @@ static LRESULT handleKeyDown(HWND hwnd, WPARAM vk, LPARAM lParam) {
     }
 
     // Session picker / command palette / theme picker key routing
-    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
+    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_shell_picker_active) {
         if (vk == VK_ESCAPE)     { attyx_picker_cmd(7); g_suppress_char = 1; return 0; }
         if (vk == VK_RETURN)     { attyx_picker_cmd(8); g_suppress_char = 1; return 0; }
         if (vk == VK_BACK)       { attyx_picker_cmd(1); g_suppress_char = 1; return 0; }
@@ -411,7 +411,7 @@ static LRESULT handleChar(HWND hwnd, WPARAM wParam) {
         if (codepoint >= 0x20) attyx_ai_prompt_insert_char(codepoint);
         return 0;
     }
-    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
+    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_shell_picker_active) {
         if (codepoint >= 0x20) attyx_picker_insert_char(codepoint);
         return 0;
     }
