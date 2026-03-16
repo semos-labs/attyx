@@ -168,26 +168,13 @@ fn connectToSocketWindows() !std.posix.fd_t {
 
     dbg("connecting to daemon pipe: {s}", .{pipe_path});
 
-    // First attempt — probe checks daemon is alive, then we open a fresh
-    // connection so no stale response data pollutes the client buffer.
+    // Try connecting directly — each CreateFileW on a named pipe gives a
+    // fresh connection with no stale data, so no probe needed.
     if (tryConnectWindows(pipe_path)) |h| {
-        const alive = probeAliveWindows(h);
-        _ = win32.CloseHandle(h);
-        if (alive) {
-            dbg("existing daemon is alive, opening fresh connection", .{});
-            // Retry the second connect — the daemon needs time to create
-            // a new pipe instance after accepting the probe connection.
-            var retry: u32 = 0;
-            while (retry < 10) : (retry += 1) {
-                if (tryConnectWindows(pipe_path)) |fresh| return fresh;
-                win32.Sleep(50);
-            }
-        } else {
-            dbg("existing daemon pipe not alive", .{});
-        }
-    } else {
-        dbg("no existing daemon pipe found", .{});
+        dbg("connected to existing daemon", .{});
+        return h;
     }
+    dbg("no existing daemon pipe found", .{});
 
     if (isUpgradeInProgress()) {
         var delay_ms: u32 = 100;
