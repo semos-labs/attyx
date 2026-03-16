@@ -47,6 +47,10 @@ extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
+// Crash diagnosis breadcrumbs (file-scope so SEH handler can read them).
+pub var crash_iter: u32 = 0;
+pub var crash_phase: u8 = 0;
+
 pub const WinCtx = struct {
     tab_mgr: *TabManager,
     cells: [*]c.AttyxCell,
@@ -119,10 +123,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
     var prev_cursor_col: usize = 0;
-
-    // Breadcrumb counter for crash diagnosis (static — no stack)
-pub var crash_iter: u32 = 0;
-pub var crash_phase: u8 = 0;
 
     const Dbg = struct {
         var dbg_buf: [256]u8 = undefined;
