@@ -50,6 +50,8 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
 
 /// Route daemon pane output to the matching pane's engine.
 fn routePaneOutput(ctx: *WinCtx, pane_id: u32, data: []const u8) void {
+    const attyx = @import("attyx");
+    const publish = @import("publish.zig");
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
         const lay = &(maybe_layout.* orelse continue);
         var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
@@ -57,6 +59,23 @@ fn routePaneOutput(ctx: *WinCtx, pane_id: u32, data: []const u8) void {
         for (leaves[0..lc]) |leaf| {
             if (leaf.pane.daemon_pane_id) |dpid| {
                 if (dpid == pane_id) {
+                    // Deferred engine reinit: if the daemon is replaying
+                    // scrollback for a newly-focused pane, reinit the
+                    // engine before feeding data to avoid stale content.
+                    if (leaf.pane.needs_engine_reinit) {
+                        const rows: u16 = @intCast(leaf.pane.engine.state.ring.screen_rows);
+                        const cols: u16 = @intCast(leaf.pane.engine.state.ring.cols);
+                        const new_engine = attyx.Engine.init(
+                            leaf.pane.allocator,
+                            rows,
+                            cols,
+                            ctx.applied_scrollback_lines,
+                        ) catch return;
+                        leaf.pane.engine.deinit();
+                        leaf.pane.engine = new_engine;
+                        leaf.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                        leaf.pane.needs_engine_reinit = false;
+                    }
                     leaf.pane.feed(data);
                     return;
                 }
