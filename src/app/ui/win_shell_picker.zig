@@ -88,45 +88,21 @@ pub fn consumeInput(ctx: *WinCtx) bool {
 fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
     const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
-    if (ctx.session_client) |sc| {
-        // Daemon mode: use sendCreatePaneWithCmd with shell hint.
-        // The daemon spawns the pane; we pass the shell name as the cmd.
-        const cmd_str: []const u8 = switch (shell) {
-            .zsh => "zsh",
-            .pwsh => "pwsh",
-            .cmd => "cmd",
-            .auto => "",
-        };
-        sc.sendCreatePaneWithCmd(rows, ctx.grid_cols, "", cmd_str) catch {
-            logging.err("shell-picker", "sendCreatePane failed", .{});
-            return;
-        };
-        const pane_id = sc.waitForPaneCreated(5000) catch |err| {
-            logging.err("shell-picker", "create daemon pane failed: {}", .{err});
-            return;
-        };
-        const new_pane = ctx.tab_mgr.addDaemonTab(rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch |err| {
-            logging.err("shell-picker", "addDaemonTab failed: {}", .{err});
-            return;
-        };
-        new_pane.daemon_pane_id = pane_id;
-        new_pane.session_client = sc;
-        sc.sendFocusPanes(&.{pane_id}) catch {};
-    } else {
-        // Local mode: spawn with shell override.
-        const new_pane = ctx.allocator.create(Pane) catch return;
-        new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines, .{ .shell = shell }) catch |err| {
-            logging.err("shell-picker", "Pane.spawn failed: {}", .{err});
-            ctx.allocator.destroy(new_pane);
-            return;
-        };
-        ctx.tab_mgr.addTabWithPane(new_pane, rows, ctx.grid_cols) catch |err| {
-            logging.err("shell-picker", "addTabWithPane failed: {}", .{err});
-            new_pane.deinit();
-            ctx.allocator.destroy(new_pane);
-            return;
-        };
-    }
+    // Always spawn locally with the selected shell. The daemon protocol
+    // doesn't support per-pane shell override, and the user explicitly
+    // chose a non-default shell — local spawn is the right call.
+    const new_pane = ctx.allocator.create(Pane) catch return;
+    new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines, .{ .shell = shell }) catch |err| {
+        logging.err("shell-picker", "Pane.spawn failed: {}", .{err});
+        ctx.allocator.destroy(new_pane);
+        return;
+    };
+    ctx.tab_mgr.addTabWithPane(new_pane, rows, ctx.grid_cols) catch |err| {
+        logging.err("shell-picker", "addTabWithPane failed: {}", .{err});
+        new_pane.deinit();
+        ctx.allocator.destroy(new_pane);
+        return;
+    };
 
     event_loop.updateGridOffsets(ctx);
     ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
