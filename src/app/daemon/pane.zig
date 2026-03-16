@@ -46,9 +46,9 @@ pub const DaemonPane = struct {
     theme_cursor: [3]u8 = .{ 220, 220, 220 },
     theme_cursor_set: bool = false,
 
-    /// Restore a pane from deserialized state (inherited PTY across exec/spawn).
-    /// On POSIX: inherits fd + pid. On Windows: inherits pipe HANDLEs.
-    pub const fromRestored = if (!is_windows) fromRestoredImpl else fromRestoredWindows;
+    /// Restore a pane from deserialized state (inherited PTY fd across exec).
+    /// POSIX only — Windows hot-upgrade builds panes directly in upgrade_windows.zig.
+    pub const fromRestored = if (!is_windows) fromRestoredImpl else @compileError("fromRestored not available on Windows");
 
     fn fromRestoredImpl(
         allocator: std.mem.Allocator,
@@ -81,41 +81,6 @@ pub const DaemonPane = struct {
         @memcpy(pane.proc_name[0..nlen], proc_name_slice[0..nlen]);
         pane.proc_name_len = nlen;
         // Restore ring buffer contents
-        if (ring_data.len > 0) pane.replay.write(ring_data);
-        return pane;
-    }
-
-    /// Windows: restore a pane from inherited ConPTY pipe handles.
-    fn fromRestoredWindows(
-        allocator: std.mem.Allocator,
-        id: u32,
-        pipe_out_read: std.os.windows.HANDLE,
-        pipe_in_write: std.os.windows.HANDLE,
-        process: std.os.windows.HANDLE,
-        rows: u16,
-        cols: u16,
-        alive: bool,
-        exit_code: ?u8,
-        cursor_visible: bool,
-        alt_screen: bool,
-        proc_name_slice: []const u8,
-        ring_data: []const u8,
-        replay_capacity: usize,
-    ) !DaemonPane {
-        var pane = DaemonPane{
-            .id = id,
-            .pty = Pty.fromInherited(pipe_out_read, pipe_in_write, process),
-            .replay = try RingBuffer.init(allocator, replay_capacity),
-            .rows = rows,
-            .cols = cols,
-            .alive = alive,
-            .exit_code = exit_code,
-            .cursor_visible = cursor_visible,
-            .alt_screen = alt_screen,
-        };
-        const nlen: u8 = @intCast(@min(proc_name_slice.len, 64));
-        @memcpy(pane.proc_name[0..nlen], proc_name_slice[0..nlen]);
-        pane.proc_name_len = nlen;
         if (ring_data.len > 0) pane.replay.write(ring_data);
         return pane;
     }

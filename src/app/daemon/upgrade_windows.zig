@@ -165,10 +165,11 @@ fn serializeSession(w: ListWriter, s: *DaemonSession) !void {
 
 fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     try writeU32(w, p.id);
-    // Windows: three HANDLE values (u64 each) instead of fd+pid
+    // Windows: four HANDLE values (u64 each) instead of fd+pid
     try writeU64(w, @intFromPtr(p.pty.pipe_out_read));
     try writeU64(w, @intFromPtr(p.pty.pipe_in_write));
     try writeU64(w, @intFromPtr(p.pty.process));
+    try writeU64(w, @intFromPtr(@as(HANDLE, @ptrCast(p.pty.hpc))));
     try writeU16(w, p.rows);
     try writeU16(w, p.cols);
     try writeByte(w, if (p.alive) 1 else 0);
@@ -267,6 +268,7 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
     const pipe_out_read = handleFromU64(try r.readU64());
     const pipe_in_write = handleFromU64(try r.readU64());
     const process = handleFromU64(try r.readU64());
+    const hpc_handle = handleFromU64(try r.readU64());
     const rows = try r.readU16();
     const cols = try r.readU16();
     const alive = (try r.readByte()) != 0;
@@ -286,7 +288,7 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
     // Write directly into the slot — no by-value return of the 64KB+ struct.
     slot.* = DaemonPane{
         .id = id,
-        .pty = Pty.fromInherited(pipe_out_read, pipe_in_write, process),
+        .pty = Pty.fromInherited(pipe_out_read, pipe_in_write, process, @ptrCast(hpc_handle)),
         .replay = try RingBuffer.init(allocator, RingBuffer.default_capacity),
         .rows = rows,
         .cols = cols,

@@ -306,7 +306,7 @@ pub const Pty = struct {
     /// Restore a Pty from inherited handles (hot-upgrade on Windows).
     /// The caller (new daemon) owns the pipe handles but NOT the HPCON —
     /// the old daemon keeps HPCON alive as an HPCON keeper process.
-    pub fn fromInherited(pipe_out_read: HANDLE, pipe_in_write: HANDLE, process: HANDLE) Pty {
+    pub fn fromInherited(pipe_out_read: HANDLE, pipe_in_write: HANDLE, process: HANDLE, hpc: HPCON) Pty {
         // Create a new event for overlapped I/O on the inherited pipe.
         const read_evt_raw = CreateEventW(null, 1, 0, null);
         // CreateEventW returns ?HANDLE on some targets, HANDLE on others.
@@ -318,7 +318,7 @@ pub const Pty = struct {
         return .{
             .pipe_out_read = pipe_out_read,
             .pipe_in_write = pipe_in_write,
-            .hpc = undefined,
+            .hpc = hpc,
             .process = process,
             .thread = INVALID_HANDLE,
             .attr_list_buf = &.{},
@@ -328,12 +328,13 @@ pub const Pty = struct {
         };
     }
 
-    /// Mark pipe and process handles as inheritable for hot-upgrade.
+    /// Mark pipe, process, and HPCON handles as inheritable for hot-upgrade.
     /// Called by the old daemon before spawning the new daemon.
     pub fn markHandlesInheritable(self: *Pty) void {
         _ = SetHandleInformation(self.pipe_in_write, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
         _ = SetHandleInformation(self.pipe_out_read, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
         _ = SetHandleInformation(self.process, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        _ = SetHandleInformation(@as(HANDLE, @ptrCast(self.hpc)), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
 
     pub const SpawnOpts = struct {
