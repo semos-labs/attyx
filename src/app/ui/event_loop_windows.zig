@@ -144,6 +144,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
     while (c.attyx_should_quit() == 0) {
         crash_iter += 1;
+        Dbg.mark(1);
 
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
@@ -151,6 +152,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Config reload ──
+        Dbg.mark(2);
         if (@atomicRmw(i32, &ws.g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
             doReloadConfig(ctx);
         }
@@ -159,6 +161,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         handleResize(ctx);
 
         // ── Tab actions ──
+        Dbg.mark(3);
         var tabs_changed = false;
         processTabActions(ctx, &tabs_changed);
         if (tabs_changed) saveLayoutToDaemon(ctx);
@@ -224,6 +227,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
+        Dbg.mark(4);
         var got_data = false;
         {
             const active_pane = ctx.tab_mgr.activePane();
