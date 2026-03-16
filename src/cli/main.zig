@@ -189,113 +189,59 @@ pub fn doKillDaemon() void {
 
 fn doKillDaemonWindows() void {
     if (comptime !is_windows) unreachable;
-    const windows = std.os.windows;
     const stdout = std.fs.File.stdout();
+    const conn = @import("../app/session_connect.zig");
+    const protocol = @import("../app/daemon/protocol.zig");
 
-    const kernel32 = struct {
-        extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: [*]u16, nSize: u32) callconv(.winapi) u32;
-        extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandles: i32, dwProcessId: u32) callconv(.winapi) ?windows.HANDLE;
-        extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: u32) callconv(.winapi) i32;
-        extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) i32;
-        extern "kernel32" fn GetModuleFileNameW(hModule: ?windows.HANDLE, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
-        extern "kernel32" fn CreateProcessW(
-            lpApplicationName: ?[*:0]const u16,
-            lpCommandLine: ?[*:0]u16,
-            lpProcessAttributes: ?*anyopaque,
-            lpThreadAttributes: ?*anyopaque,
-            bInheritHandles: i32,
-            dwCreationFlags: u32,
-            lpEnvironment: ?*anyopaque,
-            lpCurrentDirectory: ?[*:0]const u16,
-            lpStartupInfo: *StartupInfoW,
-            lpProcessInformation: *ProcessInformation,
-        ) callconv(.winapi) i32;
-
-        const StartupInfoW = extern struct {
-            cb: u32 = @sizeOf(StartupInfoW),
-            lpReserved: ?[*:0]u16 = null,
-            lpDesktop: ?[*:0]u16 = null,
-            lpTitle: ?[*:0]u16 = null,
-            dwX: u32 = 0,
-            dwY: u32 = 0,
-            dwXSize: u32 = 0,
-            dwYSize: u32 = 0,
-            dwXCountChars: u32 = 0,
-            dwYCountChars: u32 = 0,
-            dwFillAttribute: u32 = 0,
-            dwFlags: u32 = 0,
-            wShowWindow: u16 = 0,
-            cbReserved2: u16 = 0,
-            lpReserved2: ?*u8 = null,
-            hStdInput: ?windows.HANDLE = null,
-            hStdOutput: ?windows.HANDLE = null,
-            hStdError: ?windows.HANDLE = null,
-        };
-        const ProcessInformation = extern struct {
-            hProcess: windows.HANDLE,
-            hThread: windows.HANDLE,
-            dwProcessId: u32,
-            dwThreadId: u32,
-        };
+    const win32 = struct {
+        const HANDLE = std.os.windows.HANDLE;
+        const DWORD = std.os.windows.DWORD;
+        extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) i32;
+        extern "kernel32" fn PeekNamedPipe(h: HANDLE, b: ?[*]u8, s: DWORD, r: ?*DWORD, a: ?*DWORD, l: ?*DWORD) callconv(.winapi) i32;
+        extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
+        extern "kernel32" fn WriteFile(h: HANDLE, b: [*]const u8, n: DWORD, w: ?*DWORD, o: ?*anyopaque) callconv(.winapi) i32;
     };
 
-    // Get PID from ATTYX_PID env var
-    const env_name: [*:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("ATTYX_PID");
-    var val_buf: [32]u16 = undefined;
-    const len = kernel32.GetEnvironmentVariableW(env_name, &val_buf, val_buf.len);
-    if (len == 0 or len >= val_buf.len) {
-        stdout.writeAll("No running Attyx instance found (ATTYX_PID not set).\n") catch {};
+    // Connect to daemon pipe
+    var path_buf: [256]u8 = undefined;
+    const pipe_path = conn.getSocketPath(&path_buf) orelse {
+        stdout.writeAll("error: could not determine daemon pipe path\n") catch {};
         return;
-    }
-    var ascii: [32]u8 = undefined;
-    for (0..len) |i| ascii[i] = @intCast(val_buf[i] & 0xFF);
-    const pid = std.fmt.parseInt(u32, ascii[0..len], 10) catch {
-        stdout.writeAll("No running Attyx instance found (invalid ATTYX_PID).\n") catch {};
+    };
+    const handle = conn.tryConnectWindows(pipe_path) orelse {
+        stdout.writeAll("No daemon running.\n") catch {};
         return;
     };
 
-    // Get path to current executable for relaunch
-    var exe_path: [512]u16 = undefined;
-    const exe_len = kernel32.GetModuleFileNameW(null, &exe_path, exe_path.len);
-    if (exe_len == 0 or exe_len >= exe_path.len) {
-        stdout.writeAll("Failed to get executable path for restart.\n") catch {};
-        return;
-    }
-    exe_path[exe_len] = 0;
-
-    // Launch new instance before killing old one
-    var si: kernel32.StartupInfoW = .{};
-    var pi: kernel32.ProcessInformation = undefined;
-    if (kernel32.CreateProcessW(
-        exe_path[0..exe_len :0],
-        null,
-        null,
-        null,
-        0,
-        0,
-        null,
-        null,
-        &si,
-        &pi,
-    ) == 0) {
-        stdout.writeAll("Failed to launch new Attyx instance.\n") catch {};
-        return;
-    }
-    _ = kernel32.CloseHandle(pi.hProcess);
-    _ = kernel32.CloseHandle(pi.hThread);
-
-    // Now terminate the old instance
-    const PROCESS_TERMINATE: u32 = 0x0001;
-    const handle = kernel32.OpenProcess(PROCESS_TERMINATE, 0, pid) orelse {
-        stdout.writeAll("New instance launched, but old instance not found.\n") catch {};
+    // Send hello with a mismatched version to trigger graceful shutdown.
+    // The daemon detects version != its own → saves session state → exits.
+    var hello_payload: [256]u8 = undefined;
+    const version = protocol.encodeHello(&hello_payload, "shutdown") catch {
+        _ = win32.CloseHandle(handle);
+        stdout.writeAll("error: failed to encode shutdown message\n") catch {};
         return;
     };
-    defer _ = kernel32.CloseHandle(handle);
-    _ = kernel32.TerminateProcess(handle, 0);
+    var msg_buf: [protocol.header_size + 256]u8 = undefined;
+    const msg = protocol.encodeMessage(&msg_buf, .hello, version) catch {
+        _ = win32.CloseHandle(handle);
+        return;
+    };
+    var written: win32.DWORD = 0;
+    _ = win32.WriteFile(handle, msg.ptr, @intCast(msg.len), &written, null);
 
-    var msg_buf: [64]u8 = undefined;
-    const msg = std.fmt.bufPrint(&msg_buf, "Attyx restarted (old PID {d}).\n", .{pid}) catch "Attyx restarted.\n";
-    stdout.writeAll(msg) catch {};
+    // Wait for daemon to exit (pipe will break)
+    stdout.writeAll("Shutting down daemon (saving sessions)...") catch {};
+    var waited: u32 = 0;
+    while (waited < 5000) : (waited += 100) {
+        var avail: win32.DWORD = 0;
+        if (win32.PeekNamedPipe(handle, null, 0, null, &avail, null) == 0) {
+            // Pipe broken — daemon exited
+            break;
+        }
+        win32.Sleep(100);
+    }
+    _ = win32.CloseHandle(handle);
+    stdout.writeAll(" done.\n") catch {};
 }
 
 fn doKillDaemonPosix() void {

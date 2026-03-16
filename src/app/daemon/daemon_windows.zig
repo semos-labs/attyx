@@ -223,6 +223,23 @@ fn daemonLoop(state: *DaemonState) void {
         pollClients(state);
         pollProcNames(state);
         pollDeadSessions(state);
+
+        // Version mismatch: graceful restart. Kill PTYs (preserving session
+        // metadata), save state, and exit. The new-version client will
+        // auto-start a fresh daemon that loads the persisted sessions.
+        // (Windows can't transfer ConPTY handles across processes like
+        // POSIX can with fd inheritance, so shells must restart.)
+        if (state.upgrade_requested) {
+            daemonLog("upgrade: version mismatch, saving state and exiting");
+            for (state.sessions) |*slot| {
+                if (slot.*) |*s| {
+                    if (s.alive) s.killAllPanes();
+                }
+            }
+            state_persist.save(state.sessions, state.next_session_id, state.next_pane_id);
+            g_running = false;
+        }
+
         Sleep(50);
     }
 }
