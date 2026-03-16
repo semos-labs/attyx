@@ -308,7 +308,13 @@ pub const Pty = struct {
     /// the old daemon keeps HPCON alive as an HPCON keeper process.
     pub fn fromInherited(pipe_out_read: HANDLE, pipe_in_write: HANDLE, process: HANDLE) Pty {
         // Create a new event for overlapped I/O on the inherited pipe.
-        const read_evt = CreateEventW(null, 1, 0, null);
+        const read_evt_raw = CreateEventW(null, 1, 0, null);
+        // CreateEventW returns ?HANDLE on some targets, HANDLE on others.
+        // Normalize to HANDLE, treating null/0 as INVALID_HANDLE.
+        const read_evt: HANDLE = if (@typeInfo(@TypeOf(read_evt_raw)) == .optional)
+            (read_evt_raw orelse INVALID_HANDLE)
+        else
+            read_evt_raw;
         return .{
             .pipe_out_read = pipe_out_read,
             .pipe_in_write = pipe_in_write,
@@ -317,7 +323,7 @@ pub const Pty = struct {
             .thread = INVALID_HANDLE,
             .attr_list_buf = &.{},
             .allocator = undefined,
-            .read_event = if (@intFromPtr(read_evt) != 0) read_evt.? else INVALID_HANDLE,
+            .read_event = if (@intFromPtr(read_evt) != 0) read_evt else INVALID_HANDLE,
             .owns_hpcon = false,
         };
     }
