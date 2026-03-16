@@ -271,13 +271,21 @@ fn daemonCleanup(alloc: std.mem.Allocator, state: *DaemonState) void {
 // ── Hot upgrade ──
 
 fn performUpgradeAndKeep(state: *DaemonState) void {
-    // Get the pipe name as UTF-8 for the probe
     var pipe_utf8: [512]u8 = undefined;
     var utf8_len: usize = 0;
     for (state.pipe_name_buf[0..state.pipe_name_len]) |cp| {
         const n = std.unicode.utf8Encode(@intCast(cp), pipe_utf8[utf8_len..]) catch break;
         utf8_len += n;
     }
+
+    // Close listener + clients BEFORE spawning new daemon.
+    // The new daemon needs the pipe name free to bind its own listener.
+    if (state.listen_pipe) |lp| { _ = CloseHandle(lp); state.listen_pipe = null; }
+    if (state.connect_overlap.hEvent) |ev| { _ = CloseHandle(ev); state.connect_overlap.hEvent = null; }
+    for (state.clients) |*slot| {
+        if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
+    }
+    state.client_count = 0;
 
     const result = upgrade.performUpgrade(
         state.sessions,
@@ -289,19 +297,16 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
 
     switch (result) {
         .success => {
-            // Close IPC listener — new daemon owns it now
-            if (state.listen_pipe) |lp| { _ = CloseHandle(lp); state.listen_pipe = null; }
-            // Disconnect all clients
-            for (state.clients) |*slot| {
-                if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
-            }
-            state.client_count = 0;
             // Enter HPCON keeper mode — blocks until all shells die
             upgrade.hpconKeeperLoop(state.sessions);
         },
         .failed => {
-            daemonLog("upgrade: failed, continuing with old version");
+            daemonLog("upgrade: failed, rebinding listener");
             state.upgrade_requested = false;
+            // Re-create listener so old daemon can continue serving
+            state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
+            state.listen_pipe = createPipeInstance(state.getPipeName());
+            if (state.listen_pipe) |lp| startAsyncConnect(lp, &state.connect_overlap);
         },
         .fatal => {
             daemonLog("upgrade: fatal failure");
