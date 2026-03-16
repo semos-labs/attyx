@@ -20,6 +20,7 @@ const keybinds = @import("../../config/keybinds.zig");
 const platform = @import("../../platform/platform.zig");
 const toml_edit = @import("../../config/toml_edit.zig");
 const win_session_picker = @import("win_session_picker.zig");
+const win_shell_picker = @import("win_shell_picker.zig");
 // Note: can't import actions.zig (depends on terminal.zig/POSIX).
 // Use c.attyx_mark_all_dirty() directly for force-redraw instead.
 
@@ -493,7 +494,12 @@ pub fn processOverlayDismiss(ctx: *WinCtx) void {
         return;
     }
 
-    // Command palette
+    // Shell picker
+    if (ws.g_shell_picker_active != 0) {
+        win_shell_picker.close(ctx);
+        return;
+    }
+
     // Session picker
     if (ws.g_session_picker_active != 0) {
         win_session_picker.close(ctx);
@@ -552,6 +558,17 @@ pub fn processToggles(ctx: *WinCtx) void {
         }
     }
 
+    if (@atomicRmw(i32, &ws.g_toggle_shell_picker, .Xchg, 0, .seq_cst) != 0) {
+        if (ws.g_shell_picker_active != 0) {
+            win_shell_picker.close(ctx);
+        } else {
+            if (ws.g_command_palette_active != 0) closeCommandPalette(ctx);
+            if (ws.g_theme_picker_active != 0) closeThemePicker(ctx);
+            if (ws.g_session_picker_active != 0) win_session_picker.close(ctx);
+            win_shell_picker.open(ctx);
+        }
+    }
+
     if (@atomicRmw(i32, &ws.g_toggle_theme_picker, .Xchg, 0, .seq_cst) != 0) {
         if (ws.g_theme_picker_active != 0) {
             // Revert on toggle-off
@@ -573,6 +590,9 @@ pub fn processToggles(ctx: *WinCtx) void {
 
 /// Returns true if any overlay input was consumed this tick.
 pub fn processInput(ctx: *WinCtx) bool {
+    if (ws.g_shell_picker_active != 0) {
+        return win_shell_picker.consumeInput(ctx);
+    }
     if (ws.g_session_picker_active != 0) {
         return win_session_picker.consumeInput(ctx);
     }

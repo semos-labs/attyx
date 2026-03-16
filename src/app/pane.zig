@@ -95,6 +95,7 @@ pub const Pane = struct {
         capture_stdout: bool = false,
         preserve_tmux: bool = false,
         skip_shell_integration: bool = false,
+        shell: if (builtin.os.tag == .windows) Pty.ShellType else void = if (builtin.os.tag == .windows) .auto else {},
     };
 
     pub fn spawnOpts(
@@ -109,14 +110,20 @@ pub const Pane = struct {
         var engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         errdefer engine.deinit();
 
-        const spawn_opts: Pty.SpawnOpts = .{
-            .rows = rows,
-            .cols = cols,
-            .argv = argv,
-            .cwd = cwd,
-            .capture_stdout = opts.capture_stdout,
-            .preserve_tmux = opts.preserve_tmux,
-            .skip_shell_integration = opts.skip_shell_integration,
+        const spawn_opts: Pty.SpawnOpts = blk: {
+            var so: Pty.SpawnOpts = .{
+                .rows = rows,
+                .cols = cols,
+                .argv = argv,
+                .cwd = cwd,
+                .capture_stdout = opts.capture_stdout,
+                .preserve_tmux = opts.preserve_tmux,
+                .skip_shell_integration = opts.skip_shell_integration,
+            };
+            if (comptime builtin.os.tag == .windows) {
+                so.shell = opts.shell;
+            }
+            break :blk so;
         };
         const pty = if (builtin.os.tag == .windows)
             try Pty.spawn(allocator, spawn_opts)

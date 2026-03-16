@@ -338,6 +338,8 @@ pub const Pty = struct {
         _ = SetHandleInformation(self.process, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
 
+    pub const ShellType = enum { auto, zsh, pwsh, cmd };
+
     pub const SpawnOpts = struct {
         rows: u16 = 24,
         cols: u16 = 80,
@@ -347,6 +349,7 @@ pub const Pty = struct {
         preserve_tmux: bool = false,
         skip_shell_integration: bool = false,
         startup_cmd: ?[*:0]const u8 = null,
+        shell: ShellType = .auto,
     };
 
     pub fn spawn(allocator: std.mem.Allocator, opts: SpawnOpts) !Pty {
@@ -741,7 +744,40 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         return &S.buf;
     }
 
-    // Bundled zsh is the highest priority — built-in MSYS2 sysroot.
+    // Shell override — skip auto-detection and use the requested shell.
+    switch (opts.shell) {
+        .zsh => {
+            if (bundled_shell.findBundledZsh()) |zsh| {
+                bundled_shell.setupMsysEnv();
+                @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
+                S.buf[zsh.zsh_len] = 0;
+                return &S.buf;
+            }
+            if (findGitBash(&S.buf)) |shell_len| {
+                S.buf[shell_len] = 0;
+                return &S.buf;
+            }
+        },
+        .pwsh => {
+            if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
+                S.buf[shell_len] = 0;
+                return &S.buf;
+            }
+            if (findOnPath("powershell.exe", &S.buf)) |shell_len| {
+                S.buf[shell_len] = 0;
+                return &S.buf;
+            }
+        },
+        .cmd => {
+            const cmd = comptime toUtf16Literal("cmd.exe");
+            @memcpy(S.buf[0..cmd.len], &cmd);
+            S.buf[cmd.len] = 0;
+            return &S.buf;
+        },
+        .auto => {},
+    }
+
+    // Auto-detection: bundled zsh is the highest priority.
     // Return just the path; setupShellIntegration adds --login.
     if (bundled_shell.findBundledZsh()) |zsh| {
         bundled_shell.setupMsysEnv();

@@ -20,6 +20,7 @@ extern fn attyx_toggle_session_switcher() void;
 extern fn attyx_create_session_direct() void;
 extern fn attyx_toggle_command_palette() void;
 extern fn attyx_toggle_theme_picker() void;
+extern fn attyx_toggle_shell_picker() void;
 extern fn attyx_toggle_debug_overlay() void;
 extern fn attyx_toggle_anchor_demo() void;
 extern fn attyx_toggle_ai_demo() void;
@@ -138,6 +139,7 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
         .session_switcher_toggle => { attyx_toggle_session_switcher(); return 1; },
         .command_palette_toggle => { attyx_toggle_command_palette(); return 1; },
         .theme_picker_toggle => { attyx_toggle_theme_picker(); return 1; },
+        .shell_picker_toggle => { attyx_toggle_shell_picker(); return 1; },
         .session_create => {
             if (c.g_popup_active != 0) {
                 const b = [_]u8{0x0e};

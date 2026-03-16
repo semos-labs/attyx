@@ -396,6 +396,9 @@ export fn attyx_toggle_command_palette() void {
 export fn attyx_toggle_theme_picker() void {
     @atomicStore(i32, &g_toggle_theme_picker, 1, .seq_cst);
 }
+export fn attyx_toggle_shell_picker() void {
+    @atomicStore(i32, &g_toggle_shell_picker, 1, .seq_cst);
+}
 export fn attyx_toggle_debug_overlay() void {
     @atomicStore(i32, &g_toggle_debug_overlay, 1, .seq_cst);
 }
@@ -542,6 +545,8 @@ pub export var g_command_palette_active: i32 = 0;
 pub export var g_toggle_command_palette: i32 = 0;
 pub export var g_theme_picker_active: i32 = 0;
 pub export var g_toggle_theme_picker: i32 = 0;
+pub export var g_shell_picker_active: i32 = 0;
+pub export var g_toggle_shell_picker: i32 = 0;
 
 pub export var g_popup_active: i32 = 0;
 pub export var g_popup_trail_active: i32 = 0;

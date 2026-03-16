@@ -123,6 +123,7 @@ pub const Action = enum(u8) {
     split_up = 91,
     close_all_tabs = 92,
     close_all_windows = 93,
+    shell_picker_toggle = 94,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
