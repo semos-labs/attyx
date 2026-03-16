@@ -1,17 +1,22 @@
-/// Standalone test: do ConPTY pipe handles survive parent exit via inheritance?
+/// Test: Option 4 — old daemon keeps HPCON alive, new daemon uses inherited pipes.
+///
+/// This simulates the "pipe proxy" upgrade strategy:
+///   - Old daemon (parent) owns the HPCON and keeps it open
+///   - New daemon (child) inherits pipe handles and talks to the shell directly
+///   - Parent stays alive as HPCON keeper until child is done
 ///
 /// Parent mode (default):
 ///   1. Create ConPTY + cmd.exe
-///   2. Verify shell is alive (read initial output)
-///   3. Mark pipe_in_write, pipe_out_read, process handles as inheritable
-///   4. Write handle values to a temp file
-///   5. Spawn self with --child and bInheritHandles=TRUE
-///   6. Sleep 2s, then exit (OS closes HPCON + parent's pipe handles)
+///   2. Verify shell is alive
+///   3. Mark pipe handles as inheritable
+///   4. Spawn child with bInheritHandles=TRUE
+///   5. Keep HPCON alive, wait for child to finish
+///   6. Clean up
 ///
 /// Child mode (--child):
-///   1. Read handle values from temp file
-///   2. Sleep 3s (wait for parent to exit, HPCON to close)
-///   3. Try PeekNamedPipe / WriteFile / ReadFile on inherited handles
+///   1. Read inherited handle values from temp file
+///   2. Write "echo CONPTY_INHERIT_TEST" via inherited pipe_in_write
+///   3. Read response via inherited pipe_out_read
 ///   4. Print PASS or FAIL
 ///
 /// Build:  zig build-exe conpty_test.zig -lkernel32 -luser32
@@ -90,7 +95,7 @@ const LOG_FILE = "conpty_test_result.log";
 
 var log_file: ?std.fs.File = null;
 
-/// Print to both stderr and the log file (child mode).
+/// Print to both stderr and the log file.
 fn pr(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
     if (log_file) |f| {
@@ -120,7 +125,8 @@ pub fn main() !void {
 }
 
 // ════════════════════════════════════════════════════════════════
-// Parent: create ConPTY, mark handles inheritable, spawn child
+// Parent (old daemon): create ConPTY, keep it alive, let child
+// use inherited pipe handles
 // ════════════════════════════════════════════════════════════════
 
 fn runParent(allocator: std.mem.Allocator) !void {
@@ -179,7 +185,7 @@ fn runParent(allocator: std.mem.Allocator) !void {
     _ = CloseHandle(in_r);
     _ = CloseHandle(out_w);
 
-    // Wait for shell to start producing output
+    // Wait for shell to start
     pr("[parent] Waiting 2s for shell startup...\n", .{});
     Sleep(2000);
 
@@ -195,12 +201,11 @@ fn runParent(allocator: std.mem.Allocator) !void {
     }
 
     // Mark handles as inheritable
-    const h_in_w = SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    const h_out_r = SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    const h_proc = SetHandleInformation(pi.hProcess, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    pr("[parent] SetHandleInformation: in_w={d} out_r={d} proc={d}\n", .{ h_in_w, h_out_r, h_proc });
+    _ = SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    _ = SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    _ = SetHandleInformation(pi.hProcess, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 
-    pr("[parent] Handles: in_w={x} out_r={x} proc={x}\n", .{
+    pr("[parent] Handles marked inheritable: in_w={x} out_r={x} proc={x}\n", .{
         @intFromPtr(in_w), @intFromPtr(out_r), @intFromPtr(pi.hProcess),
     });
 
@@ -222,21 +227,19 @@ fn runParent(allocator: std.mem.Allocator) !void {
     const exe_len = GetModuleFileNameW(null, &exe_path, exe_path.len);
     if (exe_len == 0) return error.GetModuleFileNameFailed;
 
-    // Build: "<exe>" --child
     var child_cmd: [2048:0]u16 = undefined;
     var pos: usize = 0;
     child_cmd[pos] = '"';
     pos += 1;
     @memcpy(child_cmd[pos .. pos + exe_len], exe_path[0..exe_len]);
     pos += exe_len;
-    const suffix = "\" --child";
-    for (suffix) |c| {
+    const suffix_str = "\" --child";
+    for (suffix_str) |c| {
         child_cmd[pos] = c;
         pos += 1;
     }
     child_cmd[pos] = 0;
 
-    // Spawn with bInheritHandles=TRUE, CREATE_NEW_CONSOLE
     var child_si = std.mem.zeroes(STARTUPINFOEXW);
     child_si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
     var child_pi: PROCESS_INFORMATION = undefined;
@@ -247,33 +250,30 @@ fn runParent(allocator: std.mem.Allocator) !void {
     }
     _ = CloseHandle(child_pi.hThread);
 
-    pr("[parent] Child spawned (pid={d}). Sleeping 2s before closing HPCON...\n", .{child_pi.dwProcessId});
-    Sleep(2000);
+    pr("[parent] Child spawned (pid={d}).\n", .{child_pi.dwProcessId});
+    pr("[parent] HPCON stays open. Waiting for child to finish...\n", .{});
 
-    // Close HPCON — simulates old daemon exiting.
-    // The child is already running and will wait 4s before testing handles,
-    // so by the time it tests, HPCON has been closed for ~2s.
+    // ── KEY DIFFERENCE: parent keeps HPCON alive ──
+    // Wait for child to complete (up to 30s)
+    _ = WaitForSingleObject(child_pi.hProcess, 30000);
+    _ = CloseHandle(child_pi.hProcess);
+
+    // Now clean up — HPCON closure will kill the shell, but we're done.
+    pr("[parent] Child finished. Closing HPCON and cleaning up.\n", .{});
     ClosePseudoConsole(hpc);
-    pr("[parent] HPCON closed. Closing pipe handles too (simulating process exit)...\n", .{});
     _ = CloseHandle(in_w);
     _ = CloseHandle(out_r);
     _ = CloseHandle(pi.hProcess);
 
-    pr("[parent] All handles closed. Waiting for child to finish...\n", .{});
-    // Wait for child to complete so the user sees everything in one console.
-    _ = WaitForSingleObject(child_pi.hProcess, 30000); // 30s timeout
-    _ = CloseHandle(child_pi.hProcess);
-
-    // Also print the log file contents in case child stderr went elsewhere.
+    // Print the child's log
     printLogFile();
 }
 
 // ════════════════════════════════════════════════════════════════
-// Child: wait for parent exit, test inherited handles
+// Child (new daemon): use inherited pipe handles to talk to shell
 // ════════════════════════════════════════════════════════════════
 
 fn runChild() void {
-    // Open log file so results survive even if the console window closes.
     log_file = std.fs.cwd().createFile(LOG_FILE, .{}) catch null;
     pr("[child] PID={d} — reading inherited handles\n", .{GetCurrentProcessId()});
 
@@ -301,11 +301,10 @@ fn runChild() void {
 
     pr("[child] Handles: in_w={x} out_r={x} proc={x}\n", .{ in_w_val, out_r_val, proc_val });
 
-    // Wait for parent to exit and HPCON to close
-    pr("[child] Waiting 4s for parent exit + HPCON closure...\n", .{});
-    Sleep(4000);
+    // Give parent a moment to settle (it's still alive, HPCON is open)
+    Sleep(1000);
 
-    // Check if shell process survived
+    // ── Test 1: Is shell still alive? ──
     var exit_code: DWORD = 0;
     if (GetExitCodeProcess(shell_process, &exit_code) == 0) {
         pr("[child] WARNING: GetExitCodeProcess failed (err={d})\n", .{GetLastError()});
@@ -313,29 +312,27 @@ fn runChild() void {
         pr("[child] Shell exit code: {d} (259=STILL_ACTIVE)\n", .{exit_code});
         if (exit_code != STILL_ACTIVE) {
             pr("\n========================================\n", .{});
-            pr("FAIL: Shell died after HPCON closure.\n", .{});
-            pr("Exit code: {d}\n", .{exit_code});
-            pr("Handle inheritance alone is NOT sufficient.\n", .{});
+            pr("FAIL: Shell already dead (code={d})\n", .{exit_code});
             pr("========================================\n", .{});
             cleanup();
             return;
         }
     }
 
-    // Test 1: Can we peek the pipe?
+    // ── Test 2: Can we peek? ──
     var avail: DWORD = 0;
     const peek_ok = PeekNamedPipe(pipe_out_read, null, 0, null, &avail, null);
     pr("[child] PeekNamedPipe: ok={d} avail={d}\n", .{ peek_ok, avail });
 
     if (peek_ok == 0) {
         pr("\n========================================\n", .{});
-        pr("FAIL: pipe_out_read is broken (err={d})\n", .{GetLastError()});
+        pr("FAIL: pipe_out_read broken (err={d})\n", .{GetLastError()});
         pr("========================================\n", .{});
         cleanup();
         return;
     }
 
-    // Drain pending data
+    // Drain any pending data
     if (avail > 0) {
         var drain: [4096]u8 = undefined;
         var drain_n: DWORD = 0;
@@ -343,20 +340,19 @@ fn runChild() void {
         pr("[child] Drained {d} bytes\n", .{drain_n});
     }
 
-    // Test 2: Write a command
+    // ── Test 3: Write a command via inherited pipe ──
     const cmd = "echo CONPTY_INHERIT_TEST\r\n";
     var written: DWORD = 0;
     if (WriteFile(pipe_in_write, cmd, cmd.len, &written, null) == 0) {
         pr("\n========================================\n", .{});
         pr("FAIL: WriteFile failed (err={d})\n", .{GetLastError()});
-        pr("pipe_in_write is broken after parent exit.\n", .{});
         pr("========================================\n", .{});
         cleanup();
         return;
     }
     pr("[child] Wrote {d} bytes: \"echo CONPTY_INHERIT_TEST\"\n", .{written});
 
-    // Test 3: Read back
+    // ── Test 4: Read response ──
     pr("[child] Waiting 2s for response...\n", .{});
     Sleep(2000);
 
@@ -373,26 +369,23 @@ fn runChild() void {
 
         if (std.mem.indexOf(u8, output, "CONPTY_INHERIT_TEST") != null) {
             pr("\n========================================\n", .{});
-            pr("PASS: Shell survived HPCON closure!\n", .{});
-            pr("Inherited pipe handles work after parent exit.\n", .{});
-            pr("Handle inheritance approach is VIABLE.\n", .{});
+            pr("PASS: Child can talk to shell via inherited pipes!\n", .{});
+            pr("Parent keeps HPCON alive, child uses pipes directly.\n", .{});
+            pr("Pipe-proxy upgrade approach is VIABLE.\n", .{});
             pr("========================================\n", .{});
         } else {
             pr("\n========================================\n", .{});
             pr("PARTIAL: Got data but marker not found.\n", .{});
-            pr("Shell may be alive but output unexpected.\n", .{});
             pr("========================================\n", .{});
         }
     } else if (peek2 != 0) {
         pr("\n========================================\n", .{});
         pr("AMBIGUOUS: Pipes alive but no response.\n", .{});
-        pr("Shell may have died or ConPTY stopped flushing.\n", .{});
-        pr("(Anonymous pipes don't flush without HPCON.)\n", .{});
+        pr("ConPTY may need active ReadFile to flush.\n", .{});
         pr("========================================\n", .{});
     } else {
         pr("\n========================================\n", .{});
-        pr("FAIL: Pipe broken after parent exit.\n", .{});
-        pr("Handle inheritance alone is NOT sufficient.\n", .{});
+        pr("FAIL: Pipe broken.\n", .{});
         pr("========================================\n", .{});
     }
 
