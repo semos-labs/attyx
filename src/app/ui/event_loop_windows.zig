@@ -311,6 +311,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             const grid_top: i32 = ws.g_grid_top_offset;
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
+            Dbg.mark(10);
             c.attyx_begin_cell_update();
 
             // Suppress cursor-at-col-0 flicker: when data just arrived and
@@ -359,8 +360,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 }
             }
 
+            Dbg.mark(11);
             generateTabBar(ctx);
+            Dbg.mark(12);
             generateStatusbar(ctx);
+            Dbg.mark(13);
             publishNativeTabTitles(ctx);
             win_search.publishOverlays(ctx);
             c.attyx_end_cell_update();
