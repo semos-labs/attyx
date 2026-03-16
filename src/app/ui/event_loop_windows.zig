@@ -124,7 +124,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     const Dbg = struct {
         var iter: u32 = 0;
         var phase: u8 = 0;
-        var buf: [256]u8 = undefined;
+        var dbg_buf: [256]u8 = undefined;
         var path_buf: [256]u8 = undefined;
         fn mark(p: u8) void {
             phase = p;
@@ -144,7 +144,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     while (c.attyx_should_quit() == 0) {
         Dbg.iter += 1;
         if (Dbg.iter <= 3) {
-            const msg = std.fmt.bufPrint(&Dbg.buf, "loop iter {d}", .{Dbg.iter}) catch "loop iter ?";
+            const msg = std.fmt.bufPrint(&Dbg.dbg_buf, "loop iter {d}", .{Dbg.iter}) catch "loop iter ?";
             Dbg.log(msg);
         }
 
