@@ -8,7 +8,18 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
+const session_connect = @import("../session_connect.zig");
 
+fn daemonLog(msg: []const u8) void {
+    var path_buf: [256]u8 = undefined;
+    const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+    file.writeAll("[handler] ") catch {};
+    file.writeAll(msg) catch {};
+    file.writeAll("\n") catch {};
+}
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -40,7 +51,11 @@ pub fn handleMessage(
         // V2 pane-multiplexed messages
         .create_pane => handleCreatePane(cl, msg.payload, sessions, next_pane_id, allocator),
         .close_pane => handleClosePane(cl, msg.payload, sessions),
-        .focus_panes => handleFocusPanes(cl, msg.payload, sessions),
+        .focus_panes => {
+            daemonLog("handleMessage: focus_panes received");
+            handleFocusPanes(cl, msg.payload, sessions);
+            daemonLog("handleMessage: focus_panes done");
+        },
         .pane_input => handlePaneInput(cl, msg.payload, sessions),
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
         .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
