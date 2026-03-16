@@ -121,13 +121,14 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     var prev_cursor_col: usize = 0;
 
     // Breadcrumb counter for crash diagnosis (static — no stack)
+pub var crash_iter: u32 = 0;
+pub var crash_phase: u8 = 0;
+
     const Dbg = struct {
-        var iter: u32 = 0;
-        var phase: u8 = 0;
         var dbg_buf: [256]u8 = undefined;
         var path_buf: [256]u8 = undefined;
         fn mark(p: u8) void {
-            phase = p;
+            crash_phase = p;
         }
         fn log(msg: []const u8) void {
             const sc = @import("../session_connect.zig");
@@ -142,11 +143,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     };
 
     while (c.attyx_should_quit() == 0) {
-        Dbg.iter += 1;
-        if (Dbg.iter <= 3) {
-            const msg = std.fmt.bufPrint(&Dbg.dbg_buf, "loop iter {d}", .{Dbg.iter}) catch "loop iter ?";
-            Dbg.log(msg);
-        }
+        crash_iter += 1;
 
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
@@ -256,10 +253,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Daemon socket drain ──
-        if (Dbg.iter <= 3) Dbg.log("drain daemon");
+        Dbg.mark(5);
         if (win_daemon.drainDaemon(ctx)) got_data = true;
 
-        if (Dbg.iter <= 3) Dbg.log("post-daemon");
+        Dbg.mark(6);
         // ── Title change detection ──
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             const lay = &(maybe_layout.* orelse continue);
@@ -274,6 +271,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Search ──
+        Dbg.mark(7);
         const search_input_changed = win_search.consumeSearchInput();
         win_search.processSearch(&ctx.tab_mgr.activePane().engine.state);
 
@@ -282,6 +280,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Statusbar widget tick ──
+        Dbg.mark(8);
         var statusbar_refreshed = false;
         if (ctx.statusbar) |sb| {
             if (sb.config.enabled) {
@@ -294,6 +293,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Throttle & publish ──
+        Dbg.mark(9);
         const eng = &ctx.tab_mgr.activePane().engine;
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
