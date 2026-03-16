@@ -83,7 +83,15 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     defer _ = timeEndPeriod(1);
 
     // Save layout and last-session on clean shutdown.
-    defer saveLayoutToDaemon(ctx);
+    defer {
+        saveLayoutToDaemon(ctx);
+        if (ctx.session_client) |sc| {
+            if (sc.attached_session_id) |sid| {
+                const session_connect = @import("../session_connect.zig");
+                session_connect.saveLastSession(sid);
+            }
+        }
+    }
     // Heap-allocate PTY read buffer — 64KB on stack crashes aarch64 Windows
     // (missing __chkstk probes, see project_windows_stack_probe.md).
     const buf_slice = ctx.allocator.alloc(u8, 65536) catch return;
@@ -351,7 +359,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
 // ── Layout persistence ──
 
-fn saveLayoutToDaemon(ctx: *WinCtx) void {
+pub fn saveLayoutToDaemon(ctx: *WinCtx) void {
     const sc = ctx.session_client orelse return;
     var save_buf: [4096]u8 = undefined;
     const len = ctx.tab_mgr.serializeLayout(&save_buf) catch |err| {
@@ -663,6 +671,18 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                     c.attyx_request_quit();
                     return;
                 }
+                // Tell daemon to close all panes in this tab
+                if (ctx.session_client) |sc| {
+                    if (ctx.tab_mgr.tabs[ctx.tab_mgr.active]) |*lay| {
+                        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                        const lc = lay.collectLeaves(&leaves);
+                        for (leaves[0..lc]) |leaf| {
+                            if (leaf.pane.daemon_pane_id) |dpid| {
+                                sc.sendClosePane(dpid) catch {};
+                            }
+                        }
+                    }
+                }
                 ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
                 updateGridOffsets(ctx);
                 switchActiveTab(ctx);
@@ -737,7 +757,7 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
 
 /// Send focus_panes for all daemon-backed panes in the active tab.
 /// Triggers daemon replay for newly-focused panes.
-fn sendFocusPanesForActiveTab(ctx: *WinCtx) void {
+pub fn sendFocusPanesForActiveTab(ctx: *WinCtx) void {
     const sc = ctx.session_client orelse return;
     const layout = ctx.tab_mgr.activeLayout();
     var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
@@ -908,7 +928,18 @@ fn flushPtyResizes(ctx: *WinCtx) void {
         var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
         const lc = lay.collectLeaves(&leaves);
         for (leaves[0..lc]) |leaf| {
-            if (leaf.pane.pending_pty_resize) leaf.pane.flushPtyResize();
+            const was_pending = leaf.pane.pending_pty_resize;
+            const pr = leaf.pane.pending_pty_rows;
+            const pc = leaf.pane.pending_pty_cols;
+            leaf.pane.flushPtyResize();
+            // Forward to daemon if this flush actually sent the resize
+            if (was_pending and !leaf.pane.pending_pty_resize) {
+                if (leaf.pane.daemon_pane_id) |dpid| {
+                    if (ctx.session_client) |sc| {
+                        sc.sendPaneResize(dpid, pr, pc) catch {};
+                    }
+                }
+            }
         }
     }
 }
