@@ -1,6 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const platform = @import("../platform/platform.zig");
+
+// CREATE_NO_WINDOW — prevents console flash when spawning git on Windows.
+const win_spawn_flags = if (builtin.os.tag == .windows) 0x08000000 else undefined;
 const statusbar_config = @import("../config/statusbar_config.zig");
 const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
 const statusbar = @import("statusbar.zig");
@@ -298,6 +302,7 @@ pub fn refresh(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: st
         .argv = &.{ "git", "status", "--porcelain=v2", "--branch" },
         .cwd = cwd,
         .max_output_bytes = 4096,
+        .windows_spawn_flags = win_spawn_flags,
     }) catch return;
     defer {
         allocator.free(status_result.stdout);
@@ -317,6 +322,7 @@ pub fn refresh(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: st
         .argv = &.{ "git", "stash", "list" },
         .cwd = cwd,
         .max_output_bytes = 4096,
+        .windows_spawn_flags = win_spawn_flags,
     }) catch {
         // Stash count is optional — continue without it
         formatOutput(ws, &status, wc, ansi_palette);
@@ -337,6 +343,7 @@ pub fn refresh(ws: *WidgetState, wc: *const StatusbarWidgetConfig, allocator: st
         .argv = &.{ "git", "diff", "--numstat" },
         .cwd = cwd,
         .max_output_bytes = 8192,
+        .windows_spawn_flags = win_spawn_flags,
     }) catch {
         formatOutput(ws, &status, wc, ansi_palette);
         return;

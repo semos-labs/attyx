@@ -353,6 +353,7 @@ pub const Statusbar = struct {
             .allocator = self.allocator,
             .argv = &.{path},
             .max_output_bytes = max_output_len,
+            .windows_spawn_flags = if (@import("builtin").os.tag == .windows) 0x08000000 else undefined, // CREATE_NO_WINDOW
         }) catch return;
         defer {
             self.allocator.free(result.stdout);

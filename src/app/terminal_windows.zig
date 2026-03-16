@@ -388,6 +388,7 @@ fn buildInitialTabs(
     if (daemon_pane_id != null) {
         pane.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
         pane.daemon_pane_id = daemon_pane_id;
+        pane.session_client = hsc;
     } else {
         pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
     }

@@ -691,6 +691,7 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                         return;
                     };
                     new_pane.daemon_pane_id = pane_id;
+                    new_pane.session_client = sc;
                     // Tell daemon to start sending output for this pane.
                     sc.sendFocusPanes(&.{pane_id}) catch {};
                     logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
