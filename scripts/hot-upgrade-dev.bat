@@ -4,35 +4,42 @@ REM
 REM Usage: scripts\hot-upgrade-dev.bat
 REM
 REM Flow:
-REM   1. Rename locked zig-out\bin\attyx.exe -> .old (works while running)
-REM   2. Build (zig build can now write the new binary)
-REM   3. Copy new binary to staging path
-REM   4. Daemon detects staged binary within ~2s -> hot-upgrade kicks in
+REM   1. Try to rename locked exe (works on most Windows configs)
+REM   2. If rename fails, kill daemon so build can overwrite
+REM   3. Build
+REM   4. Stage new binary -> daemon hot-upgrades within ~2s
 
 set STATEDIR=%LOCALAPPDATA%\attyx
 set STAGING=%STATEDIR%\upgrade-dev.exe
 set BUILT=zig-out\bin\attyx.exe
 set BUILT_OLD=zig-out\bin\attyx.exe.old
 
-REM Step 1: Rename the locked exe so zig build can write the new one.
-REM rename works on locked files — the running process keeps using the old binary from memory.
+REM Try to rename the locked exe so zig build can write the new one.
 if exist "%BUILT%" (
     if exist "%BUILT_OLD%" del /f "%BUILT_OLD%" 2>nul
-    rename "%BUILT%" attyx.exe.old 2>nul
+    rename "%BUILT%" attyx.exe.old
+    if exist "%BUILT%" (
+        echo [!] Rename failed (file locked). Killing daemon...
+        "%BUILT%" kill-daemon 2>nul
+        timeout /t 2 /nobreak >nul
+        if exist "%BUILT_OLD%" del /f "%BUILT_OLD%" 2>nul
+    ) else (
+        echo [*] Renamed locked exe to .old
+    )
 )
 
 echo [1/3] Building...
 zig build
 if errorlevel 1 (
     echo Build failed.
-    REM Restore the old binary if build failed
+    REM Restore old binary if build failed and we renamed
     if not exist "%BUILT%" (
         if exist "%BUILT_OLD%" rename "%BUILT_OLD%" attyx.exe 2>nul
     )
     exit /b 1
 )
 
-REM Clean up the old binary (may fail if still locked — that's fine)
+REM Clean up old binary
 if exist "%BUILT_OLD%" del /f "%BUILT_OLD%" 2>nul
 
 if not exist "%BUILT%" (
@@ -47,4 +54,4 @@ copy /y "%BUILT%" "%STAGING%" >nul
 
 echo [3/3] Staged. Daemon will pick it up within ~2s.
 echo.
-echo Watch daemon log: Get-Content "%STATEDIR%\daemon-debug-dev.log" -Tail 20 -Wait
+echo Watch: Get-Content "%STATEDIR%\daemon-debug-dev.log" -Tail 20 -Wait
