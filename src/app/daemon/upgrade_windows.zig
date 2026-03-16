@@ -536,6 +536,27 @@ extern "kernel32" fn CreateFileW(
 /// `sessions` still contains the original panes with their HPCON handles.
 pub fn hpconKeeperLoop(sessions: *[max_sessions]?DaemonSession) void {
     daemonLog("hpcon-keeper: monitoring shells");
+
+    // Close our copies of the pipe handles so the new daemon has exclusive
+    // access. We only need HPCON + process handles to keep shells alive
+    // and detect when they exit.
+    for (sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*pane| {
+                    _ = CloseHandle(pane.pty.pipe_out_read);
+                    _ = CloseHandle(pane.pty.pipe_in_write);
+                    pane.pty.pipe_out_read = INVALID_HANDLE_VALUE;
+                    pane.pty.pipe_in_write = INVALID_HANDLE_VALUE;
+                    if (pane.pty.read_event != INVALID_HANDLE_VALUE) {
+                        _ = CloseHandle(pane.pty.read_event);
+                        pane.pty.read_event = INVALID_HANDLE_VALUE;
+                    }
+                }
+            }
+        }
+    }
+
     while (true) {
         var any_alive = false;
         for (sessions) |*slot| {

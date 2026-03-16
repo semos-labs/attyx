@@ -162,6 +162,7 @@ extern "kernel32" fn GetExitCodeProcess(
 
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn SetHandleInformation(hObject: HANDLE, dwMask: DWORD, dwFlags: DWORD) callconv(.winapi) BOOL;
+extern "kernel32" fn TerminateProcess(hProcess: HANDLE, uExitCode: c_uint) callconv(.winapi) BOOL;
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
 
 const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
@@ -485,7 +486,14 @@ pub const Pty = struct {
 
     pub fn deinit(self: *Pty) void {
         self.cancelAsyncRead();
-        if (self.owns_hpcon) ClosePseudoConsole(self.hpc);
+        if (self.owns_hpcon) {
+            ClosePseudoConsole(self.hpc);
+        } else {
+            // Inherited PTY: we don't own the HPCON, so ClosePseudoConsole
+            // won't run. Kill the shell process explicitly so it doesn't
+            // linger after the tab is closed.
+            _ = TerminateProcess(self.process, 0);
+        }
         _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
         _ = CloseHandle(self.process);
