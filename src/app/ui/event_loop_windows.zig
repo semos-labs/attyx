@@ -47,9 +47,6 @@ extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
-// Crash diagnosis breadcrumbs (file-scope so SEH handler can read them).
-pub var crash_iter: u32 = 0;
-pub var crash_phase: u8 = 0;
 
 pub const WinCtx = struct {
     tab_mgr: *TabManager,
@@ -124,27 +121,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
     var prev_cursor_col: usize = 0;
 
-    const Dbg = struct {
-        var dbg_buf: [256]u8 = undefined;
-        var path_buf: [256]u8 = undefined;
-        fn mark(p: u8) void {
-            crash_phase = p;
-        }
-        fn log(msg: []const u8) void {
-            const sc = @import("../session_connect.zig");
-            const path = sc.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
-            const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
-            defer file.close();
-            file.seekFromEnd(0) catch {};
-            file.writeAll("[event] ") catch {};
-            file.writeAll(msg) catch {};
-            file.writeAll("\n") catch {};
-        }
-    };
-
     while (c.attyx_should_quit() == 0) {
-        crash_iter += 1;
-        Dbg.mark(1);
 
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
@@ -152,7 +129,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Config reload ──
-        Dbg.mark(2);
         if (@atomicRmw(i32, &ws.g_needs_reload_config, .Xchg, 0, .seq_cst) != 0) {
             doReloadConfig(ctx);
         }
@@ -161,39 +137,30 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         handleResize(ctx);
 
         // ── Tab actions ──
-        Dbg.mark(30);
         var tabs_changed = false;
         processTabActions(ctx, &tabs_changed);
         if (tabs_changed) saveLayoutToDaemon(ctx);
 
-        Dbg.mark(31);
         win_split.processSplitActions(ctx);
         win_split.processSplitClick(ctx);
         win_split.processSplitDrag(ctx);
 
-        Dbg.mark(32);
         win_overlays.processOverlayDismiss(ctx);
         win_overlays.processToggles(ctx);
 
-        Dbg.mark(33);
         const overlay_input_changed = win_overlays.processInput(ctx);
-        Dbg.mark(34);
         win_session_picker.tickFinder(ctx);
-        Dbg.mark(35);
 
         // Guard: an overlay action (e.g. close window) may have killed all tabs
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
-        Dbg.mark(36);
 
         // ── IPC commands ──
-        Dbg.mark(37);
         while (ipc_queue.dequeue()) |cmd| {
             ipc_handler.handle(cmd, ctx);
             ipc_queue.advance();
         }
 
         // ── Clear screen ──
-        Dbg.mark(38);
         if (@atomicRmw(i32, &ws.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
             const pane = ctx.tab_mgr.activePane();
             const eng = &pane.engine;
@@ -210,7 +177,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Popup lifecycle ──
-        Dbg.mark(39);
         win_popup.processPopupToggle(ctx);
         if (@atomicRmw(i32, &ws.popup_close_request, .Xchg, 0, .seq_cst) != 0) {
             win_popup.closePopup(ctx);
@@ -219,21 +185,16 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_popup.checkPopupExit(ctx);
 
         // ── Pane exit detection ──
-        Dbg.mark(40);
         checkPaneExits(ctx);
-        Dbg.mark(41);
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
-        Dbg.mark(42);
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
 
         // ── Flush debounced PTY resizes ──
-        Dbg.mark(43);
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
-        Dbg.mark(4);
         var got_data = false;
         {
             const active_pane = ctx.tab_mgr.activePane();
@@ -263,10 +224,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Daemon socket drain ──
-        Dbg.mark(5);
         if (win_daemon.drainDaemon(ctx)) got_data = true;
 
-        Dbg.mark(6);
         // ── Title change detection ──
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             const lay = &(maybe_layout.* orelse continue);
@@ -281,7 +240,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Search ──
-        Dbg.mark(7);
         const search_input_changed = win_search.consumeSearchInput();
         win_search.processSearch(&ctx.tab_mgr.activePane().engine.state);
 
@@ -290,7 +248,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Statusbar widget tick ──
-        Dbg.mark(8);
         var statusbar_refreshed = false;
         if (ctx.statusbar) |sb| {
             if (sb.config.enabled) {
@@ -303,29 +260,23 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Throttle & publish ──
-        Dbg.mark(90);
         const eng = &ctx.tab_mgr.activePane().engine;
-        Dbg.mark(91);
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
         const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed;
 
         if (need_update) {
-            Dbg.mark(92);
             const now = std.time.nanoTimestamp();
             if (!viewport_changed and !tabs_changed and (now - last_publish_ns) < min_frame_ns) {
                 Sleep(0);
                 continue;
             }
 
-            Dbg.mark(93);
             const layout = ctx.tab_mgr.activeLayout();
-            Dbg.mark(94);
             const grid_top: i32 = ws.g_grid_top_offset;
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
-            Dbg.mark(95);
             c.attyx_begin_cell_update();
 
             // Suppress cursor-at-col-0 flicker: when data just arrived and
@@ -374,11 +325,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 }
             }
 
-            Dbg.mark(11);
             generateTabBar(ctx);
-            Dbg.mark(12);
             generateStatusbar(ctx);
-            Dbg.mark(13);
             publishNativeTabTitles(ctx);
             win_search.publishOverlays(ctx);
             c.attyx_end_cell_update();

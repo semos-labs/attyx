@@ -100,9 +100,7 @@ const seh = if (is_windows) struct {
         };
         const code = info.ExceptionRecord.ExceptionCode;
         const addr = @intFromPtr(info.ExceptionRecord.ExceptionAddress);
-        // Include event loop phase for crash diagnosis
-        const el = @import("app/ui/event_loop_windows.zig");
-        const text = std.fmt.bufPrint(&S.buf, "CRASH: exception 0x{x:0>8} at 0x{x} (loop iter={d}, phase={d})", .{ code, addr, el.crash_iter, el.crash_phase }) catch "CRASH: unknown";
+        const text = std.fmt.bufPrint(&S.buf, "CRASH: exception 0x{x:0>8} at 0x{x}", .{ code, addr }) catch "CRASH: unknown";
         const path = session_connect.statePath(&S.path_buf, "daemon-debug{s}.log") orelse return 0;
         const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return 0;
         file.seekFromEnd(0) catch {};
