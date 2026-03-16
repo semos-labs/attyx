@@ -309,8 +309,6 @@ fn handleFocusPanes(
     // Drain pending PTY data for newly-active panes before replaying.
     // This closes the race where the shell is still outputting startup
     // sequences (e.g. zsh PROMPT_EOL_MARK) that haven't been read yet.
-    // Static drain buffer — avoids 8KB stack allocation that crashes
-    // on aarch64 Windows (missing __chkstk probes).
     const DrainBuf = struct {
         var buf: [8192]u8 = undefined;
     };
@@ -325,10 +323,19 @@ fn handleFocusPanes(
         }
         if (!was_active) {
             if (session.findPane(new_id)) |pane| {
-                // Drain any buffered PTY output into the ring buffer
-                while (true) {
-                    const n = pane.readPty(&DrainBuf.buf) catch break;
-                    if (n == 0) break;
+                // Drain any buffered PTY output into the ring buffer.
+                // On Windows, Pty.read blocks (INFINITE wait), so use
+                // peekAvail + read to only drain what's available.
+                if (comptime is_windows) {
+                    while (pane.pty.peekAvail() > 0) {
+                        const n = pane.readPty(&DrainBuf.buf) catch break;
+                        if (n == 0) break;
+                    }
+                } else {
+                    while (true) {
+                        const n = pane.readPty(&DrainBuf.buf) catch break;
+                        if (n == 0) break;
+                    }
                 }
                 cl.sendPaneReplay(pane);
                 cl.sendReplayEnd(new_id);
