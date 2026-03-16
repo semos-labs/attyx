@@ -75,18 +75,28 @@ extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, n: DWORD, read_: ?*DWORD, o
 extern "kernel32" fn WriteFile(h: HANDLE, buf: [*]const u8, n: DWORD, written: ?*DWORD, ovl: ?*anyopaque) callconv(.winapi) BOOL;
 extern "kernel32" fn PeekNamedPipe(h: HANDLE, buf: ?[*]u8, n: DWORD, r: ?*DWORD, avail: ?*DWORD, left: ?*DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn GetExitCodeProcess(h: HANDLE, code: *DWORD) callconv(.winapi) BOOL;
-extern "kernel32" fn CloseHandle2(h: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn SetHandleInformation(h: HANDLE, mask: DWORD, flags: DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn GetModuleFileNameW(hModule: ?HANDLE, buf: [*]u16, sz: DWORD) callconv(.winapi) DWORD;
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
 extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
+extern "kernel32" fn WaitForSingleObject(h: HANDLE, ms: DWORD) callconv(.winapi) DWORD;
 extern "kernel32" fn AllocConsole() callconv(.winapi) BOOL;
 extern "kernel32" fn GetConsoleWindow() callconv(.winapi) ?std.os.windows.HWND;
 extern "user32" fn ShowWindow(hWnd: std.os.windows.HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 
-const pr = std.debug.print;
 const TEMP_FILE = "conpty_test_handles.tmp";
+const LOG_FILE = "conpty_test_result.log";
+
+var log_file: ?std.fs.File = null;
+
+/// Print to both stderr and the log file (child mode).
+fn pr(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+    if (log_file) |f| {
+        f.writer().print(fmt, args) catch {};
+    }
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -234,16 +244,26 @@ fn runParent(allocator: std.mem.Allocator) !void {
         return error.SpawnChildFailed;
     }
     _ = CloseHandle(child_pi.hThread);
-    _ = CloseHandle(child_pi.hProcess);
 
-    pr("[parent] Child spawned (pid={d}). Sleeping 2s then exiting...\n", .{child_pi.dwProcessId});
-    pr("[parent] On exit, OS will close HPCON and parent's pipe handles.\n", .{});
+    pr("[parent] Child spawned (pid={d}). Sleeping 2s before closing HPCON...\n", .{child_pi.dwProcessId});
     Sleep(2000);
 
-    // Explicitly close HPCON — simulates old daemon exiting
+    // Close HPCON — simulates old daemon exiting.
+    // The child is already running and will wait 4s before testing handles,
+    // so by the time it tests, HPCON has been closed for ~2s.
     ClosePseudoConsole(hpc);
-    pr("[parent] HPCON closed. Exiting now.\n", .{});
-    // Let OS close remaining handles on process exit
+    pr("[parent] HPCON closed. Closing pipe handles too (simulating process exit)...\n", .{});
+    _ = CloseHandle(in_w);
+    _ = CloseHandle(out_r);
+    _ = CloseHandle(pi.hProcess);
+
+    pr("[parent] All handles closed. Waiting for child to finish...\n", .{});
+    // Wait for child to complete so the user sees everything in one console.
+    _ = WaitForSingleObject(child_pi.hProcess, 30000); // 30s timeout
+    _ = CloseHandle(child_pi.hProcess);
+
+    // Also print the log file contents in case child stderr went elsewhere.
+    printLogFile();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -251,6 +271,8 @@ fn runParent(allocator: std.mem.Allocator) !void {
 // ════════════════════════════════════════════════════════════════
 
 fn runChild() void {
+    // Open log file so results survive even if the console window closes.
+    log_file = std.fs.cwd().createFile(LOG_FILE, .{}) catch null;
     pr("[child] PID={d} — reading inherited handles\n", .{GetCurrentProcessId()});
 
     // Read handle values from temp file
@@ -375,6 +397,16 @@ fn runChild() void {
     cleanup();
 }
 
+fn printLogFile() void {
+    const f = std.fs.cwd().openFile(LOG_FILE, .{}) catch return;
+    defer f.close();
+    var buf: [4096]u8 = undefined;
+    const n = f.readAll(&buf) catch return;
+    if (n > 0) {
+        std.debug.print("\n── child log ({s}) ──\n{s}\n── end ──\n", .{ LOG_FILE, buf[0..n] });
+    }
+}
+
 fn parseHex(maybe_line: ?[]const u8) ?usize {
     const line = maybe_line orelse return null;
     const trimmed = std.mem.trim(u8, line, &[_]u8{ '\r', ' ', '\n' });
@@ -388,5 +420,7 @@ fn fail(what: []const u8) void {
 }
 
 fn cleanup() void {
+    if (log_file) |f| f.close();
+    log_file = null;
     std.fs.cwd().deleteFile(TEMP_FILE) catch {};
 }
