@@ -39,9 +39,16 @@ const session_win = @import("../session_windows.zig");
 const WinSessionManager = session_win.WinSessionManager;
 
 const HANDLE = std.os.windows.HANDLE;
+const INVALID_HANDLE = std.os.windows.INVALID_HANDLE_VALUE;
 const DWORD = std.os.windows.DWORD;
 
 extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+extern "kernel32" fn WaitForMultipleObjects(
+    nCount: DWORD,
+    lpHandles: [*]const HANDLE,
+    bWaitAll: i32,
+    dwMilliseconds: DWORD,
+) callconv(.winapi) DWORD;
 extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 
@@ -81,6 +88,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Set 1ms timer resolution so Sleep(1) actually sleeps ~1ms instead of ~15ms.
     _ = timeBeginPeriod(1);
     defer _ = timeEndPeriod(1);
+
+    // Create wake event so the render thread can wake us immediately on input.
+    ws.initWakeEvent();
 
     // Save layout and last-session on clean shutdown.
     defer {
@@ -346,7 +356,26 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
         } else {
-            Sleep(1);
+            // Wait on PTY read event + wake event instead of sleeping.
+            // This wakes us immediately when ConPTY has output or the
+            // render thread sends input, instead of polling at 1ms
+            // (which may be 15ms in a VM).
+            var wait_handles: [2]HANDLE = undefined;
+            var wait_count: u32 = 0;
+            const active_pane = ctx.tab_mgr.activePane();
+            if (active_pane.daemon_pane_id == null and active_pane.pty.read_event != INVALID_HANDLE) {
+                wait_handles[wait_count] = active_pane.pty.read_event;
+                wait_count += 1;
+            }
+            if (ws.g_wake_event) |evt| {
+                wait_handles[wait_count] = evt;
+                wait_count += 1;
+            }
+            if (wait_count > 0) {
+                _ = WaitForMultipleObjects(wait_count, &wait_handles, 0, 2);
+            } else {
+                Sleep(1);
+            }
         }
     }
     // Clean up search state

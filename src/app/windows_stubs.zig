@@ -19,6 +19,28 @@ const c = @cImport({
 const HANDLE = std.os.windows.HANDLE;
 const BOOL = std.os.windows.BOOL;
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn CreateEventW(
+    lpEventAttributes: ?*anyopaque,
+    bManualReset: BOOL,
+    bInitialState: BOOL,
+    lpName: ?[*:0]const u16,
+) callconv(.winapi) ?HANDLE;
+extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+
+// ---------------------------------------------------------------------------
+// Wake event — signaled from render thread to wake the PTY event loop
+// immediately when input is sent or actions are queued.
+// ---------------------------------------------------------------------------
+
+pub var g_wake_event: ?HANDLE = null;
+
+pub fn initWakeEvent() void {
+    g_wake_event = CreateEventW(null, 0, 0, null); // auto-reset
+}
+
+fn signalWake() void {
+    if (g_wake_event) |evt| _ = SetEvent(evt);
+}
 
 // ---------------------------------------------------------------------------
 // Windows PTY handles (set by event loop before attyx_run)
@@ -56,10 +78,12 @@ export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (g_session_client) |sc| {
         if (g_active_daemon_pane_id != 0) {
             sc.sendPaneInput(g_active_daemon_pane_id, data) catch {};
+            signalWake();
             return;
         }
     }
     writeHandle(g_pty_handle, data);
+    signalWake();
 }
 
 pub var g_clear_screen_pending: i32 = 0;
@@ -94,6 +118,7 @@ export fn attyx_handle_key(k: u16, m: u8, e: u8, cp: u32) void {
         } else {
             writeHandle(g_pty_handle, encoded);
         }
+        signalWake();
     }
 }
 
