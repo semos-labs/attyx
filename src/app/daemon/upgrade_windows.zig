@@ -210,20 +210,26 @@ pub fn deserialize(
     const session_count = try r.readByte();
     var restored: u8 = 0;
     for (0..session_count) |_| {
-        const s = deserializeSession(&r, allocator) catch continue;
-        for (sessions) |*slot| {
-            if (slot.* == null) { slot.* = s; restored += 1; break; }
-        }
+        // Find a free slot and deserialize directly into it.
+        // DaemonSession contains [32]?DaemonPane (each >64KB) — by-value
+        // return would blow the stack on aarch64 Windows.
+        const slot = for (sessions) |*slot| {
+            if (slot.* == null) break slot;
+        } else continue;
+        deserializeSessionInto(&r, allocator, slot) catch continue;
+        restored += 1;
     }
     return restored;
 }
 
-fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSession {
-    var s = DaemonSession{ .id = try r.readU32(), .rows = 24, .cols = 80 };
+fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonSession) !void {
+    slot.* = DaemonSession{ .id = try r.readU32(), .rows = 24, .cols = 80 };
+    var s = &(slot.*.?);
     errdefer {
         for (&s.panes) |*pslot| {
             if (pslot.*) |*p| { p.replay.deinit(); pslot.* = null; }
         }
+        slot.* = null;
     }
     s.name_len = try r.readByte();
     try r.readInto(s.name[0..s.name_len]);
@@ -239,10 +245,14 @@ fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSess
 
     const pane_count = try r.readByte();
     for (0..pane_count) |_| {
-        const pane = try deserializePane(r, allocator);
-        for (&s.panes) |*pslot| {
-            if (pslot.* == null) { pslot.* = pane; s.pane_count += 1; break; }
-        }
+        // Find a free slot and deserialize directly into it.
+        // DaemonPane is >64KB (Pty.async_buf) — returning by value would
+        // blow the aarch64 Windows stack probe limit.
+        const pane_slot = for (&s.panes) |*pslot| {
+            if (pslot.* == null) break pslot;
+        } else continue;
+        try deserializePaneInto(r, allocator, pane_slot);
+        s.pane_count += 1;
     }
     return s;
 }
@@ -252,7 +262,8 @@ fn handleFromU64(val: u64) HANDLE {
     return @ptrFromInt(val);
 }
 
-fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
+/// Deserialize a pane directly into a slot pointer to avoid 64KB+ stack copies.
+fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonPane) !void {
     const id = try r.readU32();
     const pipe_out_read = handleFromU64(try r.readU64());
     const pipe_in_write = handleFromU64(try r.readU64());
@@ -273,21 +284,31 @@ fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
 
-    var pane = try DaemonPane.fromRestored(
-        allocator, id,
-        pipe_out_read, pipe_in_write, process,
-        rows, cols, alive, exit_code,
-        cursor_visible, alt_screen,
-        proc_name_slice, ring_data,
-        RingBuffer.default_capacity,
-    );
+    // Write directly into the slot — no by-value return of the 64KB+ struct.
+    slot.* = DaemonPane{
+        .id = id,
+        .pty = Pty.fromInherited(pipe_out_read, pipe_in_write, process),
+        .replay = try RingBuffer.init(allocator, RingBuffer.default_capacity),
+        .rows = rows,
+        .cols = cols,
+        .alive = alive,
+        .exit_code = exit_code,
+        .cursor_visible = cursor_visible,
+        .alt_screen = alt_screen,
+    };
+
+    // Fill in remaining fields via pointer.
+    var pane = &(slot.*.?);
+    const nlen: u8 = @intCast(@min(proc_name_slice.len, 64));
+    @memcpy(pane.proc_name[0..nlen], proc_name_slice[0..nlen]);
+    pane.proc_name_len = nlen;
+    if (ring_data.len > 0) pane.replay.write(ring_data);
     const clen: u16 = @intCast(@min(osc7_cwd_slice.len, pane.osc7_cwd.len));
     @memcpy(pane.osc7_cwd[0..clen], osc7_cwd_slice[0..clen]);
     pane.osc7_cwd_len = clen;
     const plen: u16 = @intCast(@min(osc7337_path_slice.len, pane.osc7337_path.len));
     @memcpy(pane.osc7337_path[0..plen], osc7337_path_slice[0..plen]);
     pane.osc7337_path_len = plen;
-    return pane;
 }
 
 // ── Upgrade path helpers ──
