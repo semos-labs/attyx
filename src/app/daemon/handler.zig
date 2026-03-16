@@ -9,9 +9,22 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
 
+const session_connect = @import("../session_connect.zig");
+
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
 const replay_capacity: usize = RingBuffer.default_capacity;
+
+fn debugLog(msg: []const u8) void {
+    if (comptime !is_windows) return;
+    var path_buf: [256]u8 = undefined;
+    const path = session_connect.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+    file.writeAll(msg) catch {};
+    file.writeAll("\n") catch {};
+}
 
 pub fn handleMessage(
     cl: *DaemonClient,
@@ -25,9 +38,28 @@ pub fn handleMessage(
     upgrade_requested: *bool,
 ) void {
     switch (msg.msg_type) {
-        .create => handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator),
-        .list => cl.sendSessionListFromSlots(sessions),
-        .attach => handleAttach(cl, msg.payload, sessions, next_pane_id, allocator),
+        .create => {
+            debugLog("handler: create session");
+            handleCreate(cl, msg.payload, sessions, session_count, next_id, next_pane_id, allocator);
+        },
+        .list => {
+            var alive_count: u32 = 0;
+            var total_count: u32 = 0;
+            for (sessions) |*slot| {
+                if (slot.*) |*s| {
+                    total_count += 1;
+                    if (s.alive) alive_count += 1;
+                }
+            }
+            var dbuf: [128]u8 = undefined;
+            const dmsg = std.fmt.bufPrint(&dbuf, "handler: list → {d} sessions ({d} alive)", .{ total_count, alive_count }) catch "handler: list";
+            debugLog(dmsg);
+            cl.sendSessionListFromSlots(sessions);
+        },
+        .attach => {
+            debugLog("handler: attach");
+            handleAttach(cl, msg.payload, sessions, next_pane_id, allocator);
+        },
         .detach => {
             cl.attached_session = null;
             cl.active_pane_count = 0;
