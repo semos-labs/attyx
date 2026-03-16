@@ -247,11 +247,16 @@ fn deserializeSession(r: *SliceReader, allocator: std.mem.Allocator) !DaemonSess
     return s;
 }
 
+fn handleFromU64(val: u64) HANDLE {
+    if (val == 0) return INVALID_HANDLE_VALUE;
+    return @ptrFromInt(val);
+}
+
 fn deserializePane(r: *SliceReader, allocator: std.mem.Allocator) !DaemonPane {
     const id = try r.readU32();
-    const pipe_out_read: HANDLE = @ptrFromInt(try r.readU64());
-    const pipe_in_write: HANDLE = @ptrFromInt(try r.readU64());
-    const process: HANDLE = @ptrFromInt(try r.readU64());
+    const pipe_out_read = handleFromU64(try r.readU64());
+    const pipe_in_write = handleFromU64(try r.readU64());
+    const process = handleFromU64(try r.readU64());
     const rows = try r.readU16();
     const cols = try r.readU16();
     const alive = (try r.readByte()) != 0;

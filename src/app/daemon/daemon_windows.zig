@@ -316,21 +316,33 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
 
 fn restoreFromUpgrade(state: *DaemonState, restore_path: []const u8) void {
     daemonLog("restore: loading state from upgrade file");
-    const data = std.fs.cwd().readFileAlloc(state.allocator, restore_path, 128 * 1024 * 1024) catch {
-        daemonLog("restore: failed to read upgrade file");
+
+    var rp_log: [512]u8 = undefined;
+    const rp_msg = std.fmt.bufPrint(&rp_log, "restore: path=[{s}] len={d}", .{ restore_path, restore_path.len }) catch "restore: path=?";
+    daemonLog(rp_msg);
+
+    const data = std.fs.cwd().readFileAlloc(state.allocator, restore_path, 128 * 1024 * 1024) catch |err| {
+        var ebuf: [128]u8 = undefined;
+        const emsg = std.fmt.bufPrint(&ebuf, "restore: read failed: {s}", .{@errorName(err)}) catch "restore: read failed";
+        daemonLog(emsg);
         return;
     };
     defer state.allocator.free(data);
 
+    var dbuf: [128]u8 = undefined;
+    const dmsg = std.fmt.bufPrint(&dbuf, "restore: read {d} bytes, deserializing", .{data.len}) catch "restore: read ok";
+    daemonLog(dmsg);
+
     const restored = upgrade.deserialize(
         data, state.sessions, &state.next_session_id, &state.next_pane_id, state.allocator,
-    ) catch {
-        daemonLog("restore: deserialization failed");
+    ) catch |err| {
+        var ebuf2: [128]u8 = undefined;
+        const emsg2 = std.fmt.bufPrint(&ebuf2, "restore: deserialize failed: {s}", .{@errorName(err)}) catch "restore: deserialize failed";
+        daemonLog(emsg2);
         std.fs.deleteFileAbsolute(restore_path) catch {};
         return;
     };
 
-    // Update session count
     state.session_count = 0;
     for (state.sessions) |*slot| {
         if (slot.* != null) state.session_count += 1;
