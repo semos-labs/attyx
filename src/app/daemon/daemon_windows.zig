@@ -200,8 +200,8 @@ fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
     state.pipe_name_len = wlen;
 
     state_persist.load(state.sessions, &state.next_session_id, &state.next_pane_id);
-    for (state.sessions.*) |slot| {
-        if (slot != null) state.session_count += 1;
+    for (state.sessions) |*slot| {
+        if (slot.* != null) state.session_count += 1;
     }
 
     state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
