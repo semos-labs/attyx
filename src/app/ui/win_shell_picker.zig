@@ -157,7 +157,7 @@ fn renderAndPublish(ctx: *WinCtx) void {
 
     // Fill background
     for (cells) |*cell| {
-        cell.* = .{ .codepoint = ' ', .fg = fg, .bg = bg, .bg_alpha = 230 };
+        cell.* = .{ .char = ' ', .fg = fg, .bg = bg, .bg_alpha = 230 };
     }
 
     // Title row
@@ -166,7 +166,7 @@ fn renderAndPublish(ctx: *WinCtx) void {
 
     // Separator row
     for (0..panel_width) |x| {
-        cells[1 * panel_width + x] = .{ .codepoint = 0x2500, .fg = dim_fg, .bg = bg, .bg_alpha = 230 }; // ─
+        cells[1 * panel_width + x] = .{ .char = 0x2500, .fg = dim_fg, .bg = bg, .bg_alpha = 230 }; // ─
     }
 
     // Entries
@@ -179,12 +179,12 @@ fn renderAndPublish(ctx: *WinCtx) void {
 
         // Fill row background
         for (0..panel_width) |x| {
-            cells[y * panel_width + x] = .{ .codepoint = ' ', .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
+            cells[y * panel_width + x] = .{ .char = ' ', .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
         }
 
         // Indicator
         const indicator: u21 = if (is_selected) 0x25B8 else ' '; // ▸
-        cells[y * panel_width + 1] = .{ .codepoint = indicator, .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
+        cells[y * panel_width + 1] = .{ .char = indicator, .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
 
         // Label
         writeString(cells, y, 3, panel_width, entry.label, entry_fg, entry_bg, alpha);
@@ -215,7 +215,7 @@ fn writeString(
         const x = col + @as(u16, @intCast(i));
         if (x >= width) break;
         cells[@as(usize, row) * @as(usize, width) + @as(usize, x)] = .{
-            .codepoint = ch,
+            .char = ch,
             .fg = fg,
             .bg = bg,
             .bg_alpha = alpha,
