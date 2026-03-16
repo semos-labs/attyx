@@ -202,6 +202,10 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_native_tabs.c"), .flags = win_flags });
         exe.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         exe.subsystem = .Windows; // No console window — CLI paths use AttachConsole
+        // Zig 0.15 on aarch64 Windows doesn't emit __chkstk stack probes.
+        // Set 8MB stack commit so all threads start with enough committed
+        // pages to avoid crashes on functions with >4KB stack frames.
+        exe.stack_size = 8 * 1024 * 1024;
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
