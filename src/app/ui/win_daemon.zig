@@ -73,7 +73,7 @@ fn routePaneOutput(ctx: *WinCtx, pane_id: u32, data: []const u8) void {
                         ) catch return;
                         leaf.pane.engine.deinit();
                         leaf.pane.engine = new_engine;
-                        leaf.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                        leaf.pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
                         leaf.pane.needs_engine_reinit = false;
                     }
                     leaf.pane.feed(data);
