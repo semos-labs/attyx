@@ -527,7 +527,9 @@ pub fn handlePopupExit(ctx: *PtyThreadCtx, ps: *popup_mod.PopupState) void {
                         cmd, text, publish.ctxEngine(ctx).state.alt_active,
                     });
                     defer ctx.allocator.free(text);
-                    if (publish.ctxEngine(ctx).state.alt_active and !pcfg.inject_alt) {
+                    const use_detached = publish.ctxEngine(ctx).state.alt_active and !pcfg.inject_alt;
+                    const is_daemon = ctx.tab_mgr.activePane().daemon_pane_id != null;
+                    if (use_detached or is_daemon) {
                         popup_mod.execDetached(ctx.allocator, cmd, text);
                     } else {
                         const full = std.fmt.allocPrint(ctx.allocator, "{s} {s}\r", .{ cmd, text }) catch return;
