@@ -52,7 +52,8 @@ fn installDaemonPanicHandler() void {
 pub const panic = std.debug.FullPanic(panicImpl);
 
 fn panicImpl(msg: []const u8, ret_addr: ?usize) noreturn {
-    if (is_windows and g_daemon_panic_handler_installed) {
+    if (is_windows) {
+        // Always log panics to file on Windows — GUI has no console.
         var buf: [512]u8 = undefined;
         const text = if (ret_addr) |addr|
             std.fmt.bufPrint(&buf, "PANIC at 0x{x}: {s}", .{ addr, msg }) catch msg
