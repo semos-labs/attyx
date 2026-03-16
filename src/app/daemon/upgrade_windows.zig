@@ -254,7 +254,6 @@ fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *
         try deserializePaneInto(r, allocator, pane_slot);
         s.pane_count += 1;
     }
-    return s;
 }
 
 fn handleFromU64(val: u64) HANDLE {
