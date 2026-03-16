@@ -186,12 +186,14 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         Dbg.mark(36);
 
         // ── IPC commands ──
+        Dbg.mark(37);
         while (ipc_queue.dequeue()) |cmd| {
             ipc_handler.handle(cmd, ctx);
             ipc_queue.advance();
         }
 
         // ── Clear screen ──
+        Dbg.mark(38);
         if (@atomicRmw(i32, &ws.g_clear_screen_pending, .Xchg, 0, .seq_cst) != 0) {
             const pane = ctx.tab_mgr.activePane();
             const eng = &pane.engine;
@@ -208,6 +210,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Popup lifecycle ──
+        Dbg.mark(39);
         win_popup.processPopupToggle(ctx);
         if (@atomicRmw(i32, &ws.popup_close_request, .Xchg, 0, .seq_cst) != 0) {
             win_popup.closePopup(ctx);
@@ -216,6 +219,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_popup.checkPopupExit(ctx);
 
         // ── Pane exit detection ──
+        Dbg.mark(40);
         checkPaneExits(ctx);
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
