@@ -264,7 +264,9 @@ pub fn run(
     }
 
     // Start event loop thread
-    const reader_thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
+    // 8MB stack for reader thread — aarch64 Windows needs committed pages
+    // for functions with >4KB frames (no __chkstk probes in Zig debug mode).
+    const reader_thread = try std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, event_loop.ptyReaderThread, .{&ctx});
     defer reader_thread.join();
 
     // Send focus_panes for all daemon panes in the active tab.
