@@ -190,54 +190,65 @@ pub fn doKillDaemon() void {
 fn doKillDaemonWindows() void {
     if (comptime !is_windows) unreachable;
     const stdout = std.fs.File.stdout();
-    const conn = @import("../app/session_connect.zig");
-    const protocol = @import("../app/daemon/protocol.zig");
 
     const win32 = struct {
         const HANDLE = std.os.windows.HANDLE;
+        const INVALID_HANDLE_VALUE = std.os.windows.INVALID_HANDLE_VALUE;
         const DWORD = std.os.windows.DWORD;
+        const LPCWSTR = [*:0]const u16;
+        const GENERIC_READ: DWORD = 0x80000000;
+        const GENERIC_WRITE: DWORD = 0x40000000;
+        const OPEN_EXISTING: DWORD = 3;
+        const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
         extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) i32;
         extern "kernel32" fn PeekNamedPipe(h: HANDLE, b: ?[*]u8, s: DWORD, r: ?*DWORD, a: ?*DWORD, l: ?*DWORD) callconv(.winapi) i32;
         extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
         extern "kernel32" fn WriteFile(h: HANDLE, b: [*]const u8, n: DWORD, w: ?*DWORD, o: ?*anyopaque) callconv(.winapi) i32;
+        extern "kernel32" fn CreateFileW(n: LPCWSTR, a: DWORD, s: DWORD, sa: ?*anyopaque, d: DWORD, f: DWORD, t: ?HANDLE) callconv(.winapi) HANDLE;
     };
 
-    // Connect to daemon pipe
+    // Connect to daemon pipe (inline — avoids cross-module import)
     var path_buf: [256]u8 = undefined;
-    const pipe_path = conn.getSocketPath(&path_buf) orelse {
+    const pipe_path = getSocketPath(&path_buf) orelse {
         stdout.writeAll("error: could not determine daemon pipe path\n") catch {};
         return;
     };
-    const handle = conn.tryConnectWindows(pipe_path) orelse {
+    var wide_buf: [256]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch {
+        stdout.writeAll("error: pipe path encoding failed\n") catch {};
+        return;
+    };
+    wide_buf[wlen] = 0;
+    const handle = win32.CreateFileW(
+        @ptrCast(wide_buf[0..wlen :0]),
+        win32.GENERIC_READ | win32.GENERIC_WRITE,
+        0, null, win32.OPEN_EXISTING, win32.FILE_ATTRIBUTE_NORMAL, null,
+    );
+    if (handle == win32.INVALID_HANDLE_VALUE) {
         stdout.writeAll("No daemon running.\n") catch {};
         return;
-    };
+    }
 
     // Send hello with a mismatched version to trigger graceful shutdown.
-    // The daemon detects version != its own → saves session state → exits.
-    var hello_payload: [256]u8 = undefined;
-    const version = protocol.encodeHello(&hello_payload, "shutdown") catch {
-        _ = win32.CloseHandle(handle);
-        stdout.writeAll("error: failed to encode shutdown message\n") catch {};
-        return;
-    };
-    var msg_buf: [protocol.header_size + 256]u8 = undefined;
-    const msg = protocol.encodeMessage(&msg_buf, .hello, version) catch {
-        _ = win32.CloseHandle(handle);
-        return;
-    };
+    // Protocol: [4-byte LE payload_len][1-byte msg_type][1-byte version_len][version_bytes]
+    // hello msg_type = 0x01, version = "shutdown" (guaranteed mismatch)
+    const ver = "shutdown";
+    const payload_len: u32 = 1 + ver.len;
+    var msg: [5 + 1 + ver.len]u8 = undefined;
+    std.mem.writeInt(u32, msg[0..4], payload_len, .little);
+    msg[4] = 0x01; // hello
+    msg[5] = ver.len;
+    @memcpy(msg[6..], ver);
+
     var written: win32.DWORD = 0;
-    _ = win32.WriteFile(handle, msg.ptr, @intCast(msg.len), &written, null);
+    _ = win32.WriteFile(handle, &msg, msg.len, &written, null);
 
     // Wait for daemon to exit (pipe will break)
     stdout.writeAll("Shutting down daemon (saving sessions)...") catch {};
     var waited: u32 = 0;
     while (waited < 5000) : (waited += 100) {
         var avail: win32.DWORD = 0;
-        if (win32.PeekNamedPipe(handle, null, 0, null, &avail, null) == 0) {
-            // Pipe broken — daemon exited
-            break;
-        }
+        if (win32.PeekNamedPipe(handle, null, 0, null, &avail, null) == 0) break;
         win32.Sleep(100);
     }
     _ = win32.CloseHandle(handle);
