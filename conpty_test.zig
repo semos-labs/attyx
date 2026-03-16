@@ -94,7 +94,9 @@ var log_file: ?std.fs.File = null;
 fn pr(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
     if (log_file) |f| {
-        f.writer().print(fmt, args) catch {};
+        var buf: [1024]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
+        f.writeAll(s) catch {};
     }
 }
 
