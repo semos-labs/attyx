@@ -356,13 +356,19 @@ pub fn performUpgrade(
         return .failed;
     };
 
+    // Always delete the staged binary so it doesn't re-trigger on next startup.
     var staged_buf: [256]u8 = undefined;
     if (getStagedExePath(&staged_buf)) |staged| {
         const has_staged = blk: {
             std.fs.accessAbsolute(staged, .{}) catch break :blk false;
             break :blk true;
         };
-        if (has_staged) swapExe(exe, staged);
+        if (has_staged) {
+            swapExe(exe, staged);
+            // If swapExe moved it, it's gone. If it failed, delete it
+            // so it doesn't trigger another upgrade on next daemon start.
+            std.fs.deleteFileAbsolute(staged) catch {};
+        }
     }
 
     // ── Step 2: Mark handles inheritable ──
@@ -537,26 +543,10 @@ extern "kernel32" fn CreateFileW(
 /// `sessions` still contains the original panes with their HPCON handles.
 pub fn hpconKeeperLoop(sessions: *[max_sessions]?DaemonSession) void {
     daemonLog("hpcon-keeper: monitoring shells");
-
-    // Close our copies of the pipe handles so the new daemon has exclusive
-    // access. We only need HPCON + process handles to keep shells alive
-    // and detect when they exit.
-    for (sessions) |*slot| {
-        if (slot.*) |*s| {
-            for (&s.panes) |*pslot| {
-                if (pslot.*) |*pane| {
-                    _ = CloseHandle(pane.pty.pipe_out_read);
-                    _ = CloseHandle(pane.pty.pipe_in_write);
-                    pane.pty.pipe_out_read = INVALID_HANDLE_VALUE;
-                    pane.pty.pipe_in_write = INVALID_HANDLE_VALUE;
-                    if (pane.pty.read_event != INVALID_HANDLE_VALUE) {
-                        _ = CloseHandle(pane.pty.read_event);
-                        pane.pty.read_event = INVALID_HANDLE_VALUE;
-                    }
-                }
-            }
-        }
-    }
+    // Note: we do NOT close pipe handles here. Named pipe server handles
+    // (pipe_out_read) have special semantics — closing the server side can
+    // destroy the pipe instance even if the new daemon inherited a copy.
+    // The old daemon just holds them open but never reads/writes.
 
     while (true) {
         var any_alive = false;
