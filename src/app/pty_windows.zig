@@ -16,6 +16,7 @@ const HPCON = *opaque {};
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
+const PSEUDOCONSOLE_PASSTHROUGH: DWORD = 0x00000008;
 const S_OK: c_long = 0;
 const INFINITE: DWORD = 0xFFFFFFFF;
 const WAIT_OBJECT_0: DWORD = 0;
@@ -375,13 +376,19 @@ pub const Pty = struct {
         }
 
         // Create the pseudo console.
+        // Try passthrough mode first (Win11 22H2+) — bypasses ConPTY's
+        // diff engine and passes raw VT sequences through, avoiding
+        // scroll-related rendering artifacts.
         const size = COORD{
             .x = @intCast(opts.cols),
             .y = @intCast(opts.rows),
         };
         var hpc: HPCON = undefined;
-        if (CreatePseudoConsole(size, pty_in_read, pty_out_write, 0, &hpc) != S_OK)
-            return error.CreatePseudoConsoleFailed;
+        const passthrough_ok = CreatePseudoConsole(size, pty_in_read, pty_out_write, PSEUDOCONSOLE_PASSTHROUGH, &hpc) == S_OK;
+        if (!passthrough_ok) {
+            if (CreatePseudoConsole(size, pty_in_read, pty_out_write, 0, &hpc) != S_OK)
+                return error.CreatePseudoConsoleFailed;
+        }
         errdefer ClosePseudoConsole(hpc);
 
         // Build the proc thread attribute list.
