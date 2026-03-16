@@ -308,7 +308,10 @@ fn handleFocusPanes(
                 // Drain any buffered PTY output into the ring buffer.
                 // On Windows, Pty.read blocks (INFINITE wait), so use
                 // peekAvail + read to only drain what's available.
+                // Cancel any pending async read first — two overlapped
+                // reads on the same handle corrupt each other's state.
                 if (comptime is_windows) {
+                    pane.pty.cancelAsyncRead();
                     while (pane.pty.peekAvail() > 0) {
                         const n = pane.readPty(&DrainBuf.buf) catch break;
                         if (n == 0) break;
