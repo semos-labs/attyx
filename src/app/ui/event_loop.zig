@@ -25,6 +25,7 @@ const overlay_input = @import("overlay_input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
+const tab_picker_ui = @import("tab_picker_ui.zig");
 const copy_mode = @import("copy_mode.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
@@ -303,6 +304,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Tab picker toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_tab_picker, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_tab_picker_active != 0) {
+                tab_picker_ui.closeTabPicker(ctx);
+            } else {
+                tab_picker_ui.openTabPicker(ctx);
+            }
+        }
+
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);
@@ -360,6 +370,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Theme picker input polling
         if (terminal.g_theme_picker_active != 0) {
             _ = theme_picker_ui.consumePickerInput(ctx);
+        }
+
+        // Tab picker input polling
+        if (terminal.g_tab_picker_active != 0) {
+            _ = tab_picker_ui.consumePickerInput(ctx);
         }
 
         // Tick update check notification

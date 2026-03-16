@@ -184,6 +184,8 @@ pub export var g_toggle_command_palette: i32 = 0;
 pub export var g_command_palette_active: i32 = 0;
 pub export var g_toggle_theme_picker: i32 = 0;
 pub export var g_theme_picker_active: i32 = 0;
+pub export var g_toggle_tab_picker: i32 = 0;
+pub export var g_tab_picker_active: i32 = 0;
 
 // Ensure keybind, dispatch, and copy mode exports are linked
 comptime {
@@ -235,6 +237,9 @@ export fn attyx_toggle_command_palette() void {
 }
 export fn attyx_toggle_theme_picker() void {
     @atomicStore(i32, &g_toggle_theme_picker, 1, .seq_cst);
+}
+export fn attyx_toggle_tab_picker() void {
+    @atomicStore(i32, &g_toggle_tab_picker, 1, .seq_cst);
 }
 export fn attyx_create_session_direct() void {
     @atomicStore(i32, &g_create_session_direct, 1, .seq_cst);

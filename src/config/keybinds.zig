@@ -119,6 +119,7 @@ pub const Action = enum(u8) {
     font_size_reset = 87,
     theme_picker_toggle = 88,
     open_config = 89,
+    tab_picker_toggle = 94,
     split_left = 90,
     split_up = 91,
     close_all_tabs = 92,
