@@ -78,6 +78,45 @@ fn panicImpl(msg: []const u8, ret_addr: ?usize) noreturn {
     std.debug.defaultPanic(msg, ret_addr);
 }
 
+// Windows SEH crash handler — catches C-level crashes that bypass Zig's panic.
+const seh = if (is_windows) struct {
+    const EXCEPTION_POINTERS = extern struct {
+        ExceptionRecord: *extern struct {
+            ExceptionCode: u32,
+            ExceptionFlags: u32,
+            ExceptionRecord: ?*anyopaque,
+            ExceptionAddress: ?*anyopaque,
+        },
+        ContextRecord: ?*anyopaque,
+    };
+    extern "kernel32" fn SetUnhandledExceptionFilter(
+        lpTopLevelExceptionFilter: ?*const fn (*EXCEPTION_POINTERS) callconv(.winapi) i32,
+    ) callconv(.winapi) ?*anyopaque;
+
+    fn crashHandler(info: *EXCEPTION_POINTERS) callconv(.winapi) i32 {
+        const S = struct {
+            var buf: [512]u8 = undefined;
+            var path_buf: [256]u8 = undefined;
+        };
+        const code = info.ExceptionRecord.ExceptionCode;
+        const addr = @intFromPtr(info.ExceptionRecord.ExceptionAddress);
+        const text = std.fmt.bufPrint(&S.buf, "CRASH: exception 0x{x:0>8} at 0x{x}", .{ code, addr }) catch "CRASH: unknown";
+        const path = session_connect.statePath(&S.path_buf, "daemon-debug{s}.log") orelse return 0;
+        const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return 0;
+        file.seekFromEnd(0) catch {};
+        file.writeAll(text) catch {};
+        file.writeAll("\n") catch {};
+        file.close();
+        return 0; // EXCEPTION_CONTINUE_SEARCH — let Windows handle it
+    }
+
+    fn install() void {
+        _ = SetUnhandledExceptionFilter(&crashHandler);
+    }
+} else struct {
+    fn install() void {}
+};
+
 // Windows API imports for console management and error dialogs.
 const win32 = if (is_windows) struct {
     const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
@@ -103,11 +142,9 @@ fn winFatal(msg: []const u8) noreturn {
 }
 
 pub fn main() !void {
-    // On Windows (subsystem=Windows), attach to parent console for CLI paths.
-    // This gives subcommands (login, device, etc.) stdout/stderr when run from
-    // a terminal. GUI and daemon paths don't need a console.
-    // Skip for daemon: if AttachConsole succeeds, the daemon gets
-    // CTRL_CLOSE_EVENT when the console owner exits → kills the daemon.
+    // Install SEH crash handler first — catches C-level crashes.
+    seh.install();
+
     if (is_windows) {
         _ = win32.AttachConsole(win32.ATTACH_PARENT_PROCESS);
     }
