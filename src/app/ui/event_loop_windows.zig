@@ -120,7 +120,34 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
     var prev_cursor_col: usize = 0;
 
+    // Breadcrumb counter for crash diagnosis (static — no stack)
+    const Dbg = struct {
+        var iter: u32 = 0;
+        var phase: u8 = 0;
+        var buf: [256]u8 = undefined;
+        var path_buf: [256]u8 = undefined;
+        fn mark(p: u8) void {
+            phase = p;
+        }
+        fn log(msg: []const u8) void {
+            const sc = @import("../session_connect.zig");
+            const path = sc.statePath(&path_buf, "daemon-debug{s}.log") orelse return;
+            const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;
+            defer file.close();
+            file.seekFromEnd(0) catch {};
+            file.writeAll("[event] ") catch {};
+            file.writeAll(msg) catch {};
+            file.writeAll("\n") catch {};
+        }
+    };
+
     while (c.attyx_should_quit() == 0) {
+        Dbg.iter += 1;
+        if (Dbg.iter <= 3) {
+            const msg = std.fmt.bufPrint(&Dbg.buf, "loop iter {d}", .{Dbg.iter}) catch "loop iter ?";
+            Dbg.log(msg);
+        }
+
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
             break;
@@ -229,8 +256,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Daemon socket drain ──
+        if (Dbg.iter <= 3) Dbg.log("drain daemon");
         if (win_daemon.drainDaemon(ctx)) got_data = true;
 
+        if (Dbg.iter <= 3) Dbg.log("post-daemon");
         // ── Title change detection ──
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             const lay = &(maybe_layout.* orelse continue);
