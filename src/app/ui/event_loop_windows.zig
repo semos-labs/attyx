@@ -179,9 +179,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const overlay_input_changed = win_overlays.processInput(ctx);
         Dbg.mark(34);
         win_session_picker.tickFinder(ctx);
+        Dbg.mark(35);
 
         // Guard: an overlay action (e.g. close window) may have killed all tabs
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+        Dbg.mark(36);
 
         // ── IPC commands ──
         while (ipc_queue.dequeue()) |cmd| {
