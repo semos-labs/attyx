@@ -377,6 +377,8 @@ fn buildInitialTabs(
                     if (tab_mgr.count > 0) {
                         logging.info("session", "reconstructed {d} tab(s) from layout", .{tab_mgr.count});
                         applyThemeToAllPanes(tab_mgr, theme, config);
+                        // Wire session_client into all daemon-backed panes.
+                        wireSessionClient(tab_mgr, sc);
                         return tab_mgr.activePane();
                     }
                 }
@@ -401,6 +403,19 @@ fn buildInitialTabs(
     pane.engine.state.theme_colors = publish.themeToEngineColors(theme);
     tab_mgr.* = TabManager.init(allocator, pane);
     return pane;
+}
+
+fn wireSessionClient(tab_mgr: *TabManager, sc: *SessionClient) void {
+    for (tab_mgr.tabs[0..tab_mgr.count]) |*maybe_layout| {
+        const lay = &(maybe_layout.* orelse continue);
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = lay.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            if (leaf.pane.daemon_pane_id != null) {
+                leaf.pane.session_client = sc;
+            }
+        }
+    }
 }
 
 fn applyThemeToAllPanes(
