@@ -59,6 +59,7 @@ pub fn handleMessage(
         .attach => {
             debugLog("handler: attach");
             handleAttach(cl, msg.payload, sessions, next_pane_id, allocator);
+            debugLog("handler: attach done");
         },
         .detach => {
             cl.attached_session = null;

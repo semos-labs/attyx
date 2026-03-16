@@ -371,7 +371,10 @@ pub fn performUpgrade(
         if (slot.*) |*s| {
             for (&s.panes) |*pslot| {
                 if (pslot.*) |*pane| {
-                    if (pane.alive) pane.pty.markHandlesInheritable();
+                    if (pane.alive) {
+                        pane.pty.cancelAsyncRead();
+                        pane.pty.markHandlesInheritable();
+                    }
                 }
             }
         }
