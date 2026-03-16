@@ -174,6 +174,7 @@ fn handleAttach(
         cl.sendError(1, "invalid attach payload");
         return;
     };
+    debugLog("attach: finding session");
     const session = findSession(sessions, attach.session_id) orelse {
         cl.sendError(4, "session not found");
         return;
@@ -182,12 +183,13 @@ fn handleAttach(
 
     // Revive dead (recent) sessions by spawning fresh panes.
     if (!session.alive) {
+        debugLog("attach: reviving dead session");
         reviveSession(session, attach.rows, attach.cols, next_pane_id, allocator);
     }
 
+    debugLog("attach: resizing");
     session.resize(attach.rows, attach.cols) catch {};
-    // Send V2 attached with layout blob and pane IDs.
-    // Replay is NOT sent here — the client requests it via focus_panes.
+    debugLog("attach: sending attached response");
     cl.sendAttachedV2(session);
 }
 
