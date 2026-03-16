@@ -448,5 +448,10 @@ fn sendInitialFocusPanes(tab_mgr: *TabManager, hsc: *SessionClient) void {
             count += 1;
         }
     }
-    if (count > 0) hsc.sendFocusPanes(focus_ids[0..count]) catch {};
+    if (count > 0) {
+        logging.info("session", "sendInitialFocusPanes: {d} pane(s), first_id={d}", .{ count, focus_ids[0] });
+        hsc.sendFocusPanes(focus_ids[0..count]) catch {};
+    } else {
+        logging.info("session", "sendInitialFocusPanes: no daemon panes found!", .{});
+    }
 }

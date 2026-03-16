@@ -24,10 +24,13 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
     }
 
     var got_output = false;
+    var msg_count: u32 = 0;
     while (sc.readMessage()) |msg| {
+        msg_count += 1;
         switch (msg) {
             .pane_output => |po| {
                 got_output = true;
+                if (msg_count <= 3) logging.info("daemon", "pane_output: pane={d} len={d}", .{ po.pane_id, po.data.len });
                 routePaneOutput(ctx, po.pane_id, po.data);
             },
             .pane_died => |pd| {
