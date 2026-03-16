@@ -221,6 +221,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Pane exit detection ──
         Dbg.mark(40);
         checkPaneExits(ctx);
+        Dbg.mark(41);
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
