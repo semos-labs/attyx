@@ -293,25 +293,29 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Throttle & publish ──
-        Dbg.mark(9);
+        Dbg.mark(90);
         const eng = &ctx.tab_mgr.activePane().engine;
+        Dbg.mark(91);
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
         const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed;
 
         if (need_update) {
+            Dbg.mark(92);
             const now = std.time.nanoTimestamp();
             if (!viewport_changed and !tabs_changed and (now - last_publish_ns) < min_frame_ns) {
-                Sleep(0); // Yield timeslice but don't wait — keep draining PTY data
+                Sleep(0);
                 continue;
             }
 
+            Dbg.mark(93);
             const layout = ctx.tab_mgr.activeLayout();
+            Dbg.mark(94);
             const grid_top: i32 = ws.g_grid_top_offset;
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
-            Dbg.mark(10);
+            Dbg.mark(95);
             c.attyx_begin_cell_update();
 
             // Suppress cursor-at-col-0 flicker: when data just arrived and
