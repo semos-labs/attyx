@@ -52,6 +52,8 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
 }
 
 /// Route daemon pane output to the matching pane's engine.
+var route_log_count: u32 = 0;
+
 fn routePaneOutput(ctx: *WinCtx, pane_id: u32, data: []const u8) void {
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
         const lay = &(maybe_layout.* orelse continue);
@@ -65,6 +67,10 @@ fn routePaneOutput(ctx: *WinCtx, pane_id: u32, data: []const u8) void {
                 }
             }
         }
+    }
+    route_log_count += 1;
+    if (route_log_count <= 5) {
+        logging.warn("daemon", "routePaneOutput: no pane found for id={d} (tabs={d})", .{ pane_id, ctx.tab_mgr.count });
     }
 }
 
