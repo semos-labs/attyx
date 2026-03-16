@@ -161,7 +161,10 @@ extern "kernel32" fn GetExitCodeProcess(
 ) callconv(.winapi) BOOL;
 
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn SetHandleInformation(hObject: HANDLE, dwMask: DWORD, dwFlags: DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+
+const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
 
 extern "kernel32" fn SetEnvironmentVariableW(
     lpName: LPCWSTR,
@@ -283,6 +286,9 @@ pub const Pty = struct {
     async_buf: [65536]u8 = undefined,
 
     exit_status: ?c_int = null,
+    /// Whether this Pty owns (and should close) the HPCON handle.
+    /// False for inherited panes where the old daemon keeps HPCON alive.
+    owns_hpcon: bool = true,
 
     /// Return an inactive Pty (no process, no handles). Used for daemon-backed panes.
     pub fn initInactive() Pty {
@@ -295,6 +301,33 @@ pub const Pty = struct {
             .attr_list_buf = &.{},
             .allocator = undefined,
         };
+    }
+
+    /// Restore a Pty from inherited handles (hot-upgrade on Windows).
+    /// The caller (new daemon) owns the pipe handles but NOT the HPCON —
+    /// the old daemon keeps HPCON alive as an HPCON keeper process.
+    pub fn fromInherited(pipe_out_read: HANDLE, pipe_in_write: HANDLE, process: HANDLE) Pty {
+        // Create a new event for overlapped I/O on the inherited pipe.
+        const read_evt = CreateEventW(null, 1, 0, null);
+        return .{
+            .pipe_out_read = pipe_out_read,
+            .pipe_in_write = pipe_in_write,
+            .hpc = undefined,
+            .process = process,
+            .thread = INVALID_HANDLE,
+            .attr_list_buf = &.{},
+            .allocator = undefined,
+            .read_event = if (@intFromPtr(read_evt) != 0) read_evt.? else INVALID_HANDLE,
+            .owns_hpcon = false,
+        };
+    }
+
+    /// Mark pipe and process handles as inheritable for hot-upgrade.
+    /// Called by the old daemon before spawning the new daemon.
+    pub fn markHandlesInheritable(self: *Pty) void {
+        _ = SetHandleInformation(self.pipe_in_write, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        _ = SetHandleInformation(self.pipe_out_read, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        _ = SetHandleInformation(self.process, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
 
     pub const SpawnOpts = struct {
@@ -446,13 +479,15 @@ pub const Pty = struct {
 
     pub fn deinit(self: *Pty) void {
         self.cancelAsyncRead();
-        ClosePseudoConsole(self.hpc);
+        if (self.owns_hpcon) ClosePseudoConsole(self.hpc);
         _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
         _ = CloseHandle(self.process);
         if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
-        DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
-        self.allocator.free(self.attr_list_buf);
+        if (self.owns_hpcon and self.attr_list_buf.len > 0) {
+            DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
+            self.allocator.free(self.attr_list_buf);
+        }
     }
 
     pub fn peekAvail(self: *Pty) usize {

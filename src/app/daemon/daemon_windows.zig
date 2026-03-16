@@ -5,7 +5,6 @@
 ///   - SetConsoleCtrlHandler for shutdown signals
 ///   - PeekNamedPipe + Sleep polling loop instead of poll()
 ///
-/// Hot-upgrade is not supported on Windows yet.
 const std = @import("std");
 const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
@@ -16,6 +15,7 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const handler = @import("handler.zig");
 const session_connect = @import("../session_connect.zig");
 const state_persist = @import("state_persist.zig");
+const upgrade = @import("upgrade_windows.zig");
 
 /// File-based debug logging for daemon (no console available).
 fn daemonLog(msg: []const u8) void {
@@ -121,19 +121,22 @@ fn ctrlHandler(ctrl_type: DWORD) callconv(.winapi) BOOL {
     }
 }
 
-pub fn run(allocator: std.mem.Allocator, _: ?[]const u8) !void {
+pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
     // Zig debug mode on aarch64 Windows generates stack frames that exceed
     // the default 1MB stack. Calling a separate function (even a small one)
     // triggers a stack probe crash. Work around by running the daemon loop
     // directly inside a thread entry with an 8MB stack.
+    const RestoreInfo = struct { path: ?[]const u8, alloc: std.mem.Allocator };
+    const info = RestoreInfo{ .path = restore_path, .alloc = allocator };
     const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, struct {
-        fn entry(alloc: std.mem.Allocator) void {
+        fn entry(ri: RestoreInfo) void {
             daemonLog("daemon thread started");
-            const state = daemonSetup(alloc) orelse return;
+            const state = daemonSetup(ri.alloc) orelse return;
+            if (ri.path) |rp| restoreFromUpgrade(state, rp);
             daemonLoop(state);
-            daemonCleanup(alloc, state);
+            daemonCleanup(ri.alloc, state);
         }
-    }.entry, .{allocator}) catch {
+    }.entry, .{info}) catch {
         daemonLog("ERROR: failed to spawn daemon thread");
         return error.SpawnFailed;
     };
@@ -176,6 +179,7 @@ fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
     };
     ensureStateDir();
     writeVersionFile();
+    upgrade.cleanupOldExe();
 
     var wide_buf: [256]u16 = undefined;
     const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch return null;
@@ -217,6 +221,7 @@ fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
 }
 
 fn daemonLoop(state: *DaemonState) void {
+    var staged_check_tick: u32 = 0;
     while (g_running) {
         pollAccept(state);
         pollPtyOutput(state);
@@ -224,19 +229,22 @@ fn daemonLoop(state: *DaemonState) void {
         pollProcNames(state);
         pollDeadSessions(state);
 
-        // Version mismatch: graceful restart. Kill PTYs (preserving session
-        // metadata), save state, and exit. The new-version client will
-        // auto-start a fresh daemon that loads the persisted sessions.
-        // (Windows can't transfer ConPTY handles across processes like
-        // POSIX can with fd inheritance, so shells must restart.)
-        if (state.upgrade_requested) {
-            daemonLog("upgrade: version mismatch, saving state and exiting");
-            for (state.sessions) |*slot| {
-                if (slot.*) |*s| {
-                    if (s.alive) s.killAllPanes();
-                }
+        // Check for staged binary every ~2s (40 ticks × 50ms).
+        // The installer/dev script drops upgrade.exe in state dir.
+        staged_check_tick += 1;
+        if (staged_check_tick >= 40) {
+            staged_check_tick = 0;
+            if (!state.upgrade_requested and upgrade.hasStagedBinary()) {
+                daemonLog("upgrade: staged binary detected");
+                state.upgrade_requested = true;
             }
-            state_persist.save(state.sessions, state.next_session_id, state.next_pane_id);
+        }
+
+        // Hot upgrade: serialize state with inherited HANDLE values,
+        // spawn new daemon, then enter HPCON keeper mode.
+        if (state.upgrade_requested) {
+            daemonLog("upgrade: performing hot upgrade");
+            performUpgradeAndKeep(state);
             g_running = false;
         }
 
@@ -258,6 +266,75 @@ fn daemonCleanup(alloc: std.mem.Allocator, state: *DaemonState) void {
     alloc.destroy(state.clients);
     alloc.destroy(state);
     deleteVersionFile();
+}
+
+// ── Hot upgrade ──
+
+fn performUpgradeAndKeep(state: *DaemonState) void {
+    // Get the pipe name as UTF-8 for the probe
+    var pipe_utf8: [512]u8 = undefined;
+    var utf8_len: usize = 0;
+    for (state.pipe_name_buf[0..state.pipe_name_len]) |cp| {
+        const n = std.unicode.utf8Encode(@intCast(cp), pipe_utf8[utf8_len..]) catch break;
+        utf8_len += n;
+    }
+
+    const result = upgrade.performUpgrade(
+        state.sessions,
+        state.next_session_id,
+        state.next_pane_id,
+        state.allocator,
+        pipe_utf8[0..utf8_len],
+    );
+
+    switch (result) {
+        .success => {
+            // Close IPC listener — new daemon owns it now
+            if (state.listen_pipe) |lp| { _ = CloseHandle(lp); state.listen_pipe = null; }
+            // Disconnect all clients
+            for (state.clients) |*slot| {
+                if (slot.*) |*cl| { cl.deinit(); slot.* = null; }
+            }
+            state.client_count = 0;
+            // Enter HPCON keeper mode — blocks until all shells die
+            upgrade.hpconKeeperLoop(state.sessions);
+        },
+        .failed => {
+            daemonLog("upgrade: failed, continuing with old version");
+            state.upgrade_requested = false;
+        },
+        .fatal => {
+            daemonLog("upgrade: fatal failure");
+        },
+    }
+}
+
+fn restoreFromUpgrade(state: *DaemonState, restore_path: []const u8) void {
+    daemonLog("restore: loading state from upgrade file");
+    const data = std.fs.cwd().readFileAlloc(state.allocator, restore_path, 128 * 1024 * 1024) catch {
+        daemonLog("restore: failed to read upgrade file");
+        return;
+    };
+    defer state.allocator.free(data);
+
+    const restored = upgrade.deserialize(
+        data, state.sessions, &state.next_session_id, &state.next_pane_id, state.allocator,
+    ) catch {
+        daemonLog("restore: deserialization failed");
+        std.fs.deleteFileAbsolute(restore_path) catch {};
+        return;
+    };
+
+    // Update session count
+    state.session_count = 0;
+    for (state.sessions) |*slot| {
+        if (slot.* != null) state.session_count += 1;
+    }
+
+    var msg_buf: [128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "restore: {d} sessions restored", .{restored}) catch "restore: done";
+    daemonLog(msg);
+    std.fs.deleteFileAbsolute(restore_path) catch {};
 }
 
 // ── Loop body split into small functions (aarch64 Windows stack probe workaround) ──
