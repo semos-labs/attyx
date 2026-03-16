@@ -80,7 +80,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
     // Save layout and last-session on clean shutdown.
     defer saveLayoutToDaemon(ctx);
-    var buf: [65536]u8 = undefined;
+    // Heap-allocate PTY read buffer — 64KB on stack crashes aarch64 Windows
+    // (missing __chkstk probes, see project_windows_stack_probe.md).
+    const buf_slice = ctx.allocator.alloc(u8, 65536) catch return;
+    defer ctx.allocator.free(buf_slice);
+    const buf: *[65536]u8 = buf_slice[0..65536];
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
     const min_frame_ns: i128 = 16 * std.time.ns_per_ms;
@@ -182,7 +186,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         if (@atomicRmw(i32, &ws.popup_close_request, .Xchg, 0, .seq_cst) != 0) {
             win_popup.closePopup(ctx);
         }
-        win_popup.drainPopupPty(ctx, &buf);
+        win_popup.drainPopupPty(ctx, buf);
         win_popup.checkPopupExit(ctx);
 
         // ── Pane exit detection ──
@@ -208,7 +212,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     got_data = true;
                     // Drain any additional data now available via peek+read.
                     while (active_pane.pty.peekAvail() > 0) {
-                        const n = active_pane.pty.read(&buf) catch break;
+                        const n = active_pane.pty.read(buf) catch break;
                         if (n == 0) break;
                         active_pane.feed(buf[0..n]);
                     }
@@ -216,7 +220,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             }
 
             // All panes (including active): drain via PeekNamedPipe.
-            drainAllPanes(ctx, &buf, &got_data);
+            drainAllPanes(ctx, buf, &got_data);
 
             // Keep an async read pending on active pane so ConPTY flushes output.
             if (active_pane.daemon_pane_id == null) {
