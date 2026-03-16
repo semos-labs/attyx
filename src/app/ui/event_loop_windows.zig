@@ -225,9 +225,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
+        Dbg.mark(42);
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
 
         // ── Flush debounced PTY resizes ──
+        Dbg.mark(43);
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
