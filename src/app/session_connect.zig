@@ -175,7 +175,13 @@ fn connectToSocketWindows() !std.posix.fd_t {
         _ = win32.CloseHandle(h);
         if (alive) {
             dbg("existing daemon is alive, opening fresh connection", .{});
-            if (tryConnectWindows(pipe_path)) |fresh| return fresh;
+            // Retry the second connect — the daemon needs time to create
+            // a new pipe instance after accepting the probe connection.
+            var retry: u32 = 0;
+            while (retry < 10) : (retry += 1) {
+                if (tryConnectWindows(pipe_path)) |fresh| return fresh;
+                win32.Sleep(50);
+            }
         } else {
             dbg("existing daemon pipe not alive", .{});
         }
