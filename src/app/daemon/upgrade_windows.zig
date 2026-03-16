@@ -208,15 +208,16 @@ pub fn deserialize(
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
     const session_count = try r.readByte();
+    daemonLog2("deserialize: session_count={d}", .{session_count});
     var restored: u8 = 0;
-    for (0..session_count) |_| {
-        // Find a free slot and deserialize directly into it.
-        // DaemonSession contains [32]?DaemonPane (each >64KB) — by-value
-        // return would blow the stack on aarch64 Windows.
+    for (0..session_count) |si| {
         const slot = for (sessions) |*slot| {
             if (slot.* == null) break slot;
         } else continue;
-        deserializeSessionInto(&r, allocator, slot) catch continue;
+        deserializeSessionInto(&r, allocator, slot) catch |err| {
+            daemonLog2("deserialize: session {d} failed: {s} at pos {d}/{d}", .{ si, @errorName(err), r.pos, r.data.len });
+            continue;
+        };
         restored += 1;
     }
     return restored;
@@ -594,4 +595,10 @@ fn daemonLog(msg: []const u8) void {
     file.writeAll("[upgrade] ") catch {};
     file.writeAll(msg) catch {};
     file.writeAll("\n") catch {};
+}
+
+fn daemonLog2(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    daemonLog(msg);
 }
