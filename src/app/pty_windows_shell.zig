@@ -40,25 +40,27 @@ pub fn injectExeDirIntoPath() void {
     }
     if (dir_len == 0) return;
 
-    // Get current PATH.
+    // Get current PATH. Static buffers — called once at startup, not reentrant.
     const path_name = comptime toUtf16Literal("PATH");
-    var old_path: [32768]u16 = undefined;
-    const old_len = GetEnvironmentVariableW(&path_name, &old_path, @intCast(old_path.len));
+    const S = struct {
+        var old_path: [32768]u16 = undefined;
+        var new_path: [32768]u16 = undefined;
+    };
+    const old_len = GetEnvironmentVariableW(&path_name, &S.old_path, @intCast(S.old_path.len));
 
     // Build new PATH: exe_dir + ";" + old_path.
-    var new_path: [32768]u16 = undefined;
     var pos: usize = 0;
-    @memcpy(new_path[0..dir_len], exe_path[0..dir_len]);
+    @memcpy(S.new_path[0..dir_len], exe_path[0..dir_len]);
     pos = dir_len;
     if (old_len > 0) {
-        new_path[pos] = ';';
+        S.new_path[pos] = ';';
         pos += 1;
-        const copy_len = @min(old_len, new_path.len - pos - 1);
-        @memcpy(new_path[pos .. pos + copy_len], old_path[0..copy_len]);
+        const copy_len = @min(old_len, S.new_path.len - pos - 1);
+        @memcpy(S.new_path[pos .. pos + copy_len], S.old_path[0..copy_len]);
         pos += copy_len;
     }
-    new_path[pos] = 0;
-    _ = SetEnvironmentVariableW(&path_name, new_path[0..pos :0]);
+    S.new_path[pos] = 0;
+    _ = SetEnvironmentVariableW(&path_name, S.new_path[0..pos :0]);
 }
 
 /// Detect shell type from the command line and set up integration:

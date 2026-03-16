@@ -142,21 +142,24 @@ pub fn setupMsysEnv() void {
             sysroot_bin[sysroot_bin_len] = 0;
 
             const path_name = comptime toUtf16Literal("PATH");
-            var old_path: [32768]u16 = undefined;
-            const old_len = win.GetEnvironmentVariableW(&path_name, &old_path, @intCast(old_path.len));
+            // Static buffers — called once at startup, not reentrant.
+            const P = struct {
+                var old_path: [32768]u16 = undefined;
+                var new_path: [32768]u16 = undefined;
+            };
+            const old_len = win.GetEnvironmentVariableW(&path_name, &P.old_path, @intCast(P.old_path.len));
 
-            var new_path: [32768]u16 = undefined;
-            @memcpy(new_path[0..sysroot_bin_len], sysroot_bin[0..sysroot_bin_len]);
+            @memcpy(P.new_path[0..sysroot_bin_len], sysroot_bin[0..sysroot_bin_len]);
             var pos: usize = sysroot_bin_len;
             if (old_len > 0) {
-                new_path[pos] = ';';
+                P.new_path[pos] = ';';
                 pos += 1;
-                const copy_len = @min(old_len, new_path.len - pos - 1);
-                @memcpy(new_path[pos .. pos + copy_len], old_path[0..copy_len]);
+                const copy_len = @min(old_len, P.new_path.len - pos - 1);
+                @memcpy(P.new_path[pos .. pos + copy_len], P.old_path[0..copy_len]);
                 pos += copy_len;
             }
-            new_path[pos] = 0;
-            _ = win.SetEnvironmentVariableW(&path_name, new_path[0..pos :0]);
+            P.new_path[pos] = 0;
+            _ = win.SetEnvironmentVariableW(&path_name, P.new_path[0..pos :0]);
         }
     }
 }
