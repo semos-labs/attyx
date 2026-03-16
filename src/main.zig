@@ -53,13 +53,26 @@ pub const panic = std.debug.FullPanic(panicImpl);
 
 fn panicImpl(msg: []const u8, ret_addr: ?usize) noreturn {
     if (is_windows) {
-        // Always log panics to file on Windows — GUI has no console.
-        var buf: [512]u8 = undefined;
+        // Static buffer — must not use stack (might be blown).
+        const S = struct {
+            var buf: [512]u8 = undefined;
+            var path_buf: [256]u8 = undefined;
+        };
         const text = if (ret_addr) |addr|
-            std.fmt.bufPrint(&buf, "PANIC at 0x{x}: {s}", .{ addr, msg }) catch msg
+            std.fmt.bufPrint(&S.buf, "PANIC at 0x{x}: {s}", .{ addr, msg }) catch msg
         else
-            std.fmt.bufPrint(&buf, "PANIC: {s}", .{msg}) catch msg;
-        debugToFile(text);
+            std.fmt.bufPrint(&S.buf, "PANIC: {s}", .{msg}) catch msg;
+        // Write directly — debugToFile also has stack locals
+        const path = session_connect.statePath(&S.path_buf, "daemon-debug{s}.log") orelse {
+            std.process.exit(3);
+        };
+        const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch {
+            std.process.exit(3);
+        };
+        file.seekFromEnd(0) catch {};
+        file.writeAll(text) catch {};
+        file.writeAll("\n") catch {};
+        file.close();
         std.process.exit(3);
     }
     std.debug.defaultPanic(msg, ret_addr);
