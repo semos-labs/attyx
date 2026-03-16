@@ -71,6 +71,9 @@ pub const WinCtx = struct {
     finder_root: []const u8 = "~",
     finder_depth: u8 = 4,
     finder_show_hidden: bool = false,
+    /// Tracking for focus_panes — which daemon panes were active last time.
+    last_focus_panes: [split_layout_mod.max_panes]u32 = undefined,
+    last_focus_count: u8 = 0,
 };
 
 pub fn ptyReaderThread(ctx: *WinCtx) void {
@@ -726,8 +729,36 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     // output when there's a pending ReadFile(), so without this, switching
     // to a tab whose pane has no pending read shows a blank screen.
     pane.pty.startAsyncRead();
+    // Tell daemon which panes are now focused so it sends replay + output.
+    sendFocusPanesForActiveTab(ctx);
     // Force full repaint so the renderer picks up the new tab's content.
     c.attyx_mark_all_dirty();
+}
+
+/// Send focus_panes for all daemon-backed panes in the active tab.
+/// Triggers daemon replay for newly-focused panes.
+fn sendFocusPanesForActiveTab(ctx: *WinCtx) void {
+    const sc = ctx.session_client orelse return;
+    const layout = ctx.tab_mgr.activeLayout();
+    var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
+    var count: usize = 0;
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const lc = layout.collectLeaves(&leaves);
+    for (leaves[0..lc]) |leaf| {
+        if (leaf.pane.daemon_pane_id) |dpid| {
+            pane_ids[count] = dpid;
+            count += 1;
+            // Mark for engine reinit on first replay byte (see win_daemon.zig).
+            var was_focused = false;
+            for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
+                if (old_id == dpid) { was_focused = true; break; }
+            }
+            if (!was_focused) leaf.pane.needs_engine_reinit = true;
+        }
+    }
+    for (0..count) |i| ctx.last_focus_panes[i] = pane_ids[i];
+    ctx.last_focus_count = @intCast(count);
+    if (count > 0) sc.sendFocusPanes(pane_ids[0..count]) catch {};
 }
 
 /// Switch the active session — update tab_mgr and bridge globals.
