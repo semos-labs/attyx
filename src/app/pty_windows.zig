@@ -248,7 +248,7 @@ extern "user32" fn ShowWindow(hWnd: std.os.windows.HWND, nCmdShow: i32) callconv
 
 var hidden_console_ready: bool = false;
 
-fn ensureHiddenConsole() void {
+pub fn ensureHiddenConsole() void {
     if (hidden_console_ready) return;
     hidden_console_ready = true;
     if (AllocConsole() != 0) {

@@ -264,6 +264,10 @@ pub fn run(
     }
 
     // Start event loop thread
+    // Allocate a hidden console so child processes (git, statusbar scripts)
+    // inherit it instead of creating visible console windows that flash.
+    @import("pty_windows.zig").ensureHiddenConsole();
+
     // 8MB stack for reader thread — aarch64 Windows needs committed pages
     // for functions with >4KB frames (no __chkstk probes in Zig debug mode).
     const reader_thread = try std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, event_loop.ptyReaderThread, .{&ctx});
