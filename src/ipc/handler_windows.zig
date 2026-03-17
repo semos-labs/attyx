@@ -133,17 +133,17 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
             else
                 sendError(cmd, "--wait requires --cmd");
         },
-        .popup => sendError(cmd, "popup not yet supported on Windows"),
-        .theme_set => sendError(cmd, "theme_set not yet supported on Windows"),
+        .popup => handlePopup(cmd, ctx),
+        .theme_set => handleThemeSet(cmd, ctx),
         .session_list => handleSessionList(cmd, ctx),
         .session_create => handleSessionCreate(cmd, ctx),
         .session_kill => handleSessionKill(cmd, ctx),
         .session_switch => handleSessionSwitch(cmd, ctx),
         .session_rename => handleSessionRename(cmd, ctx),
         .session_envelope => sendError(cmd, "unexpected session envelope"),
-        .tab_rename_targeted, .pane_rotate_targeted, .pane_zoom_targeted => {
-            sendError(cmd, "targeted operation not yet supported");
-        },
+        .tab_rename_targeted => handleTabRenameTargeted(cmd, ctx),
+        .pane_rotate_targeted => handlePaneRotateTargeted(cmd, ctx),
+        .pane_zoom_targeted => handlePaneZoomTargeted(cmd, ctx),
         .success, .err, .exit_code => sendError(cmd, "unexpected message type"),
     }
 }
@@ -546,6 +546,155 @@ fn lastPathComponent(path: []const u8) []const u8 {
     if (trimmed.len == 0) return "";
     if (std.mem.lastIndexOfAny(u8, trimmed, "/\\")) |i| return trimmed[i + 1 ..];
     return trimmed;
+}
+
+// ── Popup ──
+
+fn handlePopup(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing popup command");
+        return;
+    }
+    const width_pct = cmd.payload[0];
+    const height_pct = cmd.payload[1];
+    const border_raw = cmd.payload[2];
+    const command = cmd.payload[3..cmd.payload_len];
+    const popup_mod = @import("../app/popup.zig");
+    const ws = @import("../app/windows_stubs.zig");
+    const publish = @import("../app/ui/publish.zig");
+
+    const border_style: popup_mod.BorderStyle = switch (border_raw) {
+        0 => .single, 1 => .double, 2 => .rounded, 3 => .heavy, 4 => .none,
+        else => .rounded,
+    };
+
+    // Close existing popup if any
+    if (ctx.popup_state != null) {
+        @import("../app/ui/win_popup.zig").closePopup(ctx);
+    }
+
+    const cfg_idx: u8 = if (ctx.popup_config_count < 32) ctx.popup_config_count else 31;
+    ctx.popup_configs[cfg_idx] = popup_mod.PopupConfig{
+        .command = command,
+        .width_pct = if (width_pct >= 1 and width_pct <= 100) width_pct else 80,
+        .height_pct = if (height_pct >= 1 and height_pct <= 100) height_pct else 80,
+        .border_style = border_style,
+        .border_fg = .{ 128, 128, 128 },
+    };
+    const cfg = ctx.popup_configs[cfg_idx];
+
+    var ps = ctx.allocator.create(popup_mod.PopupState) catch {
+        sendError(cmd, "failed to allocate popup");
+        return;
+    };
+    ps.* = popup_mod.PopupState.spawn(ctx.allocator, cfg, ctx.grid_cols, ctx.grid_rows, null, null) catch {
+        ctx.allocator.destroy(ps);
+        sendError(cmd, "failed to spawn popup");
+        return;
+    };
+    ps.pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
+    ps.config_index = cfg_idx;
+    ctx.popup_state = ps;
+    ws.g_popup_pty_handle = ps.pane.pty.pipe_in_write;
+    ws.g_popup_engine = &ps.pane.engine;
+    const c = publish.c;
+    @atomicStore(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_popup_active))), 1, .seq_cst);
+    ps.publishCells(ctx.theme, cfg);
+    sendOk(cmd, "");
+}
+
+// ── Theme set ──
+
+fn handleThemeSet(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    if (cmd.payload_len > 0) {
+        const name = cmd.payload[0..cmd.payload_len];
+        ctx.theme.* = ctx.theme_registry.resolve(name);
+        const publish = @import("../app/ui/publish.zig");
+        publish.publishTheme(ctx.theme);
+        // Update all pane engines with new theme colors
+        const tc = publish.themeToEngineColors(ctx.theme);
+        for (&ctx.tab_mgr.tabs) |*slot| {
+            if (slot.*) |*layout| {
+                for (&layout.pool) |*node| {
+                    if (node.tag == .leaf) {
+                        if (node.pane) |pane| {
+                            pane.engine.state.theme_colors = tc;
+                        }
+                    }
+                }
+            }
+        }
+        if (ctx.popup_state) |ps| {
+            ps.pane.engine.state.theme_colors = tc;
+        }
+    }
+    sendOk(cmd, "");
+}
+
+// ── Targeted operations ──
+
+fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    if (cmd.payload_len < 2) {
+        sendError(cmd, "missing tab index or name");
+        return;
+    }
+    const ti = cmd.payload[0];
+    if (ti >= ctx.tab_mgr.count) {
+        sendError(cmd, "tab not found");
+        return;
+    }
+    const layout = &(ctx.tab_mgr.tabs[ti] orelse {
+        sendError(cmd, "tab not found");
+        return;
+    });
+    const name = cmd.payload[1..cmd.payload_len];
+    layout.focusedPane().setCustomTitle(name);
+    sendOk(cmd, "");
+}
+
+fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing pane ID");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
+        sendError(cmd, "pane not found");
+        return;
+    };
+    const prev_focused = found.layout.focused;
+    found.layout.focused = found.pool_idx;
+    found.layout.toggleZoom();
+    if (!found.layout.isZoomed() and prev_focused != found.pool_idx) {
+        found.layout.focused = prev_focused;
+    }
+    const ws = @import("../app/windows_stubs.zig");
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    if (found.layout.isZoomed()) {
+        found.layout.focusedPane().resize(pty_rows, ctx.grid_cols);
+    } else {
+        found.layout.layout(pty_rows, ctx.grid_cols);
+    }
+    event_loop.switchActiveTab(ctx);
+    sendOk(cmd, "");
+}
+
+fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const layout = if (cmd.payload_len >= 4) blk: {
+        const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+        const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
+            sendError(cmd, "pane not found");
+            return;
+        };
+        break :blk found.layout;
+    } else ctx.tab_mgr.activeLayout();
+
+    layout.rotatePanes();
+    const ws = @import("../app/windows_stubs.zig");
+    const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    layout.layout(pty_rows, ctx.grid_cols);
+    event_loop.switchActiveTab(ctx);
+    sendOk(cmd, "");
 }
 
 // ── Response helpers ──
