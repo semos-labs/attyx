@@ -38,6 +38,15 @@
     return _item;
 }
 
+/// Return the arch string for the current process ("arm64" or "x86_64").
++ (NSString *)currentArch {
+#if __arm64__
+    return @"arm64";
+#else
+    return @"x86_64";
+#endif
+}
+
 - (void)parser:(NSXMLParser *)p didStartElement:(NSString *)el
   namespaceURI:(NSString *)ns qualifiedName:(NSString *)qn
     attributes:(NSDictionary *)attrs {
@@ -45,6 +54,13 @@
         _inItem = YES;
         _item = [AttyxAppcastItem new];
     } else if ([el isEqualToString:@"enclosure"] && _inItem) {
+        // Unified appcast: filter by os="macos" and arch matching current.
+        // Legacy per-arch appcasts have no os/arch attrs — accept them too.
+        NSString *os = attrs[@"os"];
+        NSString *arch = attrs[@"arch"];
+        if (os && ![os isEqualToString:@"macos"]) return;
+        if (arch && ![arch isEqualToString:[AttyxAppcastParser currentArch]]) return;
+
         _item.downloadURL = attrs[@"url"];
         _item.version = attrs[@"sparkle:shortVersionString"]
                      ?: attrs[@"sparkle:version"];
@@ -610,12 +626,9 @@ void attyx_updater_init(void) {
     if (isPackageManaged()) return;
 
     if (!g_feedURL) {
-#if __arm64__
-        g_feedURL = [[NSBundle mainBundle]
-            objectForInfoDictionaryKey:@"SUFeedURL"];
-#else
-        g_feedURL = @"https://semos.sh/appcast-x64.xml";
-#endif
+        // Prefer the unified appcast (all platforms + archs in one feed).
+        // Fall back to Info.plist SUFeedURL for older builds.
+        g_feedURL = @"https://semos.sh/appcast.xml";
     }
     if (!g_feedURL) return;
 

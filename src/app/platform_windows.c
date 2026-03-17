@@ -383,6 +383,14 @@ void attyx_apply_window_update(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Updater forward declarations (windows_updater.c)
+// ---------------------------------------------------------------------------
+void attyx_updater_init(const char *current_version);
+int  attyx_updater_tick(UINT_PTR timer_id);
+void attyx_updater_show(void);
+void attyx_updater_check(void);
+
+// ---------------------------------------------------------------------------
 // Renderer forward declarations (windows_renderer.c)
 // ---------------------------------------------------------------------------
 
@@ -512,7 +520,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (windows_renderer_draw_frame()) {
                 windows_renderer_present();
             }
+        } else if (attyx_updater_tick(wParam)) {
+            // Handled by updater
         }
+        return 0;
+
+    // Updater: background check completed, show update window on main thread.
+    case WM_APP + 1:
+        attyx_updater_show();
         return 0;
 
     case WM_SIZE:
@@ -848,6 +863,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         SetWindowTextW(g_hwnd, wtitle);
         g_title_changed = 0;
     }
+
+    // Initialize auto-updater (schedules first check after 5s)
+    extern const char *attyx_get_version(void);  // from windows_stubs.zig
+    attyx_updater_init(attyx_get_version());
 
     // Message loop with 60fps frame pacing
     LARGE_INTEGER freq, last_frame;

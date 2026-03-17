@@ -72,6 +72,11 @@ fn writeHandle(handle: ?std.os.windows.HANDLE, data: []const u8) void {
 // Core I/O
 // ---------------------------------------------------------------------------
 
+/// Export build version for C code (updater, etc.)
+export fn attyx_get_version() [*]const u8 {
+    return attyx.version.ptr;
+}
+
 export fn attyx_send_input(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];

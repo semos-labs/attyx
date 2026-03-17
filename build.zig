@@ -200,6 +200,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_text_util.c"), .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_menu.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_native_tabs.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_updater.c"), .flags = win_flags });
         exe.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         exe.subsystem = .Windows; // No console window — CLI paths use AttachConsole
         exe.root_module.linkSystemLibrary("kernel32", .{});
@@ -215,6 +216,8 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ole32", .{});
         exe.root_module.linkSystemLibrary("windowscodecs", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
+        exe.root_module.linkSystemLibrary("winhttp", .{});
+        exe.root_module.linkSystemLibrary("advapi32", .{});
 
         // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
         // On native Windows: auto-fetch + install on every build (idempotent).

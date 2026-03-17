@@ -93,43 +93,80 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "bundle_version=$BUNDLE_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download macOS release zips
+      - name: Download release assets
         run: |
           gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPO" \
             --pattern "attyx-darwin-*.zip" \
+            --pattern "attyx-windows-*.exe" \
             --dir assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate appcast XML files
         run: |
-          ARM64_SIZE=$(stat -c%s assets/attyx-darwin-arm64.zip)
-          X64_SIZE=$(stat -c%s assets/attyx-darwin-x64.zip)
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE_VERSION="${{ steps.version.outputs.bundle_version }}"
           PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
           DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
 
-          cat > appcast-arm64.xml <<FEED
+          # File sizes (0 if asset doesn't exist yet)
+          DARWIN_ARM64_SIZE=$(stat -c%s assets/attyx-darwin-arm64.zip 2>/dev/null || echo 0)
+          DARWIN_X64_SIZE=$(stat -c%s assets/attyx-darwin-x64.zip 2>/dev/null || echo 0)
+          WIN_ARM64_SIZE=$(stat -c%s assets/attyx-windows-arm64.exe 2>/dev/null || echo 0)
+          WIN_X64_SIZE=$(stat -c%s assets/attyx-windows-x64.exe 2>/dev/null || echo 0)
+
+          # Build enclosure list (only include assets that exist)
+          ENCLOSURES=""
+          if [ "$DARWIN_ARM64_SIZE" -gt 0 ]; then
+            ENCLOSURES="${ENCLOSURES}
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-arm64.zip\" os=\"macos\" arch=\"arm64\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
+          fi
+          if [ "$DARWIN_X64_SIZE" -gt 0 ]; then
+            ENCLOSURES="${ENCLOSURES}
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-x64.zip\" os=\"macos\" arch=\"x86_64\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_X64_SIZE}\" type=\"application/octet-stream\" />"
+          fi
+          if [ "$WIN_ARM64_SIZE" -gt 0 ]; then
+            ENCLOSURES="${ENCLOSURES}
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-arm64.exe\" os=\"windows\" arch=\"arm64\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
+          fi
+          if [ "$WIN_X64_SIZE" -gt 0 ]; then
+            ENCLOSURES="${ENCLOSURES}
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-x64.exe\" os=\"windows\" arch=\"x86_64\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_X64_SIZE}\" type=\"application/octet-stream\" />"
+          fi
+
+          # Unified appcast (all platforms)
+          cat > appcast.xml <<FEED
           <?xml version="1.0" encoding="utf-8"?>
-          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
-              <title>Attyx (Apple Silicon)</title>
+              <title>Attyx</title>
               <link>https://semos.sh</link>
-              <description>Attyx auto-update feed for Apple Silicon</description>
+              <description>Attyx auto-update feed</description>
               <language>en</language>
               <item>
                 <title>Attyx v${VERSION}</title>
                 <pubDate>${PUB_DATE}</pubDate>
                 <sparkle:releaseNotesLink>https://semos.sh/releases/attyx/${VERSION}/sparkle</sparkle:releaseNotesLink>
                 <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
-                <enclosure
-                  url="${DOWNLOAD_BASE}/attyx-darwin-arm64.zip"
-                  sparkle:version="${BUNDLE_VERSION}"
-                  sparkle:shortVersionString="${VERSION}"
-                  length="${ARM64_SIZE}"
-                  type="application/octet-stream" />
+          ${ENCLOSURES}
+              </item>
+            </channel>
+          </rss>
+          FEED
+
+          # Legacy per-arch appcasts (backward compat for older macOS builds)
+          cat > appcast-arm64.xml <<FEED
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Attyx (Apple Silicon)</title>
+              <item>
+                <title>Attyx v${VERSION}</title>
+                <pubDate>${PUB_DATE}</pubDate>
+                <sparkle:releaseNotesLink>https://semos.sh/releases/attyx/${VERSION}/sparkle</sparkle:releaseNotesLink>
+                <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+                <enclosure url="${DOWNLOAD_BASE}/attyx-darwin-arm64.zip" sparkle:version="${BUNDLE_VERSION}" sparkle:shortVersionString="${VERSION}" length="${DARWIN_ARM64_SIZE}" type="application/octet-stream" />
               </item>
             </channel>
           </rss>
@@ -137,23 +174,15 @@ jobs:
 
           cat > appcast-x64.xml <<FEED
           <?xml version="1.0" encoding="utf-8"?>
-          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
               <title>Attyx (Intel)</title>
-              <link>https://semos.sh</link>
-              <description>Attyx auto-update feed for Intel</description>
-              <language>en</language>
               <item>
                 <title>Attyx v${VERSION}</title>
                 <pubDate>${PUB_DATE}</pubDate>
                 <sparkle:releaseNotesLink>https://semos.sh/releases/attyx/${VERSION}/sparkle</sparkle:releaseNotesLink>
                 <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
-                <enclosure
-                  url="${DOWNLOAD_BASE}/attyx-darwin-x64.zip"
-                  sparkle:version="${BUNDLE_VERSION}"
-                  sparkle:shortVersionString="${VERSION}"
-                  length="${X64_SIZE}"
-                  type="application/octet-stream" />
+                <enclosure url="${DOWNLOAD_BASE}/attyx-darwin-x64.zip" sparkle:version="${BUNDLE_VERSION}" sparkle:shortVersionString="${VERSION}" length="${DARWIN_X64_SIZE}" type="application/octet-stream" />
               </item>
             </channel>
           </rss>
@@ -184,6 +213,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${SEMOS_WEBSITE}.git" semos-site
+          cp appcast.xml semos-site/public/appcast.xml
           cp appcast-arm64.xml semos-site/public/appcast-arm64.xml
           cp appcast-x64.xml semos-site/public/appcast-x64.xml
           mkdir -p semos-site/src/content/releases/attyx
@@ -191,7 +221,7 @@ jobs:
           cd semos-site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/appcast-arm64.xml public/appcast-x64.xml "src/content/releases/attyx/${VERSION}.md"
+          git add public/appcast.xml public/appcast-arm64.xml public/appcast-x64.xml "src/content/releases/attyx/${VERSION}.md"
           git diff --cached --quiet || git commit -m "chore: update appcast and release notes for ${RELEASE_TAG}"
           git push
 
