@@ -195,9 +195,9 @@ pub const DaemonPane = struct {
         if (data.len > 0) {
             if (findLastEraseScrollback(data)) |pos| {
                 self.replay.clear();
-                self.replay.write(data[pos..]);
+                writeReplayFiltered(&self.replay, data[pos..]);
             } else {
-                self.replay.write(data);
+                writeReplayFiltered(&self.replay, data);
             }
             self.trackModes(data);
             self.trackOsc(data);
@@ -215,9 +215,9 @@ pub const DaemonPane = struct {
             const slice = out_buf[0..n];
             if (findLastEraseScrollback(slice)) |pos| {
                 self.replay.clear();
-                self.replay.write(slice[pos..]);
+                writeReplayFiltered(&self.replay, slice[pos..]);
             } else {
-                self.replay.write(slice);
+                writeReplayFiltered(&self.replay, slice);
             }
             self.trackModes(slice);
             self.trackOsc(slice);
@@ -236,15 +236,50 @@ pub const DaemonPane = struct {
             // buffer so replayed sessions don't resurrect cleared scrollback.
             if (findLastEraseScrollback(data)) |pos| {
                 self.replay.clear();
-                self.replay.write(data[pos..]);
+                writeReplayFiltered(&self.replay, data[pos..]);
             } else {
-                self.replay.write(data);
+                writeReplayFiltered(&self.replay, data);
             }
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
         }
         return n;
+    }
+
+    /// Write data to replay buffer, stripping OSC 7337;set-path sequences.
+    /// These contain the full PATH which is very long and, when split at the
+    /// ring buffer boundary, renders as raw text on replay. The path is
+    /// tracked separately in osc7337_path so it doesn't need to be in replay.
+    fn writeReplayFiltered(ring: *RingBuffer, data: []const u8) void {
+        var i: usize = 0;
+        var last: usize = 0;
+        while (i + 1 < data.len) {
+            if (data[i] == '\x1b' and data[i + 1] == ']') {
+                // Check for "7337;" after ESC ]
+                const rest = data[i + 2 ..];
+                if (rest.len >= 5 and rest[0] == '7' and rest[1] == '3' and
+                    rest[2] == '3' and rest[3] == '7' and rest[4] == ';')
+                {
+                    // Write everything before this OSC.
+                    if (i > last) ring.write(data[last..i]);
+                    // Skip to BEL or ST terminator.
+                    var j = i + 7; // past ESC ] 7337 ;
+                    while (j < data.len) : (j += 1) {
+                        if (data[j] == 0x07) { j += 1; break; }
+                        if (data[j] == '\x1b' and j + 1 < data.len and data[j + 1] == '\\') {
+                            j += 2;
+                            break;
+                        }
+                    }
+                    last = j;
+                    i = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if (last < data.len) ring.write(data[last..]);
     }
 
     /// Scan for the last occurrence of CSI 3 J (`\x1b[3J`) in `data`.
