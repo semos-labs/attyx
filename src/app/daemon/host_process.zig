@@ -169,6 +169,10 @@ fn hostMain(allocator: std.mem.Allocator, args: HostArgs) void {
     };
     const pipe_name: LPCWSTR = @ptrCast(pipe_name_buf[0..pipe_name_len :0]);
 
+    // Refresh PATH from registry — picks up tools installed after the daemon
+    // started (e.g. bun, node, cargo). The daemon's inherited PATH is stale.
+    refreshPathFromRegistry();
+
     // Spawn the shell via ConPTY.
     var pty = Pty.spawn(allocator, .{
         .rows = args.rows,
@@ -427,4 +431,140 @@ fn hostLog(msg: []const u8) void {
     file.writeAll("[host] ") catch {};
     file.writeAll(msg) catch {};
     file.writeAll("\n") catch {};
+}
+
+// ── Registry PATH refresh ──
+// The daemon's PATH is frozen from startup. Tools installed after (bun, cargo,
+// node, etc.) modify the registry PATH but the daemon doesn't see them.
+// Read fresh PATH from registry so each new tab picks up new installations.
+
+const HKEY = *opaque {};
+const HKEY_LOCAL_MACHINE: HKEY = @ptrFromInt(0x80000002);
+const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+const KEY_READ: DWORD = 0x20019;
+const ERROR_SUCCESS: DWORD = 0;
+
+extern "advapi32" fn RegOpenKeyExW(
+    hKey: HKEY,
+    lpSubKey: LPCWSTR,
+    ulOptions: DWORD,
+    samDesired: DWORD,
+    phkResult: *HKEY,
+) callconv(.winapi) DWORD;
+
+extern "advapi32" fn RegQueryValueExW(
+    hKey: HKEY,
+    lpValueName: ?LPCWSTR,
+    lpReserved: ?*DWORD,
+    lpType: ?*DWORD,
+    lpData: ?[*]u8,
+    lpcbData: ?*DWORD,
+) callconv(.winapi) DWORD;
+
+extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.winapi) DWORD;
+
+extern "kernel32" fn SetEnvironmentVariableW(
+    lpName: LPCWSTR,
+    lpValue: ?LPCWSTR,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn GetEnvironmentVariableW(
+    lpName: LPCWSTR,
+    lpBuffer: ?[*]u16,
+    nSize: DWORD,
+) callconv(.winapi) DWORD;
+
+fn refreshPathFromRegistry() void {
+    const S = struct {
+        var sys_path: [16384]u16 = undefined;
+        var usr_path: [16384]u16 = undefined;
+        var new_path: [32768]u16 = undefined;
+        var old_path: [32768]u16 = undefined;
+    };
+
+    const sys_subkey = comptime toUtf16("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment");
+    const usr_subkey = comptime toUtf16("Environment");
+    const sys_len = readRegPath(HKEY_LOCAL_MACHINE, &sys_subkey, &S.sys_path);
+    const usr_len = readRegPath(HKEY_CURRENT_USER, &usr_subkey, &S.usr_path);
+
+    if (sys_len == 0 and usr_len == 0) return;
+
+    // Build fresh PATH: user + system (standard Windows order).
+    var pos: usize = 0;
+    if (usr_len > 0) {
+        @memcpy(S.new_path[pos .. pos + usr_len], S.usr_path[0..usr_len]);
+        pos += usr_len;
+    }
+    if (sys_len > 0) {
+        if (pos > 0) {
+            S.new_path[pos] = ';';
+            pos += 1;
+        }
+        @memcpy(S.new_path[pos .. pos + sys_len], S.sys_path[0..sys_len]);
+        pos += sys_len;
+    }
+
+    // Preserve entries from the current PATH that aren't in the registry
+    // (e.g. MSYS2 sysroot, attyx bin dir added by setupMsysEnv).
+    const path_name = comptime toUtf16("PATH");
+    const old_len = GetEnvironmentVariableW(&path_name, &S.old_path, @intCast(S.old_path.len));
+    if (old_len > 0) {
+        // Scan old PATH for entries not in the new registry PATH.
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i <= old_len) : (i += 1) {
+            if (i == old_len or S.old_path[i] == ';') {
+                if (i > start and !containsPathEntry(S.new_path[0..pos], S.old_path[start..i])) {
+                    if (pos > 0 and pos + 1 + (i - start) < S.new_path.len) {
+                        S.new_path[pos] = ';';
+                        pos += 1;
+                        @memcpy(S.new_path[pos .. pos + (i - start)], S.old_path[start..i]);
+                        pos += (i - start);
+                    }
+                }
+                start = i + 1;
+            }
+        }
+    }
+
+    if (pos > 0) {
+        S.new_path[pos] = 0;
+        _ = SetEnvironmentVariableW(&path_name, S.new_path[0..pos :0]);
+    }
+}
+
+fn readRegPath(root: HKEY, subkey: LPCWSTR, buf: *[16384]u16) usize {
+    var hkey: HKEY = undefined;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &hkey) != ERROR_SUCCESS) return 0;
+    defer _ = RegCloseKey(hkey);
+
+    const val_name_lit = comptime toUtf16("Path");
+    var data_size: DWORD = @intCast(@sizeOf(@TypeOf(buf.*)));
+    if (RegQueryValueExW(hkey, &val_name_lit, null, null, @ptrCast(buf), &data_size) != ERROR_SUCCESS) return 0;
+
+    // data_size is in bytes; convert to u16 count, strip null terminator.
+    const u16_count = data_size / 2;
+    if (u16_count > 0 and buf[u16_count - 1] == 0) return u16_count - 1;
+    return u16_count;
+}
+
+fn containsPathEntry(haystack: []const u16, needle: []const u16) bool {
+    if (needle.len == 0) return true;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= haystack.len) : (i += 1) {
+        if (i == haystack.len or haystack[i] == ';') {
+            if (i - start == needle.len and std.mem.eql(u16, haystack[start..i], needle)) return true;
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
+fn toUtf16(comptime s: []const u8) [s.len:0]u16 {
+    comptime {
+        var result: [s.len:0]u16 = undefined;
+        for (s, 0..) |c, i| result[i] = c;
+        return result;
+    }
 }
