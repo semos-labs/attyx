@@ -174,11 +174,6 @@ const DaemonState = struct {
 fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
     _ = SetConsoleCtrlHandler(@ptrCast(&ctrlHandler), 1);
 
-    // Allocate a hidden console for MSYS2 fork() emulation.
-    // Host processes inherit this console, so they don't need to
-    // AllocConsole themselves (which causes a visible window flash).
-    @import("../pty_windows.zig").ensureHiddenConsole();
-
     var path_buf: [256]u8 = undefined;
     const pipe_path = session_connect.getSocketPath(&path_buf) orelse {
         daemonLog("ERROR: no socket path");

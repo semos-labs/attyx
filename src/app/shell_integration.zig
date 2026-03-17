@@ -329,6 +329,12 @@ pub const zsh_script =
     \\}
     \\[[ -z "${precmd_functions[(r)__attyx_first_precmd]}" ]] && precmd_functions+=(__attyx_first_precmd)
     \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
+    \\# Sensible history defaults — only set if user hasn't configured them.
+    \\# Without these, zsh defaults to SAVEHIST=0 (no history saved to disk).
+    \\[[ -z "$HISTFILE" ]] && export HISTFILE="$HOME/.zsh_history"
+    \\(( HISTSIZE <= 100 )) && HISTSIZE=10000
+    \\(( SAVEHIST <= 0 )) && SAVEHIST=10000
+    \\setopt APPEND_HISTORY SHARE_HISTORY HIST_IGNORE_DUPS 2>/dev/null
     \\__attyx_chpwd
     \\
 ;
