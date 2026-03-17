@@ -223,7 +223,9 @@ pub fn main() !void {
         },
         .host => {
             if (is_windows) {
-                _ = win32.FreeConsole();
+                // Don't FreeConsole — host is spawned with CREATE_NO_WINDOW
+                // which provides a hidden console. Freeing it would force
+                // ensureHiddenConsole() to AllocConsole (visible flash).
                 host_process.run(allocator, args) catch |err| {
                     var buf: [256]u8 = undefined;
                     const msg = std.fmt.bufPrint(&buf, "host process failed: {s}", .{@errorName(err)}) catch "host process failed";

@@ -286,7 +286,7 @@ extern "kernel32" fn CreateProcessW(
     pi: *PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
 
-const DETACHED_PROCESS: DWORD = 0x00000008;
+const CREATE_NO_WINDOW: DWORD = 0x08000000;
 const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 
 /// Spawn a host process for a pane. Returns true on success.
@@ -331,7 +331,9 @@ pub fn spawnHostProcess(
     si.cb = @sizeOf(STARTUPINFOW);
     var pi: PROCESS_INFORMATION = undefined;
 
-    if (CreateProcessW(null, &cmd_wide, null, null, 0, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
+    // CREATE_NO_WINDOW gives the host a hidden console from the start,
+    // avoiding the visible AllocConsole flash that DETACHED_PROCESS causes.
+    if (CreateProcessW(null, &cmd_wide, null, null, 0, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
         return false;
     }
     _ = CloseHandle(pi.hThread);
