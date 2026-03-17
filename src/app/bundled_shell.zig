@@ -132,6 +132,8 @@ pub fn setupMsysEnv() void {
     }
 
     // Prepend sysroot/usr/bin to PATH so zsh can find coreutils, etc.
+    // Also add Git for Windows' usr/bin if installed — provides vi, less,
+    // nano, ssh, and other tools that the minimal sysroot doesn't bundle.
     {
         const suffix = comptime toUtf16Literal("\\share\\msys2\\usr\\bin");
         const sysroot_bin_len = dir_len + suffix.len;
@@ -142,7 +144,6 @@ pub fn setupMsysEnv() void {
             sysroot_bin[sysroot_bin_len] = 0;
 
             const path_name = comptime toUtf16Literal("PATH");
-            // Static buffers — called once at startup, not reentrant.
             const P = struct {
                 var old_path: [32768]u16 = undefined;
                 var new_path: [32768]u16 = undefined;
@@ -151,6 +152,14 @@ pub fn setupMsysEnv() void {
 
             @memcpy(P.new_path[0..sysroot_bin_len], sysroot_bin[0..sysroot_bin_len]);
             var pos: usize = sysroot_bin_len;
+
+            // Append Git for Windows usr/bin (vi, less, nano, ssh, etc.)
+            const git_usr_bin_len = findGitUsrBin(P.new_path[pos + 1 ..]);
+            if (git_usr_bin_len > 0) {
+                P.new_path[pos] = ';';
+                pos += 1 + git_usr_bin_len;
+            }
+
             if (old_len > 0) {
                 P.new_path[pos] = ';';
                 pos += 1;
@@ -180,6 +189,43 @@ pub fn findBundledZshUtf8() ?[]const u8 {
 }
 
 // ── Internals ──
+
+/// Find Git for Windows' usr\bin directory (contains vi, less, nano, ssh, etc.)
+/// Writes the path as UTF-16 into `buf` and returns the length, or 0 if not found.
+fn findGitUsrBin(buf: []u16) usize {
+    if (comptime !is_windows) return 0;
+
+    // Check GIT_INSTALL_ROOT env var first.
+    const git_root_name = comptime toUtf16Literal("GIT_INSTALL_ROOT");
+    var git_root: [1024]u16 = undefined;
+    const git_root_len = win.GetEnvironmentVariableW(&git_root_name, &git_root, @intCast(git_root.len));
+    if (git_root_len > 0 and git_root_len < git_root.len) {
+        const usr_bin = comptime toUtf16Literal("\\usr\\bin");
+        const total = git_root_len + usr_bin.len;
+        if (total < buf.len) {
+            @memcpy(buf[0..git_root_len], git_root[0..git_root_len]);
+            @memcpy(buf[git_root_len..total], &usr_bin);
+            buf[total] = 0;
+            if (win.GetFileAttributesW(@ptrCast(buf[0..total :0])) != win.INVALID_FILE_ATTRIBUTES)
+                return total;
+        }
+    }
+
+    // Try standard install locations.
+    return tryGitUsrBinPath(buf, "C:\\Program Files\\Git\\usr\\bin") orelse
+        tryGitUsrBinPath(buf, "C:\\Program Files (x86)\\Git\\usr\\bin") orelse 0;
+}
+
+fn tryGitUsrBinPath(buf: []u16, comptime path: []const u8) ?usize {
+    if (comptime !is_windows) return null;
+    const wide = comptime toUtf16Literal(path);
+    if (wide.len >= buf.len) return null;
+    @memcpy(buf[0..wide.len], &wide);
+    buf[wide.len] = 0;
+    if (win.GetFileAttributesW(@ptrCast(buf[0..wide.len :0])) != win.INVALID_FILE_ATTRIBUTES)
+        return wide.len;
+    return null;
+}
 
 fn setEnvW(comptime name: []const u8, comptime value: []const u8) void {
     if (comptime !is_windows) return;

@@ -222,40 +222,32 @@ pub const Pane = struct {
         self.engine.state.resize(rows, cols) catch |err| {
             logging.err("resize", "state.resize({d}x{d}) failed: {}", .{ cols, rows, err });
         };
-        // Trailing-edge debounce: always defer TIOCSWINSZ during active
-        // resizing. The event loop's flushPtyResize() sends it once no
-        // resize has occurred for the debounce interval. This prevents
-        // the shell from being flooded with SIGWINCHs that cause prompt
-        // redraws to pile up as ghost content.
+        // Leading-edge throttle: record pending dimensions but don't reset
+        // the timer. flushPtyResize() fires immediately on the first event,
+        // then at most once per throttle interval during continuous resizing.
         if (rows != old_rows or cols != old_cols) {
             self.pending_pty_rows = rows;
             self.pending_pty_cols = cols;
             self.pending_pty_resize = true;
-            self.last_pty_resize_ns = std.time.nanoTimestamp();
         }
     }
 
-    /// Send any deferred PTY resize once resizing has stopped (no resize
-    /// events for the debounce interval). Called from the event loop.
+    /// Send pending PTY resize if the throttle interval has elapsed since
+    /// the last send. Called from the event loop every iteration.
     pub fn flushPtyResize(self: *Pane) void {
         if (!self.pending_pty_resize) return;
-        // Daemon-backed panes: send resize to daemon, not local PTY.
-        if (self.daemon_pane_id) |dpid| {
-            const now = std.time.nanoTimestamp();
-            if (now - self.last_pty_resize_ns >= pty_resize_throttle_ns) {
-                // Send pane_resize to daemon via session client.
-                if (self.session_client) |sc| {
-                    sc.sendPaneResize(dpid, self.pending_pty_rows, self.pending_pty_cols) catch {};
-                }
-                self.pending_pty_resize = false;
-            }
-            return;
-        }
         const now = std.time.nanoTimestamp();
-        if (now - self.last_pty_resize_ns >= pty_resize_throttle_ns) {
+        if (now - self.last_pty_resize_ns < pty_resize_throttle_ns) return;
+
+        if (self.daemon_pane_id) |dpid| {
+            if (self.session_client) |sc| {
+                sc.sendPaneResize(dpid, self.pending_pty_rows, self.pending_pty_cols) catch {};
+            }
+        } else {
             self.pty.resize(self.pending_pty_rows, self.pending_pty_cols) catch {};
-            self.pending_pty_resize = false;
         }
+        self.pending_pty_resize = false;
+        self.last_pty_resize_ns = now;
     }
 
     /// Force TIOCSWINSZ even if engine dimensions match. Used after split
