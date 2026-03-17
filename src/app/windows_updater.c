@@ -650,9 +650,6 @@ static DWORD WINAPI check_thread(LPVOID param) {
 
     if (!check_appcast()) {
         updateLog("check_thread: no update found (or fetch failed)");
-        if (interactive && g_update_hwnd) {
-            SetWindowTextA(g_status_label, "You're up to date!");
-        }
         return 0;
     }
 
