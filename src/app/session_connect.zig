@@ -238,9 +238,6 @@ pub fn setNonBlocking(fd: posix.fd_t) void {
 }
 
 fn setRecvBuf(fd: posix.fd_t, size: u32) void {
-    const SOL_SOCKET: u32 = 0xFFFF;
-    const SO_RCVBUF: u32 = 0x1002; // macOS; Linux is 8
-    const so_rcvbuf = if (comptime @import("builtin").os.tag == .linux) 8 else SO_RCVBUF;
     const val: [4]u8 = @bitCast(size);
-    posix.setsockopt(fd, @intCast(SOL_SOCKET), @intCast(so_rcvbuf), &val) catch {};
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVBUF, &val) catch {};
 }

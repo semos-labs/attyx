@@ -508,9 +508,6 @@ fn setNonBlocking(fd: posix.fd_t) void {
 }
 
 fn setSendBuf(fd: posix.fd_t, size: u32) void {
-    const SOL_SOCKET: u32 = 0xFFFF; // macOS + Linux
-    const SO_SNDBUF: u32 = 0x1001; // macOS; Linux is 7
-    const so_sndbuf = if (comptime @import("builtin").os.tag == .linux) 7 else SO_SNDBUF;
     const val: [4]u8 = @bitCast(size);
-    posix.setsockopt(fd, @intCast(SOL_SOCKET), @intCast(so_sndbuf), &val) catch {};
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDBUF, &val) catch {};
 }
