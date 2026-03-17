@@ -249,39 +249,97 @@ static void fetch_release_notes(void) {
         return;
     }
 
-    // Basic HTML → plain text: strip tags, decode common entities
+    // HTML → formatted plain text with proper element handling
     int out = 0;
-    int in_tag = 0;
-    for (int i = 0; i < len && out < (int)sizeof(g_release_notes) - 2; i++) {
-        if (html[i] == '<') { in_tag = 1; continue; }
-        if (html[i] == '>') {
-            in_tag = 0;
-            // Add newline after block elements
-            if (i >= 2 && (html[i-1] == 'p' || html[i-1] == 'r' ||
-                html[i-1] == 'i' || html[i-1] == 'l'))
-                if (out > 0 && g_release_notes[out-1] != '\n')
-                    g_release_notes[out++] = '\n';
+    int max = (int)sizeof(g_release_notes) - 4;
+    int i = 0;
+
+    #define EMIT(ch) do { if (out < max) g_release_notes[out++] = (ch); } while(0)
+    #define EMIT_NL() do { if (out > 0 && g_release_notes[out-1] != '\n') EMIT('\n'); } while(0)
+
+    while (i < len && out < max) {
+        if (html[i] == '<') {
+            // Capture tag name (lowercase)
+            i++;
+            int closing = (i < len && html[i] == '/');
+            if (closing) i++;
+            char tag[32] = {0};
+            int tl = 0;
+            while (i < len && html[i] != '>' && html[i] != ' ' && tl < 30) {
+                tag[tl++] = (html[i] >= 'A' && html[i] <= 'Z') ? html[i] + 32 : html[i];
+                i++;
+            }
+            // Skip to end of tag
+            while (i < len && html[i] != '>') i++;
+            if (i < len) i++; // past '>'
+
+            // Handle specific tags
+            if (!closing) {
+                if (strcmp(tag, "li") == 0) {
+                    EMIT_NL(); EMIT(' '); EMIT(' ');
+                    // Unicode bullet: use simple dash for ASCII compat
+                    EMIT('-'); EMIT(' ');
+                } else if (strcmp(tag, "br") == 0) {
+                    EMIT_NL();
+                } else if (strcmp(tag, "p") == 0 || strcmp(tag, "div") == 0) {
+                    EMIT_NL();
+                } else if (tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' && tag[2] == 0) {
+                    EMIT_NL(); EMIT_NL();
+                } else if (strcmp(tag, "script") == 0 || strcmp(tag, "style") == 0) {
+                    // Skip script/style content entirely
+                    char end_tag[16];
+                    snprintf(end_tag, sizeof(end_tag), "</%s>", tag);
+                    const char *end = strstr(html + i, end_tag);
+                    if (end) i = (int)(end - html) + (int)strlen(end_tag);
+                }
+            } else {
+                if (strcmp(tag, "li") == 0 || strcmp(tag, "p") == 0 ||
+                    strcmp(tag, "div") == 0 || strcmp(tag, "tr") == 0) {
+                    EMIT_NL();
+                } else if (tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' && tag[2] == 0) {
+                    EMIT_NL();
+                } else if (strcmp(tag, "ul") == 0 || strcmp(tag, "ol") == 0) {
+                    EMIT_NL();
+                }
+            }
             continue;
         }
-        if (in_tag) continue;
+
+        // Decode HTML entities
         if (html[i] == '&') {
-            if (strncmp(html + i, "&amp;", 5) == 0) { g_release_notes[out++] = '&'; i += 4; continue; }
-            if (strncmp(html + i, "&lt;", 4) == 0) { g_release_notes[out++] = '<'; i += 3; continue; }
-            if (strncmp(html + i, "&gt;", 4) == 0) { g_release_notes[out++] = '>'; i += 3; continue; }
-            if (strncmp(html + i, "&quot;", 6) == 0) { g_release_notes[out++] = '"'; i += 5; continue; }
-            if (strncmp(html + i, "&#8212;", 7) == 0) { g_release_notes[out++] = '-'; i += 6; continue; }
-            if (strncmp(html + i, "&nbsp;", 6) == 0) { g_release_notes[out++] = ' '; i += 5; continue; }
+            if (strncmp(html + i, "&amp;", 5) == 0)  { EMIT('&'); i += 5; continue; }
+            if (strncmp(html + i, "&lt;", 4) == 0)   { EMIT('<'); i += 4; continue; }
+            if (strncmp(html + i, "&gt;", 4) == 0)   { EMIT('>'); i += 4; continue; }
+            if (strncmp(html + i, "&quot;", 6) == 0)  { EMIT('"'); i += 6; continue; }
+            if (strncmp(html + i, "&nbsp;", 6) == 0)  { EMIT(' '); i += 6; continue; }
+            if (strncmp(html + i, "&#8212;", 7) == 0) { EMIT('-'); EMIT('-'); i += 7; continue; }
+            if (strncmp(html + i, "&#8217;", 7) == 0) { EMIT('\''); i += 7; continue; }
+            if (strncmp(html + i, "&#8220;", 7) == 0) { EMIT('"'); i += 7; continue; }
+            if (strncmp(html + i, "&#8221;", 7) == 0) { EMIT('"'); i += 7; continue; }
+            // Skip unknown entities
+            const char *semi = strchr(html + i, ';');
+            if (semi && (semi - (html + i)) < 10) { i = (int)(semi - html) + 1; continue; }
         }
-        g_release_notes[out++] = html[i];
+
+        EMIT(html[i]);
+        i++;
     }
     g_release_notes[out] = '\0';
 
-    // Collapse multiple newlines
+    #undef EMIT
+    #undef EMIT_NL
+
+    // Collapse runs of 3+ newlines → 2, trim leading whitespace
     char *r = g_release_notes, *w = g_release_notes;
-    int nl_count = 0;
+    int nl = 0;
+    int leading = 1;
     while (*r) {
-        if (*r == '\n') { nl_count++; if (nl_count <= 2) *w++ = '\n'; }
-        else { nl_count = 0; *w++ = *r; }
+        if (*r == '\n' || (*r == ' ' && leading)) {
+            if (*r == '\n') nl++;
+            if (nl <= 2 && !leading) *w++ = *r;
+        } else {
+            leading = 0; nl = 0; *w++ = *r;
+        }
         r++;
     }
     *w = '\0';
@@ -410,8 +468,8 @@ static DWORD WINAPI download_thread(LPVOID param) {
 #define UPD_LINE_H   20
 
 static HFONT g_uf_title, g_uf_body, g_uf_notes, g_uf_btn;
-static int g_upd_hover = 0;  // 0=none, 1=install, 2=later
-static RECT g_rc_upd_install, g_rc_upd_later;
+static int g_upd_hover = 0;  // 0=none, 1=install, 2=later, 3=notes_link
+static RECT g_rc_upd_install, g_rc_upd_later, g_rc_upd_notes_link;
 static void DrawUpdButton(HDC hdc, RECT *rc, const wchar_t *text, int hover, int accent) {
     COLORREF bg = hover ? UPD_BTN_HV : UPD_BTN_BG;
     COLORREF bd = accent ? UPD_BTN_AC : UPD_BTN_BD;
@@ -497,7 +555,25 @@ static void DoPaintUpdate(HWND hwnd) {
         MultiByteToWideChar(CP_UTF8, 0, g_release_notes, -1, notes_w, 8192);
         DrawTextW(mem, notes_w, -1, &nr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
     }
-    y += notes_h + 8;
+    y += notes_h + 4;
+
+    // "View full release notes" link
+    if (g_notes_url[0]) {
+        SelectObject(mem, g_uf_body);
+        SetTextColor(mem, g_upd_hover == 3 ? UPD_TEXT : UPD_BTN_AC);
+        RECT lr = { UPD_MARGIN, y, UPD_MARGIN + 220, y + UPD_LINE_H };
+        DrawTextW(mem, L"View full release notes \x2192", -1, &lr, DT_LEFT | DT_SINGLELINE);
+        g_rc_upd_notes_link = lr;
+        // Underline when hovered
+        if (g_upd_hover == 3) {
+            HPEN up = CreatePen(PS_SOLID, 1, UPD_TEXT);
+            SelectObject(mem, up);
+            MoveToEx(mem, lr.left, y + UPD_LINE_H - 2, NULL);
+            LineTo(mem, lr.left + 195, y + UPD_LINE_H - 2);
+            DeleteObject(up);
+        }
+    }
+    y += UPD_LINE_H + 4;
 
     // Progress bar
     if (g_downloading || g_dl_progress > 0) {
@@ -545,6 +621,7 @@ static int UpdHitTest(int x, int y) {
     POINT pt = { x, y };
     if (!g_downloading && PtInRect(&g_rc_upd_install, pt)) return 1;
     if (!g_downloading && PtInRect(&g_rc_upd_later, pt)) return 2;
+    if (g_notes_url[0] && PtInRect(&g_rc_upd_notes_link, pt)) return 3;
     return 0;
 }
 
@@ -559,10 +636,18 @@ static LRESULT CALLBACK UpdateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         int old = g_upd_hover;
         g_upd_hover = UpdHitTest(LOWORD(lParam), HIWORD(lParam));
         if (g_upd_hover != old) InvalidateRect(hwnd, NULL, FALSE);
+        // Hand cursor over link, arrow elsewhere
+        SetCursor(LoadCursorW(NULL, g_upd_hover == 3 ? (LPCWSTR)IDC_HAND : (LPCWSTR)IDC_ARROW));
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
         return 0;
     }
+    case WM_SETCURSOR:
+        if (g_upd_hover == 3) {
+            SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_HAND));
+            return TRUE;
+        }
+        break;
     case WM_MOUSELEAVE:
         if (g_upd_hover) { g_upd_hover = 0; InvalidateRect(hwnd, NULL, FALSE); }
         return 0;
@@ -575,6 +660,12 @@ static LRESULT CALLBACK UpdateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
         }
         if (hit == 2) DestroyWindow(hwnd);
+        if (hit == 3 && g_notes_url[0]) {
+            // Open release notes in default browser
+            wchar_t url_w[2048];
+            MultiByteToWideChar(CP_UTF8, 0, g_notes_url, -1, url_w, 2048);
+            ShellExecuteW(NULL, L"open", url_w, NULL, NULL, SW_SHOWNORMAL);
+        }
         return 0;
     }
     case WM_DESTROY:
