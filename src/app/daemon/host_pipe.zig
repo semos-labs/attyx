@@ -127,6 +127,9 @@ pub const HostConnection = struct {
     pane_id: u32,
     read_buf: [65536 + frame_header_size]u8 = undefined,
     read_len: usize = 0,
+    /// Stable copy of the last frame's payload (avoids use-after-move
+    /// when copyForwards shifts read_buf after extracting a frame).
+    frame_buf: [65536]u8 = undefined,
 
     /// Connect to an existing host process pipe. Retries for up to ~5 seconds.
     pub fn connect(pane_id: u32, is_dev: bool) ?HostConnection {
@@ -205,20 +208,24 @@ pub const HostConnection = struct {
     }
 
     /// Extract the next complete frame from the read buffer.
+    /// Payload is copied to frame_buf so it survives the read_buf shift.
     pub fn nextFrame(self: *HostConnection) ?struct { frame_type: FrameType, payload: []const u8 } {
         const header = decodeFrameHeader(self.read_buf[0..self.read_len]) orelse return null;
         const total = frame_header_size + @as(usize, header.length);
         if (self.read_len < total) return null;
 
-        const payload = self.read_buf[frame_header_size..total];
-        // Consume the frame
+        // Copy payload to stable buffer before shifting read_buf.
+        const plen: usize = header.length;
+        @memcpy(self.frame_buf[0..plen], self.read_buf[frame_header_size..total]);
+
+        // Consume the frame from read_buf.
         const remaining = self.read_len - total;
         if (remaining > 0) {
             std.mem.copyForwards(u8, self.read_buf[0..remaining], self.read_buf[total..self.read_len]);
         }
         self.read_len = remaining;
 
-        return .{ .frame_type = header.frame_type, .payload = payload };
+        return .{ .frame_type = header.frame_type, .payload = self.frame_buf[0..plen] };
     }
 };
 
