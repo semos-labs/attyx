@@ -327,7 +327,7 @@ static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mo
     }
 
     // Session picker / command palette key routing
-    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
+    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_tab_picker_active) {
         if (key == GLFW_KEY_ESCAPE)       { attyx_picker_cmd(7); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_ENTER)        { attyx_picker_cmd(8); g_suppress_char = 1; return; }
         if (key == GLFW_KEY_BACKSPACE)    { attyx_picker_cmd(1); g_suppress_char = 1; return; }
@@ -425,7 +425,7 @@ static void charCallback(GLFWwindow* w, unsigned int codepoint) {
     }
 
     // When session picker or command palette is open, route chars to picker
-    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
+    if (g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_tab_picker_active) {
         if (codepoint >= 0x20) attyx_picker_insert_char(codepoint);
         return;
     }

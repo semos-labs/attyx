@@ -25,6 +25,7 @@ const overlay_input = @import("overlay_input.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
+const tab_picker_ui = @import("tab_picker_ui.zig");
 const copy_mode = @import("copy_mode.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
@@ -169,6 +170,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     }
 
     var got_data = false;
+    var throttled_frames: u8 = 0; // count frames skipped by rate limiter
     outer: while (c.attyx_should_quit() == 0) {
         // Safety: if tab_mgr has no tabs (e.g. failed session attach after
         // reset), quit gracefully rather than crashing on activePane().
@@ -303,6 +305,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Tab picker toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_tab_picker, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_tab_picker_active != 0) {
+                tab_picker_ui.closeTabPicker(ctx);
+            } else {
+                tab_picker_ui.openTabPicker(ctx);
+            }
+        }
+
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);
@@ -360,6 +371,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Theme picker input polling
         if (terminal.g_theme_picker_active != 0) {
             _ = theme_picker_ui.consumePickerInput(ctx);
+        }
+
+        // Tab picker input polling
+        if (terminal.g_tab_picker_active != 0) {
+            _ = tab_picker_ui.consumePickerInput(ctx);
         }
 
         // Tick update check notification
@@ -705,12 +721,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         }
                     },
                     .replay_end => |pane_id| {
+                        // The daemon already nudged the PTY size (cols+1)
+                        // before sending replay_end. Restore the correct
+                        // size so the app gets a second SIGWINCH at the
+                        // right dimensions — the round-trip delay ensures
+                        // the first SIGWINCH was processed.
                         if (findPaneByDaemonId(ctx, pane_id)) |result| {
                             const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
                             const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
                             if (ctx.session_client) |scc| {
-                                const nudged = if (cols > 1) cols - 1 else cols + 1;
-                                scc.sendPaneResize(pane_id, rows, nudged) catch {};
                                 scc.sendPaneResize(pane_id, rows, cols) catch {};
                             }
                         }
@@ -821,7 +840,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // ~60fps. Viewport changes and force redraws bypass the throttle.
         if (need_update_final and !viewport_changed and !search_vp_changed and !actions.g_force_full_redraw) {
             const now_ns = std.time.nanoTimestamp();
-            if (now_ns - last_publish_ns < min_frame_ns) continue;
+            if (now_ns - last_publish_ns < min_frame_ns) {
+                throttled_frames +|= 1;
+                continue;
+            }
         }
 
         if (need_update_final) {
@@ -856,7 +878,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 terminal.g_pane_rect_rows = pty_rows_s;
                 terminal.g_pane_rect_cols = @intCast(ctx.grid_cols);
                 const eng = publish.ctxEngine(ctx);
-                const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw;
+                // Force full redraw when frames were throttled during rapid
+                // output — incremental dirty tracking may miss rows when
+                // the engine processes many screenfuls between publishes.
+                const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw or (throttled_frames > 0);
                 if (full_redraw) {
                     eng.state.dirty.markAll(eng.state.ring.screen_rows);
                 }
@@ -887,6 +912,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
 
+            throttled_frames = 0;
             if (got_data) {
                 const h = state_hash.hash(&publish.ctxEngine(ctx).state);
                 ctx.session.appendFrame(h, publish.ctxEngine(ctx).state.alt_active);

@@ -431,10 +431,30 @@ pub fn generate(
         }
     }
 
-    // 3. Tabs — always render in statusbar (even for a single tab)
+    // 3. Right widgets — compute total width first so we can reserve space for tabs
+    var right_total: u16 = 0;
+    var right_widget_count: u16 = 0;
+    for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
+        if (wc.side != .right) continue;
+        const ws = &bar.widgets[i];
+        if (ws.output_len == 0) continue;
+        right_total += utf8CodepointCount(ws.output[0..ws.output_len]) + 2; // " text "
+        right_widget_count += 1;
+    }
+    // Remove trailing space from last widget (reduce outer padding by 1 cell)
+    if (right_widget_count > 0) right_total -= 1;
+
+    // Clamp right widgets to leave minimum space for tabs
+    {
+        const min_tab_cols: u16 = 10;
+        const max_right = (grid_cols -| col) -| min_tab_cols;
+        if (right_total > max_right) right_total = max_right;
+    }
+
+    // 4. Tabs — always render in statusbar (even for a single tab)
     tab_col_offset = col;
     {
-        const remaining = grid_cols - col;
+        const remaining = grid_cols -| col -| right_total;
         var tab_buf: [512]StyledCell = undefined;
         const tab_style = tab_bar_mod.Style{
             .tab_bg = style.tab_bg,
@@ -458,19 +478,7 @@ pub fn generate(
         }
     }
 
-    // 4. Right widgets — compute total width (in codepoints), then render from right edge
-    var right_total: u16 = 0;
-    var right_widget_count: u16 = 0;
-    for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
-        if (wc.side != .right) continue;
-        const ws = &bar.widgets[i];
-        if (ws.output_len == 0) continue;
-        right_total += utf8CodepointCount(ws.output[0..ws.output_len]) + 2; // " text "
-        right_widget_count += 1;
-    }
-    // Remove trailing space from last widget (reduce outer padding by 1 cell)
-    if (right_widget_count > 0) right_total -= 1;
-
+    // 5. Right widgets — render from right edge
     if (right_total > 0 and right_total < grid_cols) {
         var rcol: u16 = grid_cols - right_total;
         var right_idx: u16 = 0;

@@ -103,34 +103,13 @@ pub fn charDisplayWidth(char: u21) u2 {
     if (cp == 0x1F22F) return 2; // 🈯
     if (cp >= 0x1F232 and cp <= 0x1F23A) return 2; // 🈲-🈺
     if (cp >= 0x1F250 and cp <= 0x1F251) return 2; // 🉐🉑
-    // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
-    if (cp == 0x231A or cp == 0x231B) return 2;
-    if (cp >= 0x23E9 and cp <= 0x23F3) return 2;
-    if (cp >= 0x23F8 and cp <= 0x23FA) return 2; // ⏸⏹⏺
-    if (cp >= 0x25FB and cp <= 0x25FE) return 2;
-    if (cp == 0x2614 or cp == 0x2615) return 2;
-    if (cp >= 0x2648 and cp <= 0x2653) return 2;
-    if (cp == 0x267F or cp == 0x2693 or cp == 0x26A1) return 2;
-    if (cp >= 0x26AA and cp <= 0x26AB) return 2; // ⚪⚫
-    if (cp >= 0x26BD and cp <= 0x26BE) return 2; // ⚽⚾
-    if (cp >= 0x26C4 and cp <= 0x26C5) return 2; // ⛄⛅
-    if (cp == 0x26CE or cp == 0x26D4 or cp == 0x26EA) return 2;
-    if (cp == 0x26F2 or cp == 0x26F3 or cp == 0x26F5) return 2;
-    if (cp == 0x26FA or cp == 0x26FD) return 2;
-    if (cp == 0x2702 or cp == 0x2705) return 2;
-    if (cp >= 0x2708 and cp <= 0x270D) return 2; // ✈-✍
-    if (cp == 0x270F or cp == 0x2712 or cp == 0x2714 or cp == 0x2716) return 2;
-    if (cp == 0x271D or cp == 0x2721 or cp == 0x2728) return 2;
-    if (cp == 0x2733 or cp == 0x2734 or cp == 0x2744 or cp == 0x2747) return 2;
-    if (cp == 0x274C or cp == 0x274E) return 2;
-    if (cp >= 0x2753 and cp <= 0x2755) return 2;
-    if (cp == 0x2757) return 2;
-    if (cp == 0x2763 or cp == 0x2764) return 2;
-    if (cp >= 0x2795 and cp <= 0x2797) return 2;
-    if (cp == 0x27A1 or cp == 0x27B0 or cp == 0x27BF) return 2;
-    if (cp == 0x2934 or cp == 0x2935) return 2;
-    if (cp >= 0x2B05 and cp <= 0x2B07) return 2;
-    if (cp == 0x2B1B or cp == 0x2B1C or cp == 0x2B50 or cp == 0x2B55) return 2;
+    // Individual emoji in Misc Symbols / Dingbats ranges are NOT listed
+    // here. They default to width 1 (matching POSIX wcwidth), and only
+    // become width 2 when followed by VS16 (U+FE0F) — handled by the
+    // isTextDefaultEmoji + printChar VS16 upgrade path.
+    //
+    // Listing them here as width 2 breaks TUI apps (Ink, curses, etc.)
+    // that rely on wcwidth() for cursor math.
     return 1;
 }
 
@@ -206,13 +185,10 @@ test "Emoji_Presentation characters are wide" {
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F600)); // 😀 grinning face
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F680)); // 🚀 rocket
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F916)); // 🤖 robot
-    // BMP emoji with Emoji_Presentation
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26BD)); // ⚽ soccer ball
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26BE)); // ⚾ baseball
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26C4)); // ⛄ snowman
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x26AA)); // ⚪ white circle
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x23F8)); // ⏸ pause button
-    try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x25FB)); // ◻ white medium square
+    // BMP emoji — these are now width 1 (matching wcwidth), upgradeable via VS16
+    try testing.expectEqual(@as(u2, 1), charDisplayWidth(0x26BD)); // ⚽ soccer ball
+    try testing.expectEqual(@as(u2, 1), charDisplayWidth(0x26AA)); // ⚪ white circle
+    try testing.expectEqual(@as(u2, 1), charDisplayWidth(0x2733)); // ✳ eight spoked asterisk
     // SMP emoji below 0x1F300
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F004)); // 🀄 Mahjong
     try testing.expectEqual(@as(u2, 2), charDisplayWidth(0x1F0CF)); // 🃏 Joker
@@ -222,10 +198,11 @@ test "Emoji_Presentation characters are wide" {
 
 test "VS16 text-default emoji detection" {
     // Characters that default to text but can become emoji with VS16
-    try testing.expect(isTextDefaultEmoji(0x2614) == false); // ☔ already 2-cell
+    try testing.expect(isTextDefaultEmoji(0x2614)); // ☔ now width-1, upgradeable
     try testing.expect(isTextDefaultEmoji(0x2600)); // ☀ sun (text default)
     try testing.expect(isTextDefaultEmoji(0x2622)); // ☢ radioactive
     try testing.expect(isTextDefaultEmoji(0x260E)); // ☎ telephone
+    try testing.expect(isTextDefaultEmoji(0x2733)); // ✳ eight spoked asterisk
     try testing.expect(!isTextDefaultEmoji('a')); // not emoji
     try testing.expect(!isTextDefaultEmoji(0x1F389)); // 🎉 already 2-cell
 }

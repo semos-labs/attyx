@@ -51,7 +51,7 @@
                 p += len;
                 if (cp >= 0x20) attyx_ai_prompt_insert_char(cp);
             }
-        } else if (g_session_picker_active || g_command_palette_active || g_theme_picker_active) {
+        } else if (g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_tab_picker_active) {
             const uint8_t* p = (const uint8_t*)utf8;
             const uint8_t* end = p + strlen(utf8);
             while (p < end) {
@@ -167,7 +167,7 @@
 
 - (void)doCommandBySelector:(SEL)selector {
     // When search, AI prompt, or session picker is active, handled by handleSpecialKey
-    if (g_search_active || g_ai_prompt_active || g_session_picker_active || g_command_palette_active || g_theme_picker_active) return;
+    if (g_search_active || g_ai_prompt_active || g_session_picker_active || g_command_palette_active || g_theme_picker_active || g_tab_picker_active) return;
 
     if (selector == @selector(insertNewline:)) {
         attyx_send_input((const uint8_t*)"\r", 1);

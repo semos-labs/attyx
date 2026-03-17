@@ -10,6 +10,7 @@ const ai = @import("ai.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
+const tab_picker_ui = @import("tab_picker_ui.zig");
 
 /// Process all overlay interactions (dismiss, focus cycling, activate, clicks, scroll).
 pub fn processOverlayInteractions(ctx: *PtyThreadCtx) void {
@@ -41,6 +42,12 @@ fn processDismiss(ctx: *PtyThreadCtx) void {
     // Command palette dismiss
     if (terminal.g_command_palette_active != 0) {
         command_palette_ui.closeCommandPalette(ctx);
+        return;
+    }
+
+    // Tab picker dismiss
+    if (terminal.g_tab_picker_active != 0) {
+        tab_picker_ui.closeTabPicker(ctx);
         return;
     }
 

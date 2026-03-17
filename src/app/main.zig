@@ -136,6 +136,11 @@ export var g_theme_picker_active: i32 = 0;
 export var g_toggle_theme_picker: i32 = 0;
 export fn attyx_toggle_theme_picker() void {}
 
+// Tab picker stubs (terminal.zig provides the real implementations)
+export var g_tab_picker_active: i32 = 0;
+export var g_toggle_tab_picker: i32 = 0;
+export fn attyx_toggle_tab_picker() void {}
+
 // Popup terminal stubs (terminal.zig provides the real implementations)
 export var g_popup_active: i32 = 0;
 export var g_popup_trail_active: i32 = 0;

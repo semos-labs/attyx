@@ -2,6 +2,8 @@
 //
 // Produces a single row of StyledCell values representing the tab bar.
 // Each tab shows " title  N " with the active tab's number highlighted.
+// Supports horizontal scrolling with < / > overflow indicators when tabs
+// exceed the available viewport width.
 
 const std = @import("std");
 const attyx = @import("attyx");
@@ -33,6 +35,13 @@ pub const TabTitles = [max_tabs]?[]const u8;
 /// Cached per-tab widths written by generate(), read by tabIndexAtCol().
 var cached_widths: [max_tabs]u16 = .{0} ** max_tabs;
 var cached_count: u8 = 0;
+
+/// Scroll state for horizontal tab overflow.
+var scroll_offset: u16 = 0;
+var cached_has_left_ind: bool = false;
+var cached_has_right_ind: bool = false;
+var manual_scroll: bool = false;
+var cached_active: u8 = 0;
 
 /// Decode the next UTF-8 codepoint from `s[i..*]`, advancing `i`.
 /// Skips invalid bytes gracefully, returning 0xFFFD (replacement char).
@@ -84,6 +93,78 @@ fn resolveTitle(titles: *const TabTitles, i: usize, fallback_buf: *[20]u8) []con
         (std.fmt.bufPrint(fallback_buf, "Tab {d}", .{i + 1}) catch "Tab ?");
 }
 
+/// Write a cell into the output buffer if the virtual column falls within
+/// the visible viewport [vis_start, vis_end).
+fn emitVCell(buf: []StyledCell, vcol: u16, vis_start: u16, vis_end: u16, left_ind: u16, cell: StyledCell) void {
+    if (vcol >= vis_start and vcol < vis_end) {
+        buf[vcol - vis_start + left_ind] = cell;
+    }
+}
+
+/// Auto-scroll so the active tab is fully visible within the viewport.
+/// Must be called after cached_widths/cached_count are populated.
+pub fn autoScroll(active_idx: u8, tab_count: u8, viewport_width: u16) void {
+    if (tab_count == 0 or viewport_width == 0) return;
+    const count: u16 = @min(tab_count, cached_count);
+    if (count == 0) return;
+    const active: u16 = @min(active_idx, count - 1);
+
+    // Compute active tab's virtual start position
+    var active_start: u16 = 0;
+    for (0..active) |i| {
+        active_start += cached_widths[i] + 1; // width + gap
+    }
+    const active_end = active_start + cached_widths[active];
+
+    // Compute total virtual width
+    var total: u16 = 0;
+    for (0..count) |i| {
+        total += cached_widths[i];
+        if (i + 1 < count) total += 1;
+    }
+
+    // Scroll to keep active tab visible
+    if (active_start < scroll_offset) {
+        scroll_offset = active_start;
+    } else if (active_end > scroll_offset + viewport_width) {
+        scroll_offset = active_end -| viewport_width;
+    }
+
+    // Clamp
+    if (total <= viewport_width) {
+        scroll_offset = 0;
+    } else {
+        scroll_offset = @min(scroll_offset, total -| viewport_width);
+    }
+}
+
+/// Manually scroll the tab bar by `delta` lines (positive = scroll left, negative = scroll right).
+/// Suppresses auto-scroll until the active tab changes.
+pub fn scrollTabs(delta: c_int, tab_count: u8) void {
+    const count = @min(tab_count, cached_count);
+    if (count == 0) return;
+
+    // Compute total virtual width from cache
+    var total: u16 = 0;
+    for (0..count) |i| {
+        total += cached_widths[i];
+        if (i + 1 < count) total += 1;
+    }
+
+    const step: u16 = 3;
+    if (delta > 0) {
+        // Scroll left (show earlier tabs)
+        const amount: u16 = @intCast(@min(delta, std.math.maxInt(c_int)) * step);
+        scroll_offset -|= amount;
+    } else if (delta < 0) {
+        // Scroll right (show later tabs)
+        const neg: u32 = @intCast(-@as(i64, delta));
+        const amount: u16 = @intCast(@min(neg * step, std.math.maxInt(u16)));
+        scroll_offset = @min(scroll_offset + amount, total -| 1);
+    }
+    manual_scroll = true;
+}
+
 /// Generate tab bar overlay cells into a caller-provided buffer.
 /// Returns the number of cells written, or null if buffer is too small.
 /// `titles` provides per-tab display names; falls back to "Tab N" when null.
@@ -120,6 +201,10 @@ pub fn generate(
         const is_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
         widths[i] = tabWidth(displayWidth(resolved[i]), @intCast(i + 1), is_zoomed);
     }
+
+    // Reset scroll on tab count change
+    if (tab_count != cached_count) scroll_offset = 0;
+
     @memcpy(cached_widths[0..tab_count], widths[0..tab_count]);
     cached_count = tab_count;
 
@@ -130,13 +215,57 @@ pub fn generate(
         num_slices[i] = std.fmt.bufPrint(&num_bufs[i], "{d}", .{i + 1}) catch "?";
     }
 
-    var col: u16 = 0;
+    // Compute total virtual width of all tabs + gaps
+    var total_virtual: u16 = 0;
     for (0..tab_count) |i| {
-        if (col >= width) break;
+        total_virtual += widths[i];
+        if (i + 1 < tab_count) total_virtual += 1;
+    }
+
+    // Determine scrolling mode — only show indicator cells when there is
+    // actual overflow in that direction (no empty placeholder cells).
+    var left_ind: u16 = 0;
+    var right_ind: u16 = 0;
+    var effective_width = width;
+
+    if (total_virtual > width and width > 2) {
+        // Pass 1: estimate with both indicators reserved
+        effective_width = width -| 2;
+        autoScroll(active, tab_count, effective_width);
+        left_ind = if (scroll_offset > 0) @as(u16, 1) else 0;
+        right_ind = if (scroll_offset + effective_width < total_virtual) @as(u16, 1) else 0;
+
+        // Pass 2: refine with actual indicator count
+        effective_width = width - left_ind - right_ind;
+        autoScroll(active, tab_count, effective_width);
+        left_ind = if (scroll_offset > 0) @as(u16, 1) else 0;
+        right_ind = if (scroll_offset + effective_width < total_virtual) @as(u16, 1) else 0;
+        effective_width = width - left_ind - right_ind;
+
+        // Final pass to settle
+        autoScroll(active, tab_count, effective_width);
+        left_ind = if (scroll_offset > 0) @as(u16, 1) else 0;
+        right_ind = if (scroll_offset + effective_width < total_virtual) @as(u16, 1) else 0;
+        effective_width = width - left_ind - right_ind;
+
+        cached_has_left_ind = left_ind > 0;
+        cached_has_right_ind = right_ind > 0;
+    } else {
+        scroll_offset = 0;
+        cached_has_left_ind = false;
+        cached_has_right_ind = false;
+    }
+
+    // Render tabs with virtual column tracking
+    const vis_start = scroll_offset;
+    const vis_end = scroll_offset + effective_width;
+    var vcol: u16 = 0;
+
+    for (0..tab_count) |i| {
+        if (vcol >= vis_end) break;
+
         const is_active = (i == active);
         const natural_width = widths[i];
-        const content_width = if (col + natural_width <= width) natural_width else width - col;
-
         const title = resolved[i];
         const num = num_slices[i];
 
@@ -151,20 +280,20 @@ pub fn generate(
         var pos: u16 = 0;
 
         // Title area: " title " (with optional zoom icon)
-        if (pos < content_width) {
-            buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
+        if (pos < natural_width) {
+            emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
             pos += 1;
         }
         // Zoom indicator: "⊞ " before title
         {
             const tab_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
             if (tab_zoomed) {
-                if (pos < content_width) {
-                    buf[col + pos] = .{ .char = 0x229E, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha }; // ⊞
+                if (pos < natural_width) {
+                    emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = 0x229E, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
                     pos += 1;
                 }
-                if (pos < content_width) {
-                    buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
+                if (pos < natural_width) {
+                    emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
                     pos += 1;
                 }
             }
@@ -172,54 +301,65 @@ pub fn generate(
         {
             var ti: usize = 0;
             while (nextCodepoint(title, &ti)) |cp| {
-                if (pos >= content_width) break;
+                if (pos >= natural_width) break;
                 if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) {
-                    // Attach to previous cell's combining slots
+                    // Attach to previous cell's combining slots if visible
                     if (pos > 0) {
-                        const prev = &buf[col + pos - 1];
-                        if (prev.combining[0] == 0) {
-                            prev.combining[0] = cp;
-                        } else if (prev.combining[1] == 0) {
-                            prev.combining[1] = cp;
+                        const prev_vcol = vcol + pos - 1;
+                        if (prev_vcol >= vis_start and prev_vcol < vis_end) {
+                            const buf_idx = prev_vcol - vis_start + left_ind;
+                            if (buf[buf_idx].combining[0] == 0) {
+                                buf[buf_idx].combining[0] = cp;
+                            } else if (buf[buf_idx].combining[1] == 0) {
+                                buf[buf_idx].combining[1] = cp;
+                            }
                         }
                     }
                     continue;
                 }
-                buf[col + pos] = .{ .char = cp, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
+                emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = cp, .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
                 pos += 1;
                 // Wide char: emit spacer in next column
-                if (unicode.charDisplayWidth(cp) == 2 and pos < content_width) {
-                    buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
+                if (unicode.charDisplayWidth(cp) == 2 and pos < natural_width) {
+                    emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
                     pos += 1;
                 }
             }
         }
-        if (pos < content_width) {
-            buf[col + pos] = .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha };
+        if (pos < natural_width) {
+            emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
             pos += 1;
         }
 
         // Number area: " N " — leading space + digits + trailing space
-        if (pos < content_width) {
-            buf[col + pos] = .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha };
+        if (pos < natural_width) {
+            emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha });
             pos += 1;
         }
         for (num) |ch| {
-            if (pos >= content_width) break;
-            buf[col + pos] = .{ .char = ch, .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha };
+            if (pos >= natural_width) break;
+            emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ch, .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha });
             pos += 1;
         }
-        while (pos < content_width) : (pos += 1) {
-            buf[col + pos] = .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha };
+        while (pos < natural_width) : (pos += 1) {
+            emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = style.bg_alpha });
         }
 
-        col += content_width;
+        vcol += natural_width;
 
         // 1-cell gap between tabs (bar background, not part of any tab)
-        if (i + 1 < tab_count and col < width) {
-            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = .{ .r = 0, .g = 0, .b = 0 }, .bg_alpha = 0 };
-            col += 1;
+        if (i + 1 < tab_count) {
+            emitVCell(buf, vcol, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = style.fg, .bg = .{ .r = 0, .g = 0, .b = 0 }, .bg_alpha = 0 });
+            vcol += 1;
         }
+    }
+
+    // Render overflow indicators (only when there's content in that direction)
+    if (cached_has_left_ind) {
+        buf[0] = .{ .char = '<', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
+    }
+    if (cached_has_right_ind) {
+        buf[width - 1] = .{ .char = '>', .fg = style.fg, .bg = style.tab_bg, .bg_alpha = style.bg_alpha };
     }
 
     return .{
@@ -230,19 +370,26 @@ pub fn generate(
 }
 
 /// Given a column position, return the tab index at that column (or null if outside tabs
-/// or on a gap between tabs).
+/// or on a gap between tabs). Accounts for scroll offset and overflow indicators.
 pub fn tabIndexAtCol(col: u16, tab_count: u8, grid_cols: u16) ?u8 {
     if (grid_cols == 0 or tab_count == 0) return null;
+
+    // Click on indicator cells — not a tab
+    if (cached_has_left_ind and col == 0) return null;
+    if (cached_has_right_ind and col >= grid_cols -| 1) return null;
+
+    // Map screen column to virtual column
+    const left_ind: u16 = if (cached_has_left_ind) 1 else 0;
+    const vcol = (col -| left_ind) + scroll_offset;
 
     const count = @min(tab_count, cached_count);
     var offset: u16 = 0;
     for (0..count) |i| {
         const w = cached_widths[i];
-        if (col >= offset and col < offset + w) return @intCast(i);
+        if (vcol >= offset and vcol < offset + w) return @intCast(i);
         offset += w;
         // Skip the 1-cell gap between tabs
         if (i + 1 < count) offset += 1;
-        if (offset >= grid_cols) break;
     }
     return null;
 }
@@ -298,7 +445,7 @@ test "generate: inactive number area uses tab_bg, active uses num_highlight_bg" 
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "zsh";
     titles[1] = "vim";
-    // Each tab: " xxx " + " N " = 5 + 3 = 8, gap at 8, tab 1 starts at 9
+    // Each tab: " xxx " + " N " = 5+3 = 8, gap at 8, tab 1 starts at 9
     const result = generate(&buf, 2, 1, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
 
     // Tab 0 (inactive) — title area tab_bg
@@ -398,4 +545,122 @@ test "generate: CJK wide chars take 2 columns" {
 test "tabIndexAtCol: null on 0 cols or 0 tabs" {
     try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 0, 40));
     try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 2, 0));
+}
+
+test "generate: scroll shows active tab and indicators" {
+    var buf: [512]StyledCell = undefined;
+    const style = Style{};
+    var titles: TabTitles = .{null} ** max_tabs;
+    // 5 tabs with short names — each is " x " + " N " = 3+3 = 6
+    // Total virtual: 5*6 + 4 gaps = 34 columns
+    titles[0] = "a";
+    titles[1] = "b";
+    titles[2] = "c";
+    titles[3] = "d";
+    titles[4] = "e";
+
+    // Viewport of 20 cols — tabs overflow (34 > 20)
+    // Active tab = 4 (last), should scroll to show it
+    const result = generate(&buf, 5, 4, 20, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 20), result.width);
+
+    // Left indicator '<' should appear at col 0 (scrolled past start)
+    try std.testing.expectEqual(@as(u21, '<'), result.cells[0].char);
+    try std.testing.expectEqual(style.tab_bg, result.cells[0].bg);
+
+    // No right indicator — active tab 4 is last, scrolled to end
+    // With left_ind=1, effective_width=19, scroll_offset=34-19=15
+    // vis_end = 15+19 = 34 = total_virtual → no right overflow
+    // Col 19 is the last tab content cell, not an indicator
+    try std.testing.expect(result.cells[19].bg_alpha == style.bg_alpha or result.cells[19].bg_alpha == 0);
+}
+
+test "generate: no scroll when tabs fit" {
+    var buf: [80]StyledCell = undefined;
+    const style = Style{};
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "a";
+    titles[1] = "b";
+    // Total virtual: 2*6 + 1 gap = 13, fits in 80 cols
+    const result = generate(&buf, 2, 0, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
+
+    // No indicators — first cell should be tab content, not '<'
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
+    try std.testing.expectEqual(style.tab_bg, result.cells[0].bg);
+    // Tab content at col 1
+    try std.testing.expectEqual(@as(u21, 'a'), result.cells[1].char);
+}
+
+test "generate: scroll right indicator when active is first tab" {
+    var buf: [512]StyledCell = undefined;
+    const style = Style{};
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "a";
+    titles[1] = "b";
+    titles[2] = "c";
+    titles[3] = "d";
+    titles[4] = "e";
+
+    // Active tab 0, viewport 20 — scroll_offset should be 0
+    const result = generate(&buf, 5, 0, 20, style, &titles, 0) orelse return error.TestUnexpectedResult;
+
+    // No left indicator (at start, no overflow left) — col 0 is tab content
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
+    try std.testing.expectEqual(style.tab_bg, result.cells[0].bg);
+    // Tab 0 title starts at col 1
+    try std.testing.expectEqual(@as(u21, 'a'), result.cells[1].char);
+
+    // Right indicator '>' (tabs overflow right)
+    try std.testing.expectEqual(@as(u21, '>'), result.cells[19].char);
+    try std.testing.expectEqual(style.tab_bg, result.cells[19].bg);
+}
+
+test "tabIndexAtCol: works with scroll offset" {
+    var buf: [512]StyledCell = undefined;
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "a"; // width 6
+    titles[1] = "b"; // width 6
+    titles[2] = "c"; // width 6
+    titles[3] = "d"; // width 6
+    titles[4] = "e"; // width 6
+    // Total: 34, viewport 20, active=4 → scrolled to end
+    // left_ind=1, right_ind=0, effective=19, scroll_offset=34-19=15
+
+    _ = generate(&buf, 5, 4, 20, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+
+    // Col 0 is left indicator '<' — should return null
+    try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 5, 20));
+
+    // Col 1 maps to virtual col 0+15=15 — that's in tab 2 (starts at 14, width 6, ends at 20)
+    try std.testing.expectEqual(@as(?u8, 2), tabIndexAtCol(1, 5, 20));
+
+    // Col 19 is tab content (no right indicator) — virtual col 18+15=33, tab 4 (starts 28, width 6)
+    try std.testing.expectEqual(@as(?u8, 4), tabIndexAtCol(19, 5, 20));
+}
+
+test "autoScroll: active tab scrolled into view" {
+    // Set up cached state manually
+    cached_widths = .{0} ** max_tabs;
+    cached_widths[0] = 6;
+    cached_widths[1] = 6;
+    cached_widths[2] = 6;
+    cached_widths[3] = 6;
+    cached_widths[4] = 6;
+    cached_count = 5;
+    scroll_offset = 0;
+
+    // Scroll to tab 4 with viewport 19 (only left indicator, no right)
+    // Tab 4 starts at virtual col 28, ends at 34
+    // 34 - 19 = 15
+    autoScroll(4, 5, 19);
+    try std.testing.expectEqual(@as(u16, 15), scroll_offset);
+
+    // Now scroll back to tab 0
+    autoScroll(0, 5, 19);
+    try std.testing.expectEqual(@as(u16, 0), scroll_offset);
+
+    // Scroll to middle tab 2 from offset 0
+    // Tab 2 starts at 14, ends at 20. Fits in viewport (0+19=19 > 14), but end 20 > 19
+    autoScroll(2, 5, 19);
+    try std.testing.expectEqual(@as(u16, 1), scroll_offset);
 }

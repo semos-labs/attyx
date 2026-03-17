@@ -228,6 +228,10 @@ void attyx_toggle_theme_picker(void);
 extern volatile int g_shell_picker_active;  // 1 = shell picker overlay has focus
 void attyx_toggle_shell_picker(void);
 
+// Tab picker: input thread -> PTY thread (Zig-side)
+extern volatile int g_tab_picker_active;  // 1 = tab picker overlay has focus
+void attyx_toggle_tab_picker(void);
+
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
 void attyx_picker_insert_char(uint32_t codepoint);

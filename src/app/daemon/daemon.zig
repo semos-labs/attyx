@@ -228,15 +228,20 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
         // Read PTY data from all panes and forward to attached clients.
         // Coalesce multiple reads into a single message per pane to reduce
         // syscall overhead with high-frequency output (e.g. btop).
+        // Cap iterations per pane to prevent a rapidly-outputting pane from
+        // monopolizing the event loop — other panes and client messages must
+        // be serviced each poll cycle.  Unread data stays in the kernel PTY
+        // buffer and applies natural backpressure to the producing process.
+        const max_drain_iterations = 4; // 4 × 64KB = 256KB per pane per poll
         for (0..pty_fd_count) |pi| {
             const poll_idx = 1 + pi;
             const entry = pty_fd_map[pi];
             if (fds[poll_idx].revents & 0x0001 != 0) {
                 if (sessions[entry.session_idx]) |*s| {
                     if (s.panes[entry.pane_idx]) |*pane| {
-                        // Drain until WouldBlock, coalescing reads into
-                        // pty_buf-sized chunks to reduce message overhead.
-                        while (true) {
+                        var drain_iter: usize = 0;
+                        while (drain_iter < max_drain_iterations) {
+                            drain_iter += 1;
                             var coalesced: usize = 0;
                             while (coalesced < pty_buf.len) {
                                 const n = pane.readPty(pty_buf[coalesced..]) catch break;
@@ -430,9 +435,15 @@ fn acceptClient(listen_fd: posix.fd_t, clients: *[max_clients]?DaemonClient, cou
         return;
     }
     // Non-blocking client sockets — writeAll polls for writability on
-    // WouldBlock with a 200ms timeout, so the daemon never blocks
-    // indefinitely when a client's recv buffer is full.
+    // WouldBlock with a timeout, so the daemon never blocks indefinitely
+    // when a client's recv buffer is full.
     setNonBlocking(fd);
+    // Enlarge socket send buffer to absorb rapid output bursts without
+    // blocking.  The default Unix socket buffer on macOS is ~8KB; with
+    // rapid output (e.g. nx test runners), it fills instantly and the
+    // daemon stalls in writeAll, eventually killing the client.  256KB
+    // gives the client enough headroom to drain between poll cycles.
+    setSendBuf(fd, 256 * 1024);
     for (clients) |*slot| {
         if (slot.* == null) {
             slot.* = DaemonClient.init(fd);
@@ -494,4 +505,9 @@ fn setNonBlocking(fd: posix.fd_t) void {
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;
     _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
+}
+
+fn setSendBuf(fd: posix.fd_t, size: u32) void {
+    const val: [4]u8 = @bitCast(size);
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDBUF, &val) catch {};
 }
