@@ -29,6 +29,7 @@ comptime {
     if (is_windows) _ = @import("app/windows_stubs.zig");
 }
 const daemon = if (!is_windows) @import("app/daemon/daemon.zig") else @import("app/daemon/daemon_windows.zig");
+const host_process = if (is_windows) @import("app/daemon/host_process.zig") else struct {};
 const ipc_client = @import("ipc/client.zig");
 
 const base_url: []const u8 = if (std.mem.eql(u8, attyx.env, "production"))
@@ -218,6 +219,18 @@ pub fn main() !void {
                 std.fs.File.stderr().writeAll(msg) catch {};
                 std.process.exit(1);
             };
+            return;
+        },
+        .host => {
+            if (is_windows) {
+                _ = win32.FreeConsole();
+                host_process.run(allocator, args) catch |err| {
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "host process failed: {s}", .{@errorName(err)}) catch "host process failed";
+                    debugToFile(msg);
+                    std.process.exit(1);
+                };
+            }
             return;
         },
         .kill_daemon => {

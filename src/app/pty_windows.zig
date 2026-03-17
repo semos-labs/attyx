@@ -288,9 +288,6 @@ pub const Pty = struct {
     async_buf: [65536]u8 = undefined,
 
     exit_status: ?c_int = null,
-    /// Whether this Pty owns (and should close) the HPCON handle.
-    /// False for inherited panes where the old daemon keeps HPCON alive.
-    owns_hpcon: bool = true,
 
     /// Return an inactive Pty (no process, no handles). Used for daemon-backed panes.
     pub fn initInactive() Pty {
@@ -305,38 +302,8 @@ pub const Pty = struct {
         };
     }
 
-    /// Restore a Pty from inherited handles (hot-upgrade on Windows).
-    /// The caller (new daemon) owns the pipe handles but NOT the HPCON —
-    /// the old daemon keeps HPCON alive as an HPCON keeper process.
-    pub fn fromInherited(pipe_out_read: HANDLE, pipe_in_write: HANDLE, process: HANDLE) Pty {
-        // Create a new event for overlapped I/O on the inherited pipe.
-        const read_evt_raw = CreateEventW(null, 1, 0, null);
-        // CreateEventW returns ?HANDLE on some targets, HANDLE on others.
-        // Normalize to HANDLE, treating null/0 as INVALID_HANDLE.
-        const read_evt: HANDLE = if (@typeInfo(@TypeOf(read_evt_raw)) == .optional)
-            (read_evt_raw orelse INVALID_HANDLE)
-        else
-            read_evt_raw;
-        return .{
-            .pipe_out_read = pipe_out_read,
-            .pipe_in_write = pipe_in_write,
-            .hpc = undefined, // HPCON is process-local, can't be inherited
-            .process = process,
-            .thread = INVALID_HANDLE,
-            .attr_list_buf = &.{},
-            .allocator = undefined,
-            .read_event = if (@intFromPtr(read_evt) != 0) read_evt else INVALID_HANDLE,
-            .owns_hpcon = false,
-        };
-    }
-
-    /// Mark pipe, process, and HPCON handles as inheritable for hot-upgrade.
-    /// Called by the old daemon before spawning the new daemon.
-    pub fn markHandlesInheritable(self: *Pty) void {
-        _ = SetHandleInformation(self.pipe_in_write, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        _ = SetHandleInformation(self.pipe_out_read, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        _ = SetHandleInformation(self.process, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    }
+    // fromInherited and markHandlesInheritable removed — host processes
+    // own ConPTY independently; no handle inheritance needed for upgrades.
 
     pub const ShellType = enum { auto, zsh, pwsh, cmd };
 
@@ -507,20 +474,15 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
+        // Inactive PTY (host-backed panes) — nothing to clean up.
+        if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
         self.cancelAsyncRead();
-        if (self.owns_hpcon) {
-            ClosePseudoConsole(self.hpc);
-        } else {
-            // Inherited PTY: we don't own the HPCON, so ClosePseudoConsole
-            // won't run. Kill the shell process explicitly so it doesn't
-            // linger after the tab is closed.
-            _ = TerminateProcess(self.process, 0);
-        }
+        ClosePseudoConsole(self.hpc);
         _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
         _ = CloseHandle(self.process);
         if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
-        if (self.owns_hpcon and self.attr_list_buf.len > 0) {
+        if (self.attr_list_buf.len > 0) {
             DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
             self.allocator.free(self.attr_list_buf);
         }
@@ -609,7 +571,7 @@ pub const Pty = struct {
     }
 
     pub fn resize(self: *Pty, rows: u16, cols: u16) !void {
-        if (!self.owns_hpcon) return; // Can't resize inherited PTY (HPCON is process-local)
+        if (self.pipe_out_read == INVALID_HANDLE) return; // Inactive PTY
         const size = COORD{
             .x = @intCast(cols),
             .y = @intCast(rows),

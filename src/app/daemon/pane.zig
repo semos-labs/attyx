@@ -5,6 +5,9 @@ const posix = std.posix;
 const Pty = @import("../pty.zig").Pty;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
+const HostConnection = if (is_windows) @import("host_pipe.zig").HostConnection else void;
+const host_pipe = if (is_windows) @import("host_pipe.zig") else struct {};
+const attyx = if (is_windows) @import("attyx") else struct {};
 
 const win32_sleep = if (is_windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: std.os.windows.DWORD) callconv(.winapi) void;
@@ -16,6 +19,9 @@ const win32_sleep = if (is_windows) struct {
 pub const DaemonPane = struct {
     id: u32,
     pty: Pty,
+    /// Windows host process connection (replaces direct PTY access).
+    /// When set, I/O goes through the host pipe instead of pty directly.
+    host_conn: if (is_windows) ?*HostConnection else void = if (is_windows) null else {},
     replay: RingBuffer,
     rows: u16,
     cols: u16,
@@ -96,11 +102,10 @@ pub const DaemonPane = struct {
         cmd: ?[*:0]const u8,
         capture_stdout: bool,
     ) !DaemonPane {
-        // If a command is given, start a normal interactive shell with
-        // __ATTYX_STARTUP_CMD set. The shell integration scripts execute
-        // it after full init (precmd/PROMPT_COMMAND), so the user's PATH
-        // and environment are fully loaded. This avoids the old $SHELL -c
-        // approach where non-interactive shells skip .zshrc/.bashrc.
+        if (comptime is_windows) {
+            return spawnViaHost(allocator, id, rows, cols, replay_capacity, cwd, shell, cmd);
+        }
+        // POSIX path: spawn PTY directly.
         var shell_argv: [1][:0]const u8 = undefined;
         const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
             shell_argv[0] = std.mem.sliceTo(s, 0);
@@ -119,7 +124,7 @@ pub const DaemonPane = struct {
         };
         var pane = DaemonPane{
             .id = id,
-            .pty = if (comptime is_windows) try Pty.spawn(allocator, pty_opts) else try Pty.spawn(pty_opts),
+            .pty = try Pty.spawn(pty_opts),
             .replay = try RingBuffer.init(allocator, replay_capacity),
             .rows = rows,
             .cols = cols,
@@ -133,6 +138,71 @@ pub const DaemonPane = struct {
         }
 
         return pane;
+    }
+
+    /// Windows: spawn a host process and connect to it via named pipe.
+    fn spawnViaHost(
+        allocator: std.mem.Allocator,
+        id: u32,
+        rows: u16,
+        cols: u16,
+        replay_capacity: usize,
+        cwd: ?[*:0]const u8,
+        shell: ?[*:0]const u8,
+        cmd: ?[*:0]const u8,
+    ) !DaemonPane {
+        const shell_type = if (shell) |s| deriveShellType(std.mem.sliceTo(s, 0)) else "auto";
+        const is_dev = comptime !std.mem.eql(u8, attyx.env, "production");
+
+        if (!host_pipe.spawnHostProcess(id, shell_type, rows, cols, cwd, cmd, is_dev))
+            return error.HostSpawnFailed;
+
+        // Connect to the host's named pipe.
+        const conn = try allocator.create(HostConnection);
+        conn.* = host_pipe.HostConnection.connect(id, is_dev) orelse {
+            allocator.destroy(conn);
+            return error.HostConnectFailed;
+        };
+
+        // Wait for READY frame.
+        if (!host_pipe.waitForReady(conn, 10_000)) {
+            conn.deinit();
+            allocator.destroy(conn);
+            return error.HostReadyTimeout;
+        }
+
+        return DaemonPane{
+            .id = id,
+            .pty = Pty.initInactive(),
+            .host_conn = conn,
+            .replay = try RingBuffer.init(allocator, replay_capacity),
+            .rows = rows,
+            .cols = cols,
+        };
+    }
+
+    fn deriveShellType(shell_str: []const u8) []const u8 {
+        if (std.mem.indexOf(u8, shell_str, "zsh") != null) return "zsh";
+        if (std.mem.indexOf(u8, shell_str, "pwsh") != null) return "pwsh";
+        if (std.mem.indexOf(u8, shell_str, "powershell") != null) return "pwsh";
+        if (std.mem.indexOf(u8, shell_str, "cmd") != null) return "cmd";
+        return "auto";
+    }
+
+    /// Process data already in the output buffer (from host pipe frames).
+    /// Updates replay buffer and mode tracking without copying.
+    pub fn absorbHostOutput(self: *DaemonPane, data: []const u8) void {
+        if (data.len > 0) {
+            if (findLastEraseScrollback(data)) |pos| {
+                self.replay.clear();
+                self.replay.write(data[pos..]);
+            } else {
+                self.replay.write(data);
+            }
+            self.trackModes(data);
+            self.trackOsc(data);
+            self.interceptQueries(data);
+        }
     }
 
     /// Process already-read PTY data (from async read completion).
@@ -267,11 +337,28 @@ pub const DaemonPane = struct {
         }
     }
 
+    /// Route bytes to PTY input — via host pipe on Windows, direct on POSIX.
+    pub fn writeToPtyInput(self: *DaemonPane, bytes: []const u8) void {
+        if (comptime is_windows) {
+            if (self.host_conn) |hc| {
+                _ = hc.sendDataIn(bytes);
+                return;
+            }
+        }
+        self.writeToPtyInput(bytes);
+    }
+
     /// Write input bytes to PTY master (keystrokes from client).
     /// Handles short writes and WouldBlock on non-blocking PTY fds
     /// by retrying with a brief sleep (bounded to avoid stalling the
     /// daemon event loop for too long).
     pub fn writeInput(self: *DaemonPane, bytes: []const u8) !void {
+        if (comptime is_windows) {
+            if (self.host_conn) |hc| {
+                if (!hc.sendDataIn(bytes)) return error.WriteFailed;
+                return;
+            }
+        }
         var offset: usize = 0;
         var retries: u32 = 0;
         const max_retries: u32 = 50; // 50ms max stall
@@ -296,26 +383,39 @@ pub const DaemonPane = struct {
 
     /// Resize the PTY.
     pub fn resize(self: *DaemonPane, rows: u16, cols: u16) !void {
+        if (comptime is_windows) {
+            if (self.host_conn) |hc| {
+                if (!hc.sendResize(rows, cols)) return error.ResizeFailed;
+                self.rows = rows;
+                self.cols = cols;
+                return;
+            }
+        }
         try self.pty.resize(rows, cols);
         self.rows = rows;
         self.cols = cols;
     }
 
     /// Force a full repaint by nudging the PTY size by one column.
-    /// Many TUI frameworks (Node.js, ncurses, React-based) only trigger
-    /// a full redraw on an actual size change — a same-size SIGWINCH is
-    /// silently ignored. We bump cols+1 here; the client restores the
-    /// correct size on replay_end, providing a second SIGWINCH after the
-    /// round-trip delay ensures the app has processed the first one.
     pub fn notifyRedraw(self: *DaemonPane) void {
         const nudged = if (self.cols < std.math.maxInt(u16)) self.cols + 1 else self.cols - 1;
+        if (comptime is_windows) {
+            if (self.host_conn) |hc| {
+                _ = hc.sendResize(self.rows, nudged);
+                return;
+            }
+        }
         self.pty.resize(self.rows, nudged) catch {};
     }
 
     /// Non-blocking check if child process has exited.
-    /// Returns exit code if exited, null if still running.
+    /// On Windows with host process, exit is detected via EXITED frame
+    /// (set externally by daemon_windows.zig polling code).
     pub fn checkExit(self: *DaemonPane) ?u8 {
         if (self.exit_code) |code| return code;
+        if (comptime is_windows) {
+            if (self.host_conn != null) return null; // Exit detected via EXITED frame
+        }
         if (self.pty.childExited()) {
             const code = self.pty.exitCode() orelse 1;
             self.exit_code = code;
@@ -339,276 +439,12 @@ pub const DaemonPane = struct {
         return self.proc_name[0..len];
     }
 
+    const pane_queries = @import("pane_queries.zig");
+
     /// Scan PTY output for terminal queries and write immediate responses.
-    /// This eliminates round-trip latency through the client, preventing
-    /// shells from displaying stale responses as raw text.
     fn interceptQueries(self: *DaemonPane, data: []const u8) void {
-        var i: usize = 0;
-        while (i < data.len) {
-            if (data[i] != '\x1b') {
-                i += 1;
-                continue;
-            }
-            if (i + 1 >= data.len) break;
-
-            if (data[i + 1] == '[') {
-                // CSI sequences
-                if (i + 2 >= data.len) break;
-                const b2 = data[i + 2];
-
-                // DA1: ESC [ c
-                if (b2 == 'c') {
-                    _ = self.pty.writeToPty("\x1b[?62c") catch {};
-                    i += 3;
-                    continue;
-                }
-                // DA1: ESC [ 0 c
-                if (b2 == '0' and i + 3 < data.len and data[i + 3] == 'c') {
-                    _ = self.pty.writeToPty("\x1b[?62c") catch {};
-                    i += 4;
-                    continue;
-                }
-
-                // DA2: ESC [ > c or ESC [ > 0 c
-                if (b2 == '>') {
-                    if (i + 3 < data.len and data[i + 3] == 'c') {
-                        _ = self.pty.writeToPty("\x1b[>0;10;1c") catch {};
-                        i += 4;
-                        continue;
-                    }
-                    if (i + 4 < data.len and data[i + 3] == '0' and data[i + 4] == 'c') {
-                        _ = self.pty.writeToPty("\x1b[>0;10;1c") catch {};
-                        i += 5;
-                        continue;
-                    }
-                }
-
-                // DSR device status: ESC [ 5 n
-                if (b2 == '5' and i + 3 < data.len and data[i + 3] == 'n') {
-                    _ = self.pty.writeToPty("\x1b[0n") catch {};
-                    i += 4;
-                    continue;
-                }
-
-                // CSI ? sequences: DECRQM or kitty keyboard query
-                if (b2 == '?') {
-                    var j = i + 3;
-
-                    // Kitty keyboard query: ESC [ ? u
-                    if (j < data.len and data[j] == 'u') {
-                        _ = self.pty.writeToPty("\x1b[?0u") catch {};
-                        i = j + 1;
-                        continue;
-                    }
-
-                    // DECRQM: ESC [ ? <digits> $ p
-                    var num: u32 = 0;
-                    var has_digits = false;
-                    while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {
-                        num = num * 10 + (data[j] - '0');
-                        has_digits = true;
-                    }
-                    if (has_digits and j + 1 < data.len and data[j] == '$' and data[j + 1] == 'p') {
-                        self.respondDECRPM(@intCast(num));
-                        i = j + 2;
-                        continue;
-                    }
-                }
-            }
-
-            // APC kitty graphics query: ESC _ G ... ESC \
-            // Applications send `a=q` to detect kitty graphics support.
-            if (data[i + 1] == '_') {
-                if (i + 2 < data.len and data[i + 2] == 'G') {
-                    // Find the APC terminator: ESC \ (ST)
-                    var j = i + 3;
-                    while (j + 1 < data.len) : (j += 1) {
-                        if (data[j] == '\x1b' and data[j + 1] == '\\') break;
-                    }
-                    if (j + 1 < data.len) {
-                        const params = data[i + 3 .. j];
-                        if (isGraphicsQuery(params)) {
-                            const gfx_id = parseGraphicsId(params);
-                            self.respondGraphicsOk(gfx_id);
-                        }
-                        i = j + 2;
-                        continue;
-                    }
-                }
-            }
-
-            // OSC sequences: ESC ] <num> ; ? <terminator>
-            if (data[i + 1] == ']') {
-                var j = i + 2;
-                // Parse OSC number
-                var osc_num: u16 = 0;
-                var has_osc_digits = false;
-                while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {
-                    osc_num = osc_num *% 10 +% @as(u16, data[j] - '0');
-                    has_osc_digits = true;
-                }
-                if (has_osc_digits and j < data.len and data[j] == ';') {
-                    j += 1; // skip ';'
-                    // Find terminator to get the rest payload
-                    const payload_start = j;
-                    var term_end: usize = j;
-                    var found_term = false;
-                    while (term_end < data.len) : (term_end += 1) {
-                        if (data[term_end] == 0x07) {
-                            found_term = true;
-                            break;
-                        }
-                        if (data[term_end] == '\x1b' and term_end + 1 < data.len and data[term_end + 1] == '\\') {
-                            found_term = true;
-                            break;
-                        }
-                    }
-                    if (found_term) {
-                        const rest = data[payload_start..term_end];
-                        const advanced = if (data[term_end] == 0x07) term_end + 1 else term_end + 2;
-                        switch (osc_num) {
-                            10 => if (std.mem.eql(u8, rest, "?")) {
-                                self.respondOscColor(10, self.theme_fg);
-                                i = advanced;
-                                continue;
-                            },
-                            11 => if (std.mem.eql(u8, rest, "?")) {
-                                self.respondOscColor(11, self.theme_bg);
-                                i = advanced;
-                                continue;
-                            },
-                            12 => if (std.mem.eql(u8, rest, "?")) {
-                                const c = if (self.theme_cursor_set) self.theme_cursor else self.theme_fg;
-                                self.respondOscColor(12, c);
-                                i = advanced;
-                                continue;
-                            },
-                            4 => {
-                                // OSC 4;N;? — palette query
-                                if (self.parseAndRespondPaletteQuery(rest)) {
-                                    i = advanced;
-                                    continue;
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-            }
-
-            i += 1;
-        }
+        pane_queries.interceptQueries(self, data);
     }
-
-    /// Check if a kitty graphics APC payload contains `a=q` (query action).
-    fn isGraphicsQuery(params: []const u8) bool {
-        // params is the content between 'G' and 'ESC \', e.g. "a=q,i=31,s=1,v=1,f=24;AAAA"
-        // The key-value part is before the ';' (if any).
-        const kv = if (std.mem.indexOfScalar(u8, params, ';')) |semi| params[0..semi] else params;
-        // Look for "a=q" as a key-value pair.
-        var iter = std.mem.splitScalar(u8, kv, ',');
-        while (iter.next()) |pair| {
-            if (std.mem.eql(u8, pair, "a=q")) return true;
-        }
-        return false;
-    }
-
-    /// Parse the image_id (`i=N`) from a kitty graphics parameter string.
-    fn parseGraphicsId(params: []const u8) u32 {
-        const kv = if (std.mem.indexOfScalar(u8, params, ';')) |semi| params[0..semi] else params;
-        var iter = std.mem.splitScalar(u8, kv, ',');
-        while (iter.next()) |pair| {
-            if (pair.len > 2 and pair[0] == 'i' and pair[1] == '=') {
-                return std.fmt.parseInt(u32, pair[2..], 10) catch 0;
-            }
-        }
-        return 0;
-    }
-
-    /// Respond to a kitty graphics query with OK.
-    fn respondGraphicsOk(self: *DaemonPane, image_id: u32) void {
-        var buf: [64]u8 = undefined;
-        const resp = std.fmt.bufPrint(&buf, "\x1b_Gi={d};OK\x1b\\", .{image_id}) catch return;
-        _ = self.pty.writeToPty(resp) catch {};
-    }
-
-    fn respondDECRPM(self: *DaemonPane, mode: u16) void {
-        // Return "not recognized" (0) for most modes.
-        // Mode 2026 (synchronized output): return 2 (reset) as safe default.
-        const pm: u8 = switch (mode) {
-            2026 => 2,
-            else => 0,
-        };
-        var buf: [32]u8 = undefined;
-        const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, pm }) catch return;
-        _ = self.pty.writeToPty(resp) catch {};
-    }
-
-    /// Format and write an OSC color response: ESC ] <num> ; rgb:RRRR/GGGG/BBBB BEL.
-    /// Uses BEL (0x07) terminator for maximum compatibility — some libraries
-    /// (e.g. termbg, terminal-colorsaurus) only parse BEL-terminated responses.
-    fn respondOscColor(self: *DaemonPane, osc_num: u8, rgb: [3]u8) void {
-        var buf: [64]u8 = undefined;
-        const resp = std.fmt.bufPrint(&buf, "\x1b]{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{
-            osc_num,
-            rgb[0], rgb[0],
-            rgb[1], rgb[1],
-            rgb[2], rgb[2],
-        }) catch return;
-        _ = self.pty.writeToPty(resp) catch {};
-    }
-
-    /// Parse "N;?" from an OSC 4 payload and respond with the palette color.
-    fn parseAndRespondPaletteQuery(self: *DaemonPane, rest: []const u8) bool {
-        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return false;
-        if (!std.mem.eql(u8, rest[semi + 1 ..], "?")) return false;
-        const idx = std.fmt.parseInt(u8, rest[0..semi], 10) catch return false;
-        const rgb = paletteRgb(idx);
-        var buf: [64]u8 = undefined;
-        const resp = std.fmt.bufPrint(&buf, "\x1b]4;{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{
-            idx,
-            rgb[0], rgb[0],
-            rgb[1], rgb[1],
-            rgb[2], rgb[2],
-        }) catch return false;
-        _ = self.pty.writeToPty(resp) catch return false;
-        return true;
-    }
-
-    /// Standard 256-color palette lookup.
-    fn paletteRgb(n: u8) [3]u8 {
-        if (n < 16) return ansi16[n];
-        if (n < 232) {
-            const idx = n - 16;
-            return .{ cubeComp(idx / 36), cubeComp((idx / 6) % 6), cubeComp(idx % 6) };
-        }
-        const g: u8 = @intCast(@as(u16, 8) + @as(u16, n - 232) * 10);
-        return .{ g, g, g };
-    }
-
-    fn cubeComp(idx: u8) u8 {
-        if (idx == 0) return 0;
-        return @intCast(@as(u16, 55) + @as(u16, idx) * 40);
-    }
-
-    const ansi16 = [16][3]u8{
-        .{ 0, 0, 0 },
-        .{ 170, 0, 0 },
-        .{ 0, 170, 0 },
-        .{ 170, 85, 0 },
-        .{ 0, 0, 170 },
-        .{ 170, 0, 170 },
-        .{ 0, 170, 170 },
-        .{ 170, 170, 170 },
-        .{ 85, 85, 85 },
-        .{ 255, 85, 85 },
-        .{ 85, 255, 85 },
-        .{ 255, 255, 85 },
-        .{ 85, 85, 255 },
-        .{ 255, 85, 255 },
-        .{ 85, 255, 255 },
-        .{ 255, 255, 255 },
-    };
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
     pub fn drainCapturedStdout(self: *DaemonPane) void {
@@ -631,6 +467,7 @@ pub const DaemonPane = struct {
     }
 
     pub fn deinit(self: *DaemonPane) void {
+        self.deinitHost();
         if (self.captured_stdout) |cs| {
             if (self.stdout_allocator) |alloc| {
                 cs.deinit(alloc);
@@ -640,5 +477,15 @@ pub const DaemonPane = struct {
         self.pty.deinit();
         self.replay.deinit();
         self.* = undefined;
+    }
+
+    fn deinitHost(self: *DaemonPane) void {
+        if (comptime !is_windows) return;
+        if (self.host_conn) |hc| {
+            if (self.alive) _ = hc.sendKill();
+            hc.deinit();
+            // Note: allocator for HostConnection is not stored here.
+            // The caller (daemon) is responsible for freeing if heap-allocated.
+        }
     }
 };

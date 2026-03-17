@@ -297,8 +297,8 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
 
     switch (result) {
         .success => {
-            // Enter HPCON keeper mode — blocks until all shells die
-            upgrade.hpconKeeperLoop(state.sessions);
+            // Host processes keep shells alive — old daemon exits cleanly.
+            daemonLog("upgrade: success, exiting cleanly");
         },
         .failed => {
             daemonLog("upgrade: failed, rebinding listener");
@@ -368,15 +368,48 @@ fn pollPtyOutput(st: *DaemonState) void {
 
 fn pollSinglePane(st: *DaemonState, s: *DaemonSession, pane: *DaemonPane) void {
     var n: usize = 0;
-    if (pane.pty.checkAsyncRead()) |data| {
-        n = pane.absorbPtyData(data, st.pty_buf);
+
+    // Host process mode: read from host pipe, process frames.
+    if (pane.host_conn) |hc| {
+        if (!hc.recvData()) {
+            // Host pipe broken — host process died.
+            pane.alive = false;
+            pane.exit_code = pane.exit_code orelse 1;
+        } else {
+            while (hc.nextFrame()) |frame| {
+                switch (frame.frame_type) {
+                    .data_out => {
+                        const copy = @min(frame.payload.len, st.pty_buf.len - n);
+                        @memcpy(st.pty_buf[n .. n + copy], frame.payload[0..copy]);
+                        n += copy;
+                    },
+                    .exited => {
+                        pane.exit_code = if (frame.payload.len > 0) frame.payload[0] else 1;
+                        pane.alive = false;
+                    },
+                    .ready => {}, // Already handled at spawn time
+                    else => {},
+                }
+            }
+        }
+
+        // Track modes/replay for host-received data.
+        if (n > 0) {
+            pane.absorbHostOutput(st.pty_buf[0..n]);
+        }
+    } else {
+        // Direct PTY mode (fallback / non-host path).
+        if (pane.pty.checkAsyncRead()) |data| {
+            n = pane.absorbPtyData(data, st.pty_buf);
+        }
+        while (pane.pty.peekAvail() > 0) {
+            const extra = pane.readPty(st.pty_buf[n..]) catch break;
+            if (extra == 0) break;
+            n += extra;
+        }
+        pane.pty.startAsyncRead();
     }
-    while (pane.pty.peekAvail() > 0) {
-        const extra = pane.readPty(st.pty_buf[n..]) catch break;
-        if (extra == 0) break;
-        n += extra;
-    }
-    pane.pty.startAsyncRead();
+
     if (n > 0) {
         for (st.clients) |*cslot| {
             if (cslot.*) |*cl| {

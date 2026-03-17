@@ -1,14 +1,13 @@
-/// Windows hot-upgrade: serialize state with HANDLE values, spawn new daemon,
-/// transition old daemon to HPCON keeper mode.
+/// Windows hot-upgrade: serialize state, spawn new daemon, exit cleanly.
 ///
-/// Strategy (Option 4 — pipe proxy without relay):
-///   1. Old daemon marks ConPTY pipe handles as inheritable
-///   2. Serializes session state + HANDLE values to upgrade.bin
-///   3. Spawns new daemon with bInheritHandles=TRUE + --restore <path>
-///   4. Verifies new daemon started (probes named pipe)
-///   5. Old daemon enters HPCON keeper mode: holds HPCON alive, waits for
-///      all shells to die, then exits
-///   6. New daemon uses inherited pipe handles directly to talk to shells
+/// With the host process model, ConPTY ownership lives in per-pane host
+/// processes (`attyx.exe --host <pane_id>`). The daemon only holds pipe
+/// connections to hosts. On upgrade:
+///   1. Serialize session state + pane IDs to upgrade.bin
+///   2. Spawn new daemon (no handle inheritance needed)
+///   3. Old daemon exits cleanly
+///   4. New daemon reconnects to existing host pipes
+///   5. No HPCON keeper — hosts survive independently
 const std = @import("std");
 const attyx = @import("attyx");
 const DaemonSession = @import("session.zig").DaemonSession;
@@ -17,6 +16,8 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const session_connect = @import("../session_connect.zig");
 const protocol = @import("protocol.zig");
 const Pty = @import("../pty.zig").Pty;
+const HostConnection = @import("host_pipe.zig").HostConnection;
+const host_pipe = @import("host_pipe.zig");
 
 const windows = std.os.windows;
 const HANDLE = windows.HANDLE;
@@ -38,10 +39,7 @@ extern "kernel32" fn CreateProcessW(
     pi: *PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
 extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
-extern "kernel32" fn WaitForSingleObject(h: HANDLE, ms: DWORD) callconv(.winapi) DWORD;
-extern "kernel32" fn GetExitCodeProcess(h: HANDLE, code: *DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
-extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 
 const STARTUPINFOW = extern struct {
     cb: DWORD,
@@ -61,11 +59,9 @@ const PROCESS_INFORMATION = extern struct {
 
 const DETACHED_PROCESS: DWORD = 0x00000008;
 const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
-const WAIT_OBJECT_0: DWORD = 0;
-const STILL_ACTIVE: DWORD = 259;
 
-const magic = "ATUW"; // "AT Upgrade Windows" — distinct from POSIX "ATUP"
-const format_version: u8 = 1;
+const magic = "ATUW";
+const format_version: u8 = 2; // v2: host process model (no HANDLE inheritance)
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -77,7 +73,6 @@ fn writeBytes(w: ListWriter, data: []const u8) !void { try w.writeAll(data); }
 fn writeByte(w: ListWriter, b: u8) !void { try w.writeByte(b); }
 fn writeU16(w: ListWriter, v: u16) !void { try w.writeInt(u16, v, .little); }
 fn writeU32(w: ListWriter, v: u32) !void { try w.writeInt(u32, v, .little); }
-fn writeU64(w: ListWriter, v: u64) !void { try w.writeInt(u64, v, .little); }
 
 const SliceReader = struct {
     data: []const u8,
@@ -101,12 +96,6 @@ const SliceReader = struct {
         self.pos += 4;
         return v;
     }
-    fn readU64(self: *SliceReader) !u64 {
-        if (self.pos + 8 > self.data.len) return error.EndOfStream;
-        const v = std.mem.readInt(u64, self.data[self.pos..][0..8], .little);
-        self.pos += 8;
-        return v;
-    }
     fn readSlice(self: *SliceReader, len: usize) ![]const u8 {
         if (self.pos + len > self.data.len) return error.EndOfStream;
         const s = self.data[self.pos .. self.pos + len];
@@ -120,7 +109,7 @@ const SliceReader = struct {
     }
 };
 
-// ── Serialization ──
+// ── Serialization (v2: pane_id instead of HANDLEs) ──
 
 pub fn serialize(
     w: ListWriter,
@@ -164,11 +153,9 @@ fn serializeSession(w: ListWriter, s: *DaemonSession) !void {
 }
 
 fn serializePane(w: ListWriter, p: *DaemonPane) !void {
+    // v2: only pane_id — host process pipe name is derived deterministically.
+    // No HANDLE values needed since hosts own ConPTY independently.
     try writeU32(w, p.id);
-    // Windows: three HANDLE values (u64 each) instead of fd+pid
-    try writeU64(w, @intFromPtr(p.pty.pipe_out_read));
-    try writeU64(w, @intFromPtr(p.pty.pipe_in_write));
-    try writeU64(w, @intFromPtr(p.pty.process));
     try writeU16(w, p.rows);
     try writeU16(w, p.cols);
     try writeByte(w, if (p.alive) 1 else 0);
@@ -189,7 +176,7 @@ fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     if (slices.second.len > 0) try writeBytes(w, slices.second);
 }
 
-// ── Deserialization ──
+// ── Deserialization (v2: reconnect to host pipes) ──
 
 pub fn deserialize(
     data: []const u8,
@@ -246,9 +233,6 @@ fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *
 
     const pane_count = try r.readByte();
     for (0..pane_count) |_| {
-        // Find a free slot and deserialize directly into it.
-        // DaemonPane is >64KB (Pty.async_buf) — returning by value would
-        // blow the aarch64 Windows stack probe limit.
         const pane_slot = for (&s.panes) |*pslot| {
             if (pslot.* == null) break pslot;
         } else continue;
@@ -257,17 +241,9 @@ fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *
     }
 }
 
-fn handleFromU64(val: u64) HANDLE {
-    if (val == 0) return INVALID_HANDLE_VALUE;
-    return @ptrFromInt(val);
-}
-
-/// Deserialize a pane directly into a slot pointer to avoid 64KB+ stack copies.
+/// Deserialize a pane and reconnect to its host process pipe.
 fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonPane) !void {
     const id = try r.readU32();
-    const pipe_out_read = handleFromU64(try r.readU64());
-    const pipe_in_write = handleFromU64(try r.readU64());
-    const process = handleFromU64(try r.readU64());
     const rows = try r.readU16();
     const cols = try r.readU16();
     const alive = (try r.readByte()) != 0;
@@ -284,10 +260,19 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
 
-    // Write directly into the slot — no by-value return of the 64KB+ struct.
+    // Reconnect to host process pipe.
+    const is_dev = !std.mem.eql(u8, attyx.env, "production");
+    const conn = allocator.create(HostConnection) catch return error.OutOfMemory;
+    conn.* = HostConnection.connect(id, is_dev) orelse {
+        allocator.destroy(conn);
+        daemonLog2("deserialize: host connect failed for pane {d}", .{id});
+        return error.HostConnectFailed;
+    };
+
     slot.* = DaemonPane{
         .id = id,
-        .pty = Pty.fromInherited(pipe_out_read, pipe_in_write, process),
+        .pty = Pty.initInactive(),
+        .host_conn = conn,
         .replay = try RingBuffer.init(allocator, RingBuffer.default_capacity),
         .rows = rows,
         .cols = cols,
@@ -297,7 +282,6 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
         .alt_screen = alt_screen,
     };
 
-    // Fill in remaining fields via pointer.
     var pane = &(slot.*.?);
     const nlen: u8 = @intCast(@min(proc_name_slice.len, 64));
     @memcpy(pane.proc_name[0..nlen], proc_name_slice[0..nlen]);
@@ -321,7 +305,6 @@ fn getStagedExePath(buf: *[256]u8) ?[]const u8 {
     return session_connect.statePath(buf, "upgrade{s}.exe");
 }
 
-/// Check if a staged binary exists (installer or dev script dropped it).
 pub fn hasStagedBinary() bool {
     var buf: [256]u8 = undefined;
     const path = getStagedExePath(&buf) orelse return false;
@@ -333,8 +316,8 @@ pub fn hasStagedBinary() bool {
 
 pub const UpgradeResult = enum { success, failed, fatal };
 
-/// Perform hot-upgrade: swap exe, serialize state, spawn new daemon with
-/// inherited handles, verify handoff. On success, caller enters HPCON keeper.
+/// Perform hot-upgrade: swap exe, serialize state, spawn new daemon, exit.
+/// No HPCON keeper needed — host processes keep shells alive independently.
 pub fn performUpgrade(
     sessions: *[max_sessions]?DaemonSession,
     next_session_id: u32,
@@ -346,17 +329,12 @@ pub fn performUpgrade(
     const upgrade_path = getUpgradePath(&path_buf) orelse return .failed;
 
     // ── Step 1: Exe swap ──
-    // The installer/updater stages the new binary at upgrade.exe in state dir.
-    // We rename the running exe → .old (works on locked files), then move
-    // the staged binary into place. If no staged binary, the installer already
-    // replaced the exe via rename (e.g. external updater).
     var exe_buf: [1024]u8 = undefined;
     const exe = session_connect.getExePath(&exe_buf) orelse {
         daemonLog("upgrade: cannot find exe path");
         return .failed;
     };
 
-    // Always delete the staged binary so it doesn't re-trigger on next startup.
     var staged_buf: [256]u8 = undefined;
     if (getStagedExePath(&staged_buf)) |staged| {
         const has_staged = blk: {
@@ -365,27 +343,11 @@ pub fn performUpgrade(
         };
         if (has_staged) {
             swapExe(exe, staged);
-            // If swapExe moved it, it's gone. If it failed, delete it
-            // so it doesn't trigger another upgrade on next daemon start.
             std.fs.deleteFileAbsolute(staged) catch {};
         }
     }
 
-    // ── Step 2: Mark handles inheritable ──
-    for (sessions) |*slot| {
-        if (slot.*) |*s| {
-            for (&s.panes) |*pslot| {
-                if (pslot.*) |*pane| {
-                    if (pane.alive) {
-                        pane.pty.cancelAsyncRead();
-                        pane.pty.markHandlesInheritable();
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Step 3: Serialize state ──
+    // ── Step 2: Serialize state (no handle inheritance needed) ──
     var list: std.ArrayList(u8) = .{};
     defer list.deinit(allocator);
     serialize(list.writer(allocator), sessions, next_session_id, next_pane_id) catch {
@@ -404,10 +366,7 @@ pub fn performUpgrade(
         return .failed;
     };
 
-    // ── Step 4: Spawn new daemon ──
-    var expected: u16 = 0;
-    for (sessions) |s| { if (s != null) expected += 1; }
-
+    // ── Step 3: Spawn new daemon (no bInheritHandles) ──
     daemonLog("upgrade: state saved, spawning new daemon");
 
     if (!spawnNewDaemon(exe, upgrade_path)) {
@@ -416,47 +375,34 @@ pub fn performUpgrade(
         return .failed;
     }
 
-    // ── Step 5: Verify ──
-    if (!probeNewDaemon(pipe_name, expected)) {
+    // ── Step 4: Verify new daemon is listening ──
+    if (!probeNewDaemon(pipe_name)) {
         daemonLog("upgrade: verification failed");
         cleanup(upgrade_path);
         return .failed;
     }
 
-    daemonLog("upgrade: new daemon verified, entering HPCON keeper mode");
+    daemonLog("upgrade: new daemon verified, old daemon exiting cleanly");
     cleanup(upgrade_path);
     return .success;
 }
 
-/// Swap the running exe with a staged new binary.
-/// 1. Rename running exe → .old (works on locked files)
-/// 2. Move staged binary → exe path
-/// If anything fails, try to roll back.
 fn swapExe(exe_path: []const u8, staged_path: []const u8) void {
     var old_buf: [1028]u8 = undefined;
     const old_path = std.fmt.bufPrint(&old_buf, "{s}.old", .{exe_path}) catch return;
-
-    // Clean up any leftover .old from a previous upgrade
     std.fs.deleteFileAbsolute(old_path) catch {};
-
-    // Rename running exe → .old (Windows allows renaming locked files)
     std.fs.renameAbsolute(exe_path, old_path) catch {
         daemonLog("upgrade: rename exe → .old failed");
         return;
     };
-
-    // Move staged binary into place
     std.fs.renameAbsolute(staged_path, exe_path) catch {
         daemonLog("upgrade: move staged → exe failed, rolling back");
-        // Roll back: restore the old exe
         std.fs.renameAbsolute(old_path, exe_path) catch {};
         return;
     };
-
     daemonLog("upgrade: exe swapped successfully");
 }
 
-/// Clean up attyx.exe.old from a previous upgrade. Called on daemon startup.
 pub fn cleanupOldExe() void {
     var exe_buf: [1024]u8 = undefined;
     const exe = session_connect.getExePath(&exe_buf) orelse return;
@@ -465,9 +411,8 @@ pub fn cleanupOldExe() void {
     std.fs.deleteFileAbsolute(old_path) catch {};
 }
 
-/// Spawn a new daemon process with bInheritHandles=TRUE.
+/// Spawn new daemon — no handle inheritance needed.
 fn spawnNewDaemon(exe_path: []const u8, restore_path: []const u8) bool {
-    // Build command line: "exe_path" daemon --restore "restore_path"
     var cmd_buf: [4096:0]u16 = undefined;
     var pos: usize = 0;
 
@@ -487,9 +432,8 @@ fn spawnNewDaemon(exe_path: []const u8, restore_path: []const u8) bool {
     si.cb = @sizeOf(STARTUPINFOW);
     var pi: PROCESS_INFORMATION = undefined;
 
-    // bInheritHandles=1 so the child gets the ConPTY pipe handles.
-    // DETACHED_PROCESS so the child doesn't share our console.
-    if (CreateProcessW(null, &cmd_buf, null, null, 1, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
+    // bInheritHandles=0 — no handle inheritance needed with host process model.
+    if (CreateProcessW(null, &cmd_buf, null, null, 0, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
         return false;
     }
     _ = CloseHandle(pi.hThread);
@@ -497,11 +441,7 @@ fn spawnNewDaemon(exe_path: []const u8, restore_path: []const u8) bool {
     return true;
 }
 
-/// Probe the named pipe to verify the new daemon is listening.
-/// Also verifies session count if expected > 0.
-fn probeNewDaemon(pipe_name: []const u8, expected: u16) bool {
-    _ = expected;
-    // Try connecting to the named pipe up to 80 times (8 seconds)
+fn probeNewDaemon(pipe_name: []const u8) bool {
     for (0..80) |_| {
         Sleep(100);
         if (probeConnect(pipe_name)) return true;
@@ -510,7 +450,6 @@ fn probeNewDaemon(pipe_name: []const u8, expected: u16) bool {
 }
 
 fn probeConnect(pipe_name: []const u8) bool {
-    // Try to open the named pipe as a client
     var wide: [256:0]u16 = undefined;
     const wlen = std.unicode.utf8ToUtf16Le(&wide, pipe_name) catch return false;
     wide[wlen] = 0;
@@ -537,40 +476,6 @@ extern "kernel32" fn CreateFileW(
     dwFlagsAndAttributes: DWORD,
     hTemplateFile: ?HANDLE,
 ) callconv(.winapi) HANDLE;
-
-/// HPCON keeper mode: hold HPCONs alive, wait for all shells to die, then exit.
-/// Called by the old daemon after the new daemon is verified.
-/// `sessions` still contains the original panes with their HPCON handles.
-pub fn hpconKeeperLoop(sessions: *[max_sessions]?DaemonSession) void {
-    daemonLog("hpcon-keeper: monitoring shells");
-    // Note: we do NOT close pipe handles here. Named pipe server handles
-    // (pipe_out_read) have special semantics — closing the server side can
-    // destroy the pipe instance even if the new daemon inherited a copy.
-    // The old daemon just holds them open but never reads/writes.
-
-    while (true) {
-        var any_alive = false;
-        for (sessions) |*slot| {
-            if (slot.*) |*s| {
-                for (&s.panes) |*pslot| {
-                    if (pslot.*) |*pane| {
-                        if (pane.alive) {
-                            if (pane.pty.childExited()) {
-                                pane.alive = false;
-                                daemonLog("hpcon-keeper: shell exited");
-                            } else {
-                                any_alive = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (!any_alive) break;
-        Sleep(500);
-    }
-    daemonLog("hpcon-keeper: all shells dead, exiting");
-}
 
 fn cleanup(path: []const u8) void {
     std.fs.deleteFileAbsolute(path) catch {};
