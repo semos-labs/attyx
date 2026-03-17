@@ -101,15 +101,30 @@ static int http_get_ex(const wchar_t *host, int port, const wchar_t *path, int s
     if (!session) return 0;
 
     HINTERNET conn = WinHttpConnect(session, host, (INTERNET_PORT)port, 0);
-    if (!conn) { WinHttpCloseHandle(session); return 0; }
+    if (!conn) {
+        char dbg[128]; snprintf(dbg, sizeof(dbg), "http_get: Connect failed, error=%lu", GetLastError());
+        updateLog(dbg);
+        WinHttpCloseHandle(session); return 0;
+    }
 
     DWORD flags = secure ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET req = WinHttpOpenRequest(conn, L"GET", path, NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!req) { WinHttpCloseHandle(conn); WinHttpCloseHandle(session); return 0; }
+    if (!req) {
+        char dbg[128]; snprintf(dbg, sizeof(dbg), "http_get: OpenRequest failed, error=%lu", GetLastError());
+        updateLog(dbg);
+        WinHttpCloseHandle(conn); WinHttpCloseHandle(session); return 0;
+    }
 
-    if (!WinHttpSendRequest(req, NULL, 0, NULL, 0, 0, 0) ||
-        !WinHttpReceiveResponse(req, NULL)) {
+    if (!WinHttpSendRequest(req, NULL, 0, NULL, 0, 0, 0)) {
+        char dbg[128]; snprintf(dbg, sizeof(dbg), "http_get: SendRequest failed, error=%lu", GetLastError());
+        updateLog(dbg);
+        WinHttpCloseHandle(req); WinHttpCloseHandle(conn); WinHttpCloseHandle(session);
+        return 0;
+    }
+    if (!WinHttpReceiveResponse(req, NULL)) {
+        char dbg[128]; snprintf(dbg, sizeof(dbg), "http_get: ReceiveResponse failed, error=%lu", GetLastError());
+        updateLog(dbg);
         WinHttpCloseHandle(req); WinHttpCloseHandle(conn); WinHttpCloseHandle(session);
         return 0;
     }
