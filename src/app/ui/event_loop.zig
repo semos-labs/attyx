@@ -170,6 +170,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     }
 
     var got_data = false;
+    var throttled_frames: u8 = 0; // count frames skipped by rate limiter
     outer: while (c.attyx_should_quit() == 0) {
         // Safety: if tab_mgr has no tabs (e.g. failed session attach after
         // reset), quit gracefully rather than crashing on activePane().
@@ -839,7 +840,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // ~60fps. Viewport changes and force redraws bypass the throttle.
         if (need_update_final and !viewport_changed and !search_vp_changed and !actions.g_force_full_redraw) {
             const now_ns = std.time.nanoTimestamp();
-            if (now_ns - last_publish_ns < min_frame_ns) continue;
+            if (now_ns - last_publish_ns < min_frame_ns) {
+                throttled_frames +|= 1;
+                continue;
+            }
         }
 
         if (need_update_final) {
@@ -874,7 +878,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 terminal.g_pane_rect_rows = pty_rows_s;
                 terminal.g_pane_rect_cols = @intCast(ctx.grid_cols);
                 const eng = publish.ctxEngine(ctx);
-                const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw;
+                // Force full redraw when frames were throttled during rapid
+                // output — incremental dirty tracking may miss rows when
+                // the engine processes many screenfuls between publishes.
+                const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw or (throttled_frames > 0);
                 if (full_redraw) {
                     eng.state.dirty.markAll(eng.state.ring.screen_rows);
                 }
@@ -905,6 +912,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
 
+            throttled_frames = 0;
             if (got_data) {
                 const h = state_hash.hash(&publish.ctxEngine(ctx).state);
                 ctx.session.appendFrame(h, publish.ctxEngine(ctx).state.alt_active);
