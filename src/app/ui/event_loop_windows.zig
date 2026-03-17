@@ -206,7 +206,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_popup.checkPopupExit(ctx);
 
         // ── Pane exit detection ──
-        checkPaneExits(ctx);
+        var pane_exited = false;
+        checkPaneExits(ctx, &pane_exited);
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
@@ -285,7 +286,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
@@ -926,11 +927,12 @@ pub fn updateGridOffsets(ctx: *WinCtx) void {
 
 // ── Pane exit detection ──
 
-fn checkPaneExits(ctx: *WinCtx) void {
+fn checkPaneExits(ctx: *WinCtx, pane_exited: *bool) void {
     var tab_idx: u8 = 0;
     while (tab_idx < ctx.tab_mgr.count) : (tab_idx += 1) {
         const lay = &(ctx.tab_mgr.tabs[tab_idx] orelse continue);
         const exited_idx = lay.findExitedPane() orelse continue;
+        pane_exited.* = true;
         if (lay.pane_count <= 1) {
             ctx.tab_mgr.closeTab(tab_idx);
             if (ctx.tab_mgr.count == 0) {
@@ -939,12 +941,14 @@ fn checkPaneExits(ctx: *WinCtx) void {
             }
             updateGridOffsets(ctx);
             switchActiveTab(ctx);
+            c.attyx_mark_all_dirty();
             tab_idx -|= 1;
         } else {
             _ = lay.closePaneAt(exited_idx, ctx.allocator);
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
             lay.layout(pty_rows, ctx.grid_cols);
             if (tab_idx == ctx.tab_mgr.active) switchActiveTab(ctx);
+            c.attyx_mark_all_dirty();
         }
     }
 }
