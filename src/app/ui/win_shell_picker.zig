@@ -18,16 +18,38 @@ const logging = @import("../../logging/log.zig");
 
 const ShellType = Pty.ShellType;
 
-const shell_entries = [_]struct { shell: ShellType, label: []const u8 }{
-    .{ .shell = .zsh, .label = "zsh (MSYS2)" },
-    .{ .shell = .pwsh, .label = "PowerShell" },
-    .{ .shell = .cmd, .label = "Command Prompt" },
+const ShellEntry = struct {
+    shell: ShellType,
+    label: []const u8,
+    /// For shells not in ShellType (e.g. Git Bash), the full path to pass as shell override.
+    shell_override: []const u8 = "",
 };
-const entry_count: u8 = shell_entries.len;
 
+const max_entries = 5;
+var g_entries: [max_entries]ShellEntry = undefined;
+var g_entry_count: u8 = 0;
 var g_selected: u8 = 0;
 
+fn buildEntries() void {
+    g_entry_count = 0;
+    // Always include zsh (MSYS2)
+    g_entries[g_entry_count] = .{ .shell = .zsh, .label = "zsh (MSYS2)" };
+    g_entry_count += 1;
+
+    // Git Bash — only if installed
+    if (@import("../pty_windows.zig").findGitBashUtf8()) |_| {
+        g_entries[g_entry_count] = .{ .shell = .auto, .label = "Git Bash", .shell_override = "bash" };
+        g_entry_count += 1;
+    }
+
+    g_entries[g_entry_count] = .{ .shell = .pwsh, .label = "PowerShell" };
+    g_entry_count += 1;
+    g_entries[g_entry_count] = .{ .shell = .cmd, .label = "Command Prompt" };
+    g_entry_count += 1;
+}
+
 pub fn open(ctx: *WinCtx) void {
+    buildEntries();
     g_selected = 0;
     @atomicStore(i32, &ws.g_shell_picker_active, 1, .seq_cst);
     renderAndPublish(ctx);
@@ -65,12 +87,12 @@ pub fn consumeInput(ctx: *WinCtx) bool {
                 if (g_selected > 0) g_selected -= 1;
             },
             10 => { // Down
-                if (g_selected < entry_count - 1) g_selected += 1;
+                if (g_selected + 1 < g_entry_count) g_selected += 1;
             },
             8 => { // Enter / confirm
-                const selected_shell = shell_entries[g_selected].shell;
+                const entry = g_entries[g_selected];
                 close(ctx);
-                spawnShellTab(ctx, selected_shell);
+                spawnShellTab(ctx, entry);
                 return true;
             },
             7 => { // Esc
@@ -85,12 +107,13 @@ pub fn consumeInput(ctx: *WinCtx) bool {
     return consumed;
 }
 
-fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
+fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
+    const shell = entry.shell;
     const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
 
     if (ctx.session_client) |sc| {
         // Daemon mode: create daemon-backed pane with shell override.
-        const shell_name: []const u8 = switch (shell) {
+        const shell_name: []const u8 = if (entry.shell_override.len > 0) entry.shell_override else switch (shell) {
             .zsh => "zsh",
             .pwsh => "pwsh.exe",
             .cmd => "cmd.exe",
@@ -133,7 +156,7 @@ fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
     pane.engine.state.dirty.markAll(pane.engine.state.ring.screen_rows);
     event_loop.switchActiveTab(ctx);
     event_loop.saveLayoutToDaemon(ctx);
-    logging.info("shell-picker", "opened new tab with {s}", .{@tagName(shell)});
+    logging.info("shell-picker", "opened new tab with {s}", .{entry.label});
 }
 
 // ── Rendering ──
@@ -146,13 +169,13 @@ fn renderAndPublish(ctx: *WinCtx) void {
     const theme = publish.overlayThemeFromTheme(ctx.theme);
 
     // Build menu items from shell entries.
-    var menu_items: [entry_count]Element.MenuItem = undefined;
-    for (shell_entries, 0..) |entry, i| {
+    var menu_items: [max_entries]Element.MenuItem = undefined;
+    for (g_entries[0..g_entry_count], 0..) |entry, i| {
         menu_items[i] = .{ .label = entry.label };
     }
 
     const menu = Element{ .menu = .{
-        .items = &menu_items,
+        .items = menu_items[0..g_entry_count],
         .selected = g_selected,
         .selected_style = .{ .bg = theme.selected_bg, .fg = theme.selected_fg },
     } };
@@ -162,7 +185,7 @@ fn renderAndPublish(ctx: *WinCtx) void {
         .{
             .title = "Select Shell",
             .width = .{ .cells = 30 },
-            .height = .{ .cells = entry_count + 4 },
+            .height = .{ .cells = g_entry_count + 4 },
             .border = .rounded,
             .theme = theme,
         },
