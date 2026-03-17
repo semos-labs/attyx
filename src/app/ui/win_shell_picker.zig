@@ -115,88 +115,52 @@ fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
 
 // ── Rendering ──
 
+const Element = overlay_mod.Element;
+const panel_mod = attyx.overlay_panel;
+
 fn renderAndPublish(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     const theme = publish.overlayThemeFromTheme(ctx.theme);
 
-    const panel_width: u16 = 30;
-    const panel_height: u16 = entry_count + 3; // title + separator + entries + bottom border
-    const col = if (ctx.grid_cols > panel_width) (ctx.grid_cols - panel_width) / 2 else 0;
-    const row = if (ctx.grid_rows > panel_height + 2) (ctx.grid_rows - panel_height) / 3 else 0;
-
-    const total = @as(usize, panel_width) * @as(usize, panel_height);
-    const cells = ctx.allocator.alloc(StyledCell, total) catch return;
-
-    const bg = theme.bg;
-    const fg = theme.fg;
-    const highlight_bg = theme.selected_bg;
-    const highlight_fg = theme.selected_fg;
-    const dim_fg = theme.border_color;
-
-    // Fill background
-    for (cells) |*cell| {
-        cell.* = .{ .char = ' ', .fg = fg, .bg = bg, .bg_alpha = 230 };
-    }
-
-    // Title row
-    const title = "Select Shell";
-    writeString(cells, 0, (panel_width - @as(u16, @intCast(title.len))) / 2, panel_width, title, fg, bg, 230);
-
-    // Separator row
-    for (0..panel_width) |x| {
-        cells[1 * panel_width + x] = .{ .char = 0x2500, .fg = dim_fg, .bg = bg, .bg_alpha = 230 }; // ─
-    }
-
-    // Entries
+    // Build menu items from shell entries.
+    var menu_items: [entry_count]Element.MenuItem = undefined;
     for (shell_entries, 0..) |entry, i| {
-        const y: u16 = @intCast(2 + i);
-        const is_selected = (@as(u8, @intCast(i)) == g_selected);
-        const entry_bg = if (is_selected) highlight_bg else bg;
-        const entry_fg = if (is_selected) highlight_fg else fg;
-        const alpha: u8 = 230;
-
-        // Fill row background
-        for (0..panel_width) |x| {
-            cells[y * panel_width + x] = .{ .char = ' ', .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
-        }
-
-        // Indicator
-        const indicator: u21 = if (is_selected) 0x25B8 else ' '; // ▸
-        cells[y * panel_width + 1] = .{ .char = indicator, .fg = entry_fg, .bg = entry_bg, .bg_alpha = alpha };
-
-        // Label
-        writeString(cells, y, 3, panel_width, entry.label, entry_fg, entry_bg, alpha);
+        menu_items[i] = .{ .label = entry.label };
     }
 
-    mgr.setContent(.shell_picker, col, row, panel_width, panel_height, cells) catch {
-        ctx.allocator.free(cells);
-        return;
-    };
+    const menu = Element{ .menu = .{
+        .items = &menu_items,
+        .selected = g_selected,
+        .selected_style = .{ .bg = theme.selected_bg, .fg = theme.selected_fg },
+    } };
+
+    const result = panel_mod.renderPanel(
+        ctx.allocator,
+        .{
+            .title = "Select Shell",
+            .width = .{ .cells = 30 },
+            .height = .{ .cells = entry_count + 4 },
+            .border = .rounded,
+            .theme = theme,
+        },
+        menu,
+        ctx.grid_cols,
+        ctx.grid_rows,
+    ) catch return;
+
+    if (result.width == 0 or result.height == 0) return;
+
+    mgr.setContent(
+        .shell_picker,
+        result.col,
+        result.row,
+        result.width,
+        result.height,
+        result.cells,
+    ) catch {};
     mgr.show(.shell_picker);
     mgr.layers[@intFromEnum(overlay_mod.OverlayId.shell_picker)].backdrop_alpha = 100;
-    ctx.allocator.free(cells);
+    ctx.allocator.free(result.cells);
 
     win_search.publishOverlays(ctx);
-}
-
-fn writeString(
-    cells: []StyledCell,
-    row: u16,
-    col: u16,
-    width: u16,
-    text: []const u8,
-    fg: Rgb,
-    bg: Rgb,
-    alpha: u8,
-) void {
-    for (text, 0..) |ch, i| {
-        const x = col + @as(u16, @intCast(i));
-        if (x >= width) break;
-        cells[@as(usize, row) * @as(usize, width) + @as(usize, x)] = .{
-            .char = ch,
-            .fg = fg,
-            .bg = bg,
-            .bg_alpha = alpha,
-        };
-    }
 }
