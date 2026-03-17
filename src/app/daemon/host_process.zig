@@ -215,8 +215,11 @@ fn hostMain(allocator: std.mem.Allocator, args: HostArgs) void {
         // Send READY frame.
         _ = sendFrame(daemon_pipe, .ready, &.{});
 
-        // Replay buffered output from previous disconnect.
+        // Replay output buffered during daemon disconnect, then clear
+        // so the ring only holds data from the next disconnect gap.
+        // (The daemon has its own replay buffer for historical output.)
         replayBuffer(daemon_pipe, &ring);
+        ring.clear();
 
         // Enter relay loop.
         const reason = relayLoop(daemon_pipe, &pty, &ring);
@@ -231,9 +234,11 @@ fn hostMain(allocator: std.mem.Allocator, args: HostArgs) void {
                 return;
             },
             .daemon_disconnected => {
-                // Daemon disconnected (upgrade) — loop back and wait for new daemon.
+                // Daemon disconnected (upgrade) — drain ConPTY output into
+                // ring buffer while waiting for new daemon to reconnect.
                 hostLog("daemon disconnected, waiting for reconnect");
                 if (shellExited(&pty)) return;
+                drainPtyIntoRing(&pty, &ring);
                 continue;
             },
         }
@@ -242,7 +247,7 @@ fn hostMain(allocator: std.mem.Allocator, args: HostArgs) void {
 
 const RelayResult = enum { shell_died, daemon_disconnected };
 
-fn relayLoop(daemon_pipe: HANDLE, pty: *Pty, ring: *RingBuffer) RelayResult {
+fn relayLoop(daemon_pipe: HANDLE, pty: *Pty, _: *RingBuffer) RelayResult {
     var pty_buf: [65536]u8 = undefined;
     var daemon_read_buf: [65536 + host_pipe.frame_header_size]u8 = undefined;
     var daemon_read_len: usize = 0;
@@ -300,19 +305,19 @@ fn relayLoop(daemon_pipe: HANDLE, pty: *Pty, ring: *RingBuffer) RelayResult {
             }
         }
 
-        // 2. Check for data from ConPTY → forward to daemon + buffer in ring.
+        // 2. Check for data from ConPTY → forward to daemon.
+        //    Don't buffer in ring during normal relay — the ring is only
+        //    for data that arrives while the daemon is disconnected.
+        //    If sendDataOut fails, we return immediately; the outer loop
+        //    will then drain ConPTY into the ring while waiting for reconnect.
         {
-            // Check async read first.
             if (pty.checkAsyncRead()) |data| {
-                ring.write(data);
                 if (!sendDataOut(daemon_pipe, data)) return .daemon_disconnected;
             }
 
-            // Also drain any peeked data.
             while (pty.peekAvail() > 0) {
                 const n = pty.read(&pty_buf) catch break;
                 if (n == 0) break;
-                ring.write(pty_buf[0..n]);
                 if (!sendDataOut(daemon_pipe, pty_buf[0..n])) return .daemon_disconnected;
             }
 
@@ -329,6 +334,21 @@ fn relayLoop(daemon_pipe: HANDLE, pty: *Pty, ring: *RingBuffer) RelayResult {
 
         Sleep(5); // ~200Hz polling
     }
+}
+
+/// Drain any pending ConPTY output into the ring buffer.
+/// Called after daemon disconnect, before blocking on ConnectNamedPipe.
+fn drainPtyIntoRing(pty: *Pty, ring: *RingBuffer) void {
+    var buf: [65536]u8 = undefined;
+    if (pty.checkAsyncRead()) |data| {
+        ring.write(data);
+    }
+    while (pty.peekAvail() > 0) {
+        const n = pty.read(&buf) catch break;
+        if (n == 0) break;
+        ring.write(buf[0..n]);
+    }
+    pty.startAsyncRead();
 }
 
 fn replayBuffer(daemon_pipe: HANDLE, ring: *RingBuffer) void {
