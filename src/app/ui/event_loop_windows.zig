@@ -290,7 +290,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
-            if (!viewport_changed and !tabs_changed and (now - last_publish_ns) < min_frame_ns) {
+            if (!viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
                 Sleep(0);
                 continue;
             }
@@ -333,7 +333,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 c.attyx_mark_all_dirty();
             } else {
                 const total: usize = @as(usize, pty_rows) * @as(usize, ctx.grid_cols);
-                if (viewport_changed) {
+                const full_repaint = viewport_changed or tabs_changed or pane_exited;
+                if (full_repaint) {
                     publish.fillCells(ctx.cells[0..total], eng, total, ctx.theme, null);
                     c.attyx_mark_all_dirty();
                 } else {
