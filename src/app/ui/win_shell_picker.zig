@@ -115,7 +115,7 @@ fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
 
 // ── Rendering ──
 
-const Element = overlay_mod.Element;
+const Element = attyx.overlay_ui.Element;
 const panel_mod = attyx.overlay_panel;
 
 fn renderAndPublish(ctx: *WinCtx) void {
