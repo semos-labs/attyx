@@ -125,6 +125,7 @@ pub fn formatPipeNameUtf8(buf: *[128]u8, pane_id: u32, is_dev: bool) ?[]const u8
 pub const HostConnection = struct {
     pipe: HANDLE,
     pane_id: u32,
+    host_pid: u32 = 0,
     read_buf: [65536 + frame_header_size]u8 = undefined,
     read_len: usize = 0,
     /// Stable copy of the last frame's payload (avoids use-after-move
@@ -296,7 +297,7 @@ extern "kernel32" fn CreateProcessW(
 const CREATE_NO_WINDOW: DWORD = 0x08000000;
 const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 
-/// Spawn a host process for a pane. Returns true on success.
+/// Spawn a host process for a pane. Returns the host PID, or 0 on failure.
 pub fn spawnHostProcess(
     pane_id: u32,
     shell_type: []const u8,
@@ -305,10 +306,10 @@ pub fn spawnHostProcess(
     cwd: ?[*:0]const u8,
     startup_cmd: ?[*:0]const u8,
     is_dev: bool,
-) bool {
+) u32 {
     _ = is_dev;
     var exe_buf: [1024]u8 = undefined;
-    const exe_path = session_connect.getExePath(&exe_buf) orelse return false;
+    const exe_path = session_connect.getExePath(&exe_buf) orelse return 0;
 
     // Build command line: "exe" --host <id> --shell <type> --rows <r> --cols <c> [--cwd <path>]
     var cmd_ascii: [4096]u8 = undefined;
@@ -317,16 +318,16 @@ pub fn spawnHostProcess(
     // Quote the exe path
     pos += (std.fmt.bufPrint(cmd_ascii[pos..], "\"{s}\" --host {d} --shell {s} --rows {d} --cols {d}", .{
         exe_path, pane_id, shell_type, rows, cols,
-    }) catch return false).len;
+    }) catch return 0).len;
 
     if (cwd) |c| {
         const cwd_str = std.mem.sliceTo(c, 0);
-        pos += (std.fmt.bufPrint(cmd_ascii[pos..], " --cwd \"{s}\"", .{cwd_str}) catch return false).len;
+        pos += (std.fmt.bufPrint(cmd_ascii[pos..], " --cwd \"{s}\"", .{cwd_str}) catch return 0).len;
     }
 
     if (startup_cmd) |sc| {
         const cmd_str = std.mem.sliceTo(sc, 0);
-        pos += (std.fmt.bufPrint(cmd_ascii[pos..], " --startup-cmd \"{s}\"", .{cmd_str}) catch return false).len;
+        pos += (std.fmt.bufPrint(cmd_ascii[pos..], " --startup-cmd \"{s}\"", .{cmd_str}) catch return 0).len;
     }
 
     // Convert to UTF-16
@@ -342,11 +343,12 @@ pub fn spawnHostProcess(
     // without a visible window. No daemon hidden console needed — avoids
     // stray console windows that interfere with installers (winget etc).
     if (CreateProcessW(null, &cmd_wide, null, null, 0, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
-        return false;
+        return 0;
     }
+    const pid = pi.dwProcessId;
     _ = CloseHandle(pi.hThread);
     _ = CloseHandle(pi.hProcess);
-    return true;
+    return pid;
 }
 
 /// Wait for READY frame from a host connection (with timeout).

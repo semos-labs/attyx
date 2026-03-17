@@ -154,8 +154,8 @@ pub const DaemonPane = struct {
         const shell_type = if (shell) |s| deriveShellType(std.mem.sliceTo(s, 0)) else "auto";
         const is_dev = comptime !std.mem.eql(u8, attyx.env, "production");
 
-        if (!host_pipe.spawnHostProcess(id, shell_type, rows, cols, cwd, cmd, is_dev))
-            return error.HostSpawnFailed;
+        const host_pid = host_pipe.spawnHostProcess(id, shell_type, rows, cols, cwd, cmd, is_dev);
+        if (host_pid == 0) return error.HostSpawnFailed;
 
         // Connect to the host's named pipe.
         const conn = try allocator.create(HostConnection);
@@ -170,6 +170,7 @@ pub const DaemonPane = struct {
             allocator.destroy(conn);
             return error.HostReadyTimeout;
         }
+        conn.host_pid = host_pid;
 
         return DaemonPane{
             .id = id,
@@ -427,14 +428,21 @@ pub const DaemonPane = struct {
 
     /// Check if the foreground process name changed. Returns the new name if changed, null otherwise.
     pub fn checkProcNameChanged(self: *DaemonPane) ?[]const u8 {
-        if (comptime is_windows) return null; // No PTY fg process name on Windows yet
         var buf: [256]u8 = undefined;
-        const name = platform.getForegroundProcessName(self.pty.master, &buf) orelse return null;
-        const len: u8 = @intCast(@min(name.len, 64));
-        if (len == self.proc_name_len and std.mem.eql(u8, self.proc_name[0..len], name[0..len])) {
+        const name = if (comptime is_windows) blk: {
+            // Windows: walk the process tree from the host PID to find the
+            // deepest leaf (the actual foreground command like vim, git, etc.)
+            const win_plat = @import("../../platform/windows.zig");
+            const pid = if (self.host_conn) |hc| hc.host_pid else 0;
+            break :blk win_plat.getDeepestChildName(pid, &buf);
+        } else platform.getForegroundProcessName(self.pty.master, &buf);
+
+        const resolved = name orelse return null;
+        const len: u8 = @intCast(@min(resolved.len, 64));
+        if (len == self.proc_name_len and std.mem.eql(u8, self.proc_name[0..len], resolved[0..len])) {
             return null; // unchanged
         }
-        @memcpy(self.proc_name[0..len], name[0..len]);
+        @memcpy(self.proc_name[0..len], resolved[0..len]);
         self.proc_name_len = len;
         return self.proc_name[0..len];
     }
