@@ -105,7 +105,9 @@ fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
     };
 
     event_loop.updateGridOffsets(ctx);
-    ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
+    const pane = ctx.tab_mgr.activePane();
+    pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
+    pane.engine.state.dirty.markAll(pane.engine.state.ring.screen_rows);
     event_loop.switchActiveTab(ctx);
     event_loop.saveLayoutToDaemon(ctx);
     logging.info("shell-picker", "opened new tab with {s}", .{@tagName(shell)});
