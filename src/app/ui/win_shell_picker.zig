@@ -97,6 +97,11 @@ fn spawnShellTab(ctx: *WinCtx, shell: ShellType) void {
         ctx.allocator.destroy(new_pane);
         return;
     };
+    // Start async read immediately — ConPTY only flushes output when a
+    // ReadFile is pending. cmd.exe/PowerShell start fast and produce their
+    // banner before we'd normally call startAsyncRead in switchActiveTab,
+    // so that initial output is lost if no read is pending.
+    new_pane.pty.startAsyncRead();
     ctx.tab_mgr.addTabWithPane(new_pane, rows, ctx.grid_cols) catch |err| {
         logging.err("shell-picker", "addTabWithPane failed: {}", .{err});
         new_pane.deinit();
