@@ -16,6 +16,8 @@ const handler = @import("handler.zig");
 const session_connect = @import("../session_connect.zig");
 const state_persist = @import("state_persist.zig");
 const upgrade = @import("upgrade_windows.zig");
+const host_pipe = @import("host_pipe.zig");
+const HostConnection = host_pipe.HostConnection;
 
 /// File-based debug logging for daemon (no console available).
 fn daemonLog(msg: []const u8) void {
@@ -287,6 +289,12 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
     }
     state.client_count = 0;
 
+    // Detach host pipe connections BEFORE spawning new daemon.
+    // Host pipes use nMaxInstances=1, so the new daemon can't connect
+    // while the old daemon still holds the pipe open. Closing without
+    // sending KILL lets host processes enter reconnect mode.
+    detachHostConnections(state);
+
     const result = upgrade.performUpgrade(
         state.sessions,
         state.next_session_id,
@@ -298,11 +306,14 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
     switch (result) {
         .success => {
             // Host processes keep shells alive — old daemon exits cleanly.
+            // Host connections already detached above (before spawn).
             daemonLog("upgrade: success, exiting cleanly");
         },
         .failed => {
-            daemonLog("upgrade: failed, rebinding listener");
+            daemonLog("upgrade: failed, reconnecting to hosts");
             state.upgrade_requested = false;
+            // Reconnect to host processes (we detached above).
+            reconnectHostConnections(state);
             // Re-create listener so old daemon can continue serving
             state.connect_overlap.hEvent = CreateEventW(null, 1, 0, null);
             state.listen_pipe = createPipeInstance(state.getPipeName());
@@ -311,6 +322,47 @@ fn performUpgradeAndKeep(state: *DaemonState) void {
         .fatal => {
             daemonLog("upgrade: fatal failure");
         },
+    }
+}
+
+/// Close host pipe handles without sending KILL. Called before cleanup
+/// on successful upgrade so that host processes survive for the new daemon.
+fn detachHostConnections(state: *DaemonState) void {
+    for (state.sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*pane| {
+                    if (pane.host_conn) |hc| {
+                        hc.deinit(); // Close pipe, no KILL sent
+                        pane.host_conn = null;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Reconnect to host processes after a failed upgrade attempt.
+fn reconnectHostConnections(state: *DaemonState) void {
+    const is_dev = !std.mem.eql(u8, attyx.env, "production");
+    for (state.sessions) |*slot| {
+        if (slot.*) |*s| {
+            for (&s.panes) |*pslot| {
+                if (pslot.*) |*pane| {
+                    if (pane.host_conn == null and pane.alive) {
+                        const conn = state.allocator.create(HostConnection) catch continue;
+                        conn.* = HostConnection.connect(pane.id, is_dev) orelse {
+                            state.allocator.destroy(conn);
+                            daemonLog("reconnect: failed for pane");
+                            pane.alive = false;
+                            pane.exit_code = 1;
+                            continue;
+                        };
+                        pane.host_conn = conn;
+                    }
+                }
+            }
+        }
     }
 }
 

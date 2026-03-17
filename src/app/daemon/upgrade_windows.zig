@@ -382,8 +382,10 @@ pub fn performUpgrade(
         return .failed;
     }
 
+    // Don't delete upgrade.bin here — the new daemon reads it in
+    // restoreFromUpgrade() and deletes it after successful deserialization.
+    // Deleting here races with the new daemon's read.
     daemonLog("upgrade: new daemon verified, old daemon exiting cleanly");
-    cleanup(upgrade_path);
     return .success;
 }
 

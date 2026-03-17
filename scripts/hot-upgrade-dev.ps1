@@ -8,14 +8,15 @@
 #   2. Copies the new binary to the staging path (upgrade-dev.exe)
 #   3. The running daemon detects the staged binary within ~2s
 #   4. Daemon performs hot-upgrade: swaps exe, spawns new daemon,
-#      enters HPCON keeper mode (shells stay alive)
+#      host processes keep shells alive across the transition
 #
 # The daemon polls for upgrade-dev.exe every ~2s. Once found, it:
+#   - Disconnects from host processes (they enter reconnect mode)
 #   - Renames running attyx.exe → attyx.exe.old
 #   - Moves upgrade-dev.exe → attyx.exe
-#   - Serializes session state with inherited HANDLE values
-#   - Spawns new daemon with bInheritHandles=TRUE
-#   - Old daemon keeps HPCON alive until all shells exit
+#   - Serializes session state (pane IDs, not handles)
+#   - Spawns new daemon (no handle inheritance needed)
+#   - Old daemon exits cleanly; new daemon reconnects to hosts
 
 $ErrorActionPreference = "Stop"
 
