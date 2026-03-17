@@ -218,6 +218,12 @@ pub const SessionClient = struct {
         try self.sendMessage(.create_pane, payload);
     }
 
+    pub fn sendCreatePaneWithShell(self: *SessionClient, rows: u16, cols: u16, cwd: []const u8, shell: []const u8) !void {
+        var payload_buf: [8465]u8 = undefined;
+        const payload = try protocol.encodeCreatePaneWithCmdFlagsShell(&payload_buf, rows, cols, cwd, "", 0, shell);
+        try self.sendMessage(.create_pane, payload);
+    }
+
     pub fn sendClosePane(self: *SessionClient, pane_id: u32) !void {
         var payload_buf: [4]u8 = undefined;
         const payload = try protocol.encodeClosePane(&payload_buf, pane_id);

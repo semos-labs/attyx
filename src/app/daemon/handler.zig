@@ -240,7 +240,16 @@ fn handleCreatePane(
         PaneBufs.cmd_z_buf[msg.cmd.len] = 0;
         break :blk @ptrCast(&PaneBufs.cmd_z_buf);
     } else null;
-    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, cmd_z, msg.capture_stdout) catch {
+    // Optional shell override (e.g. from shell picker: "pwsh.exe", "cmd.exe").
+    const ShellBuf = struct {
+        var shell_z_buf: [257]u8 = undefined;
+    };
+    const shell_z: ?[*:0]const u8 = if (msg.shell.len > 0 and msg.shell.len < ShellBuf.shell_z_buf.len) blk: {
+        @memcpy(ShellBuf.shell_z_buf[0..msg.shell.len], msg.shell);
+        ShellBuf.shell_z_buf[msg.shell.len] = 0;
+        break :blk @ptrCast(&ShellBuf.shell_z_buf);
+    } else null;
+    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, shell_z, cmd_z, msg.capture_stdout) catch {
         cl.sendError(3, "create pane failed");
         return;
     };
@@ -423,7 +432,7 @@ fn reviveSession(
                 const pane_id = next_pane_id.*;
                 next_pane_id.* += 1;
                 new_ids[i] = pane_id;
-                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch continue;
+                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, null, false) catch continue;
                 if (session.findPane(pane_id)) |pane| {
                     if (comptime !is_windows) setNonBlocking(pane.pty.master);
                 }
@@ -445,7 +454,7 @@ fn reviveSession(
     // Fallback: spawn a single pane (no layout or deserialization failed).
     const pane_id = next_pane_id.*;
     next_pane_id.* += 1;
-    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch return;
+    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, null, false) catch return;
     if (session.findPane(pane_id)) |pane| {
         if (comptime !is_windows) setNonBlocking(pane.pty.master);
     }
