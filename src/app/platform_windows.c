@@ -498,6 +498,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (!g_window_decorations && wParam) return 0;
         break;
 
+    // During window resize/move drag, DefWindowProc enters a modal message
+    // loop that blocks our main loop. Use a timer to keep rendering at ~60fps.
+    case WM_ENTERSIZEMOVE:
+        SetTimer(hwnd, 1, 16, NULL);  // ~60fps timer
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer(hwnd, 1);
+        return 0;
+    case WM_TIMER:
+        if (wParam == 1) {
+            // Render a frame during modal resize/move
+            if (windows_renderer_draw_frame()) {
+                windows_renderer_present();
+            }
+        }
+        return 0;
+
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED) {
             int w = LOWORD(lParam);

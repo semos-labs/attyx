@@ -26,7 +26,7 @@ else
 /// During continuous window resizing, the engine state is updated every
 /// frame for correct display, but SIGWINCH is throttled to avoid flooding
 /// the shell with prompt redraws that create ghost content.
-const pty_resize_debounce_ns: i128 = 80 * std.time.ns_per_ms;
+const pty_resize_throttle_ns: i128 = 80 * std.time.ns_per_ms;
 
 pub const Pane = struct {
     engine: Engine,
@@ -242,7 +242,7 @@ pub const Pane = struct {
         // Daemon-backed panes: send resize to daemon, not local PTY.
         if (self.daemon_pane_id) |dpid| {
             const now = std.time.nanoTimestamp();
-            if (now - self.last_pty_resize_ns >= pty_resize_debounce_ns) {
+            if (now - self.last_pty_resize_ns >= pty_resize_throttle_ns) {
                 // Send pane_resize to daemon via session client.
                 if (self.session_client) |sc| {
                     sc.sendPaneResize(dpid, self.pending_pty_rows, self.pending_pty_cols) catch {};
@@ -252,7 +252,7 @@ pub const Pane = struct {
             return;
         }
         const now = std.time.nanoTimestamp();
-        if (now - self.last_pty_resize_ns >= pty_resize_debounce_ns) {
+        if (now - self.last_pty_resize_ns >= pty_resize_throttle_ns) {
             self.pty.resize(self.pending_pty_rows, self.pending_pty_cols) catch {};
             self.pending_pty_resize = false;
         }
