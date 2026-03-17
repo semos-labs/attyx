@@ -39,9 +39,6 @@ pub const DaemonPane = struct {
     /// Tracked OSC 7337;set-path shell PATH for replay restoration.
     osc7337_path: [2048]u8 = .{0} ** 2048,
     osc7337_path_len: u16 = 0,
-    /// True when an OSC 7337 sequence started in a previous data chunk
-    /// but its terminator hasn't been seen yet (cross-boundary filtering).
-    in_osc7337: bool = false,
 
     /// Heap-allocated captured stdout for --wait mode.
     /// Only allocated when capture_stdout is requested at spawn time.
@@ -198,9 +195,9 @@ pub const DaemonPane = struct {
         if (data.len > 0) {
             if (findLastEraseScrollback(data)) |pos| {
                 self.replay.clear();
-                self.writeReplayFiltered(data[pos..]);
+                self.replay.write(data[pos..]);
             } else {
-                self.writeReplayFiltered(data);
+                self.replay.write(data);
             }
             self.trackModes(data);
             self.trackOsc(data);
@@ -218,9 +215,9 @@ pub const DaemonPane = struct {
             const slice = out_buf[0..n];
             if (findLastEraseScrollback(slice)) |pos| {
                 self.replay.clear();
-                self.writeReplayFiltered(slice[pos..]);
+                self.replay.write(slice[pos..]);
             } else {
-                self.writeReplayFiltered(slice);
+                self.replay.write(slice);
             }
             self.trackModes(slice);
             self.trackOsc(slice);
@@ -239,60 +236,15 @@ pub const DaemonPane = struct {
             // buffer so replayed sessions don't resurrect cleared scrollback.
             if (findLastEraseScrollback(data)) |pos| {
                 self.replay.clear();
-                self.writeReplayFiltered(data[pos..]);
+                self.replay.write(data[pos..]);
             } else {
-                self.writeReplayFiltered(data);
+                self.replay.write(data);
             }
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
         }
         return n;
-    }
-
-    /// Write data to replay buffer, stripping OSC 7337;set-path sequences.
-    /// Handles sequences that span data chunk boundaries via `in_osc7337` state.
-    fn writeReplayFiltered(self: *DaemonPane, data: []const u8) void {
-        var i: usize = 0;
-        var last: usize = 0;
-
-        // If previous chunk ended mid-OSC-7337, skip until terminator.
-        if (self.in_osc7337) {
-            while (i < data.len) : (i += 1) {
-                if (data[i] == 0x07) { i += 1; break; }
-                if (data[i] == '\x1b' and i + 1 < data.len and data[i + 1] == '\\') {
-                    i += 2;
-                    break;
-                }
-            }
-            self.in_osc7337 = (i >= data.len);
-            last = i;
-        }
-
-        while (i + 1 < data.len) {
-            if (data[i] == '\x1b' and data[i + 1] == ']') {
-                const rest = data[i + 2 ..];
-                if (rest.len >= 5 and rest[0] == '7' and rest[1] == '3' and
-                    rest[2] == '3' and rest[3] == '7' and rest[4] == ';')
-                {
-                    if (i > last) self.replay.write(data[last..i]);
-                    var j = i + 7;
-                    while (j < data.len) : (j += 1) {
-                        if (data[j] == 0x07) { j += 1; break; }
-                        if (data[j] == '\x1b' and j + 1 < data.len and data[j + 1] == '\\') {
-                            j += 2;
-                            break;
-                        }
-                    }
-                    if (j >= data.len) self.in_osc7337 = true;
-                    last = j;
-                    i = j;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        if (last < data.len) self.replay.write(data[last..]);
     }
 
     /// Scan for the last occurrence of CSI 3 J (`\x1b[3J`) in `data`.

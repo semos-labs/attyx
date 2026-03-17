@@ -232,8 +232,9 @@ pub const DaemonClient = struct {
         }
         // Cursor visibility (send after replay data so it takes final effect)
         self.sendPaneOutput(pane.id, prefix[0..plen]);
-        if (slices.first.len > 0) self.sendPaneOutput(pane.id, slices.first);
-        if (slices.second.len > 0) self.sendPaneOutput(pane.id, slices.second);
+        var in_osc7337 = false;
+        if (slices.first.len > 0) self.sendReplayStripped(pane.id, slices.first, &in_osc7337);
+        if (slices.second.len > 0) self.sendReplayStripped(pane.id, slices.second, &in_osc7337);
         // Apply cursor visibility after replay — the replay may toggle it,
         // but the tracked state reflects the most recent value.
         if (!pane.cursor_visible) {
@@ -253,6 +254,49 @@ pub const DaemonClient = struct {
             const osc = std.fmt.bufPrint(&path_buf, "\x1b]7337;set-path;{s}\x07", .{pane.osc7337_path[0..pane.osc7337_path_len]}) catch null;
             if (osc) |seq| self.sendPaneOutput(pane.id, seq);
         }
+    }
+
+    /// Send replay data, stripping OSC 7337;set-path sequences.
+    /// `in_osc` tracks cross-slice state (true = mid-sequence from previous call).
+    fn sendReplayStripped(self: *DaemonClient, pane_id: u32, data: []const u8, in_osc: *bool) void {
+        var i: usize = 0;
+        var last: usize = 0;
+
+        // Continue skipping if previous slice ended mid-OSC-7337.
+        if (in_osc.*) {
+            while (i < data.len) : (i += 1) {
+                if (data[i] == 0x07) { i += 1; break; }
+                if (data[i] == '\x1b' and i + 1 < data.len and data[i + 1] == '\\') {
+                    i += 2;
+                    break;
+                }
+            }
+            in_osc.* = (i >= data.len);
+            last = i;
+        }
+
+        while (i < data.len) {
+            if (data[i] == '\x1b' and i + 6 < data.len and data[i + 1] == ']' and
+                data[i + 2] == '7' and data[i + 3] == '3' and
+                data[i + 4] == '3' and data[i + 5] == '7' and data[i + 6] == ';')
+            {
+                if (i > last) self.sendPaneOutput(pane_id, data[last..i]);
+                var j = i + 7;
+                while (j < data.len) : (j += 1) {
+                    if (data[j] == 0x07) { j += 1; break; }
+                    if (data[j] == '\x1b' and j + 1 < data.len and data[j + 1] == '\\') {
+                        j += 2;
+                        break;
+                    }
+                }
+                if (j >= data.len) in_osc.* = true;
+                last = j;
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+        if (last < data.len) self.sendPaneOutput(pane_id, data[last..]);
     }
 
     /// Skip past a partial CSI escape sequence at the start of replay data.
