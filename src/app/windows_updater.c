@@ -51,12 +51,9 @@ static char g_download_url[2048];
 static char g_notes_url[2048];
 static char g_release_notes[16384];
 static HWND g_update_hwnd = NULL;
-static HWND g_notes_edit = NULL;
-static HWND g_install_btn = NULL;
-static HWND g_later_btn = NULL;
-static HWND g_progress_bar = NULL;
-static HWND g_status_label = NULL;
 static volatile int g_downloading = 0;
+static int g_dl_progress = 0;
+static char g_dl_status[256] = "";
 
 // ---------------------------------------------------------------------------
 // Version comparison
@@ -365,20 +362,15 @@ static DWORD WINAPI download_thread(LPVOID param) {
         WriteFile(file, chunk, bytes_read, &written, NULL);
         total += bytes_read;
 
-        // Update progress bar
-        if (g_progress_bar && content_length > 0) {
-            int pct = (int)((LONGLONG)total * 100 / content_length);
-            SendMessageW(g_progress_bar, PBM_SETPOS, pct, 0);
-        }
-        if (g_status_label) {
-            char msg[128];
-            if (content_length > 0)
-                snprintf(msg, sizeof(msg), "Downloading... %.1f / %.1f MB",
-                    total / 1048576.0, content_length / 1048576.0);
-            else
-                snprintf(msg, sizeof(msg), "Downloading... %.1f MB", total / 1048576.0);
-            SetWindowTextA(g_status_label, msg);
-        }
+        // Update progress
+        if (content_length > 0)
+            g_dl_progress = (int)((LONGLONG)total * 100 / content_length);
+        if (content_length > 0)
+            snprintf(g_dl_status, sizeof(g_dl_status), "Downloading... %.1f / %.1f MB",
+                total / 1048576.0, content_length / 1048576.0);
+        else
+            snprintf(g_dl_status, sizeof(g_dl_status), "Downloading... %.1f MB", total / 1048576.0);
+        if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
     }
 
     WinHttpCloseHandle(req);
@@ -390,8 +382,9 @@ static DWORD WINAPI download_thread(LPVOID param) {
     MoveFileExW(tmp, staging, MOVEFILE_REPLACE_EXISTING);
 
     // Update UI
-    if (g_status_label) SetWindowTextA(g_status_label, "Update downloaded. Restarting...");
-    if (g_install_btn) EnableWindow(g_install_btn, FALSE);
+    g_dl_progress = 100;
+    strcpy(g_dl_status, "Update downloaded. Restarting...");
+    if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
 
     // The daemon will detect the staged binary and hot-upgrade
     g_downloading = 0;
@@ -399,34 +392,193 @@ static DWORD WINAPI download_thread(LPVOID param) {
 }
 
 // ---------------------------------------------------------------------------
-// Update window
+// Update window — custom-painted dark theme (matches installer design)
 // ---------------------------------------------------------------------------
-#define ID_INSTALL 101
-#define ID_LATER   102
-#define PBM_SETPOS  0x0402
-#define PBM_SETRANGE32 0x0406
-#define PBS_SMOOTH  0x01
+#define UPD_W       520
+#define UPD_H       440
+#define UPD_BG      RGB(26, 26, 26)
+#define UPD_TEXT     RGB(224, 224, 224)
+#define UPD_DIM      RGB(128, 128, 128)
+#define UPD_BTN_BG   RGB(40, 40, 40)
+#define UPD_BTN_BD   RGB(80, 80, 80)
+#define UPD_BTN_HV   RGB(55, 55, 55)
+#define UPD_BTN_AC   RGB(70, 130, 180)
+#define UPD_PROG_BG  RGB(50, 50, 50)
+#define UPD_PROG_FG  RGB(70, 130, 180)
+#define UPD_MARGIN   32
+#define UPD_BTN_H    38
+#define UPD_LINE_H   20
+
+static HFONT g_uf_title, g_uf_body, g_uf_notes, g_uf_btn;
+static int g_upd_hover = 0;  // 0=none, 1=install, 2=later
+static RECT g_rc_upd_install, g_rc_upd_later;
+static void DrawUpdButton(HDC hdc, RECT *rc, const wchar_t *text, int hover, int accent) {
+    COLORREF bg = hover ? UPD_BTN_HV : UPD_BTN_BG;
+    COLORREF bd = accent ? UPD_BTN_AC : UPD_BTN_BD;
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(hdc, rc, br);
+    DeleteObject(br);
+    HPEN pen = CreatePen(PS_SOLID, accent ? 2 : 1, bd);
+    SelectObject(hdc, pen);
+    SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, rc->left, rc->top, rc->right, rc->bottom, 6, 6);
+    DeleteObject(pen);
+    SelectObject(hdc, g_uf_btn);
+    SetTextColor(hdc, UPD_TEXT);
+    DrawTextW(hdc, text, -1, rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+static void DoPaintUpdate(HWND hwnd) {
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    int W = cr.right, H = cr.bottom;
+
+    HDC mem = CreateCompatibleDC(hdc);
+    HBITMAP bmp = CreateCompatibleBitmap(hdc, W, H);
+    SelectObject(mem, bmp);
+
+    // Background
+    HBRUSH bgBr = CreateSolidBrush(UPD_BG);
+    FillRect(mem, &cr, bgBr);
+    DeleteObject(bgBr);
+    SetBkMode(mem, TRANSPARENT);
+
+    int y = UPD_MARGIN;
+
+    // Title: "Attyx v0.2.48 is available!"
+    SelectObject(mem, g_uf_title);
+    SetTextColor(mem, UPD_TEXT);
+    {
+        wchar_t title[128];
+        _snwprintf(title, 128, L"Attyx %hs is available!", g_new_version);
+        RECT tr = { UPD_MARGIN, y, W - UPD_MARGIN, y + 32 };
+        DrawTextW(mem, title, -1, &tr, DT_LEFT | DT_SINGLELINE);
+    }
+    y += 36;
+
+    // Subtitle
+    SelectObject(mem, g_uf_body);
+    SetTextColor(mem, UPD_DIM);
+    {
+        wchar_t sub[128];
+        _snwprintf(sub, 128, L"You have version %hs", g_current_version);
+        RECT sr = { UPD_MARGIN, y, W - UPD_MARGIN, y + UPD_LINE_H };
+        DrawTextW(mem, sub, -1, &sr, DT_LEFT | DT_SINGLELINE);
+    }
+    y += UPD_LINE_H + 16;
+
+    // "Release Notes:" label
+    SetTextColor(mem, UPD_DIM);
+    {
+        RECT lr = { UPD_MARGIN, y, W - UPD_MARGIN, y + UPD_LINE_H };
+        DrawTextW(mem, L"Release Notes:", -1, &lr, DT_LEFT | DT_SINGLELINE);
+    }
+    y += UPD_LINE_H + 4;
+
+    // Release notes box (dark inset)
+    int notes_h = H - y - 90;
+    {
+        RECT box = { UPD_MARGIN, y, W - UPD_MARGIN, y + notes_h };
+        HBRUSH nbg = CreateSolidBrush(UPD_BTN_BG);
+        FillRect(mem, &box, nbg);
+        DeleteObject(nbg);
+        HPEN bp = CreatePen(PS_SOLID, 1, UPD_BTN_BD);
+        SelectObject(mem, bp);
+        SelectObject(mem, GetStockObject(NULL_BRUSH));
+        Rectangle(mem, box.left, box.top, box.right, box.bottom);
+        DeleteObject(bp);
+
+        SelectObject(mem, g_uf_notes);
+        SetTextColor(mem, UPD_TEXT);
+        RECT nr = { UPD_MARGIN + 10, y + 8, W - UPD_MARGIN - 10, y + notes_h - 8 };
+        wchar_t notes_w[8192];
+        MultiByteToWideChar(CP_UTF8, 0, g_release_notes, -1, notes_w, 8192);
+        DrawTextW(mem, notes_w, -1, &nr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+    }
+    y += notes_h + 8;
+
+    // Progress bar
+    if (g_downloading || g_dl_progress > 0) {
+        RECT pbg = { UPD_MARGIN, y, W - UPD_MARGIN, y + 5 };
+        HBRUSH pBg = CreateSolidBrush(UPD_PROG_BG);
+        FillRect(mem, &pbg, pBg);
+        DeleteObject(pBg);
+        if (g_dl_progress > 0) {
+            int pw = (W - 2 * UPD_MARGIN) * g_dl_progress / 100;
+            RECT pfg = { UPD_MARGIN, y, UPD_MARGIN + pw, y + 5 };
+            HBRUSH pFg = CreateSolidBrush(UPD_PROG_FG);
+            FillRect(mem, &pfg, pFg);
+            DeleteObject(pFg);
+        }
+    }
+    y += 10;
+
+    // Status text
+    if (g_dl_status[0]) {
+        SelectObject(mem, g_uf_body);
+        SetTextColor(mem, UPD_DIM);
+        wchar_t sw[256];
+        MultiByteToWideChar(CP_UTF8, 0, g_dl_status, -1, sw, 256);
+        RECT sr = { UPD_MARGIN, y, W - UPD_MARGIN - 240, y + UPD_LINE_H };
+        DrawTextW(mem, sw, -1, &sr, DT_LEFT | DT_SINGLELINE);
+    }
+
+    // Buttons
+    int btn_w = 140;
+    g_rc_upd_install = (RECT){ W - UPD_MARGIN - btn_w, y - 2, W - UPD_MARGIN, y - 2 + UPD_BTN_H };
+    g_rc_upd_later = (RECT){ W - UPD_MARGIN - btn_w - 12 - 80, y - 2, W - UPD_MARGIN - btn_w - 12, y - 2 + UPD_BTN_H };
+
+    if (!g_downloading) {
+        DrawUpdButton(mem, &g_rc_upd_install, L"Install Update", g_upd_hover == 1, 1);
+        DrawUpdButton(mem, &g_rc_upd_later, L"Later", g_upd_hover == 2, 0);
+    }
+
+    BitBlt(hdc, 0, 0, W, H, mem, 0, 0, SRCCOPY);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(hwnd, &ps);
+}
+
+static int UpdHitTest(int x, int y) {
+    POINT pt = { x, y };
+    if (!g_downloading && PtInRect(&g_rc_upd_install, pt)) return 1;
+    if (!g_downloading && PtInRect(&g_rc_upd_later, pt)) return 2;
+    return 0;
+}
 
 static LRESULT CALLBACK UpdateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-    case WM_COMMAND:
-        if (LOWORD(wParam) == ID_INSTALL && !g_downloading) {
-            g_downloading = 1;
-            EnableWindow(g_install_btn, FALSE);
-            ShowWindow(g_progress_bar, SW_SHOW);
-            SetWindowTextA(g_status_label, "Downloading...");
-            CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
-        } else if (LOWORD(wParam) == ID_LATER) {
-            DestroyWindow(hwnd);
-        }
+    case WM_PAINT:
+        DoPaintUpdate(hwnd);
         return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE: {
+        int old = g_upd_hover;
+        g_upd_hover = UpdHitTest(LOWORD(lParam), HIWORD(lParam));
+        if (g_upd_hover != old) InvalidateRect(hwnd, NULL, FALSE);
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+        TrackMouseEvent(&tme);
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        if (g_upd_hover) { g_upd_hover = 0; InvalidateRect(hwnd, NULL, FALSE); }
+        return 0;
+    case WM_LBUTTONDOWN: {
+        int hit = UpdHitTest(LOWORD(lParam), HIWORD(lParam));
+        if (hit == 1 && !g_downloading) {
+            g_downloading = 1;
+            strcpy(g_dl_status, "Downloading...");
+            InvalidateRect(hwnd, NULL, FALSE);
+            CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
+        }
+        if (hit == 2) DestroyWindow(hwnd);
+        return 0;
+    }
     case WM_DESTROY:
         g_update_hwnd = NULL;
-        g_notes_edit = NULL;
-        g_install_btn = NULL;
-        g_later_btn = NULL;
-        g_progress_bar = NULL;
-        g_status_label = NULL;
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -438,86 +590,48 @@ static void show_update_window(void) {
         return;
     }
 
-    // Register window class
+    // Fonts
+    if (!g_uf_title) {
+        g_uf_title = CreateFontW(-22, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+            0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        g_uf_body = CreateFontW(-14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+            0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        g_uf_notes = CreateFontW(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+            0, 0, CLEARTYPE_QUALITY, 0, L"Cascadia Mono");
+        g_uf_btn = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+            0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    }
+
+    // Register class
     static int registered = 0;
     if (!registered) {
-        WNDCLASSW wc = {0};
-        wc.lpfnWndProc = UpdateWndProc;
-        wc.hInstance = GetModuleHandleW(NULL);
-        wc.lpszClassName = L"AttyxUpdateWindow";
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+        WNDCLASSW wc = { .lpfnWndProc = UpdateWndProc, .hInstance = GetModuleHandleW(NULL),
+            .lpszClassName = L"AttyxUpdateWindow", .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW) };
         RegisterClassW(&wc);
         registered = 1;
     }
 
-    int ww = 520, wh = 440;
-    RECT wr = {0, 0, ww, wh};
+    RECT wr = { 0, 0, UPD_W, UPD_H };
     AdjustWindowRect(&wr, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
+    int sx = GetSystemMetrics(SM_CXSCREEN), sy = GetSystemMetrics(SM_CYSCREEN);
+    int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
 
     g_update_hwnd = CreateWindowExW(0, L"AttyxUpdateWindow", L"Software Update",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        wr.right - wr.left, wr.bottom - wr.top,
+        (sx - ww) / 2, (sy - wh) / 2, ww, wh,
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!g_update_hwnd) return;
 
-    int pad = 16, y = pad;
+    // Dark title bar (Windows 10 1809+)
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (dwm) {
+        typedef HRESULT (WINAPI *PFN)(HWND, DWORD, const void*, DWORD);
+        PFN fn = (PFN)GetProcAddress(dwm, "DwmSetWindowAttribute");
+        if (fn) { BOOL dark = TRUE; fn(g_update_hwnd, 20, &dark, sizeof(dark)); }
+    }
 
-    // Title
-    char title[128];
-    snprintf(title, sizeof(title), "Attyx %s is available!", g_new_version);
-    HWND ht = CreateWindowA("STATIC", title, WS_CHILD | WS_VISIBLE | SS_LEFT,
-        pad, y, ww - 2 * pad, 24, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(ht, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    y += 28;
-
-    // Subtitle
-    char subtitle[128];
-    snprintf(subtitle, sizeof(subtitle), "You have version %s", g_current_version);
-    HWND hs = CreateWindowA("STATIC", subtitle, WS_CHILD | WS_VISIBLE | SS_LEFT,
-        pad, y, ww - 2 * pad, 18, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(hs, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    y += 28;
-
-    // Release notes label
-    HWND rl = CreateWindowA("STATIC", "Release Notes:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        pad, y, ww - 2 * pad, 18, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(rl, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    y += 22;
-
-    // Release notes text area
-    int notes_h = wh - y - 100;
-    g_notes_edit = CreateWindowA("EDIT", g_release_notes,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_BORDER,
-        pad, y, ww - 2 * pad, notes_h, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(g_notes_edit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    y += notes_h + 8;
-
-    // Progress bar (hidden initially)
-    g_progress_bar = CreateWindowW(L"msctls_progress32", NULL,
-        WS_CHILD | PBS_SMOOTH,
-        pad, y, ww - 2 * pad, 16, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(g_progress_bar, PBM_SETRANGE32, 0, 100);
-    y += 22;
-
-    // Status label
-    g_status_label = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        pad, y, 300, 18, g_update_hwnd, NULL, NULL, NULL);
-    SendMessageW(g_status_label, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-    // Buttons (bottom right)
-    int btn_w = 120, btn_h = 30;
-    g_install_btn = CreateWindowA("BUTTON", "Install Update",
-        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-        ww - pad - btn_w, y - 4, btn_w, btn_h, g_update_hwnd, (HMENU)(INT_PTR)ID_INSTALL, NULL, NULL);
-    SendMessageW(g_install_btn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-    g_later_btn = CreateWindowA("BUTTON", "Later",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        ww - pad - btn_w - 8 - 80, y - 4, 80, btn_h, g_update_hwnd, (HMENU)(INT_PTR)ID_LATER, NULL, NULL);
-    SendMessageW(g_later_btn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
+    g_dl_progress = 0;
+    g_dl_status[0] = '\0';
     ShowWindow(g_update_hwnd, SW_SHOW);
     UpdateWindow(g_update_hwnd);
 }
