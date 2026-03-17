@@ -11,7 +11,9 @@ $TestVersion = "99.0.0"
 
 # ── Build ──
 Write-Host "[1/3] Building..." -ForegroundColor Cyan
-zig build 2>&1
+$ErrorActionPreference = "Continue"
+zig build 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { $_ } }
+$ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
 
 $Exe = "zig-out\bin\attyx.exe"

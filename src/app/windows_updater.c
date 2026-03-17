@@ -16,6 +16,11 @@
 #pragma comment(lib, "winhttp.lib")
 
 // ---------------------------------------------------------------------------
+// Forward declarations
+// ---------------------------------------------------------------------------
+static void updateLog(const char *msg);
+
+// ---------------------------------------------------------------------------
 // Externals
 // ---------------------------------------------------------------------------
 extern HWND g_hwnd;  // Main terminal window handle (platform_windows.c)
@@ -133,8 +138,15 @@ static int http_get(const wchar_t *host, const wchar_t *path, char *buf, int buf
 // ---------------------------------------------------------------------------
 static int check_appcast(void) {
     char xml[32768];
+    updateLog("check_appcast: fetching...");
     int xml_len = http_get_ex(g_appcast_host, g_appcast_port, g_appcast_path, g_appcast_secure, xml, sizeof(xml));
-    if (xml_len <= 0) return 0;
+    if (xml_len <= 0) {
+        updateLog("check_appcast: fetch failed or empty response");
+        return 0;
+    }
+    char dbg[128];
+    snprintf(dbg, sizeof(dbg), "check_appcast: got %d bytes", xml_len);
+    updateLog(dbg);
 
     // Find matching enclosure
     const char *pos = xml;
@@ -500,18 +512,33 @@ static void show_update_window(void) {
 // ---------------------------------------------------------------------------
 static DWORD WINAPI check_thread(LPVOID param) {
     int interactive = (int)(INT_PTR)param;
+    updateLog("check_thread: starting");
+
+    char dbg[512];
+    snprintf(dbg, sizeof(dbg), "check_thread: host=%ls port=%d path=%ls secure=%d version=%s",
+        g_appcast_host, g_appcast_port, g_appcast_path, g_appcast_secure, g_current_version);
+    updateLog(dbg);
 
     if (!check_appcast()) {
+        updateLog("check_thread: no update found (or fetch failed)");
         if (interactive && g_update_hwnd) {
             SetWindowTextA(g_status_label, "You're up to date!");
         }
         return 0;
     }
 
+    snprintf(dbg, sizeof(dbg), "check_thread: update found! version=%s url=%s", g_new_version, g_download_url);
+    updateLog(dbg);
+
     fetch_release_notes();
 
     // Show window on main thread
-    if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 1, 0, 0);
+    if (g_hwnd) {
+        updateLog("check_thread: posting WM_APP+1 to show window");
+        PostMessageW(g_hwnd, WM_APP + 1, 0, 0);
+    } else {
+        updateLog("check_thread: ERROR g_hwnd is NULL");
+    }
     return 0;
 }
 
@@ -546,6 +573,11 @@ void attyx_updater_init(const char *current_version) {
         }
     }
 
+    char dbg[512];
+    snprintf(dbg, sizeof(dbg), "init: version=%s host=%ls port=%d secure=%d hwnd=%p",
+        g_current_version, g_appcast_host, g_appcast_port, g_appcast_secure, (void*)g_hwnd);
+    updateLog(dbg);
+
     // Schedule first check 5 seconds after launch
     SetTimer(g_hwnd, 42, 5000, NULL);
 }
@@ -573,6 +605,24 @@ void attyx_updater_check(void) {
 
 int attyx_updater_available(void) {
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Debug logging
+// ---------------------------------------------------------------------------
+static void updateLog(const char *msg) {
+    wchar_t appdata[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata))) return;
+    wchar_t path[MAX_PATH + 64];
+    _snwprintf(path, MAX_PATH + 64, L"%s\\attyx\\updater-debug.log", appdata);
+
+    HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD written;
+    WriteFile(f, "[updater] ", 10, &written, NULL);
+    WriteFile(f, msg, (DWORD)strlen(msg), &written, NULL);
+    WriteFile(f, "\r\n", 2, &written, NULL);
+    CloseHandle(f);
 }
 
 #endif // _WIN32
