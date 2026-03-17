@@ -347,28 +347,28 @@ fn appendLoginFlag(cmd_line: [*:0]u16) void {
     cmd_line[pos] = 0;
 }
 
-/// Append " -ExecutionPolicy Bypass -NoExit -File \"<script_path>\"" to the
-/// PowerShell command line. -ExecutionPolicy Bypass is scoped to this process
-/// only and avoids the default Restricted policy blocking our integration script.
+/// Append " -ExecutionPolicy Bypass -NoExit -Command ". '<script_path>'"" to the
+/// PowerShell command line. Uses -Command with dot-sourcing (not -File) so that
+/// $PROFILE loads automatically — users get their aliases, oh-my-posh, Starship, etc.
+/// -ExecutionPolicy Bypass is scoped to this process only.
 fn appendPowerShellArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
     var pos: usize = 0;
     while (cmd_line[pos] != 0) : (pos += 1) {}
 
-    const args = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -File \"");
-    const quote = comptime toUtf16Literal("\"");
+    const prefix = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -Command \". '");
+    const suffix = comptime toUtf16Literal("'\"");
 
     var sp_len: usize = 0;
     while (script_path[sp_len] != 0) : (sp_len += 1) {}
 
-    // Check we have room (4096 buf in buildCommandLine).
-    if (pos + args.len + sp_len + quote.len >= 4095) return;
+    if (pos + prefix.len + sp_len + suffix.len >= 4095) return;
 
-    @memcpy(cmd_line[pos .. pos + args.len], &args);
-    pos += args.len;
+    @memcpy(cmd_line[pos .. pos + prefix.len], &prefix);
+    pos += prefix.len;
     @memcpy(cmd_line[pos .. pos + sp_len], script_path[0..sp_len]);
     pos += sp_len;
-    @memcpy(cmd_line[pos .. pos + quote.len], &quote);
-    pos += quote.len;
+    @memcpy(cmd_line[pos .. pos + suffix.len], &suffix);
+    pos += suffix.len;
     cmd_line[pos] = 0;
 }
 

@@ -293,6 +293,7 @@ extern "kernel32" fn CreateProcessW(
     pi: *PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
 
+const CREATE_NO_WINDOW: DWORD = 0x08000000;
 const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 
 /// Spawn a host process for a pane. Returns true on success.
@@ -337,9 +338,10 @@ pub fn spawnHostProcess(
     si.cb = @sizeOf(STARTUPINFOW);
     var pi: PROCESS_INFORMATION = undefined;
 
-    // No DETACHED_PROCESS or CREATE_NO_WINDOW — host inherits the daemon's
-    // hidden console, so MSYS2 fork() works without per-tab AllocConsole flash.
-    if (CreateProcessW(null, &cmd_wide, null, null, 0, CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
+    // CREATE_NO_WINDOW: host gets console infrastructure (MSYS2 fork works)
+    // without a visible window. No daemon hidden console needed — avoids
+    // stray console windows that interfere with installers (winget etc).
+    if (CreateProcessW(null, &cmd_wide, null, null, 0, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, null, null, &si, &pi) == 0) {
         return false;
     }
     _ = CloseHandle(pi.hThread);

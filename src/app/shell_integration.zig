@@ -93,8 +93,8 @@ pub fn setup() ArgvOverride {
 // Windows shell integration — script content generation
 // ---------------------------------------------------------------------------
 
-/// PowerShell integration script content. Emits OSC 7337 (PATH) and OSC 7 (CWD)
-/// on every prompt via the prompt function override.
+/// PowerShell integration script content. Dot-sourced AFTER $PROFILE loads
+/// (via -Command ". 'script.ps1'"), so user config is already active.
 pub const powershell_script =
     \\# Attyx shell integration (PowerShell 5.1+)
     \\$ESC = [char]27; $BEL = [char]7
@@ -103,31 +103,43 @@ pub const powershell_script =
     \\    $env:PATH = "$env:__ATTYX_BIN_DIR;$env:PATH"
     \\}
     \\Remove-Item Env:__ATTYX_BIN_DIR -ErrorAction SilentlyContinue
-    \\# Save the original prompt function
-    \\if (Test-Path Function:\prompt) {
-    \\    $global:__attyx_orig_prompt = Get-Content Function:\prompt
+    \\# Enable predictive IntelliSense (pwsh 7.2+) if not already configured
+    \\if (Get-Module PSReadLine -ErrorAction SilentlyContinue) {
+    \\    try { $src = (Get-PSReadLineOption).PredictionSource
+    \\        if ($src -eq 'None') {
+    \\            Set-PSReadLineOption -PredictionSource History 2>$null
+    \\        }
+    \\    } catch {}
     \\}
+    \\# Save the current prompt (after $PROFILE loaded — captures oh-my-posh, Starship, etc.)
+    \\$global:__attyx_orig_prompt = $function:prompt
     \\function global:prompt {
-    \\    # OSC 7: report CWD
+    \\    $prevExit = $global:LASTEXITCODE
     \\    $cwd = (Get-Location).Path
+    \\    # OSC 7: report CWD
     \\    [Console]::Error.Write("${ESC}]7;file://$($env:COMPUTERNAME)/$($cwd -replace '\\','/')${BEL}")
     \\    # OSC 7337: report PATH for popup commands
     \\    [Console]::Error.Write("${ESC}]7337;set-path;$($env:PATH)${BEL}")
+    \\    # OSC 2: set terminal title to current directory
+    \\    [Console]::Error.Write("${ESC}]2;$cwd${BEL}")
     \\    # Execute startup command on first prompt
     \\    if ($env:__ATTYX_STARTUP_CMD) {
     \\        $cmd = $env:__ATTYX_STARTUP_CMD
     \\        Remove-Item Env:__ATTYX_STARTUP_CMD -ErrorAction SilentlyContinue
     \\        Invoke-Expression $cmd
     \\    }
-    \\    # Call original prompt
+    \\    # Restore $LASTEXITCODE so prompt themes see the real exit code
+    \\    $global:LASTEXITCODE = $prevExit
+    \\    # Call original prompt (oh-my-posh, Starship, or default)
     \\    if ($global:__attyx_orig_prompt) {
-    \\        & ([scriptblock]::Create($global:__attyx_orig_prompt))
+    \\        & $global:__attyx_orig_prompt
     \\    } else {
     \\        "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
     \\    }
     \\}
     \\
 ;
+
 
 /// Generate the cmd.exe PROMPT string that emits OSC 7 for CWD reporting.
 /// cmd.exe doesn't support OSC 7337 easily, so we only report CWD.
