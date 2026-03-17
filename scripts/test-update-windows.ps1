@@ -2,19 +2,21 @@
 #
 # Usage:  .\scripts\test-update-windows.ps1
 #
-# Builds attyx, hosts a fake appcast on localhost, launches attyx pointed
-# at it. The update window should appear ~5 seconds after launch.
+# Builds attyx, hosts a fake appcast on localhost:8089, launches attyx
+# pointed at it. Update window should appear ~5 seconds after launch.
+# Press Ctrl+C to stop.
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $Port = 8089
 $TestVersion = "99.0.0"
 
 # ── Build ──
 Write-Host "[1/3] Building..." -ForegroundColor Cyan
-$ErrorActionPreference = "Continue"
-zig build 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { $_ } }
-$ErrorActionPreference = "Stop"
-if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
+zig build 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    zig build 2>&1
+    Write-Host "Build failed." -ForegroundColor Red; exit 1
+}
 
 $Exe = "zig-out\bin\attyx.exe"
 if (-not (Test-Path $Exe)) { Write-Host "No binary at $Exe" -ForegroundColor Red; exit 1 }
@@ -35,7 +37,6 @@ Copy-Item $Exe "$Dir\attyx-windows-x64.exe"
 <li>PowerShell profile loading and predictive IntelliSense</li>
 <li>Process name tracking in tab titles</li>
 <li>Git Bash in shell picker</li>
-<li>Registry PATH refresh for new tool installs</li>
 </ul>
 </body></html>
 "@ | Set-Content "$Dir\release-notes.html" -Encoding UTF8
@@ -56,41 +57,48 @@ $Size = (Get-Item "$Dir\attyx-windows-arm64.exe").Length
 </rss>
 "@ | Set-Content "$Dir\appcast.xml" -Encoding UTF8
 
-Write-Host "[2/3] Test appcast ready (version $TestVersion)" -ForegroundColor Cyan
+Write-Host "[2/3] Test appcast ready (v$TestVersion)" -ForegroundColor Cyan
 
-# ── HTTP server + attyx launch ──
-Write-Host "[3/3] Starting server on :$Port and launching attyx..." -ForegroundColor Green
+# ── Launch attyx in background ──
+Write-Host "[3/3] Launching attyx + HTTP server on :$Port" -ForegroundColor Green
 Write-Host "       Update window appears in ~5 seconds." -ForegroundColor DarkGray
-Write-Host "       Close attyx to stop." -ForegroundColor DarkGray
+Write-Host "       Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
-# Run HTTP server as a background process
-$ServerScript = @"
-`$l = [System.Net.HttpListener]::new()
-`$l.Prefixes.Add('http://localhost:$Port/')
-`$l.Start()
-while (`$l.IsListening) {
-    try {
-        `$c = `$l.GetContext()
-        `$f = Join-Path '$Dir' `$c.Request.Url.LocalPath.TrimStart('/')
-        if (Test-Path `$f) {
-            `$b = [IO.File]::ReadAllBytes(`$f)
-            `$c.Response.ContentLength64 = `$b.Length
-            `$c.Response.OutputStream.Write(`$b, 0, `$b.Length)
-        } else { `$c.Response.StatusCode = 404 }
-        `$c.Response.Close()
-    } catch { break }
-}
-"@
+$env:ATTYX_FEED_URL = "http://localhost:$Port/appcast.xml"
+$Attyx = Start-Process -FilePath (Resolve-Path $Exe) -PassThru
 
-$Server = Start-Process powershell -ArgumentList "-NoProfile","-Command",$ServerScript -PassThru -WindowStyle Hidden
-Start-Sleep 1
+# ── Run HTTP server inline (foreground) ──
+$Listener = [System.Net.HttpListener]::new()
+$Listener.Prefixes.Add("http://+:$Port/")
+try { $Listener.Start() } catch {
+    # Fallback: localhost only (no admin required)
+    $Listener = [System.Net.HttpListener]::new()
+    $Listener.Prefixes.Add("http://localhost:$Port/")
+    $Listener.Start()
+}
+
+Write-Host "Server listening on http://localhost:$Port/" -ForegroundColor DarkGray
 
 try {
-    $env:ATTYX_FEED_URL = "http://localhost:$Port/appcast.xml"
-    & ".\$Exe"
+    while ($Listener.IsListening) {
+        $ctx = $Listener.GetContext()
+        $path = $ctx.Request.Url.LocalPath.TrimStart('/')
+        $file = Join-Path $Dir $path
+        Write-Host "  -> $($ctx.Request.HttpMethod) /$path" -ForegroundColor DarkGray
+        if (Test-Path $file) {
+            $bytes = [System.IO.File]::ReadAllBytes($file)
+            $ctx.Response.ContentLength64 = $bytes.Length
+            $ctx.Response.StatusCode = 200
+            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+        } else {
+            $ctx.Response.StatusCode = 404
+        }
+        $ctx.Response.Close()
+    }
 } finally {
-    Stop-Process $Server -ErrorAction SilentlyContinue
+    $Listener.Stop()
+    Stop-Process $Attyx -ErrorAction SilentlyContinue
     Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "Cleaned up." -ForegroundColor DarkGray
 }
