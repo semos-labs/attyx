@@ -317,6 +317,10 @@ pub const Pty = struct {
         skip_shell_integration: bool = false,
         startup_cmd: ?[*:0]const u8 = null,
         shell: ShellType = .auto,
+        /// Skip AllocConsole — host processes don't need their own console
+        /// because ConPTY provides the console context for the shell.
+        /// Allocating one causes a visible window flash + focus steal.
+        skip_console_alloc: bool = false,
     };
 
     pub fn spawn(allocator: std.mem.Allocator, opts: SpawnOpts) !Pty {
@@ -425,7 +429,8 @@ pub const Pty = struct {
         // MSYS2's fork() emulation needs an inheritable console. Without one
         // (Windows subsystem), each forked child allocates a new visible console
         // window causing flash. Allocate a hidden console so children inherit it.
-        ensureHiddenConsole();
+        // Host processes skip this — ConPTY provides the shell's console context.
+        if (!opts.skip_console_alloc) ensureHiddenConsole();
 
         // Set up STARTUPINFOEXW.
         var si = std.mem.zeroes(STARTUPINFOEXW);

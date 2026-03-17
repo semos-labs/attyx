@@ -177,6 +177,7 @@ fn hostMain(allocator: std.mem.Allocator, args: HostArgs) void {
         .shell = args.shell,
         .startup_cmd = args.startup_cmd,
         .capture_stdout = args.capture_stdout,
+        .skip_console_alloc = true, // ConPTY provides the shell's console
     }) catch {
         hostLog("ERROR: ConPTY spawn failed");
         return;
