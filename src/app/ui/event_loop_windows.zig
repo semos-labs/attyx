@@ -691,9 +691,6 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                         logging.err("tabs", "addTab failed: {}", .{err});
                         return;
                     };
-                    // Start async read immediately — ConPTY only flushes
-                    // output when a ReadFile is pending.
-                    ctx.tab_mgr.activePane().pty.startAsyncRead();
                 }
                 updateGridOffsets(ctx);
                 ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);

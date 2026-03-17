@@ -486,7 +486,7 @@ pub const Pty = struct {
 
         _ = CloseHandle(pi.hThread);
 
-        return .{
+        var pty = Pty{
             .pipe_out_read = pty_out_read,
             .pipe_in_write = pty_in_write,
             .hpc = hpc,
@@ -496,6 +496,14 @@ pub const Pty = struct {
             .allocator = allocator,
             .read_event = read_evt,
         };
+
+        // Start first async read immediately — ConPTY only flushes output
+        // to the pipe when a ReadFile is pending. Without this, fast shells
+        // (cmd.exe, PowerShell) produce their banner before any read is
+        // queued and ConPTY never flushes it, causing a blank screen.
+        pty.startAsyncRead();
+
+        return pty;
     }
 
     pub fn deinit(self: *Pty) void {
