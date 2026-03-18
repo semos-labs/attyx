@@ -6,6 +6,7 @@
 #define ATTYX_SFX_H
 
 #include <stdbool.h>
+#include "attyx_setup.h"
 #include "miniz.h"
 
 // Extract appended zip from exePath into destDir.
@@ -103,19 +104,6 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
     mz_zip_reader_end(&zip);
     VirtualFree(data, 0, MEM_RELEASE);
     return success;
-}
-
-// Delete a directory tree. Safe to call with empty path (no-op).
-static void SfxCleanup(const wchar_t* dir) {
-    if (!dir || dir[0] == 0) return;
-    wchar_t from[MAX_PATH + 2];
-    wcscpy(from, dir);
-    from[wcslen(from) + 1] = 0; // double-null for SHFileOperation
-    SHFILEOPSTRUCTW op = {0};
-    op.wFunc = FO_DELETE;
-    op.pFrom = from;
-    op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-    SHFileOperationW(&op);
 }
 
 #endif // ATTYX_SFX_H

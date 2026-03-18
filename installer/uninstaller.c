@@ -21,6 +21,7 @@
 #include <shlwapi.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "attyx_setup.h"
 
 #pragma comment(lib, "shlwapi.lib")
 
@@ -79,6 +80,12 @@ static void InitInstallDir(void) {
 static DWORD WINAPI UninstallThread(LPVOID param) {
     (void)param;
 
+    // Close running Attyx GUI (keeps daemon alive for now — we kill it below)
+    if (FindWindowW(L"AttyxWindow", NULL)) {
+        SetStatus(L"Closing Attyx...");
+        CloseAttyxGui();
+    }
+
     // 1. Remove from user PATH
     SetStatus(L"Removing from PATH...");
     g_progress = 10;
@@ -124,15 +131,7 @@ static DWORD WINAPI UninstallThread(LPVOID param) {
         wchar_t startMenu[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_PROGRAMS, NULL, 0, startMenu) == S_OK) {
             wcscat(startMenu, L"\\Attyx");
-            // Delete the folder and everything in it
-            wchar_t from[MAX_PATH + 2];
-            wcscpy(from, startMenu);
-            from[wcslen(from) + 1] = 0; // double-null for SHFileOp
-            SHFILEOPSTRUCTW op = {0};
-            op.wFunc = FO_DELETE;
-            op.pFrom = from;
-            op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-            SHFileOperationW(&op);
+            DeleteDirTree(startMenu);
         }
         wchar_t desktop[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) == S_OK) {
@@ -154,14 +153,7 @@ static DWORD WINAPI UninstallThread(LPVOID param) {
         wchar_t appdata[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata) == S_OK) {
             wcscat(appdata, L"\\attyx");
-            wchar_t from[MAX_PATH + 2];
-            wcscpy(from, appdata);
-            from[wcslen(from) + 1] = 0;
-            SHFILEOPSTRUCTW op = {0};
-            op.wFunc = FO_DELETE;
-            op.pFrom = from;
-            op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-            SHFileOperationW(&op);
+            DeleteDirTree(appdata);
         }
     }
     g_progress = 75;
@@ -171,14 +163,7 @@ static DWORD WINAPI UninstallThread(LPVOID param) {
         wchar_t appdata[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appdata) == S_OK) {
             wcscat(appdata, L"\\attyx");
-            wchar_t from[MAX_PATH + 2];
-            wcscpy(from, appdata);
-            from[wcslen(from) + 1] = 0;
-            SHFILEOPSTRUCTW op = {0};
-            op.wFunc = FO_DELETE;
-            op.pFrom = from;
-            op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-            SHFileOperationW(&op);
+            DeleteDirTree(appdata);
         }
     }
     g_progress = 85;

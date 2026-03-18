@@ -21,6 +21,7 @@
 #include <objbase.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "attyx_install.h"
 #include "sfx.h"
 
 // ---------------------------------------------------------------------------
@@ -83,10 +84,6 @@ static void DoPaint(HWND hwnd);
 static void DoInstall(void);
 static DWORD WINAPI InstallThread(LPVOID param);
 static int  HitTest(int x, int y);
-static bool CopyDirRecursive(const wchar_t* src, const wchar_t* dst);
-static bool CreateShortcutLink(const wchar_t* lnkPath, const wchar_t* target,
-                                const wchar_t* desc, const wchar_t* iconPath);
-static void ApplyPostInstallOptions(void);
 
 // ---------------------------------------------------------------------------
 // Drawing primitives
@@ -464,14 +461,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         if (hit == 3) {
-            ApplyPostInstallOptions();
+            {
+                AttyxRegisterOpts opts = {
+                    .addToPath = g_opt_path,
+                    .desktopShortcut = g_opt_desktop,
+                    .contextMenu = g_opt_context,
+                    .version = g_version[0] ? g_version : NULL,
+                };
+                AttyxRegister(g_install_dir, &opts);
+            }
             wchar_t exe[MAX_PATH];
             swprintf(exe, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
             ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
             PostQuitMessage(0);
         }
         if (hit == 4) {
-            ApplyPostInstallOptions();
+            {
+                AttyxRegisterOpts opts = {
+                    .addToPath = g_opt_path,
+                    .desktopShortcut = g_opt_desktop,
+                    .contextMenu = g_opt_context,
+                    .version = g_version[0] ? g_version : NULL,
+                };
+                AttyxRegister(g_install_dir, &opts);
+            }
             PostQuitMessage(0);
         }
         // Checkbox toggles
@@ -509,93 +522,21 @@ static void DoInstall(void) {
     CreateThread(NULL, 0, InstallThread, NULL, 0, NULL);
 }
 
+static bool InstallerProgress(const wchar_t* status, int progress) {
+    SetStatus(status);
+    g_progress = progress;
+    return true;
+}
+
 static DWORD WINAPI InstallThread(LPVOID param) {
     (void)param;
 
-    SetStatus(L"Creating directory...");
-    g_progress = 5;
-    int dirErr = SHCreateDirectoryExW(NULL, g_install_dir, NULL);
-    if (dirErr != ERROR_SUCCESS && dirErr != ERROR_ALREADY_EXISTS
-        && dirErr != ERROR_FILE_EXISTS) {
-        wchar_t msg[512];
-        swprintf(msg, 512, L"Could not create folder: %s", DescribeError((DWORD)dirErr));
-        SetStatus(msg);
+    if (!AttyxInstallFiles(g_install_dir, g_payload_dir, InstallerProgress)) {
+        SetStatus(L"Installation failed — could not copy files.");
         g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
 
-    SetStatus(L"Copying files...");
-    g_progress = 10;
-    wchar_t src[MAX_PATH], dst[MAX_PATH];
-    swprintf(src, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
-    swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
-    if (!CopyFileW(src, dst, FALSE)) {
-        DWORD err = GetLastError();
-        wchar_t msg[512];
-        swprintf(msg, 512, L"Could not install attyx.exe: %s", DescribeError(err));
-        SetStatus(msg);
-        g_failed = true; g_done = true; g_installing = false;
-        return 1;
-    }
-
-    swprintf(src, MAX_PATH, L"%s\\attyx.pdb", g_payload_dir);
-    if (PathFileExistsW(src)) {
-        swprintf(dst, MAX_PATH, L"%s\\attyx.pdb", g_install_dir);
-        CopyFileW(src, dst, FALSE);
-    }
-    g_progress = 20;
-
-    SetStatus(L"Setting up shell environment...");
-    swprintf(src, MAX_PATH, L"%s\\share\\msys2", g_payload_dir);
-    if (PathFileExistsW(src)) {
-        swprintf(dst, MAX_PATH, L"%s\\share\\msys2", g_install_dir);
-        wchar_t shareDir[MAX_PATH];
-        swprintf(shareDir, MAX_PATH, L"%s\\share", g_install_dir);
-        CreateDirectoryW(shareDir, NULL);
-        CopyDirRecursive(src, dst);
-    }
-    g_progress = 70;
-
-    SetStatus(L"Creating shortcuts...");
-    {
-        wchar_t startMenu[MAX_PATH];
-        if (SHGetFolderPathW(NULL, CSIDL_PROGRAMS, NULL, 0, startMenu) == S_OK) {
-            wcscat(startMenu, L"\\Attyx");
-            CreateDirectoryW(startMenu, NULL);
-            wchar_t lnk[MAX_PATH];
-            swprintf(lnk, MAX_PATH, L"%s\\Attyx.lnk", startMenu);
-            swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
-            CreateShortcutLink(lnk, dst, L"Attyx Terminal", dst);
-        }
-    }
-    g_progress = 90;
-
-    SetStatus(L"Registering...");
-    {
-        HKEY hKey;
-        RegCreateKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Attyx",
-            0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ, (BYTE*)L"Attyx",
-                       6 * sizeof(wchar_t));
-        swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" uninstall", g_install_dir);
-        RegSetValueExW(hKey, L"UninstallString", 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
-        swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
-        RegSetValueExW(hKey, L"DisplayIcon", 0, REG_SZ, (BYTE*)dst,
-                       (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
-        RegSetValueExW(hKey, L"Publisher", 0, REG_SZ, (BYTE*)L"Attyx",
-                       6 * sizeof(wchar_t));
-        if (g_version[0])
-            RegSetValueExW(hKey, L"DisplayVersion", 0, REG_SZ, (BYTE*)g_version,
-                           (DWORD)((wcslen(g_version) + 1) * sizeof(wchar_t)));
-        DWORD noModify = 1;
-        RegSetValueExW(hKey, L"NoModify", 0, REG_DWORD, (BYTE*)&noModify, sizeof(DWORD));
-        RegSetValueExW(hKey, L"NoRepair", 0, REG_DWORD, (BYTE*)&noModify, sizeof(DWORD));
-        RegSetValueExW(hKey, L"InstallLocation", 0, REG_SZ, (BYTE*)g_install_dir,
-                       (DWORD)((wcslen(g_install_dir) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-    }
     g_progress = 100;
     g_done = true;
     g_installing = false;
@@ -604,110 +545,64 @@ static DWORD WINAPI InstallThread(LPVOID param) {
 }
 
 // ---------------------------------------------------------------------------
-// Post-install options
+// Entry point
 // ---------------------------------------------------------------------------
 
-static void ApplyPostInstallOptions(void) {
-    wchar_t dst[MAX_PATH];
-
-    if (g_opt_path) {
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ | KEY_WRITE, &hKey) == ERROR_SUCCESS) {
-            wchar_t path[8192] = L"";
-            DWORD sz = sizeof(path), type = 0;
-            RegQueryValueExW(hKey, L"Path", NULL, &type, (BYTE*)path, &sz);
-            if (!wcsstr(path, g_install_dir)) {
-                if (wcslen(path) > 0) wcscat(path, L";");
-                wcscat(path, g_install_dir);
-                RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ, (BYTE*)path,
-                               (DWORD)((wcslen(path) + 1) * sizeof(wchar_t)));
-                SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-                                    (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
-            }
-            RegCloseKey(hKey);
-        }
-    }
-
-    if (g_opt_desktop) {
-        wchar_t desktop[MAX_PATH];
-        if (SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) == S_OK) {
-            wchar_t lnk[MAX_PATH];
-            swprintf(lnk, MAX_PATH, L"%s\\Attyx.lnk", desktop);
-            swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);
-            CreateShortcutLink(lnk, dst, L"Attyx Terminal", dst);
-        }
-    }
-
-    if (g_opt_context) {
-        HKEY hKey;
-        swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" \"%%V\"", g_install_dir);
-        wchar_t iconVal[MAX_PATH];
-        swprintf(iconVal, MAX_PATH, L"\"%s\\attyx.exe\"", g_install_dir);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here", 16 * sizeof(wchar_t));
-        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
-                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\Background\\shell\\Attyx\\command",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst, (DWORD)((wcslen(dst)+1)*sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)L"Open Attyx Here", 16 * sizeof(wchar_t));
-        RegSetValueExW(hKey, L"Icon", 0, REG_SZ, (BYTE*)iconVal,
-                       (DWORD)((wcslen(iconVal) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-        RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\Attyx\\command",
-                        0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)dst, (DWORD)((wcslen(dst)+1)*sizeof(wchar_t)));
-        RegCloseKey(hKey);
-    }
-}
-
 // ---------------------------------------------------------------------------
-// File helpers
+// Silent update mode: extract payload, copy sysroot, stage exe for daemon
 // ---------------------------------------------------------------------------
 
-static bool CopyDirRecursive(const wchar_t* src, const wchar_t* dst) {
-    CreateDirectoryW(dst, NULL);
-    wchar_t search[MAX_PATH];
-    swprintf(search, MAX_PATH, L"%s\\*", src);
-    WIN32_FIND_DATAW fd;
-    HANDLE hFind = FindFirstFileW(search, &fd);
-    if (hFind == INVALID_HANDLE_VALUE) return false;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        wchar_t srcPath[MAX_PATH], dstPath[MAX_PATH];
-        swprintf(srcPath, MAX_PATH, L"%s\\%s", src, fd.cFileName);
-        swprintf(dstPath, MAX_PATH, L"%s\\%s", dst, fd.cFileName);
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            CopyDirRecursive(srcPath, dstPath);
-        else
-            CopyFileW(srcPath, dstPath, FALSE);
-    } while (FindNextFileW(hFind, &fd));
-    FindClose(hFind);
-    return true;
-}
+static int DoSilentUpdate(void) {
+    InitPaths();
 
-static bool CreateShortcutLink(const wchar_t* lnkPath, const wchar_t* target,
-                                const wchar_t* desc, const wchar_t* iconPath) {
-    IShellLinkW* sl = NULL;
-    HRESULT hr = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
-                                  &IID_IShellLinkW, (void**)&sl);
-    if (FAILED(hr)) return false;
-    IShellLinkW_SetPath(sl, target);
-    IShellLinkW_SetDescription(sl, desc);
-    IShellLinkW_SetIconLocation(sl, iconPath, 0);
-    IPersistFile* pf = NULL;
-    hr = IShellLinkW_QueryInterface(sl, &IID_IPersistFile, (void**)&pf);
-    if (SUCCEEDED(hr)) {
-        IPersistFile_Save(pf, lnkPath, TRUE);
-        IPersistFile_Release(pf);
+    // Find where Attyx is installed
+    wchar_t installDir[MAX_PATH] = {0};
+    if (!AttyxIsInstalled(installDir, MAX_PATH) || !installDir[0]) {
+        // Not installed — fall through to normal installer
+        return -1;
     }
-    IShellLinkW_Release(sl);
-    return SUCCEEDED(hr);
+
+    // Close running GUI (daemon stays alive)
+    CloseAttyxGui();
+
+    // Copy sysroot to install dir (if payload has one)
+    wchar_t src[MAX_PATH], dst[MAX_PATH];
+    swprintf(src, MAX_PATH, L"%s\\share\\msys2", g_payload_dir);
+    if (PathFileExistsW(src)) {
+        swprintf(dst, MAX_PATH, L"%s\\share", installDir);
+        SHCreateDirectoryExW(NULL, dst, NULL);
+        swprintf(dst, MAX_PATH, L"%s\\share\\msys2", installDir);
+        wchar_t fromBuf[MAX_PATH + 2];
+        wcscpy(fromBuf, src);
+        fromBuf[wcslen(fromBuf) + 1] = 0;
+        wchar_t toBuf[MAX_PATH + 2];
+        wcscpy(toBuf, dst);
+        toBuf[wcslen(toBuf) + 1] = 0;
+        SHFILEOPSTRUCTW op = {0};
+        op.wFunc = FO_COPY;
+        op.pFrom = fromBuf;
+        op.pTo = toBuf;
+        op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+        SHFileOperationW(&op);
+    }
+
+    // Copy uninstaller if present
+    swprintf(src, MAX_PATH, L"%s\\attyx-uninstall.exe", g_payload_dir);
+    if (PathFileExistsW(src)) {
+        swprintf(dst, MAX_PATH, L"%s\\attyx-uninstall.exe", installDir);
+        CopyFileW(src, dst, FALSE);
+    }
+
+    // Stage exe for daemon hot-swap (daemon watches this path)
+    wchar_t appdata[MAX_PATH];
+    if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata) == S_OK) {
+        swprintf(src, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
+        swprintf(dst, MAX_PATH, L"%s\\attyx\\upgrade-dev.exe", appdata);
+        CopyFileW(src, dst, FALSE);
+    }
+
+    DeleteDirTree(g_temp_dir);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +613,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     (void)hPrev; (void)cmdLineA; (void)cmdShow;
     LPWSTR cmdLine = GetCommandLineW();
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    // Silent update mode: extract → copy sysroot → stage exe → exit
+    if (cmdLine && wcsstr(cmdLine, L"/update")) {
+        int result = DoSilentUpdate();
+        CoUninitialize();
+        if (result >= 0) return result;
+        // -1 means not installed, fall through to normal installer UI
+    }
 
     if (cmdLine && wcsstr(cmdLine, L"/version=")) {
         const wchar_t* v = wcsstr(cmdLine, L"/version=") + 9;
@@ -789,7 +692,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     DeleteObject(g_font_body);
     DeleteObject(g_font_small);
     DeleteObject(g_font_btn);
-    SfxCleanup(g_temp_dir);
+    DeleteDirTree(g_temp_dir);
     CoUninitialize();
     return 0;
 }

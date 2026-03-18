@@ -285,6 +285,7 @@ pub fn build(b: *std.Build) void {
         });
         uninstall.subsystem = .Windows;
         uninstall.addCSourceFile(.{ .file = b.path("installer/uninstaller.c"), .flags = &.{} });
+        uninstall.root_module.addIncludePath(b.path("installer"));
         uninstall.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         uninstall.root_module.linkSystemLibrary("kernel32", .{});
         uninstall.root_module.linkSystemLibrary("user32", .{});
