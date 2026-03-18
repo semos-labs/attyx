@@ -411,7 +411,12 @@ static DWORD WINAPI InstallThread(LPVOID param) {
         return 1;
     }
 
-    // Step 3: Copy PDB if present
+    // Step 3: Copy uninstaller + PDB if present
+    swprintf(src, MAX_PATH, L"%s\\attyx-uninstall.exe", g_payload_dir);
+    if (PathFileExistsW(src)) {
+        swprintf(dst, MAX_PATH, L"%s\\attyx-uninstall.exe", g_install_dir);
+        CopyFileW(src, dst, FALSE);
+    }
     swprintf(src, MAX_PATH, L"%s\\attyx.pdb", g_payload_dir);
     if (PathFileExistsW(src)) {
         swprintf(dst, MAX_PATH, L"%s\\attyx.pdb", g_install_dir);
@@ -524,7 +529,7 @@ static DWORD WINAPI InstallThread(LPVOID param) {
             0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
         RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ, (BYTE*)L"Attyx",
                        6 * sizeof(wchar_t));
-        swprintf(dst, MAX_PATH, L"\"%s\\attyx.exe\" uninstall", g_install_dir);
+        swprintf(dst, MAX_PATH, L"\"%s\\attyx-uninstall.exe\"", g_install_dir);
         RegSetValueExW(hKey, L"UninstallString", 0, REG_SZ, (BYTE*)dst,
                        (DWORD)((wcslen(dst) + 1) * sizeof(wchar_t)));
         swprintf(dst, MAX_PATH, L"%s\\attyx.exe", g_install_dir);

@@ -262,8 +262,31 @@ pub fn build(b: *std.Build) void {
         setup.root_module.linkSystemLibrary("c", .{});
 
         const install_setup = b.addInstallArtifact(setup, .{});
-        const installer_step = b.step("installer", "Build the Windows installer");
+        const installer_step = b.step("installer", "Build the Windows installer + uninstaller");
         installer_step.dependOn(&install_setup.step);
+
+        // Uninstaller
+        const uninstall = b.addExecutable(.{
+            .name = "attyx-uninstall",
+            .root_module = b.createModule(.{
+                .root_source_file = null,
+                .target = target,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        uninstall.subsystem = .Windows;
+        uninstall.addCSourceFile(.{ .file = b.path("installer/uninstaller.c"), .flags = &.{} });
+        uninstall.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
+        uninstall.root_module.linkSystemLibrary("kernel32", .{});
+        uninstall.root_module.linkSystemLibrary("user32", .{});
+        uninstall.root_module.linkSystemLibrary("gdi32", .{});
+        uninstall.root_module.linkSystemLibrary("shell32", .{});
+        uninstall.root_module.linkSystemLibrary("advapi32", .{});
+        uninstall.root_module.linkSystemLibrary("shlwapi", .{});
+        uninstall.root_module.linkSystemLibrary("c", .{});
+
+        const install_uninstall = b.addInstallArtifact(uninstall, .{});
+        installer_step.dependOn(&install_uninstall.step);
     }
 
     // This creates a top level step. Top level steps have a name and can be

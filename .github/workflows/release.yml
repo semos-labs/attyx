@@ -276,6 +276,7 @@ jobs:
           Copy-Item zig-out\bin\attyx-setup.exe $staging\attyx-setup.exe
           New-Item -ItemType Directory "$staging\dist" -Force | Out-Null
           Copy-Item zig-out\bin\attyx.exe "$staging\dist\attyx.exe"
+          Copy-Item zig-out\bin\attyx-uninstall.exe "$staging\dist\attyx-uninstall.exe"
           if (Test-Path "zig-out\bin\share\msys2") {
             Copy-Item "zig-out\bin\share\msys2" "$staging\dist\share\msys2" -Recurse -Force
           }

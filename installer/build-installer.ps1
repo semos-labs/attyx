@@ -47,6 +47,12 @@ if (-not (Test-Path $srcExe)) {
 Copy-Item $srcExe -Destination $dist
 Write-Host "  Copied attyx.exe"
 
+$srcUninstall = Join-Path $root "zig-out\bin\attyx-uninstall.exe"
+if (Test-Path $srcUninstall) {
+    Copy-Item $srcUninstall -Destination $dist
+    Write-Host "  Copied attyx-uninstall.exe"
+}
+
 $srcPdb = Join-Path $root "zig-out\bin\attyx.pdb"
 if (Test-Path $srcPdb) {
     Copy-Item $srcPdb -Destination $dist
