@@ -289,8 +289,8 @@ fn sendInputToPane(pane: *Pane, text: []const u8, ctx: *PtyThreadCtx) void {
 // ---------------------------------------------------------------------------
 
 pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
-    if (cmd.response_fd == -1) return;
-    defer posix.close(cmd.response_fd);
+    if (cmd.response_fd == queue.invalid_fd) return;
+    defer protocol.closeFd(cmd.response_fd);
     var buf: [protocol.header_size + 4096]u8 = undefined;
     const msg = protocol.encodeSuccess(&buf, payload) catch {
         // Payload too large for stack buffer — write header + payload separately
@@ -304,8 +304,8 @@ pub fn sendOk(cmd: *queue.IpcCommand, payload: []const u8) void {
 }
 
 pub fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
-    if (cmd.response_fd == -1) return;
-    defer posix.close(cmd.response_fd);
+    if (cmd.response_fd == queue.invalid_fd) return;
+    defer protocol.closeFd(cmd.response_fd);
     // Send plain text error — the client formats it for display/JSON
     var buf: [protocol.header_size + 512]u8 = undefined;
     const resp = protocol.encodeMessage(&buf, .err, err_msg) catch return;

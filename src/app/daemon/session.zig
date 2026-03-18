@@ -84,6 +84,7 @@ pub const DaemonSession = struct {
         cols: u16,
         replay_capacity: usize,
         cwd_override: ?[*:0]const u8,
+        shell_override: ?[*:0]const u8,
         cmd_override: ?[*:0]const u8,
         capture_stdout: bool,
     ) !u32 {
@@ -91,7 +92,7 @@ pub const DaemonSession = struct {
             if (slot.* == null) break i;
         } else return error.TooManyPanes;
         const cwd: ?[*:0]const u8 = cwd_override orelse if (self.cwd_len > 0) @as([*:0]const u8, self.cwd[0..self.cwd_len :0]) else null;
-        const shell: ?[*:0]const u8 = if (self.shell_len > 0) @as([*:0]const u8, self.shell[0..self.shell_len :0]) else null;
+        const shell: ?[*:0]const u8 = shell_override orelse if (self.shell_len > 0) @as([*:0]const u8, self.shell[0..self.shell_len :0]) else null;
         self.panes[slot_idx] = try DaemonPane.spawn(allocator, pane_id, rows, cols, replay_capacity, cwd, shell, cmd_override, capture_stdout);
         self.pane_count += 1;
         return pane_id;

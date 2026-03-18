@@ -11,6 +11,7 @@
 // Help text lives in cli_ipc_help.zig (split for the 600-line limit).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const help = @import("cli_ipc_help.zig");
 
 pub const IpcCommand = enum {
@@ -83,7 +84,7 @@ fn looksLikePath(s: []const u8) bool {
 fn isDirectory(path: []const u8) bool {
     // Handle ~ expansion for home directory
     if (path.len > 0 and path[0] == '~') {
-        const home = std.posix.getenv("HOME") orelse return false;
+        const home = if (comptime builtin.os.tag == .windows) return false else std.posix.getenv("HOME") orelse return false;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const rest = if (path.len > 1) path[1..] else "";
         if (home.len + rest.len >= buf.len) return false;

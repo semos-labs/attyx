@@ -186,31 +186,68 @@ pub fn encodeThemeSet(buf: []u8, name: []const u8) ![]u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Read helpers (for client: read full response from fd)
+// Read/write helpers — cross-platform (POSIX sockets / Windows named pipes)
 // ---------------------------------------------------------------------------
 
-/// Read exactly `len` bytes from fd. Returns error on short read / disconnect.
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+
+const win32 = if (is_windows) struct {
+    const windows = std.os.windows;
+    const HANDLE = windows.HANDLE;
+    const DWORD = windows.DWORD;
+    const BOOL = windows.BOOL;
+    extern "kernel32" fn ReadFile(hFile: HANDLE, lpBuffer: [*]u8, nRead: DWORD, lpBytesRead: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
+    extern "kernel32" fn WriteFile(hFile: HANDLE, lpBuffer: [*]const u8, nWrite: DWORD, lpWritten: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
+    extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+} else struct {};
+
+/// Read exactly `len` bytes from fd/handle. Returns error on short read / disconnect.
 pub fn readExact(fd: std.posix.fd_t, out: []u8) !void {
     var total: usize = 0;
     while (total < out.len) {
-        const n = std.posix.read(fd, out[total..]) catch |err| switch (err) {
-            error.WouldBlock => continue,
-            else => return err,
-        };
-        if (n == 0) return error.ConnectionClosed;
-        total += n;
+        if (comptime is_windows) {
+            var bytes_read: win32.DWORD = 0;
+            if (win32.ReadFile(fd, out[total..].ptr, @intCast(out.len - total), &bytes_read, null) == 0)
+                return error.ConnectionClosed;
+            if (bytes_read == 0) return error.ConnectionClosed;
+            total += bytes_read;
+        } else {
+            const n = std.posix.read(fd, out[total..]) catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
+            if (n == 0) return error.ConnectionClosed;
+            total += n;
+        }
     }
 }
 
-/// Write all bytes to fd.
+/// Write all bytes to fd/handle.
 pub fn writeAll(fd: std.posix.fd_t, data: []const u8) !void {
     var total: usize = 0;
     while (total < data.len) {
-        const n = std.posix.write(fd, data[total..]) catch |err| switch (err) {
-            error.WouldBlock => continue,
-            else => return err,
-        };
-        total += n;
+        if (comptime is_windows) {
+            var written: win32.DWORD = 0;
+            if (win32.WriteFile(fd, data[total..].ptr, @intCast(data.len - total), &written, null) == 0)
+                return error.BrokenPipe;
+            total += written;
+        } else {
+            const n = std.posix.write(fd, data[total..]) catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
+            total += n;
+        }
+    }
+}
+
+/// Close a fd/handle.
+pub fn closeFd(fd: std.posix.fd_t) void {
+    if (comptime is_windows) {
+        _ = win32.CloseHandle(fd);
+    } else {
+        std.posix.close(fd);
     }
 }
 

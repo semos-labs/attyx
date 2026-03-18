@@ -53,10 +53,10 @@ pub const registry = [_]CommandDef{
     .{ .action = .scroll_to_top, .name = "scroll_to_top", .description = "Scroll to top", .scope = .global, .mac_hotkey = "shift+home", .linux_hotkey = "shift+home" },
     .{ .action = .scroll_to_bottom, .name = "scroll_to_bottom", .description = "Scroll to bottom", .scope = .global, .mac_hotkey = "shift+end", .linux_hotkey = "shift+end" },
     .{ .action = .config_reload, .name = "config_reload", .description = "Reload configuration", .scope = .global, .mac_hotkey = "ctrl+shift+r", .linux_hotkey = "ctrl+shift+r" },
-    .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+d" },
+    .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+f12" },
     .{ .action = .anchor_demo_toggle, .name = "anchor_demo_toggle", .description = "Toggle anchor demo", .scope = .global, .mac_hotkey = "ctrl+shift+a", .linux_hotkey = "ctrl+shift+a" },
     .{ .action = .new_window, .name = "new_window", .description = "Open new window", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
-    .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = "ctrl+shift+w" },
+    .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = null },
     .{ .action = .ai_demo_toggle, .name = "ai_demo_toggle", .description = "Toggle AI edit prompt", .scope = .global, .mac_hotkey = "ctrl+shift+i", .linux_hotkey = "ctrl+shift+i" },
     .{ .action = .tab_new, .name = "tab_new", .description = "Open new tab", .scope = .global, .mac_hotkey = "cmd+t", .linux_hotkey = "ctrl+shift+t" },
     .{ .action = .tab_close, .name = "tab_close", .description = "Close tab", .scope = .global, .mac_hotkey = "cmd+w", .linux_hotkey = "ctrl+shift+w" },
@@ -113,6 +113,7 @@ pub const registry = [_]CommandDef{
     // Close-all actions
     .{ .action = .close_all_tabs, .name = "close_all_tabs", .description = "Close all tabs", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .close_all_windows, .name = "close_all_windows", .description = "Close all windows", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
+    .{ .action = .shell_picker_toggle, .name = "shell_picker", .description = "Pick shell for new tab", .scope = .global, .mac_hotkey = null, .linux_hotkey = if (builtin.os.tag == .windows) "alt+shift+t" else null },
 };
 
 // ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ pub fn commandForAction(action: Action) ?*const CommandDef {
 
 pub fn defaultKeybinds() []const Keybind {
     const is_macos = comptime builtin.os.tag == .macos;
+    const is_windows = comptime builtin.os.tag == .windows;
     const keybinds = comptime blk: {
         @setEvalBranchQuota(10_000);
         var list: []const Keybind = &.{};
@@ -152,6 +154,15 @@ pub fn defaultKeybinds() []const Keybind {
                         .{ .combo = combo, .action = cmd.action },
                     };
                 }
+            }
+        }
+        // Windows: add ctrl+c (copy) and ctrl+v (paste) alongside ctrl+shift+c/v
+        if (is_windows) {
+            if (parseKeyCombo("ctrl+c")) |combo| {
+                list = list ++ &[_]Keybind{.{ .combo = combo, .action = .copy }};
+            }
+            if (parseKeyCombo("ctrl+v")) |combo| {
+                list = list ++ &[_]Keybind{.{ .combo = combo, .action = .paste }};
             }
         }
         break :blk list;

@@ -13,6 +13,9 @@ const git_widget = @import("git_widget.zig");
 const tab_bar_mod = @import("tab_bar.zig");
 const bridge = @cImport({ @cInclude("bridge.h"); });
 
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+
 const CTime = extern struct {
     tm_sec: c_int,
     tm_min: c_int,
@@ -24,7 +27,23 @@ const CTime = extern struct {
     tm_yday: c_int,
     tm_isdst: c_int,
 };
-extern "c" fn localtime_r(timep: *const i64, result: *CTime) ?*CTime;
+
+// Platform-specific local time conversion.
+const time_ffi = if (is_windows) struct {
+    // Windows UCRT: _localtime64_s(struct tm*, const __time64_t*) → errno_t
+    extern "c" fn _localtime64_s(result: *CTime, timep: *const i64) c_int;
+} else struct {
+    // POSIX: localtime_r(const time_t*, struct tm*) → struct tm*
+    extern "c" fn localtime_r(timep: *const i64, result: *CTime) ?*CTime;
+};
+
+fn getLocalTime(epoch: *i64, tm: *CTime) bool {
+    if (is_windows) {
+        return time_ffi._localtime64_s(tm, epoch) == 0;
+    } else {
+        return time_ffi.localtime_r(epoch, tm) != null;
+    }
+}
 
 pub const max_widgets = statusbar_config.max_widgets;
 pub const max_output_len = 256;
@@ -58,6 +77,7 @@ pub const default_ansi_palette = [16]Rgb{
 
 /// Parse a file:// URI to extract the path component.
 /// Returns a slice into `buf` on success, null on failure.
+/// On Windows, converts MSYS-style paths (/c/Users/...) to Windows paths (C:\Users\...).
 pub fn parseFileUri(uri: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
     const prefix = "file://";
     if (!std.mem.startsWith(u8, uri, prefix)) return null;
@@ -66,8 +86,40 @@ pub fn parseFileUri(uri: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
     const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
     const path = after_scheme[slash_idx..];
     if (path.len == 0) return null;
+
+    if (is_windows) {
+        return msysToWinPath(path, buf);
+    }
+
     const len = @min(path.len, buf.len);
     @memcpy(buf[0..len], path[0..len]);
+    return buf[0..len];
+}
+
+/// Convert MSYS-style path (/c/Users/Foo) to Windows path (C:\Users\Foo).
+/// Returns a slice into `buf`, or null if the path doesn't match the pattern.
+fn msysToWinPath(path: []const u8, buf: *[max_output_len]u8) ?[]const u8 {
+    // Pattern: /x/... where x is a drive letter
+    if (path.len >= 3 and path[0] == '/' and path[2] == '/' and
+        ((path[1] >= 'a' and path[1] <= 'z') or (path[1] >= 'A' and path[1] <= 'Z')))
+    {
+        if (buf.len < path.len) return null;
+        // Drive letter uppercase + ':'
+        buf[0] = if (path[1] >= 'a') path[1] - ('a' - 'A') else path[1];
+        buf[1] = ':';
+        // Copy rest, converting / to backslash
+        var i: usize = 2;
+        while (i < path.len) : (i += 1) {
+            buf[i] = if (path[i] == '/') '\\' else path[i];
+        }
+        return buf[0..path.len];
+    }
+    // Not an MSYS path — copy as-is with slash conversion
+    const len = @min(path.len, buf.len);
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        buf[i] = if (path[i] == '/') '\\' else path[i];
+    }
     return buf[0..len];
 }
 
@@ -181,8 +233,32 @@ pub const Statusbar = struct {
         formatCwd(ws, wc, cwd);
     }
 
+    fn getHomeDir() ?[]const u8 {
+        if (is_windows) {
+            // Cache USERPROFILE in a static buffer (it doesn't change at runtime).
+            const S = struct {
+                var buf: [512]u8 = undefined;
+                var len: usize = 0;
+                var initialized: bool = false;
+            };
+            if (!S.initialized) {
+                S.initialized = true;
+                const val = std.process.getEnvVarOwned(std.heap.page_allocator, "USERPROFILE") catch null;
+                if (val) |v| {
+                    const n = @min(v.len, S.buf.len);
+                    @memcpy(S.buf[0..n], v[0..n]);
+                    S.len = n;
+                    std.heap.page_allocator.free(v);
+                }
+            }
+            return if (S.len > 0) S.buf[0..S.len] else null;
+        } else {
+            return std.posix.getenv("HOME");
+        }
+    }
+
     fn formatCwd(ws: *WidgetState, wc: *const StatusbarWidgetConfig, cwd: []const u8) void {
-        const home = std.posix.getenv("HOME");
+        const home = getHomeDir();
         var path: []const u8 = cwd;
         var prefix: []const u8 = "";
         if (home) |h| {
@@ -195,14 +271,14 @@ pub const Statusbar = struct {
         if (truncate > 0) {
             const orig_path = path;
             path = truncatePath(path, truncate);
-            // If truncation removed components and we're under HOME, add "/" after "~"
+            // If truncation removed components and we're under HOME, add separator after "~"
             if (path.len < orig_path.len and prefix.len > 0) {
-                prefix = "~/";
+                prefix = if (is_windows) "~\\" else "~/";
             }
         }
-        // Root filesystem: ensure we output "/" not empty string
+        // Root filesystem: ensure we output separator not empty string
         if (prefix.len == 0 and path.len == 0) {
-            prefix = "/";
+            prefix = if (is_windows) "\\" else "/";
         }
         const plen = @min(prefix.len, max_output_len);
         @memcpy(ws.output[0..plen], prefix[0..plen]);
@@ -222,7 +298,7 @@ pub const Statusbar = struct {
         var i: usize = path.len;
         while (i > 0) {
             i -= 1;
-            if (path[i] == '/') {
+            if (path[i] == '/' or path[i] == '\\') {
                 count += 1;
                 if (count == keep) return path[i + 1 ..];
             }
@@ -234,7 +310,7 @@ pub const Statusbar = struct {
     fn refreshTime(ws: *WidgetState, wc: *const StatusbarWidgetConfig) void {
         var epoch = std.time.timestamp();
         var tm: CTime = undefined;
-        if (localtime_r(&epoch, &tm) == null) return;
+        if (!getLocalTime(&epoch, &tm)) return;
         const h24: u8 = @intCast(tm.tm_hour);
         const minutes: u8 = @intCast(tm.tm_min);
         const use_24h = if (wc.getParam("24h")) |v| !std.mem.eql(u8, v, "false") else true;

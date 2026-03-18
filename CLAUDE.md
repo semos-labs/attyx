@@ -66,6 +66,12 @@ Every feature must include at least one of:
 
 All tests must run in headless mode. No rendering required for core tests.
 
+## Pull Requests
+
+- Never add "Generated with Claude Code" or similar attribution lines.
+- Never add a "Files" section listing changed files — the diff shows that.
+- Keep the description focused on what changed and why, not inventory.
+
 ## Release Notes
 
 - All release notes go in the `releases/` folder as Markdown files.

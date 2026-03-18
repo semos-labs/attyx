@@ -25,6 +25,7 @@ pub const Action = enum {
     daemon_restore,
     kill_daemon,
     ipc_command,
+    host,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -68,6 +69,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             } else {
                 result.action = .daemon;
             }
+            return result;
+        } else if (std.mem.eql(u8, first, "--host")) {
+            result.action = .host;
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;

@@ -272,13 +272,18 @@ pub export fn attyx_context_menu_action(action_id: u8, col: c_int, row: c_int) v
 // ---------------------------------------------------------------------------
 
 const is_macos = builtin.os.tag == .macos;
+const is_windows = builtin.os.tag == .windows;
 
 const macos_ffi = if (is_macos) struct {
     extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
 } else struct {};
 
 fn openConfigInEditor() void {
-    // Build config file path
+    if (comptime is_windows) {
+        openConfigInEditorWindows();
+        return;
+    }
+    // POSIX: build config file path
     const home = std.posix.getenv("HOME") orelse return;
     const xdg = std.posix.getenv("XDG_CONFIG_HOME") orelse "";
     var path_buf: [512]u8 = undefined;
@@ -308,7 +313,6 @@ fn openConfigInEditor() void {
     const spawn = @import("../spawn.zig");
 
     if (isTuiEditor(basename)) {
-        // TUI editor — open in a new attyx window via --cmd sh -c '...'
         const exe = getSelfExePath() orelse return;
         var sh_buf: [1024]u8 = undefined;
         const sh_cmd = std.fmt.bufPrintZ(
@@ -319,7 +323,6 @@ fn openConfigInEditor() void {
         const argv: [6:null]?[*:0]const u8 = .{ exe, "--cmd", "sh", "-c", sh_cmd, null };
         _ = spawn.spawnp(exe, &argv, false);
     } else if (isGuiEditor(basename)) {
-        // GUI editor — launch directly via sh -c to handle multi-word $EDITOR
         var sh_buf: [1024]u8 = undefined;
         const sh_cmd = std.fmt.bufPrintZ(
             &sh_buf,
@@ -329,9 +332,28 @@ fn openConfigInEditor() void {
         const argv: [4:null]?[*:0]const u8 = .{ "sh", "-c", sh_cmd, null };
         _ = spawn.spawnp("sh", &argv, false);
     } else {
-        // Unknown editor — fall back to system opener (open / xdg-open)
         systemOpen(config_path);
     }
+}
+
+fn openConfigInEditorWindows() void {
+    // Config dir is %APPDATA%\attyx (matches platform/windows.zig getConfigPaths)
+    const appdata = std.process.getEnvVarOwned(std.heap.page_allocator, "APPDATA") catch return;
+    defer std.heap.page_allocator.free(appdata);
+    var path_buf: [512]u8 = undefined;
+    const config_path = std.fmt.bufPrintZ(&path_buf, "{s}\\attyx\\attyx.toml", .{appdata}) catch return;
+
+    // Ensure file exists
+    if (std.fs.accessAbsolute(config_path, .{})) {} else |_| {
+        var dir_buf: [512]u8 = undefined;
+        const dir = std.fmt.bufPrint(&dir_buf, "{s}\\attyx", .{appdata}) catch "";
+        if (dir.len > 0) std.fs.makeDirAbsolute(dir) catch {};
+        const f = std.fs.createFileAbsolute(config_path, .{ .exclusive = true }) catch null;
+        if (f) |file| file.close();
+    }
+
+    // Open with the default .toml editor (or Notepad)
+    shellExecuteOpen(config_path);
 }
 
 /// Extract the basename of the first word in an editor string.
@@ -369,10 +391,37 @@ fn isGuiEditor(basename: []const u8) bool {
 }
 
 fn systemOpen(path: [:0]const u8) void {
+    if (comptime is_windows) {
+        shellExecuteOpen(path);
+        return;
+    }
     const opener: [*:0]const u8 = if (comptime is_macos) "open" else "xdg-open";
     const spawn = @import("../spawn.zig");
     const argv: [3:null]?[*:0]const u8 = .{ opener, path, null };
     _ = spawn.spawnp(opener, &argv, false);
+}
+
+fn shellExecuteOpen(path: [:0]const u8) void {
+    const win32 = struct {
+        extern "shell32" fn ShellExecuteW(
+            hwnd: ?*anyopaque,
+            lpOperation: ?[*:0]const u16,
+            lpFile: [*:0]const u16,
+            lpParameters: ?[*:0]const u16,
+            lpDirectory: ?[*:0]const u16,
+            nShowCmd: c_int,
+        ) callconv(.winapi) isize;
+    };
+    var wide_path: [512:0]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide_path, path) catch return;
+    wide_path[wlen] = 0;
+    const open = comptime blk: {
+        const s = "open";
+        var r: [s.len:0]u16 = undefined;
+        for (s, 0..) |ch, i| r[i] = ch;
+        break :blk r;
+    };
+    _ = win32.ShellExecuteW(null, &open, wide_path[0..wlen :0], null, null, 1);
 }
 
 var exe_path_buf: [4096]u8 = undefined;

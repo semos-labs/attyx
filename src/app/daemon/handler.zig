@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
@@ -6,7 +8,6 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
-
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -90,19 +91,20 @@ fn handleCreate(
     };
     const id = next_id.*;
     next_id.* += 1;
-    // Null-terminate CWD for posix chdir
-    var cwd_z_buf: [4097]u8 = undefined;
-    const cwd_z: ?[*:0]const u8 = if (create.cwd.len > 0 and create.cwd.len < cwd_z_buf.len) blk: {
-        @memcpy(cwd_z_buf[0..create.cwd.len], create.cwd);
-        cwd_z_buf[create.cwd.len] = 0;
-        break :blk @ptrCast(&cwd_z_buf);
+    // Static buffers for null-terminating CWD/shell (aarch64 Windows stack workaround).
+    const ZBufs = struct {
+        var cwd_z_buf: [4097]u8 = undefined;
+        var shell_z_buf: [257]u8 = undefined;
+    };
+    const cwd_z: ?[*:0]const u8 = if (create.cwd.len > 0 and create.cwd.len < ZBufs.cwd_z_buf.len) blk: {
+        @memcpy(ZBufs.cwd_z_buf[0..create.cwd.len], create.cwd);
+        ZBufs.cwd_z_buf[create.cwd.len] = 0;
+        break :blk @ptrCast(&ZBufs.cwd_z_buf);
     } else null;
-    // Null-terminate shell program
-    var shell_z_buf: [257]u8 = undefined;
-    const shell_z: ?[*:0]const u8 = if (create.shell.len > 0 and create.shell.len < shell_z_buf.len) blk: {
-        @memcpy(shell_z_buf[0..create.shell.len], create.shell);
-        shell_z_buf[create.shell.len] = 0;
-        break :blk @ptrCast(&shell_z_buf);
+    const shell_z: ?[*:0]const u8 = if (create.shell.len > 0 and create.shell.len < ZBufs.shell_z_buf.len) blk: {
+        @memcpy(ZBufs.shell_z_buf[0..create.shell.len], create.shell);
+        ZBufs.shell_z_buf[create.shell.len] = 0;
+        break :blk @ptrCast(&ZBufs.shell_z_buf);
     } else null;
     const initial_pane_id = next_pane_id.*;
     next_pane_id.* += 1;
@@ -123,7 +125,7 @@ fn handleCreate(
     session_count.* += 1;
     // Set non-blocking on initial pane's PTY master
     if (sessions[slot_idx].?.firstPane()) |pane| {
-        setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
     }
     cl.sendCreated(id);
 }
@@ -151,8 +153,6 @@ fn handleAttach(
     }
 
     session.resize(attach.rows, attach.cols) catch {};
-    // Send V2 attached with layout blob and pane IDs.
-    // Replay is NOT sent here — the client requests it via focus_panes.
     cl.sendAttachedV2(session);
 }
 
@@ -225,27 +225,40 @@ fn handleCreatePane(
     const pane_id_val = next_pane_id.*;
     next_pane_id.* += 1;
     // Use CWD from message if provided, otherwise fall back to session CWD.
-    var cwd_z_buf: [4097]u8 = undefined;
-    const cwd_z: ?[*:0]const u8 = if (msg.cwd.len > 0 and msg.cwd.len < cwd_z_buf.len) blk: {
-        @memcpy(cwd_z_buf[0..msg.cwd.len], msg.cwd);
-        cwd_z_buf[msg.cwd.len] = 0;
-        break :blk @ptrCast(&cwd_z_buf);
+    const PaneBufs = struct {
+        var cwd_z_buf: [4097]u8 = undefined;
+        var cmd_z_buf: [4097]u8 = undefined;
+    };
+    const cwd_z: ?[*:0]const u8 = if (msg.cwd.len > 0 and msg.cwd.len < PaneBufs.cwd_z_buf.len) blk: {
+        @memcpy(PaneBufs.cwd_z_buf[0..msg.cwd.len], msg.cwd);
+        PaneBufs.cwd_z_buf[msg.cwd.len] = 0;
+        break :blk @ptrCast(&PaneBufs.cwd_z_buf);
     } else null;
     // Optional command override (e.g. from `attyx run htop`).
-    var cmd_z_buf: [4097]u8 = undefined;
-    const cmd_z: ?[*:0]const u8 = if (msg.cmd.len > 0 and msg.cmd.len < cmd_z_buf.len) blk: {
-        @memcpy(cmd_z_buf[0..msg.cmd.len], msg.cmd);
-        cmd_z_buf[msg.cmd.len] = 0;
-        break :blk @ptrCast(&cmd_z_buf);
+    const cmd_z: ?[*:0]const u8 = if (msg.cmd.len > 0 and msg.cmd.len < PaneBufs.cmd_z_buf.len) blk: {
+        @memcpy(PaneBufs.cmd_z_buf[0..msg.cmd.len], msg.cmd);
+        PaneBufs.cmd_z_buf[msg.cmd.len] = 0;
+        break :blk @ptrCast(&PaneBufs.cmd_z_buf);
     } else null;
-    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, cmd_z, msg.capture_stdout) catch {
+    // Optional shell override (e.g. from shell picker: "pwsh.exe", "cmd.exe").
+    const ShellBuf = struct {
+        var shell_z_buf: [257]u8 = undefined;
+    };
+    const shell_z: ?[*:0]const u8 = if (msg.shell.len > 0 and msg.shell.len < ShellBuf.shell_z_buf.len) blk: {
+        @memcpy(ShellBuf.shell_z_buf[0..msg.shell.len], msg.shell);
+        ShellBuf.shell_z_buf[msg.shell.len] = 0;
+        break :blk @ptrCast(&ShellBuf.shell_z_buf);
+    } else null;
+    const pane_id = session.addPaneWithId(allocator, pane_id_val, msg.rows, msg.cols, replay_capacity, cwd_z, shell_z, cmd_z, msg.capture_stdout) catch {
         cl.sendError(3, "create pane failed");
         return;
     };
     // Set non-blocking on new pane's PTY (and stdout capture pipe if present)
     if (session.findPane(pane_id)) |pane| {
-        setNonBlocking(pane.pty.master);
-        if (pane.pty.stdout_read_fd != -1) setNonBlocking(pane.pty.stdout_read_fd);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) {
+            if (pane.pty.stdout_read_fd != -1) setNonBlocking(pane.pty.stdout_read_fd);
+        }
     }
     cl.sendPaneCreated(pane_id);
 }
@@ -287,7 +300,9 @@ fn handleFocusPanes(
     // Drain pending PTY data for newly-active panes before replaying.
     // This closes the race where the shell is still outputting startup
     // sequences (e.g. zsh PROMPT_EOL_MARK) that haven't been read yet.
-    var drain_buf: [8192]u8 = undefined;
+    const DrainBuf = struct {
+        var buf: [8192]u8 = undefined;
+    };
     for (0..msg.count) |i| {
         const new_id = msg.pane_ids[i];
         var was_active = false;
@@ -299,9 +314,22 @@ fn handleFocusPanes(
         }
         if (!was_active) {
             if (session.findPane(new_id)) |pane| {
-                // Drain any buffered PTY output into the ring buffer
-                while (pane.readPty(&drain_buf) catch null) |n| {
-                    if (n == 0) break;
+                // Drain any buffered PTY output into the ring buffer.
+                // On Windows, Pty.read blocks (INFINITE wait), so use
+                // peekAvail + read to only drain what's available.
+                // Cancel any pending async read first — two overlapped
+                // reads on the same handle corrupt each other's state.
+                if (comptime is_windows) {
+                    pane.pty.cancelAsyncRead();
+                    while (pane.pty.peekAvail() > 0) {
+                        const n = pane.readPty(&DrainBuf.buf) catch break;
+                        if (n == 0) break;
+                    }
+                } else {
+                    while (true) {
+                        const n = pane.readPty(&DrainBuf.buf) catch break;
+                        if (n == 0) break;
+                    }
                 }
                 cl.sendPaneReplay(pane);
                 // Nudge the PTY size so TUI apps get a SIGWINCH and
@@ -409,9 +437,9 @@ fn reviveSession(
                 const pane_id = next_pane_id.*;
                 next_pane_id.* += 1;
                 new_ids[i] = pane_id;
-                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch continue;
+                _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, null, false) catch continue;
                 if (session.findPane(pane_id)) |pane| {
-                    setNonBlocking(pane.pty.master);
+                    if (comptime !is_windows) setNonBlocking(pane.pty.master);
                 }
                 spawned += 1;
             }
@@ -431,9 +459,9 @@ fn reviveSession(
     // Fallback: spawn a single pane (no layout or deserialization failed).
     const pane_id = next_pane_id.*;
     next_pane_id.* += 1;
-    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, false) catch return;
+    _ = session.addPaneWithId(allocator, pane_id, rows, cols, RingBuffer.default_capacity, cwd, null, null, false) catch return;
     if (session.findPane(pane_id)) |pane| {
-        setNonBlocking(pane.pty.master);
+        if (comptime !is_windows) setNonBlocking(pane.pty.master);
     }
     session.alive = true;
 }
@@ -461,6 +489,7 @@ fn findSession(sessions: *[max_sessions]?DaemonSession, id: u32) ?*DaemonSession
 }
 
 fn setNonBlocking(fd: std.posix.fd_t) void {
+    if (comptime is_windows) return; // Windows handles don't use fcntl
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const platform = @import("../../platform/platform.zig");

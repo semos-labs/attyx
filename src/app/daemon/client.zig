@@ -1,12 +1,27 @@
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonPane = @import("pane.zig").DaemonPane;
 
+// Windows API imports for named pipe I/O.
+const win32 = if (is_windows) struct {
+    const windows = std.os.windows;
+    const HANDLE = windows.HANDLE;
+    const DWORD = windows.DWORD;
+    const BOOL = windows.BOOL;
+
+    extern "kernel32" fn ReadFile(hFile: HANDLE, lpBuffer: [*]u8, nRead: DWORD, lpBytesRead: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
+    extern "kernel32" fn WriteFile(hFile: HANDLE, lpBuffer: [*]const u8, nWrite: DWORD, lpWritten: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
+    extern "kernel32" fn PeekNamedPipe(hPipe: HANDLE, lpBuf: ?[*]u8, nBufSize: DWORD, lpRead: ?*DWORD, lpAvail: ?*DWORD, lpLeft: ?*DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+    extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+} else struct {};
+
 /// A connected client being served by the daemon.
 pub const DaemonClient = struct {
-    socket_fd: posix.fd_t,
+    socket_fd: std.posix.fd_t,
     read_buf: [65536]u8 = undefined,
     read_len: usize = 0,
     msg_buf: [65536]u8 = undefined, // stable copy for nextMessage payloads
@@ -16,7 +31,7 @@ pub const DaemonClient = struct {
     active_panes: [32]u32 = .{0} ** 32,
     active_pane_count: u8 = 0,
 
-    pub fn init(fd: posix.fd_t) DaemonClient {
+    pub fn init(fd: std.posix.fd_t) DaemonClient {
         return .{ .socket_fd = fd };
     }
 
@@ -29,12 +44,24 @@ pub const DaemonClient = struct {
             // rather than discarding data (which would desync the stream).
             return false;
         }
-        const n = posix.read(self.socket_fd, space) catch |err| switch (err) {
-            error.WouldBlock => return true,
-            else => return false,
-        };
-        if (n == 0) return false; // EOF
-        self.read_len += n;
+        if (comptime is_windows) {
+            // Non-blocking read: peek first, then read if data available.
+            var avail: win32.DWORD = 0;
+            if (win32.PeekNamedPipe(self.socket_fd, null, 0, null, &avail, null) == 0) return false;
+            if (avail == 0) return true; // no data yet
+            const to_read: win32.DWORD = @intCast(@min(avail, space.len));
+            var bytes_read: win32.DWORD = 0;
+            if (win32.ReadFile(self.socket_fd, space.ptr, to_read, &bytes_read, null) == 0) return false;
+            if (bytes_read == 0) return false;
+            self.read_len += bytes_read;
+        } else {
+            const n = std.posix.read(self.socket_fd, space) catch |err| switch (err) {
+                error.WouldBlock => return true,
+                else => return false,
+            };
+            if (n == 0) return false; // EOF
+            self.read_len += n;
+        }
         return true;
     }
 
@@ -105,40 +132,59 @@ pub const DaemonClient = struct {
     const max_output_chunk = 32768;
 
     /// Write all bytes to the client socket, handling partial writes.
-    /// The socket is non-blocking; on WouldBlock we briefly poll for
-    /// writability.  If the client can't drain data within ~2s the
-    /// connection is considered dead (prevents the daemon from blocking
-    /// indefinitely when a client's recv buffer is full).
-    ///
-    /// The generous timeout (2s) combined with enlarged SO_SNDBUF (256KB)
-    /// prevents the daemon from killing clients during rapid output bursts
-    /// (e.g. nx test runners). Premature client death causes reconnect +
-    /// replay, which can leave stale content on screen.
+    /// POSIX: non-blocking socket with poll for writability. If the client
+    /// can't drain data within ~2s the connection is considered dead.
+    /// The generous timeout combined with enlarged SO_SNDBUF (256KB) prevents
+    /// killing clients during rapid output bursts (e.g. nx test runners).
+    /// Windows: synchronous WriteFile on named pipe.
     fn writeAll(self: *DaemonClient, data: []const u8) void {
-        const POLLOUT: i16 = 0x0004;
-        var offset: usize = 0;
-        var stalls: u32 = 0;
-        while (offset < data.len) {
-            const n = posix.write(self.socket_fd, data[offset..]) catch |err| {
-                if (err == error.WouldBlock) {
+        if (comptime is_windows) {
+            var offset: usize = 0;
+            var stalls: u32 = 0;
+            while (offset < data.len) {
+                var written: win32.DWORD = 0;
+                if (win32.WriteFile(self.socket_fd, data[offset..].ptr, @intCast(data.len - offset), &written, null) == 0) {
                     stalls += 1;
                     if (stalls > 200) { // 200 × 10ms = 2s
                         self.dead = true;
                         return;
                     }
-                    var fds = [1]posix.pollfd{.{ .fd = self.socket_fd, .events = POLLOUT, .revents = 0 }};
-                    _ = posix.poll(&fds, 10) catch {};
+                    win32.Sleep(10);
                     continue;
                 }
-                self.dead = true;
-                return;
-            };
-            if (n == 0) {
-                self.dead = true;
-                return;
+                if (written == 0) {
+                    self.dead = true;
+                    return;
+                }
+                stalls = 0;
+                offset += written;
             }
-            stalls = 0; // reset on progress
-            offset += n;
+        } else {
+            const POLLOUT: i16 = 0x0004;
+            var offset: usize = 0;
+            var stalls: u32 = 0;
+            while (offset < data.len) {
+                const n = std.posix.write(self.socket_fd, data[offset..]) catch |err| {
+                    if (err == error.WouldBlock) {
+                        stalls += 1;
+                        if (stalls > 200) { // 200 × 10ms = 2s
+                            self.dead = true;
+                            return;
+                        }
+                        var fds = [1]std.posix.pollfd{.{ .fd = self.socket_fd, .events = POLLOUT, .revents = 0 }};
+                        _ = std.posix.poll(&fds, 10) catch {};
+                        continue;
+                    }
+                    self.dead = true;
+                    return;
+                };
+                if (n == 0) {
+                    self.dead = true;
+                    return;
+                }
+                stalls = 0; // reset on progress
+                offset += n;
+            }
         }
     }
 
@@ -189,8 +235,9 @@ pub const DaemonClient = struct {
         }
         // Cursor visibility (send after replay data so it takes final effect)
         self.sendPaneOutput(pane.id, prefix[0..plen]);
-        if (slices.first.len > 0) self.sendPaneOutput(pane.id, slices.first);
-        if (slices.second.len > 0) self.sendPaneOutput(pane.id, slices.second);
+        var in_osc7337 = false;
+        if (slices.first.len > 0) self.sendReplayStripped(pane.id, slices.first, &in_osc7337);
+        if (slices.second.len > 0) self.sendReplayStripped(pane.id, slices.second, &in_osc7337);
         // Apply cursor visibility after replay — the replay may toggle it,
         // but the tracked state reflects the most recent value.
         if (!pane.cursor_visible) {
@@ -210,6 +257,49 @@ pub const DaemonClient = struct {
             const osc = std.fmt.bufPrint(&path_buf, "\x1b]7337;set-path;{s}\x07", .{pane.osc7337_path[0..pane.osc7337_path_len]}) catch null;
             if (osc) |seq| self.sendPaneOutput(pane.id, seq);
         }
+    }
+
+    /// Send replay data, stripping OSC 7337;set-path sequences.
+    /// `in_osc` tracks cross-slice state (true = mid-sequence from previous call).
+    fn sendReplayStripped(self: *DaemonClient, pane_id: u32, data: []const u8, in_osc: *bool) void {
+        var i: usize = 0;
+        var last: usize = 0;
+
+        // Continue skipping if previous slice ended mid-OSC-7337.
+        if (in_osc.*) {
+            while (i < data.len) : (i += 1) {
+                if (data[i] == 0x07) { i += 1; break; }
+                if (data[i] == '\x1b' and i + 1 < data.len and data[i + 1] == '\\') {
+                    i += 2;
+                    break;
+                }
+            }
+            in_osc.* = (i >= data.len);
+            last = i;
+        }
+
+        while (i < data.len) {
+            if (data[i] == '\x1b' and i + 6 < data.len and data[i + 1] == ']' and
+                data[i + 2] == '7' and data[i + 3] == '3' and
+                data[i + 4] == '3' and data[i + 5] == '7' and data[i + 6] == ';')
+            {
+                if (i > last) self.sendPaneOutput(pane_id, data[last..i]);
+                var j = i + 7;
+                while (j < data.len) : (j += 1) {
+                    if (data[j] == 0x07) { j += 1; break; }
+                    if (data[j] == '\x1b' and j + 1 < data.len and data[j + 1] == '\\') {
+                        j += 2;
+                        break;
+                    }
+                }
+                if (j >= data.len) in_osc.* = true;
+                last = j;
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+        if (last < data.len) self.sendPaneOutput(pane_id, data[last..]);
     }
 
     /// Skip past a partial escape sequence at the start of replay data.
@@ -409,7 +499,11 @@ pub const DaemonClient = struct {
     }
 
     pub fn deinit(self: *DaemonClient) void {
-        posix.close(self.socket_fd);
+        if (comptime is_windows) {
+            _ = win32.CloseHandle(self.socket_fd);
+        } else {
+            std.posix.close(self.socket_fd);
+        }
         self.* = undefined;
     }
 };

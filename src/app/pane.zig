@@ -4,20 +4,29 @@
 // Shared by popups, tabs, and splits.
 
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const posix = if (!is_windows) std.posix else struct {};
 const Allocator = std.mem.Allocator;
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
 const logging = @import("../logging/log.zig");
-const terminal = @import("terminal.zig");
-const c = terminal.c;
+const c = @cImport({
+    @cInclude("bridge.h");
+});
+
+/// Platform-appropriate invalid fd sentinel for ipc_wait_fd.
+const ipc_invalid_fd: std.posix.fd_t = if (is_windows)
+    std.os.windows.INVALID_HANDLE_VALUE
+else
+    -1;
 
 /// Minimum interval between PTY resize (TIOCSWINSZ/SIGWINCH) signals.
 /// During continuous window resizing, the engine state is updated every
 /// frame for correct display, but SIGWINCH is throttled to avoid flooding
 /// the shell with prompt redraws that create ghost content.
-const pty_resize_debounce_ns: i128 = 80 * std.time.ns_per_ms;
+const pty_resize_throttle_ns: i128 = 80 * std.time.ns_per_ms;
 
 pub const Pane = struct {
     engine: Engine,
@@ -29,6 +38,8 @@ pub const Pane = struct {
     /// Daemon pane ID. When set, this pane is backed by a daemon PTY and
     /// the local PTY is idle — I/O goes through the shared session socket.
     daemon_pane_id: ?u32 = null,
+    /// Session client for sending resize to daemon (set for daemon-backed panes).
+    session_client: ?*@import("session_client.zig").SessionClient = null,
     /// When true, the engine will be reinitialized before the next data feed
     /// (deferred reinit to prevent blank-screen gap between focus and replay).
     needs_engine_reinit: bool = false,
@@ -41,7 +52,7 @@ pub const Pane = struct {
     /// IPC --wait: fd to write exit code to when this pane's process exits.
     /// Set by IPC handler when a client requests --wait. The fd is owned by
     /// this pane: deinit writes the exit code response and closes it.
-    ipc_wait_fd: posix.fd_t = -1,
+    ipc_wait_fd: std.posix.fd_t = ipc_invalid_fd,
     /// Stored exit code for daemon-backed panes (set from pane_died message).
     stored_exit_code: ?u8 = null,
     /// Captured stdout for --wait mode. When set, stdout_read_fd is drained
@@ -84,6 +95,7 @@ pub const Pane = struct {
         capture_stdout: bool = false,
         preserve_tmux: bool = false,
         skip_shell_integration: bool = false,
+        shell: if (builtin.os.tag == .windows) Pty.ShellType else void = if (builtin.os.tag == .windows) .auto else {},
     };
 
     pub fn spawnOpts(
@@ -98,15 +110,25 @@ pub const Pane = struct {
         var engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         errdefer engine.deinit();
 
-        const pty = try Pty.spawn(.{
-            .rows = rows,
-            .cols = cols,
-            .argv = argv,
-            .cwd = cwd,
-            .capture_stdout = opts.capture_stdout,
-            .preserve_tmux = opts.preserve_tmux,
-            .skip_shell_integration = opts.skip_shell_integration,
-        });
+        const spawn_opts: Pty.SpawnOpts = blk: {
+            var so: Pty.SpawnOpts = .{
+                .rows = rows,
+                .cols = cols,
+                .argv = argv,
+                .cwd = cwd,
+                .capture_stdout = opts.capture_stdout,
+                .preserve_tmux = opts.preserve_tmux,
+                .skip_shell_integration = opts.skip_shell_integration,
+            };
+            if (comptime builtin.os.tag == .windows) {
+                so.shell = opts.shell;
+            }
+            break :blk so;
+        };
+        const pty = if (builtin.os.tag == .windows)
+            try Pty.spawn(allocator, spawn_opts)
+        else
+            try Pty.spawn(spawn_opts);
 
         return .{
             .engine = engine,
@@ -122,7 +144,7 @@ pub const Pane = struct {
         const engine = try Engine.init(allocator, rows, cols, scrollback_lines);
         return .{
             .engine = engine,
-            .pty = .{ .master = -1, .pid = 0 },
+            .pty = Pty.initInactive(),
             .allocator = allocator,
         };
     }
@@ -132,7 +154,7 @@ pub const Pane = struct {
         self.drainCapturedStdout();
 
         // Notify any IPC --wait client with the exit code before cleanup.
-        if (self.ipc_wait_fd != -1) {
+        if (self.ipc_wait_fd != ipc_invalid_fd) {
             const exit_code: u8 = self.stored_exit_code orelse
                 if (self.daemon_pane_id == null) (self.pty.exitCode() orelse 1) else 1;
             const stdout_data = if (self.captured_stdout) |cs| cs.items else &[_]u8{};
@@ -147,8 +169,8 @@ pub const Pane = struct {
             if (stdout_data.len > 0) {
                 ipc_protocol.writeAll(self.ipc_wait_fd, stdout_data) catch {};
             }
-            posix.close(self.ipc_wait_fd);
-            self.ipc_wait_fd = -1;
+            ipc_protocol.closeFd(self.ipc_wait_fd);
+            self.ipc_wait_fd = ipc_invalid_fd;
         }
         if (self.captured_stdout) |cs| {
             cs.deinit(self.allocator);
@@ -156,7 +178,9 @@ pub const Pane = struct {
             self.captured_stdout = null;
         }
         if (self.daemon_pane_id == null) {
-            _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+            if (!is_windows) {
+                _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+            }
             self.pty.deinit();
         }
         self.engine.deinit();
@@ -164,11 +188,12 @@ pub const Pane = struct {
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
     pub fn drainCapturedStdout(self: *Pane) void {
+        if (is_windows) return;
         const cs = self.captured_stdout orelse return;
         if (self.pty.stdout_read_fd == -1) return;
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = posix.read(self.pty.stdout_read_fd, &buf) catch break;
+            const n = std.posix.read(self.pty.stdout_read_fd, &buf) catch break;
             if (n == 0) break;
             cs.appendSlice(self.allocator, buf[0..n]) catch break;
         }
@@ -197,28 +222,32 @@ pub const Pane = struct {
         self.engine.state.resize(rows, cols) catch |err| {
             logging.err("resize", "state.resize({d}x{d}) failed: {}", .{ cols, rows, err });
         };
-        // Trailing-edge debounce: always defer TIOCSWINSZ during active
-        // resizing. The event loop's flushPtyResize() sends it once no
-        // resize has occurred for the debounce interval. This prevents
-        // the shell from being flooded with SIGWINCHs that cause prompt
-        // redraws to pile up as ghost content.
+        // Leading-edge throttle: record pending dimensions but don't reset
+        // the timer. flushPtyResize() fires immediately on the first event,
+        // then at most once per throttle interval during continuous resizing.
         if (rows != old_rows or cols != old_cols) {
             self.pending_pty_rows = rows;
             self.pending_pty_cols = cols;
             self.pending_pty_resize = true;
-            self.last_pty_resize_ns = std.time.nanoTimestamp();
         }
     }
 
-    /// Send any deferred PTY resize once resizing has stopped (no resize
-    /// events for the debounce interval). Called from the event loop.
+    /// Send pending PTY resize if the throttle interval has elapsed since
+    /// the last send. Called from the event loop every iteration.
     pub fn flushPtyResize(self: *Pane) void {
         if (!self.pending_pty_resize) return;
         const now = std.time.nanoTimestamp();
-        if (now - self.last_pty_resize_ns >= pty_resize_debounce_ns) {
+        if (now - self.last_pty_resize_ns < pty_resize_throttle_ns) return;
+
+        if (self.daemon_pane_id) |dpid| {
+            if (self.session_client) |sc| {
+                sc.sendPaneResize(dpid, self.pending_pty_rows, self.pending_pty_cols) catch {};
+            }
+        } else {
             self.pty.resize(self.pending_pty_rows, self.pending_pty_cols) catch {};
-            self.pending_pty_resize = false;
         }
+        self.pending_pty_resize = false;
+        self.last_pty_resize_ns = now;
     }
 
     /// Force TIOCSWINSZ even if engine dimensions match. Used after split

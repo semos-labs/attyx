@@ -1,5 +1,28 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ai_auth = @import("attyx").overlay_ai_auth;
+const is_windows = builtin.os.tag == .windows;
+
+/// Cross-platform getenv — std.posix.getenv is unavailable on Windows.
+fn getHomeDir() ?[]const u8 {
+    if (comptime is_windows) {
+        // On Windows, USERPROFILE is the HOME equivalent.
+        // Use a static buffer since we can't allocate here.
+        const S = struct {
+            var buf: [512]u8 = undefined;
+        };
+        const val = std.process.getEnvVarOwned(std.heap.page_allocator, "USERPROFILE") catch return null;
+        if (val.len >= S.buf.len) {
+            std.heap.page_allocator.free(val);
+            return null;
+        }
+        @memcpy(S.buf[0..val.len], val);
+        std.heap.page_allocator.free(val);
+        return S.buf[0..val.len];
+    } else {
+        return std.posix.getenv("HOME");
+    }
+}
 
 pub fn doLogin(allocator: std.mem.Allocator, base_url: []const u8) !void {
     const stdout = std.fs.File.stdout();
@@ -157,6 +180,82 @@ pub fn doDevice(allocator: std.mem.Allocator, base_url: []const u8) !void {
 }
 
 pub fn doKillDaemon() void {
+    if (comptime is_windows) {
+        doKillDaemonWindows();
+        return;
+    }
+    doKillDaemonPosix();
+}
+
+fn doKillDaemonWindows() void {
+    if (comptime !is_windows) unreachable;
+    const stdout = std.fs.File.stdout();
+
+    const win32 = struct {
+        const HANDLE = std.os.windows.HANDLE;
+        const INVALID_HANDLE_VALUE = std.os.windows.INVALID_HANDLE_VALUE;
+        const DWORD = std.os.windows.DWORD;
+        const LPCWSTR = [*:0]const u16;
+        const GENERIC_READ: DWORD = 0x80000000;
+        const GENERIC_WRITE: DWORD = 0x40000000;
+        const OPEN_EXISTING: DWORD = 3;
+        const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
+        extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) i32;
+        extern "kernel32" fn PeekNamedPipe(h: HANDLE, b: ?[*]u8, s: DWORD, r: ?*DWORD, a: ?*DWORD, l: ?*DWORD) callconv(.winapi) i32;
+        extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
+        extern "kernel32" fn WriteFile(h: HANDLE, b: [*]const u8, n: DWORD, w: ?*DWORD, o: ?*anyopaque) callconv(.winapi) i32;
+        extern "kernel32" fn CreateFileW(n: LPCWSTR, a: DWORD, s: DWORD, sa: ?*anyopaque, d: DWORD, f: DWORD, t: ?HANDLE) callconv(.winapi) HANDLE;
+    };
+
+    // Connect to daemon pipe (inline — avoids cross-module import)
+    var path_buf: [256]u8 = undefined;
+    const pipe_path = getSocketPath(&path_buf) orelse {
+        stdout.writeAll("error: could not determine daemon pipe path\n") catch {};
+        return;
+    };
+    var wide_buf: [256]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, pipe_path) catch {
+        stdout.writeAll("error: pipe path encoding failed\n") catch {};
+        return;
+    };
+    wide_buf[wlen] = 0;
+    const handle = win32.CreateFileW(
+        @ptrCast(wide_buf[0..wlen :0]),
+        win32.GENERIC_READ | win32.GENERIC_WRITE,
+        0, null, win32.OPEN_EXISTING, win32.FILE_ATTRIBUTE_NORMAL, null,
+    );
+    if (handle == win32.INVALID_HANDLE_VALUE) {
+        stdout.writeAll("No daemon running.\n") catch {};
+        return;
+    }
+
+    // Send hello with a mismatched version to trigger graceful shutdown.
+    // Protocol: [4-byte LE payload_len][1-byte msg_type][1-byte version_len][version_bytes]
+    // hello msg_type = 0x01, version = "shutdown" (guaranteed mismatch)
+    const ver = "shutdown";
+    const payload_len: u32 = 1 + ver.len;
+    var msg: [5 + 1 + ver.len]u8 = undefined;
+    std.mem.writeInt(u32, msg[0..4], payload_len, .little);
+    msg[4] = 0x01; // hello
+    msg[5] = ver.len;
+    @memcpy(msg[6..], ver);
+
+    var written: win32.DWORD = 0;
+    _ = win32.WriteFile(handle, &msg, msg.len, &written, null);
+
+    // Wait for daemon to exit (pipe will break)
+    stdout.writeAll("Shutting down daemon (saving sessions)...") catch {};
+    var waited: u32 = 0;
+    while (waited < 5000) : (waited += 100) {
+        var avail: win32.DWORD = 0;
+        if (win32.PeekNamedPipe(handle, null, 0, null, &avail, null) == 0) break;
+        win32.Sleep(100);
+    }
+    _ = win32.CloseHandle(handle);
+    stdout.writeAll(" done.\n") catch {};
+}
+
+fn doKillDaemonPosix() void {
     const stdout = std.fs.File.stdout();
     var path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&path_buf) orelse {
@@ -199,13 +298,13 @@ pub fn doKillDaemon() void {
 }
 
 fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
-    if (comptime @import("builtin").os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos) {
         // macOS: SOL_LOCAL=0, LOCAL_PEERPID=2
         var pid: c_int = 0;
         var len: std.posix.socklen_t = @sizeOf(c_int);
         const rc = std.c.getsockopt(fd, 0, 2, @ptrCast(&pid), &len);
         if (rc == 0 and pid > 0) return @intCast(pid);
-    } else if (comptime @import("builtin").os.tag == .linux) {
+    } else if (comptime builtin.os.tag == .linux) {
         // Linux: SOL_SOCKET=1, SO_PEERCRED=17
         const Ucred = extern struct { pid: c_int, uid: c_uint, gid: c_uint };
         var cred: Ucred = undefined;
@@ -218,7 +317,7 @@ fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
 
 pub fn doUninstall() void {
     const stdout = std.fs.File.stdout();
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -283,7 +382,7 @@ fn replaceSkillName() []const u8 {
 
 /// Silently update installed skills if they exist. Called on app launch.
 pub fn autoUpdateSkills() void {
-    const home = std.posix.getenv("HOME") orelse return;
+    const home = getHomeDir() orelse return;
     var file_buf: [512]u8 = undefined;
     const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/{s}/SKILL.md", .{ home, skill_name }) catch return;
 
@@ -313,7 +412,7 @@ pub fn doSkill(args: []const [:0]const u8) void {
 }
 
 fn doSkillInstall(stdout: std.fs.File) void {
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -358,7 +457,7 @@ fn doSkillInstall(stdout: std.fs.File) void {
 }
 
 fn doSkillUninstall(stdout: std.fs.File) void {
-    const home = std.posix.getenv("HOME") orelse {
+    const home = getHomeDir() orelse {
         stdout.writeAll("error: HOME not set\n") catch {};
         return;
     };
@@ -409,11 +508,14 @@ pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) voi
 
 fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    if (comptime is_windows) {
+        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
+    }
     if (std.posix.getenv("XDG_STATE_HOME")) |sh| {
         if (sh.len > 0)
             return std.fmt.bufPrint(buf, "{s}/attyx/sessions{s}.sock", .{ sh, suffix }) catch null;
     }
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = getHomeDir() orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.local/state/attyx/sessions{s}.sock", .{ home, suffix }) catch null;
 }
 

@@ -244,6 +244,29 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    // window.opacity / window.blur — aliases for background.opacity / background.blur
+    if (Lookup.get(root, "window", "opacity")) |v| {
+        const raw: f64 = if (v == .float) v.float
+            else if (v == .int) @floatFromInt(v.int)
+            else {
+                std.debug.print("error: {s}: window.opacity must be a number\n", .{path});
+                return error.ConfigValidationError;
+            };
+        if (raw < 0.0 or raw > 1.0) {
+            std.debug.print("error: {s}: window.opacity must be between 0.0 and 1.0\n", .{path});
+            return error.ConfigValidationError;
+        }
+        config.background_opacity = @floatCast(raw);
+    }
+    if (Lookup.get(root, "window", "blur")) |v| {
+        if (v == .int) {
+            if (v.int < 0) {
+                std.debug.print("error: {s}: window.blur must be >= 0\n", .{path});
+                return error.ConfigValidationError;
+            }
+            config.background_blur = @intCast(@min(v.int, 100));
+        }
+    }
     // Padding shorthand: apply in increasing-specificity order so more-specific
     // keys override less-specific ones regardless of file ordering.
     if (Lookup.get(root, "window", "padding")) |v| {
@@ -490,23 +513,28 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
     }
 
     // [keybindings] — table of action_name = "key+combo" pairs
+    // NOTE: We use direct get() lookups instead of table.iterator() because
+    // zig-toml 0.3.2's insert_at/reIndex can corrupt the hash map index on
+    // Windows, causing the iterator to silently skip entries.
     if (root.get("keybindings")) |kb_val| {
         if (kb_val == .table) {
-            var it = kb_val.table.table.iterator();
+            const commands = @import("commands.zig");
             var kb_count: usize = 0;
-            // First pass: count valid entries
-            while (it.next()) |entry| {
-                if (entry.value_ptr.* == .string) kb_count += 1;
+            // First pass: count valid entries by looking up each known action name
+            for (commands.registry) |cmd| {
+                if (kb_val.table.get(cmd.name)) |v| {
+                    if (v == .string) kb_count += 1;
+                }
             }
             if (kb_count > 0) {
                 const entries = try allocator.alloc(KeybindOverride, kb_count);
                 var idx: usize = 0;
-                var it2 = kb_val.table.table.iterator();
-                while (it2.next()) |entry| {
-                    if (entry.value_ptr.* != .string) continue;
+                for (commands.registry) |cmd| {
+                    const v = kb_val.table.get(cmd.name) orelse continue;
+                    if (v != .string) continue;
                     entries[idx] = .{
-                        .action_name = try allocator.dupe(u8, entry.key_ptr.*),
-                        .key_combo = try allocator.dupe(u8, entry.value_ptr.string),
+                        .action_name = try allocator.dupe(u8, cmd.name),
+                        .key_combo = try allocator.dupe(u8, v.string),
                     };
                     idx += 1;
                 }

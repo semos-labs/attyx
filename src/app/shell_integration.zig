@@ -5,13 +5,19 @@
 /// 2. Emits OSC 7337;set-path on every prompt so popups get the full PATH
 /// 3. Reports CWD via OSC 7
 ///
-/// Called from the fork child in pty.zig before execvp.
+/// On POSIX: called from the fork child in pty_posix.zig before execvp.
+/// On Windows: shell integration is handled differently (Phase 1+).
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
-extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+// POSIX-only extern declarations — guarded so they don't resolve on Windows.
+const posix_ffi = if (!is_windows) struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+    extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+} else struct {};
 
 pub const Shell = enum {
     zsh,
@@ -19,6 +25,8 @@ pub const Shell = enum {
     fish,
     nushell,
     posix_sh,
+    powershell,
+    cmd,
 };
 
 /// Extra argv entries to insert after argv[0] for shells that need them.
@@ -29,29 +37,47 @@ pub const ArgvOverride = struct {
 
 /// Detect the user's shell from $SHELL or a given path.
 pub fn detectShell(shell_path: []const u8) Shell {
-    if (std.mem.endsWith(u8, shell_path, "/zsh") or std.mem.eql(u8, shell_path, "zsh")) return .zsh;
-    if (std.mem.endsWith(u8, shell_path, "/bash") or std.mem.eql(u8, shell_path, "bash")) return .bash;
+    if (std.mem.endsWith(u8, shell_path, "/zsh") or
+        std.mem.endsWith(u8, shell_path, "\\zsh.exe") or
+        std.mem.eql(u8, shell_path, "zsh.exe") or
+        std.mem.eql(u8, shell_path, "zsh")) return .zsh;
+    if (std.mem.endsWith(u8, shell_path, "/bash") or
+        std.mem.endsWith(u8, shell_path, "\\bash.exe") or
+        std.mem.eql(u8, shell_path, "bash.exe") or
+        std.mem.eql(u8, shell_path, "bash")) return .bash;
     if (std.mem.endsWith(u8, shell_path, "/fish") or std.mem.eql(u8, shell_path, "fish")) return .fish;
     if (std.mem.endsWith(u8, shell_path, "/nu") or std.mem.eql(u8, shell_path, "nu")) return .nushell;
+    // Windows shells
+    if (std.mem.endsWith(u8, shell_path, "\\pwsh.exe") or
+        std.mem.endsWith(u8, shell_path, "\\powershell.exe") or
+        std.mem.eql(u8, shell_path, "pwsh.exe") or
+        std.mem.eql(u8, shell_path, "powershell.exe") or
+        std.mem.eql(u8, shell_path, "pwsh")) return .powershell;
+    if (std.mem.endsWith(u8, shell_path, "\\cmd.exe") or
+        std.mem.eql(u8, shell_path, "cmd.exe") or
+        std.mem.eql(u8, shell_path, "cmd")) return .cmd;
     return .posix_sh;
 }
 
 /// Set up shell integration for the current fork child.
 /// Returns an ArgvOverride with extra args to insert after argv[0] (e.g. --rcfile for bash).
 /// All string pointers are backed by static buffers valid until execvp.
+/// On Windows, this is a no-op — shell integration will be handled via ConPTY env vars.
 pub fn setup() ArgvOverride {
+    if (comptime is_windows) return .{};
+
     var exe_buf: [1024]u8 = undefined;
     const exe_dir = getExeDir(&exe_buf) orelse return .{};
 
     // Set __ATTYX_BIN_DIR for integration scripts
     var dir_buf: [1024]u8 = undefined;
     const dir_z = std.fmt.bufPrintZ(&dir_buf, "{s}", .{exe_dir}) catch return .{};
-    _ = setenv("__ATTYX_BIN_DIR", dir_z, 1);
+    _ = posix_ffi.setenv("__ATTYX_BIN_DIR", dir_z, 1);
 
-    const shell = std.mem.sliceTo(getenv("SHELL") orelse "/bin/sh", 0);
+    const shell = std.mem.sliceTo(posix_ffi.getenv("SHELL") orelse "/bin/sh", 0);
     const shell_type = detectShell(shell);
 
-    const home = std.mem.sliceTo(getenv("HOME") orelse return .{}, 0);
+    const home = std.mem.sliceTo(posix_ffi.getenv("HOME") orelse return .{}, 0);
 
     return switch (shell_type) {
         .zsh => setupZsh(home),
@@ -59,11 +85,99 @@ pub fn setup() ArgvOverride {
         .fish => setupFish(home),
         .nushell => setupNushell(home),
         .posix_sh => setupPosixSh(home, exe_dir),
+        .powershell, .cmd => .{},
     };
 }
 
 // ---------------------------------------------------------------------------
-// Per-shell setup
+// Windows shell integration — script content generation
+// ---------------------------------------------------------------------------
+
+/// PowerShell integration script content. Dot-sourced AFTER $PROFILE loads
+/// (via -Command ". 'script.ps1'"), so user config is already active.
+pub const powershell_script =
+    \\# Attyx shell integration (PowerShell 5.1+)
+    \\$ESC = [char]27; $BEL = [char]7
+    \\# Prepend attyx bin dir to PATH
+    \\if ($env:__ATTYX_BIN_DIR -and ($env:PATH -notlike "*$env:__ATTYX_BIN_DIR*")) {
+    \\    $env:PATH = "$env:__ATTYX_BIN_DIR;$env:PATH"
+    \\}
+    \\Remove-Item Env:__ATTYX_BIN_DIR -ErrorAction SilentlyContinue
+    \\# Enable predictive IntelliSense (pwsh 7.2+) if not already configured
+    \\if (Get-Module PSReadLine -ErrorAction SilentlyContinue) {
+    \\    try { $src = (Get-PSReadLineOption).PredictionSource
+    \\        if ($src -eq 'None') {
+    \\            Set-PSReadLineOption -PredictionSource History 2>$null
+    \\        }
+    \\    } catch {}
+    \\}
+    \\# Save the current prompt (after $PROFILE loaded — captures oh-my-posh, Starship, etc.)
+    \\$global:__attyx_orig_prompt = $function:prompt
+    \\function global:prompt {
+    \\    $prevExit = $global:LASTEXITCODE
+    \\    $cwd = (Get-Location).Path
+    \\    # OSC 7: report CWD
+    \\    [Console]::Error.Write("${ESC}]7;file://$($env:COMPUTERNAME)/$($cwd -replace '\\','/')${BEL}")
+    \\    # OSC 7337: report PATH for popup commands
+    \\    [Console]::Error.Write("${ESC}]7337;set-path;$($env:PATH)${BEL}")
+    \\    # OSC 2: set terminal title to current directory
+    \\    [Console]::Error.Write("${ESC}]2;$cwd${BEL}")
+    \\    # Execute startup command on first prompt
+    \\    if ($env:__ATTYX_STARTUP_CMD) {
+    \\        $cmd = $env:__ATTYX_STARTUP_CMD
+    \\        Remove-Item Env:__ATTYX_STARTUP_CMD -ErrorAction SilentlyContinue
+    \\        Invoke-Expression $cmd
+    \\    }
+    \\    # Restore $LASTEXITCODE so prompt themes see the real exit code
+    \\    $global:LASTEXITCODE = $prevExit
+    \\    # Call original prompt (oh-my-posh, Starship, or default)
+    \\    if ($global:__attyx_orig_prompt) {
+    \\        & $global:__attyx_orig_prompt
+    \\    } else {
+    \\        "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+    \\    }
+    \\}
+    \\
+;
+
+
+/// Generate the cmd.exe PROMPT string that emits OSC 7 for CWD reporting.
+/// cmd.exe doesn't support OSC 7337 easily, so we only report CWD.
+/// The PROMPT var uses $e for ESC and $p for current directory.
+pub const cmd_prompt_string = "$e]7;file://$h/$p$e\\$e]7337;set-path;%PATH%$e\\$p$g";
+
+/// Get the PowerShell script content for writing to a config file.
+pub fn getPowerShellScript() []const u8 {
+    return powershell_script;
+}
+
+/// Get the bash script content for writing to a config file.
+pub fn getBashScript() []const u8 {
+    return bash_script;
+}
+
+/// Get the cmd.exe PROMPT string for setting in the environment.
+pub fn getCmdPromptString() []const u8 {
+    return cmd_prompt_string;
+}
+
+/// Generate the integration script path for a given shell on Windows.
+/// Writes into the provided buffer. Returns the slice or null on failure.
+pub fn windowsScriptPath(buf: []u8, shell: Shell) ?[]const u8 {
+    // Use %LOCALAPPDATA%\attyx\shell-integration\ as base
+    const base = "shell-integration";
+    const suffix: []const u8 = switch (shell) {
+        .powershell => "powershell\\attyx.ps1",
+        .bash => "bash\\bashrc",
+        .cmd => "cmd\\attyx_prompt.cmd",
+        .zsh => "zsh\\.zshenv",
+        else => return null,
+    };
+    return std.fmt.bufPrint(buf, "{s}\\{s}", .{ base, suffix }) catch null;
+}
+
+// ---------------------------------------------------------------------------
+// Per-shell setup (POSIX only — guarded at call site)
 // ---------------------------------------------------------------------------
 
 fn setupZsh(home: []const u8) ArgvOverride {
@@ -85,13 +199,13 @@ fn setupZsh(home: []const u8) ArgvOverride {
     writeScript(zshenv_path, zsh_script);
 
     // Save and override ZDOTDIR
-    const orig_zdotdir = getenv("ZDOTDIR");
+    const orig_zdotdir = posix_ffi.getenv("ZDOTDIR");
     if (orig_zdotdir) |zd| {
-        _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", zd, 1);
+        _ = posix_ffi.setenv("__ATTYX_ORIGINAL_ZDOTDIR", zd, 1);
     } else {
-        _ = setenv("__ATTYX_ORIGINAL_ZDOTDIR", "", 1);
+        _ = posix_ffi.setenv("__ATTYX_ORIGINAL_ZDOTDIR", "", 1);
     }
-    _ = setenv("ZDOTDIR", integ_dir, 1);
+    _ = posix_ffi.setenv("ZDOTDIR", integ_dir, 1);
 
     return .{};
 }
@@ -115,7 +229,7 @@ fn setupBash(home: []const u8) ArgvOverride {
     writeScript(rcfile_path, bash_script);
 
     // Also set BASH_ENV for non-interactive subshells
-    _ = setenv("BASH_ENV", rcfile_path, 1);
+    _ = posix_ffi.setenv("BASH_ENV", rcfile_path, 1);
 
     return .{
         .extra = .{ @ptrCast(bash_rcfile_flag.ptr), @ptrCast(rcfile_path.ptr), null, null },
@@ -149,10 +263,10 @@ fn setupFish(home: []const u8) ArgvOverride {
     writeScript(script_path, fish_script);
 
     // Prepend our dir to XDG_DATA_DIRS so fish finds vendor_conf.d
-    const existing_xdg = std.mem.sliceTo(getenv("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share", 0);
+    const existing_xdg = std.mem.sliceTo(posix_ffi.getenv("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share", 0);
     var xdg_buf: [4096]u8 = undefined;
     const new_xdg = std.fmt.bufPrintZ(&xdg_buf, "{s}:{s}", .{ integ_dir, existing_xdg }) catch return .{};
-    _ = setenv("XDG_DATA_DIRS", new_xdg, 1);
+    _ = posix_ffi.setenv("XDG_DATA_DIRS", new_xdg, 1);
 
     return .{};
 }
@@ -190,7 +304,7 @@ fn setupPosixSh(_: []const u8, exe_dir: []const u8) ArgvOverride {
 // Shell scripts
 // ---------------------------------------------------------------------------
 
-const zsh_script =
+pub const zsh_script =
     \\#!/bin/zsh
     \\# Attyx shell integration (zsh)
     \\if [[ -n "$__ATTYX_ORIGINAL_ZDOTDIR" ]]; then
@@ -227,11 +341,17 @@ const zsh_script =
     \\}
     \\[[ -z "${precmd_functions[(r)__attyx_first_precmd]}" ]] && precmd_functions+=(__attyx_first_precmd)
     \\[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
+    \\# Sensible history defaults — only set if user hasn't configured them.
+    \\# Without these, zsh defaults to SAVEHIST=0 (no history saved to disk).
+    \\[[ -z "$HISTFILE" ]] && export HISTFILE="$HOME/.zsh_history"
+    \\(( HISTSIZE <= 100 )) && HISTSIZE=10000
+    \\(( SAVEHIST <= 0 )) && SAVEHIST=10000
+    \\setopt APPEND_HISTORY SHARE_HISTORY HIST_IGNORE_DUPS 2>/dev/null
     \\__attyx_chpwd
     \\
 ;
 
-const bash_script =
+pub const bash_script =
     \\# Attyx shell integration (bash)
     \\# Source the real rc files first
     \\if [ -f /etc/profile ]; then . /etc/profile; fi
@@ -258,6 +378,47 @@ const bash_script =
     \\}
     \\__ATTYX_ORIG_PC="$PROMPT_COMMAND"
     \\PROMPT_COMMAND="__attyx_first_prompt"
+    \\
+;
+
+/// Shadow .bash_profile for the HOME redirect trick on Windows.
+/// bash --login reads this from the shadow HOME dir. It immediately restores
+/// the real HOME, sources user profiles normally, then injects integration.
+pub const bash_login_profile =
+    \\# Attyx shell integration — shadow .bash_profile
+    \\# Restore real HOME before anything else.
+    \\HOME="$__ATTYX_REAL_HOME"
+    \\export HOME
+    \\unset __ATTYX_REAL_HOME
+    \\cd "$HOME"
+    \\# Source real user profiles (bash --login precedence order).
+    \\if   [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"
+    \\elif [ -f "$HOME/.bash_login" ];   then . "$HOME/.bash_login"
+    \\elif [ -f "$HOME/.profile" ];      then . "$HOME/.profile"
+    \\fi
+    \\# Append attyx bin dir to PATH
+    \\if [ -n "$__ATTYX_BIN_DIR" ] && [ "${PATH#*"$__ATTYX_BIN_DIR"}" = "$PATH" ]; then
+    \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
+    \\fi
+    \\unset __ATTYX_BIN_DIR
+    \\# OSC 7: report cwd (stderr so --wait capture pipe doesn't eat it)
+    \\__attyx_chpwd() { printf '\e]7;file://%s%s\a' "$(hostname)" "$PWD" >&2; }
+    \\# OSC 7337: report PATH for popup commands
+    \\__attyx_report_path() { printf '\e]7337;set-path;%s\a' "$PATH" >&2; }
+    \\# Execute startup command on first prompt, then remove the hook
+    \\__attyx_first_prompt() {
+    \\  __attyx_chpwd; __attyx_report_path
+    \\  if [ -n "$__ATTYX_STARTUP_CMD" ]; then
+    \\    local cmd="$__ATTYX_STARTUP_CMD"
+    \\    unset __ATTYX_STARTUP_CMD
+    \\    eval "$cmd"
+    \\  fi
+    \\  PROMPT_COMMAND="__attyx_chpwd;__attyx_report_path${__ATTYX_ORIG_PC:+;$__ATTYX_ORIG_PC}"
+    \\  unset __ATTYX_ORIG_PC
+    \\}
+    \\__ATTYX_ORIG_PC="$PROMPT_COMMAND"
+    \\PROMPT_COMMAND="__attyx_first_prompt"
+    \\HISTFILE="$HOME/.bash_history"
     \\
 ;
 
@@ -328,13 +489,13 @@ var nu_env_buf: [600]u8 = undefined;
 const nu_env_config_flag: [:0]const u8 = "--env-config";
 
 fn appendExeDirToPath(exe_dir: []const u8) void {
-    const existing = std.mem.sliceTo(getenv("PATH") orelse "/usr/bin:/bin", 0);
+    const existing = std.mem.sliceTo(posix_ffi.getenv("PATH") orelse "/usr/bin:/bin", 0);
     if (std.mem.indexOf(u8, existing, exe_dir) != null) return;
     var path_buf: [4096]u8 = undefined;
     const new_path = std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{
         exe_dir, existing,
     }) catch return;
-    _ = setenv("PATH", new_path, 1);
+    _ = posix_ffi.setenv("PATH", new_path, 1);
 }
 
 fn writeScript(path: [*:0]const u8, content: []const u8) void {
@@ -378,13 +539,16 @@ fn getExeDir(buf: *[1024]u8) ?[]const u8 {
 }
 
 fn getExePath(buf: *[1024]u8) ?[]const u8 {
-    if (comptime @import("builtin").os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos) {
         var size: u32 = buf.len;
-        if (_NSGetExecutablePath(buf, &size) == 0) {
+        if (posix_ffi._NSGetExecutablePath(buf, &size) == 0) {
             return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
         }
+    } else if (comptime is_windows) {
+        // Windows exe path resolution (Phase 1+)
+        return null;
     } else {
-        const n = readlink("/proc/self/exe", buf, buf.len);
+        const n = posix_ffi.readlink("/proc/self/exe", buf, buf.len);
         if (n > 0) {
             return buf[0..@intCast(n)];
         }
@@ -411,4 +575,86 @@ test "detectShell" {
     try testing.expectEqual(Shell.posix_sh, detectShell("/bin/sh"));
     try testing.expectEqual(Shell.posix_sh, detectShell("/bin/dash"));
     try testing.expectEqual(Shell.posix_sh, detectShell("/usr/bin/unknown"));
+    // Windows shells
+    try testing.expectEqual(Shell.powershell, detectShell("pwsh.exe"));
+    try testing.expectEqual(Shell.powershell, detectShell("powershell.exe"));
+    try testing.expectEqual(Shell.powershell, detectShell("pwsh"));
+    try testing.expectEqual(Shell.powershell, detectShell("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"));
+    try testing.expectEqual(Shell.cmd, detectShell("cmd.exe"));
+    try testing.expectEqual(Shell.cmd, detectShell("cmd"));
+    try testing.expectEqual(Shell.cmd, detectShell("C:\\Windows\\System32\\cmd.exe"));
+}
+
+test "detectShell — zsh on Windows" {
+    const testing = std.testing;
+    try testing.expectEqual(Shell.zsh, detectShell("zsh.exe"));
+    try testing.expectEqual(Shell.zsh, detectShell("C:\\attyx\\share\\msys2\\usr\\bin\\zsh.exe"));
+}
+
+test "detectShell — Git Bash uses bash integration" {
+    const testing = std.testing;
+    // Git Bash on Windows uses /usr/bin/bash or /bin/bash inside MSYS2
+    try testing.expectEqual(Shell.bash, detectShell("/usr/bin/bash"));
+    try testing.expectEqual(Shell.bash, detectShell("/bin/bash"));
+    try testing.expectEqual(Shell.bash, detectShell("bash"));
+    // Git Bash accessed via Windows path
+    try testing.expectEqual(Shell.bash, detectShell("C:\\Program Files\\Git\\bin\\bash.exe"));
+    try testing.expectEqual(Shell.bash, detectShell("bash.exe"));
+}
+
+test "PowerShell script contains OSC sequences" {
+    const testing = std.testing;
+    const script = getPowerShellScript();
+    // Must contain OSC 7337 for PATH reporting
+    try testing.expect(std.mem.indexOf(u8, script, "7337;set-path;") != null);
+    // Must contain OSC 7 for CWD reporting
+    try testing.expect(std.mem.indexOf(u8, script, "]7;file://") != null);
+    // Must handle __ATTYX_BIN_DIR
+    try testing.expect(std.mem.indexOf(u8, script, "__ATTYX_BIN_DIR") != null);
+    // Must handle startup command
+    try testing.expect(std.mem.indexOf(u8, script, "__ATTYX_STARTUP_CMD") != null);
+}
+
+test "cmd.exe PROMPT string contains OSC 7" {
+    const testing = std.testing;
+    const prompt = getCmdPromptString();
+    // Must contain OSC 7 escape for CWD
+    try testing.expect(std.mem.indexOf(u8, prompt, "$e]7;file://") != null);
+    // Must contain $p for current directory
+    try testing.expect(std.mem.indexOf(u8, prompt, "$p") != null);
+    // Must contain PATH reporting via OSC 7337
+    try testing.expect(std.mem.indexOf(u8, prompt, "7337;set-path;") != null);
+}
+
+test "windowsScriptPath generates correct paths" {
+    const testing = std.testing;
+    var buf: [256]u8 = undefined;
+
+    const ps_path = windowsScriptPath(&buf, .powershell);
+    try testing.expect(ps_path != null);
+    try testing.expect(std.mem.endsWith(u8, ps_path.?, "attyx.ps1"));
+    try testing.expect(std.mem.indexOf(u8, ps_path.?, "powershell") != null);
+
+    const cmd_path = windowsScriptPath(&buf, .cmd);
+    try testing.expect(cmd_path != null);
+    try testing.expect(std.mem.endsWith(u8, cmd_path.?, "attyx_prompt.cmd"));
+
+    const bash_path = windowsScriptPath(&buf, .bash);
+    try testing.expect(bash_path != null);
+    try testing.expect(std.mem.endsWith(u8, bash_path.?, "bashrc"));
+    try testing.expect(std.mem.indexOf(u8, bash_path.?, "bash") != null);
+
+    const zsh_path = windowsScriptPath(&buf, .zsh);
+    try testing.expect(zsh_path != null);
+    try testing.expect(std.mem.endsWith(u8, zsh_path.?, ".zshenv"));
+
+    // Non-Windows shells return null
+    try testing.expectEqual(@as(?[]const u8, null), windowsScriptPath(&buf, .fish));
+}
+
+test "PowerShell script uses semicolons for PATH separator" {
+    const testing = std.testing;
+    const script = getPowerShellScript();
+    // Windows PATH uses semicolons, not colons
+    try testing.expect(std.mem.indexOf(u8, script, "$env:__ATTYX_BIN_DIR;$env:PATH") != null);
 }

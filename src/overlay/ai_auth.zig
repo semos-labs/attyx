@@ -101,6 +101,11 @@ pub const TokenStore = struct {
 };
 
 fn authFilePath(allocator: std.mem.Allocator) ![]u8 {
+    if (comptime @import("builtin").os.tag == .windows) {
+        const appdata = std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch return error.NoHomeDir;
+        defer allocator.free(appdata);
+        return std.fmt.allocPrint(allocator, "{s}\\attyx\\auth.json", .{appdata});
+    }
     const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
     const state_base = std.posix.getenv("XDG_STATE_HOME") orelse "";
     if (state_base.len > 0) {

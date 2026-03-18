@@ -280,9 +280,15 @@ pub fn encodeCreatePaneWithCmd(buf: []u8, rows: u16, cols: u16, cwd: []const u8,
 /// Encode CreatePane with command and flags byte.
 /// flags bit 0: capture_stdout (pipe stdout to parent, for --wait)
 pub fn encodeCreatePaneWithCmdFlags(buf: []u8, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8, flags: u8) ![]u8 {
+    return encodeCreatePaneWithCmdFlagsShell(buf, rows, cols, cwd, cmd, flags, "");
+}
+
+/// Encode CreatePane with command, flags, and shell override.
+pub fn encodeCreatePaneWithCmdFlagsShell(buf: []u8, rows: u16, cols: u16, cwd: []const u8, cmd: []const u8, flags: u8, shell: []const u8) ![]u8 {
     const cwd_len: u16 = @intCast(@min(cwd.len, 4096));
     const cmd_len: u16 = @intCast(@min(cmd.len, 4096));
-    const total: usize = 4 + 2 + cwd_len + 2 + cmd_len + 1;
+    const shell_len: u16 = @intCast(@min(shell.len, 256));
+    const total: usize = 4 + 2 + cwd_len + 2 + cmd_len + 1 + 2 + shell_len;
     if (buf.len < total) return error.BufferTooSmall;
     var pos: usize = 0;
     std.mem.writeInt(u16, buf[0..2], rows, .little);
@@ -297,6 +303,10 @@ pub fn encodeCreatePaneWithCmdFlags(buf: []u8, rows: u16, cols: u16, cwd: []cons
     if (cmd_len > 0) @memcpy(buf[pos .. pos + cmd_len], cmd[0..cmd_len]);
     pos += cmd_len;
     buf[pos] = flags;
+    pos += 1;
+    std.mem.writeInt(u16, buf[pos..][0..2], shell_len, .little);
+    pos += 2;
+    if (shell_len > 0) @memcpy(buf[pos .. pos + shell_len], shell[0..shell_len]);
     return buf[0..total];
 }
 
@@ -397,6 +407,7 @@ pub const CreatePaneMsg = struct {
     cwd: []const u8,
     cmd: []const u8 = "",
     capture_stdout: bool = false,
+    shell: []const u8 = "",
 };
 
 pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
@@ -428,8 +439,18 @@ pub fn decodeCreatePane(payload: []const u8) !CreatePaneMsg {
     var capture_stdout = false;
     if (payload.len >= pos + 1) {
         capture_stdout = (payload[pos] & 0x01) != 0;
+        pos += 1;
     }
-    return .{ .rows = rows, .cols = cols, .cwd = cwd, .cmd = cmd, .capture_stdout = capture_stdout };
+    // Shell override is optional (new in v2.3).
+    var shell: []const u8 = "";
+    if (payload.len >= pos + 2) {
+        const shell_len = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        if (payload.len >= pos + @as(usize, shell_len)) {
+            shell = payload[pos .. pos + shell_len];
+        }
+    }
+    return .{ .rows = rows, .cols = cols, .cwd = cwd, .cmd = cmd, .capture_stdout = capture_stdout, .shell = shell };
 }
 
 pub fn decodeClosePane(payload: []const u8) !u32 {

@@ -15,10 +15,13 @@ const Pty = @import("../pty.zig").Pty;
 const AppConfig = @import("../../config/config.zig").AppConfig;
 const CursorShapeConfig = @import("../../config/config.zig").CursorShapeConfig;
 
-const terminal = @import("../terminal.zig");
-const PtyThreadCtx = terminal.PtyThreadCtx;
+const builtin = @import("builtin");
+const terminal = if (builtin.os.tag != .windows) @import("../terminal.zig") else struct {};
+const PtyThreadCtx = if (builtin.os.tag != .windows) terminal.PtyThreadCtx else void;
 pub const Theme = @import("../../theme/registry.zig").Theme;
-const c = terminal.c;
+pub const c = @cImport({
+    @cInclude("bridge.h");
+});
 
 const overlay_ui = attyx.overlay_ui;
 

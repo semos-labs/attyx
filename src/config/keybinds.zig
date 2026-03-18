@@ -124,6 +124,7 @@ pub const Action = enum(u8) {
     split_up = 91,
     close_all_tabs = 92,
     close_all_windows = 93,
+    shell_picker_toggle = 95,
     _,
 
     /// Return the popup index if this is a popup_toggle action.
@@ -316,12 +317,18 @@ pub fn buildTable(
     // 2. Apply keybinding overrides
     if (overrides) |ovs| {
         for (ovs) |ov| {
-            const action = actionFromString(ov.action_name) orelse continue;
+            const action = actionFromString(ov.action_name) orelse {
+                logging.warn("keybind", "unknown action: {s}", .{ov.action_name});
+                continue;
+            };
             if (eql(ov.key_combo, "none")) {
                 removeAction(&table, action);
                 continue;
             }
-            const combo = parseKeyCombo(ov.key_combo) orelse continue;
+            const combo = parseKeyCombo(ov.key_combo) orelse {
+                logging.warn("keybind", "bad combo: {s} for {s}", .{ ov.key_combo, ov.action_name });
+                continue;
+            };
             replaceOrAddAction(&table, .{ .combo = combo, .action = action });
         }
     }
@@ -426,7 +433,6 @@ pub export fn attyx_keybind_match(key: u16, mods: u8, codepoint: u32) u8 {
             g_keybind_matched_seq = @ptrCast(&g_table.seq_buf[entry.seq_offset]);
             g_keybind_matched_seq_len = @intCast(entry.seq_len);
         }
-        logging.info("keybind", "matched: key={d} mods=0x{x:0>2} cp={d} -> action={d}", .{ key, mods, codepoint, @intFromEnum(entry.action) });
         return @intFromEnum(entry.action);
     }
     return 0;

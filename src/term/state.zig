@@ -157,6 +157,13 @@ pub const TerminalState = struct {
         return self.link_uris.items[idx];
     }
 
+    /// BCE (Background Color Erase): create a blank cell that preserves the
+    /// current pen's background color for erase/scroll/insert operations.
+    pub fn bceCell(self: *const TerminalState) Cell {
+        if (self.pen.bg == .default) return Cell{};
+        return .{ .style = .{ .bg = self.pen.bg } };
+    }
+
     /// Apply a single Action to the terminal state.
     pub fn apply(self: *TerminalState, action: Action) void {
         if (self.suppress_echo) {
@@ -206,7 +213,7 @@ pub const TerminalState = struct {
                 self.dirty.mark(self.cursor.row);
             },
             .insert_lines => |n| {
-                self.ring.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                self.ring.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n), self.bceCell());
                 self.dirty.markRange(self.cursor.row, self.scroll_bottom);
             },
             .delete_lines => |n| {
@@ -217,33 +224,34 @@ pub const TerminalState = struct {
                     }
                     self.dirty.markRange(self.cursor.row, self.scroll_bottom);
                 } else {
-                    self.ring.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n));
+                    self.ring.scrollUpRegionN(self.cursor.row, self.scroll_bottom, @intCast(n), self.bceCell());
                     self.dirty.markRange(self.cursor.row, self.scroll_bottom);
                 }
             },
             .insert_chars => |n| {
-                self.ring.insertChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.insertChars(self.cursor.row, self.cursor.col, @intCast(n), self.bceCell());
                 self.dirty.mark(self.cursor.row);
             },
             .delete_chars => |n| {
-                self.ring.deleteChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.deleteChars(self.cursor.row, self.cursor.col, @intCast(n), self.bceCell());
                 self.dirty.mark(self.cursor.row);
             },
             .erase_chars => |n| {
-                self.ring.eraseChars(self.cursor.row, self.cursor.col, @intCast(n));
+                self.ring.eraseChars(self.cursor.row, self.cursor.col, @intCast(n), self.bceCell());
                 self.dirty.mark(self.cursor.row);
             },
             .scroll_up => |n| {
                 const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.scroll_top + 1);
+                const blank = self.bceCell();
                 if (self.isFullScreenScroll()) {
                     for (0..count) |_| self.fullScreenScroll();
                 } else {
-                    for (0..count) |_| self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+                    for (0..count) |_| self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom, blank);
                 }
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .scroll_down => |n| {
-                self.ring.scrollDownRegionN(self.scroll_top, self.scroll_bottom, @intCast(n));
+                self.ring.scrollDownRegionN(self.scroll_top, self.scroll_bottom, @intCast(n), self.bceCell());
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .sgr => |sgr| sgr_mod.applySgr(&self.pen, sgr),
@@ -405,7 +413,7 @@ pub const TerminalState = struct {
             if (self.isFullScreenScroll()) {
                 self.fullScreenScroll();
             } else {
-                self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom);
+                self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom, self.bceCell());
             }
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row < self.ring.screen_rows - 1) {
@@ -415,7 +423,7 @@ pub const TerminalState = struct {
 
     fn reverseIndex(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_top) {
-            self.ring.scrollDownRegion(self.scroll_top, self.scroll_bottom);
+            self.ring.scrollDownRegion(self.scroll_top, self.scroll_bottom, self.bceCell());
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row > 0) {
             self.cursor.row -= 1;

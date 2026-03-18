@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -55,7 +56,10 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/vendor/jebp_impl.c"), .flags = &.{} });
     mod.addIncludePath(b.path("src/vendor"));
     mod.linkSystemLibrary("c", .{});
-    mod.linkSystemLibrary("z", .{}); // zlib for Kitty graphics o=z compression
+    // zlib for Kitty graphics o=z compression — not available on Windows cross-compile yet.
+    if (target.result.os.tag != .windows) {
+        mod.linkSystemLibrary("z", .{});
+    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -176,11 +180,91 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("libpng", .{});
     }
 
+    // Windows (Direct3D 11 renderer) — Win32 platform layer + D3D11 renderer
+    if (target.result.os.tag == .windows) {
+        exe.root_module.addIncludePath(b.path("src/app"));
+        const win_flags = &.{};
+        exe.addCSourceFile(.{ .file = b.path("src/app/platform_windows.c"),   .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_input.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_clipboard.c"),  .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_renderer_draw.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_overlay.c"),    .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_popup.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),       .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_render_util.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_ligature.c"),  .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_font.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_glyph.c"),     .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_boxdraw.c"),   .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_text_util.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_menu.c"),      .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_native_tabs.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_updater.c"), .flags = win_flags });
+        exe.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
+        exe.subsystem = .Windows; // No console window — CLI paths use AttachConsole
+        exe.root_module.linkSystemLibrary("kernel32", .{});
+        exe.root_module.linkSystemLibrary("user32", .{});
+        exe.root_module.linkSystemLibrary("gdi32", .{});
+        exe.root_module.linkSystemLibrary("d3d11", .{});
+        exe.root_module.linkSystemLibrary("dxgi", .{});
+        exe.root_module.linkSystemLibrary("d2d1", .{});
+        exe.root_module.linkSystemLibrary("dwrite", .{});
+        exe.root_module.linkSystemLibrary("imm32", .{});
+        exe.root_module.linkSystemLibrary("dwmapi", .{});
+        exe.root_module.linkSystemLibrary("shell32", .{});
+        exe.root_module.linkSystemLibrary("ole32", .{});
+        exe.root_module.linkSystemLibrary("windowscodecs", .{});
+        exe.root_module.linkSystemLibrary("winmm", .{});
+        exe.root_module.linkSystemLibrary("winhttp", .{});
+        exe.root_module.linkSystemLibrary("advapi32", .{});
+
+        // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
+        // On native Windows: auto-fetch + install on every build (idempotent).
+        if (builtin.os.tag == .windows) {
+            const fetch_and_install = b.addSystemCommand(&.{
+                "powershell", "-ExecutionPolicy", "Bypass", "-File",
+                "scripts\\fetch-msys2-sysroot.ps1",
+                "-OutputDir", "zig-out\\bin\\share\\msys2",
+            });
+            fetch_and_install.has_side_effects = true;
+            b.getInstallStep().dependOn(&fetch_and_install.step);
+        }
+    }
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+
+    // Windows installer (zig build installer)
+    if (target.result.os.tag == .windows) {
+        const setup = b.addExecutable(.{
+            .name = "attyx-setup",
+            .root_module = b.createModule(.{
+                .root_source_file = null,
+                .target = target,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        setup.subsystem = .Windows;
+        setup.addCSourceFile(.{ .file = b.path("src/app/installer.c"), .flags = &.{} });
+        setup.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
+        setup.root_module.linkSystemLibrary("kernel32", .{});
+        setup.root_module.linkSystemLibrary("user32", .{});
+        setup.root_module.linkSystemLibrary("gdi32", .{});
+        setup.root_module.linkSystemLibrary("shell32", .{});
+        setup.root_module.linkSystemLibrary("ole32", .{});
+        setup.root_module.linkSystemLibrary("advapi32", .{});
+        setup.root_module.linkSystemLibrary("shlwapi", .{});
+        setup.root_module.linkSystemLibrary("uuid", .{});
+        setup.root_module.linkSystemLibrary("c", .{});
+
+        const install_setup = b.addInstallArtifact(setup, .{});
+        const installer_step = b.step("installer", "Build the Windows installer");
+        installer_step.dependOn(&install_setup.step);
+    }
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
@@ -283,9 +367,9 @@ pub fn build(b: *std.Build) void {
 
     // exe_tests links the platform layer (Metal on macOS, GLFW/GL/FreeType on
     // Linux) which requires GUI libraries. On macOS those frameworks are always
-    // present; on Linux they may be missing (headless CI). Skip exe_tests on
-    // Linux — all terminal engine tests are in mod_tests above.
-    if (target.result.os.tag != .linux) {
+    // present; on Linux they may be missing (headless CI); Windows C platform
+    // files don't exist yet. Skip exe_tests on Linux and Windows.
+    if (target.result.os.tag == .macos) {
         const exe_tests = b.addTest(.{
             .root_module = exe.root_module,
         });

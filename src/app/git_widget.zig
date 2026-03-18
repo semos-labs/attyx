@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const platform = @import("../platform/platform.zig");
+
 const statusbar_config = @import("../config/statusbar_config.zig");
 const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
 const statusbar = @import("statusbar.zig");

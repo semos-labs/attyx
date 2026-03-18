@@ -1,0 +1,6 @@
+.{
+    .name = .attyx_installer,
+    .version = "0.0.1",
+    .fingerprint = 0x5af9c9517059a47b,
+    .paths = .{ "." },
+}
