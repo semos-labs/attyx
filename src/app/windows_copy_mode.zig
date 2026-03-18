@@ -257,6 +257,7 @@ fn executeSearch(dir: i32) void {
 }
 
 fn matchAt(cells: [*]const c.AttyxCell, abs_row: usize, abs_col: usize, grid_cols: usize, qlen: usize) bool {
+    if (abs_col + qlen > grid_cols) return false; // query extends past row end
     const base = abs_row * grid_cols + abs_col;
     for (0..qlen) |i| {
         const ch = cells[base + i].character;

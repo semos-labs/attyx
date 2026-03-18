@@ -403,12 +403,13 @@ pub const Pty = struct {
         }
 
         // Convert CWD to wide string if provided.
-        const cwd_wide = if (opts.cwd) |cwd_ptr| blk: {
+        // Buffer must outlive CreateProcessW — declare at function scope.
+        var cwd_wide_buf: [std.fs.max_path_bytes]u16 = undefined;
+        const cwd_wide: ?LPCWSTR = if (opts.cwd) |cwd_ptr| blk: {
             const cwd_slice = std.mem.span(cwd_ptr);
-            var buf: [std.fs.max_path_bytes]u16 = undefined;
-            const len = std.unicode.utf8ToUtf16Le(&buf, cwd_slice) catch break :blk null;
-            buf[len] = 0;
-            break :blk @as(LPCWSTR, buf[0..len :0]);
+            const len = std.unicode.utf8ToUtf16Le(&cwd_wide_buf, cwd_slice) catch break :blk null;
+            cwd_wide_buf[len] = 0;
+            break :blk @ptrCast(cwd_wide_buf[0..len :0]);
         } else null;
 
         // Set ATTYX_PID so child shells can discover the IPC control pipe.

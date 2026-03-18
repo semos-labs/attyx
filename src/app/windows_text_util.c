@@ -82,6 +82,11 @@ int detectUrlAtCell(int row, int col, int cols,
             outUrl[pos++] = (char)(0xE0 | (ch >> 12));
             outUrl[pos++] = (char)(0x80 | ((ch >> 6) & 0x3F));
             outUrl[pos++] = (char)(0x80 | (ch & 0x3F));
+        } else if (ch <= 0x10FFFF && pos + 3 < urlBufSize) {
+            outUrl[pos++] = (char)(0xF0 | (ch >> 18));
+            outUrl[pos++] = (char)(0x80 | ((ch >> 12) & 0x3F));
+            outUrl[pos++] = (char)(0x80 | ((ch >> 6) & 0x3F));
+            outUrl[pos++] = (char)(0x80 | (ch & 0x3F));
         }
     }
     outUrl[pos] = 0;
