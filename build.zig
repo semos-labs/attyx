@@ -249,7 +249,16 @@ pub fn build(b: *std.Build) void {
             }),
         });
         setup.subsystem = .Windows;
+        const miniz_flags: []const []const u8 = &.{
+            "-DMINIZ_NO_STDIO",
+            "-DMINIZ_NO_ARCHIVE_WRITING_APIS",
+        };
         setup.addCSourceFile(.{ .file = b.path("src/app/installer.c"), .flags = &.{} });
+        setup.addCSourceFile(.{ .file = b.path("installer/miniz.c"), .flags = miniz_flags });
+        setup.addCSourceFile(.{ .file = b.path("installer/miniz_zip.c"), .flags = miniz_flags });
+        setup.addCSourceFile(.{ .file = b.path("installer/miniz_tinfl.c"), .flags = miniz_flags });
+        setup.addCSourceFile(.{ .file = b.path("installer/miniz_tdef.c"), .flags = miniz_flags });
+        setup.root_module.addIncludePath(b.path("installer"));
         setup.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         setup.root_module.linkSystemLibrary("kernel32", .{});
         setup.root_module.linkSystemLibrary("user32", .{});
