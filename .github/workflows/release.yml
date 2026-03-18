@@ -97,6 +97,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          for f in ${{ matrix.artifact }} ${{ matrix.dmg }}; do
+            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
+          done
+
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -233,11 +242,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
         run: |
-          # Delete old artifacts with same names (dedup)
-          for f in ${{ matrix.artifact }} ${{ matrix.dmg }}; do
-            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
-          done
-          # Upload new
           gh release upload "$RELEASE_TAG" ${{ matrix.artifact }} ${{ matrix.dmg }} --repo "$GITHUB_REPO" --clobber
 
   # ── Linux ──
@@ -257,6 +261,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          gh release delete-asset "$RELEASE_TAG" "${{ matrix.artifact }}" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
 
       - name: Install Linux GUI dependencies
         run: sudo apt-get update && sudo apt-get install -y libglfw3-dev libfreetype-dev libfontconfig-dev libgl-dev
@@ -286,7 +297,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
         run: |
-          gh release delete-asset "$RELEASE_TAG" "${{ matrix.artifact }}" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
           gh release upload "$RELEASE_TAG" ${{ matrix.artifact }} --repo "$GITHUB_REPO" --clobber
 
   # ── Windows ──
@@ -306,6 +316,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          for f in attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip; do
+            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
+          done
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -357,7 +377,4 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
         shell: bash
         run: |
-          for f in attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip; do
-            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
-          done
           gh release upload "$RELEASE_TAG" attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip --repo "$GITHUB_REPO" --clobber
