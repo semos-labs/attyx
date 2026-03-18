@@ -21,6 +21,7 @@
 #include <objbase.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "sfx.h"
 
 // ---------------------------------------------------------------------------
 // Layout & colors
@@ -72,6 +73,7 @@ static RECT g_rc_chk_path, g_rc_chk_desktop, g_rc_chk_context;
 
 static wchar_t g_payload_dir[MAX_PATH];
 static wchar_t g_exe_dir[MAX_PATH];
+static wchar_t g_temp_dir[MAX_PATH]; // Self-extracted temp dir (cleaned up on exit)
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -200,11 +202,27 @@ static const wchar_t* DescribeError(DWORD code) {
 }
 
 static void InitPaths(void) {
-    GetModuleFileNameW(NULL, g_exe_dir, MAX_PATH);
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    wcscpy(g_exe_dir, exePath);
     PathRemoveFileSpecW(g_exe_dir);
-    swprintf(g_payload_dir, MAX_PATH, L"%s\\dist", g_exe_dir);
-    if (!PathFileExistsW(g_payload_dir))
-        wcscpy(g_payload_dir, g_exe_dir);
+
+    // Try self-extraction: check for appended zip in our own exe
+    wchar_t tempBase[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempBase);
+    swprintf(g_temp_dir, MAX_PATH, L"%sattyx-setup-%u", tempBase, GetCurrentProcessId());
+    CreateDirectoryW(g_temp_dir, NULL);
+
+    if (SfxExtract(exePath, g_temp_dir)) {
+        wcscpy(g_payload_dir, g_temp_dir);
+    } else {
+        // Fallback: payload next to installer (dev/zip layout)
+        g_temp_dir[0] = 0;
+        swprintf(g_payload_dir, MAX_PATH, L"%s\\dist", g_exe_dir);
+        if (!PathFileExistsW(g_payload_dir))
+            wcscpy(g_payload_dir, g_exe_dir);
+    }
+
     wchar_t localApp[MAX_PATH];
     if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localApp) == S_OK)
         swprintf(g_install_dir, MAX_PATH, L"%s\\Attyx", localApp);
@@ -771,6 +789,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     DeleteObject(g_font_body);
     DeleteObject(g_font_small);
     DeleteObject(g_font_btn);
+    SfxCleanup(g_temp_dir);
     CoUninitialize();
     return 0;
 }
