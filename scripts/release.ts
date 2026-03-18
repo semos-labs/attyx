@@ -192,10 +192,16 @@ async function main() {
   }
   ok("Pulled latest main");
 
-  // 6. Create release branch
-  const branch = `release-${version}`;
-  await $`git checkout -b ${branch}`.quiet();
-  ok(`Created branch ${bold(branch)}`);
+  // 6. Create or reuse release branch (RCs share the base version branch)
+  const baseBranch = `release-${next.major}.${next.minor}.${next.patch}`;
+  const branchExists = (await $`git rev-parse --verify ${baseBranch}`.quiet()).exitCode === 0;
+  if (branchExists) {
+    await $`git checkout ${baseBranch}`.quiet();
+    ok(`Switched to existing branch ${bold(baseBranch)}`);
+  } else {
+    await $`git checkout -b ${baseBranch}`.quiet();
+    ok(`Created branch ${bold(baseBranch)}`);
+  }
 
   // 4. Update build.zig.zon version
   const zonPath = "./build.zig.zon";
@@ -249,7 +255,7 @@ async function main() {
   ok(`Tagged ${bold(tag)}`);
 
   // 7. Push release branch and tag
-  await $`git push -u origin ${branch}`.quiet();
+  await $`git push -u origin ${baseBranch}`.quiet();
   await $`git push origin ${tag}`.quiet();
   ok("Pushed to origin");
 

@@ -3,10 +3,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: ["release-*"]
   workflow_dispatch:
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -16,7 +17,69 @@ permissions:
   contents: write
 
 jobs:
+  # ── Resolve which GitHub Release to attach artifacts to ──
+  resolve-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      upload_url: ${{ steps.resolve.outputs.upload_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve target release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # If triggered by a tag push, use that tag directly.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Resolved: tag push → $TAG"
+            exit 0
+          fi
+
+          # Triggered by branch push — extract base version from branch name.
+          # Branch format: release-X.Y.Z
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          BASE_VERSION="${BRANCH#release-}"
+
+          if [ -z "$BASE_VERSION" ]; then
+            echo "ERROR: could not extract version from branch $BRANCH"
+            exit 1
+          fi
+
+          echo "Branch: $BRANCH, base version: $BASE_VERSION"
+
+          # Check for a stable draft release first (v0.2.48)
+          STABLE_TAG="v${BASE_VERSION}"
+          DRAFT=$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPO" --json isDraft,tagName -q 'select(.isDraft) | .tagName' 2>/dev/null || echo "")
+          if [ -n "$DRAFT" ]; then
+            echo "release_tag=$STABLE_TAG" >> "$GITHUB_OUTPUT"
+            echo "Resolved: draft release → $STABLE_TAG"
+            exit 0
+          fi
+
+          # Otherwise find the latest RC release for this version
+          LATEST_RC=$(gh release list --repo "$GITHUB_REPO" --limit 50 --json tagName,isPrerelease \
+            -q "[.[] | select(.isPrerelease and (.tagName | startswith(\"v${BASE_VERSION}-rc\"))) | .tagName] | sort | last // empty")
+
+          if [ -n "$LATEST_RC" ]; then
+            echo "release_tag=$LATEST_RC" >> "$GITHUB_OUTPUT"
+            echo "Resolved: latest RC → $LATEST_RC"
+            exit 0
+          fi
+
+          echo "ERROR: no release found for version $BASE_VERSION"
+          exit 1
+
+  # ── macOS ──
   build-macos:
+    needs: resolve-release
     strategy:
       matrix:
         include:
@@ -73,8 +136,8 @@ jobs:
 
       - name: Patch Info.plist version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Strip any -rcN suffix for CFBundleVersion (macOS requires X.Y.Z)
+          TAG="${{ needs.resolve-release.outputs.release_tag }}"
+          VERSION="${TAG#v}"
           BUNDLE_VERSION="${VERSION%%-rc*}"
           sed -i '' "s|<key>CFBundleVersion</key>[[:space:]]*<string>[^<]*</string>|<key>CFBundleVersion</key>\n    <string>${BUNDLE_VERSION}</string>|" resources/Info.plist
           sed -i '' "s|<key>CFBundleShortVersionString</key>[[:space:]]*<string>[^<]*</string>|<key>CFBundleShortVersionString</key>\n    <string>${BUNDLE_VERSION}</string>|" resources/Info.plist
@@ -165,17 +228,21 @@ jobs:
             security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
           fi
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          generate_release_notes: false
-          body: ""
-          files: |
-            ${{ matrix.artifact }}
-            ${{ matrix.dmg }}
+      - name: Upload artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          # Delete old artifacts with same names (dedup)
+          for f in ${{ matrix.artifact }} ${{ matrix.dmg }}; do
+            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
+          done
+          # Upload new
+          gh release upload "$RELEASE_TAG" ${{ matrix.artifact }} ${{ matrix.dmg }} --repo "$GITHUB_REPO" --clobber
 
+  # ── Linux ──
   build-linux:
+    needs: resolve-release
     strategy:
       matrix:
         include:
@@ -214,58 +281,82 @@ jobs:
           cd staging
           tar --zstd -cf ../${{ matrix.artifact }} attyx attyx.desktop attyx.png
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          gh release delete-asset "$RELEASE_TAG" "${{ matrix.artifact }}" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
+          gh release upload "$RELEASE_TAG" ${{ matrix.artifact }} --repo "$GITHUB_REPO" --clobber
+
+  # ── Windows ──
+  build-windows:
+    needs: resolve-release
+    strategy:
+      matrix:
+        include:
+          - target: windows-arm64
+            zig_target: aarch64-windows
+            runner: windows-latest
+          - target: windows-x64
+            zig_target: x86_64-windows
+            runner: windows-latest
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
         with:
-          draft: true
-          generate_release_notes: false
-          body: ""
-          files: ${{ matrix.artifact }}
+          version: 0.15.2
 
-  # snap:
-  #   needs: [build-linux]
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - arch: amd64
-  #           artifact: attyx-linux-x64.tar.zst
-  #           runner: ubuntu-latest
-  #         - arch: arm64
-  #           artifact: attyx-linux-arm64.tar.zst
-  #           runner: ubuntu-24.04-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   timeout-minutes: 5
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Download release artifact
-  #       run: |
-  #         gh release download "$GITHUB_REF_NAME" \
-  #           --repo "$GITHUB_REPO" \
-  #           --pattern "${{ matrix.artifact }}"
-  #       env:
-  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #
-  #     - name: Extract binary
-  #       run: tar --zstd -xf ${{ matrix.artifact }}
-  #
-  #     - name: Set snap version from tag
-  #       run: |
-  #         VERSION="${GITHUB_REF_NAME#v}"
-  #         sed -i "s/^version: .*/version: '$VERSION'/" snap/snapcraft.yaml
-  #
-  #     - name: Build snap
-  #       uses: snapcore/action-build@v1
-  #       id: build
-  #       with:
-  #         snapcraft-args: --platform ${{ matrix.arch }}
-  #
-  #     - name: Upload to Snap Store
-  #       uses: snapcore/action-publish@v1
-  #       env:
-  #         SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAP_CREDENTIALS }}
-  #       with:
-  #         snap: ${{ steps.build.outputs.snap }}
-  #         release: edge
+      - name: Cache Zig build
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-${{ matrix.target }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: zig-${{ matrix.target }}-
 
+      - name: Build attyx
+        run: zig build -Doptimize=ReleaseFast -Denv=production -Dtarget=${{ matrix.zig_target }}
+
+      - name: Build installer
+        run: zig build installer -Doptimize=ReleaseFast -Denv=production -Dtarget=${{ matrix.zig_target }}
+
+      - name: Fetch MSYS2 sysroot
+        shell: pwsh
+        run: |
+          $sysroot = "zig-out\bin\share\msys2"
+          if (-not (Test-Path "$sysroot\usr\bin\zsh.exe")) {
+            powershell -ExecutionPolicy Bypass -File scripts\fetch-msys2-sysroot.ps1 -OutputDir $sysroot
+          }
+
+      - name: Package bare exe (for auto-updater)
+        run: |
+          copy zig-out\bin\attyx.exe attyx-${{ matrix.target }}.exe
+
+      - name: Package installer zip (exe + sysroot + setup)
+        shell: pwsh
+        run: |
+          $staging = "installer-staging"
+          New-Item -ItemType Directory $staging -Force | Out-Null
+          Copy-Item zig-out\bin\attyx-setup.exe $staging\attyx-setup.exe
+          New-Item -ItemType Directory "$staging\dist" -Force | Out-Null
+          Copy-Item zig-out\bin\attyx.exe "$staging\dist\attyx.exe"
+          if (Test-Path "zig-out\bin\share\msys2") {
+            Copy-Item "zig-out\bin\share\msys2" "$staging\dist\share\msys2" -Recurse -Force
+          }
+          Compress-Archive -Path "$staging\*" -DestinationPath "attyx-${{ matrix.target }}-setup.zip"
+
+      - name: Upload artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          for f in attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip; do
+            gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
+          done
+          gh release upload "$RELEASE_TAG" attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip --repo "$GITHUB_REPO" --clobber
