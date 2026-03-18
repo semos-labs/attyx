@@ -81,7 +81,7 @@ var pipe_name_len: usize = 0;
 var started: bool = false;
 
 pub fn isStarted() bool {
-    return started;
+    return @atomicLoad(bool, &started, .acquire);
 }
 
 pub fn start() !void {
@@ -99,7 +99,7 @@ pub fn start() !void {
     }
     pipe_name_buf[ascii.len] = 0;
 
-    started = true;
+    @atomicStore(bool, &started, true, .release);
     logging.info("ipc", "control pipe: {s}", .{ascii});
 }
 

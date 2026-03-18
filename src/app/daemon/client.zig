@@ -167,7 +167,7 @@ pub const DaemonClient = struct {
                 const n = std.posix.write(self.socket_fd, data[offset..]) catch |err| {
                     if (err == error.WouldBlock) {
                         stalls += 1;
-                        if (stalls > 20) { // 20 × 10ms = 200ms
+                        if (stalls > 200) { // 200 × 10ms = 2s
                             self.dead = true;
                             return;
                         }

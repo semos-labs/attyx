@@ -78,7 +78,7 @@ pub fn spawnpEnv(
 /// (so it's removed from the parent's kill-on-close Job), then resumes.
 fn spawnWindows(
     file: [*:0]const u8,
-    _: [*:null]const ?[*:0]const u8,
+    argv: [*:null]const ?[*:0]const u8,
 ) SpawnResult {
     if (comptime !is_windows) return .{ .pid = 0, .ok = false };
 
@@ -178,17 +178,25 @@ fn spawnWindows(
         extern "kernel32" fn AssignProcessToJobObject(hJob: HANDLE, hProcess: HANDLE) callconv(.winapi) BOOL;
     };
 
-    // Build command line: "exe_path daemon"
+    // Build command line from argv: "exe_path" arg1 arg2 ...
     const file_slice = std.mem.sliceTo(file, 0);
-    var cmd_buf: [2048]u16 = undefined;
-    // Quote the executable path and append " daemon"
+    var cmd_buf: [4096]u16 = undefined;
     cmd_buf[0] = '"';
     const exe_len = std.unicode.utf8ToUtf16Le(cmd_buf[1..], file_slice) catch return .{ .pid = 0, .ok = false };
-    cmd_buf[1 + exe_len] = '"';
-    cmd_buf[2 + exe_len] = ' ';
-    const daemon_str = "daemon";
-    for (daemon_str, 0..) |c, i| cmd_buf[3 + exe_len + i] = c;
-    cmd_buf[3 + exe_len + daemon_str.len] = 0;
+    var pos: usize = 1 + exe_len;
+    cmd_buf[pos] = '"';
+    pos += 1;
+    // Append remaining argv entries (skip argv[0] which is the exe)
+    var ai: usize = 1;
+    while (argv[ai]) |arg| : (ai += 1) {
+        if (pos + 1 >= cmd_buf.len) break;
+        cmd_buf[pos] = ' ';
+        pos += 1;
+        const arg_slice = std.mem.sliceTo(arg, 0);
+        const arg_len = std.unicode.utf8ToUtf16Le(cmd_buf[pos..], arg_slice) catch break;
+        pos += arg_len;
+    }
+    cmd_buf[pos] = 0;
 
     var si = std.mem.zeroes(win.STARTUPINFOW);
     si.cb = @sizeOf(win.STARTUPINFOW);

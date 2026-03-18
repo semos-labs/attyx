@@ -12,11 +12,11 @@ const platform = @import("../platform/platform.zig");
 const spawn = @import("spawn.zig");
 const logging = @import("../logging/log.zig");
 
-/// Direct debug print to a file — works even when stderr is detached.
+/// Direct debug print to a file — only in debug builds.
 fn dbg(comptime fmt: []const u8, args: anytype) void {
+    if (comptime @import("builtin").mode != .Debug) return;
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "[session_connect] " ++ fmt ++ "\n", args) catch return;
-    // Write to a known debug log file in the state directory.
     var path_buf: [256]u8 = undefined;
     const path = statePath(&path_buf, "session-debug{s}.log") orelse return;
     const file = std.fs.createFileAbsolute(path, .{ .truncate = false }) catch return;

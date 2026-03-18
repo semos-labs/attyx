@@ -200,12 +200,12 @@ export fn attyx_dispatch_action(action_raw: u8) u8 {
 // Open config file (Windows)
 // ---------------------------------------------------------------------------
 
-extern "shell32" fn ShellExecuteA(
+extern "shell32" fn ShellExecuteW(
     hwnd: ?*anyopaque,
-    lpOperation: [*:0]const u8,
-    lpFile: [*:0]const u8,
-    lpParameters: ?[*:0]const u8,
-    lpDirectory: ?[*:0]const u8,
+    lpOperation: [*:0]const u16,
+    lpFile: [*:0]const u16,
+    lpParameters: ?[*:0]const u16,
+    lpDirectory: ?[*:0]const u16,
     nShowCmd: c_int,
 ) callconv(.winapi) ?*anyopaque;
 
@@ -227,7 +227,17 @@ fn openConfigWindows() void {
         if (f) |file| file.close();
     }
 
-    _ = ShellExecuteA(null, "open", path, null, null, 5); // SW_SHOW = 5
+    // Use ShellExecuteW for proper Unicode path support (non-ASCII usernames)
+    var wide_path: [512:0]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide_path, path) catch return;
+    wide_path[wlen] = 0;
+    const open_w = comptime blk: {
+        const s = "open";
+        var r: [s.len:0]u16 = undefined;
+        for (s, 0..) |ch, i| r[i] = ch;
+        break :blk r;
+    };
+    _ = ShellExecuteW(null, &open_w, wide_path[0..wlen :0], null, null, 5);
 }
 
 // ---------------------------------------------------------------------------

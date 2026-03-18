@@ -112,32 +112,35 @@ const EnclosureMatch = struct {
 fn findEnclosure(xml: []const u8) ?EnclosureMatch {
     var pos: usize = 0;
     while (std.mem.indexOfPos(u8, xml, pos, "<enclosure")) |enc_start| {
-        const enc_end = std.mem.indexOfPos(u8, xml, enc_start, "/>") orelse
-            std.mem.indexOfPos(u8, xml, enc_start, ">") orelse break;
-        const tag = xml[enc_start .. enc_end + 2];
+        // Find closing: "/>" (self-closing) or ">" (open tag)
+        const sc_end = std.mem.indexOfPos(u8, xml, enc_start, "/>");
+        const gt_end = std.mem.indexOfPos(u8, xml, enc_start, ">");
+        const enc_end = sc_end orelse gt_end orelse break;
+        const tag_end = if (sc_end != null and sc_end.? == enc_end) enc_end + 2 else enc_end + 1;
+        const tag = xml[enc_start..@min(tag_end, xml.len)];
 
         // Check os and arch attributes.
         if (findAttr(tag, "os")) |os| {
             if (!std.mem.eql(u8, os, target_os)) {
-                pos = enc_end + 2;
+                pos = tag_end;
                 continue;
             }
         }
         if (findAttr(tag, "arch")) |arch| {
             if (!std.mem.eql(u8, arch, target_arch)) {
-                pos = enc_end + 2;
+                pos = tag_end;
                 continue;
             }
         }
 
         // Extract url and version.
         const url = findAttr(tag, "url") orelse {
-            pos = enc_end + 2;
+            pos = tag_end;
             continue;
         };
         const version = findAttr(tag, "sparkle:version") orelse
             findAttr(tag, "version") orelse {
-            pos = enc_end + 2;
+            pos = tag_end;
             continue;
         };
 
