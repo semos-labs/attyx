@@ -86,16 +86,33 @@ if ($packages.Count -lt 5) {
     exit 1
 }
 
-# --- Download and extract packages ---
+# --- Download packages in parallel ---
+Write-Host "Downloading $($packages.Count) packages in parallel..."
+$jobs = @()
 foreach ($pkg in $packages) {
     $url = "$MirrorBase/$pkg"
     $localPath = Join-Path $tempDir $pkg
+    $jobs += Start-Job -ScriptBlock {
+        param($u, $p)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $u -OutFile $p -UseBasicParsing
+    } -ArgumentList $url, $localPath
+}
+$jobs | Wait-Job | Out-Null
+$failed = $jobs | Where-Object { $_.State -eq 'Failed' }
+$jobs | Remove-Job
+if ($failed) {
+    Write-Host "ERROR: Some downloads failed" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  All downloads complete."
+
+# --- Decompress and extract sequentially ---
+foreach ($pkg in $packages) {
+    $localPath = Join-Path $tempDir $pkg
     $tarPath = $localPath -replace '\.zst$', ''
 
-    Write-Host "Downloading $pkg ..."
-    Invoke-WebRequest -Uri $url -OutFile $localPath -UseBasicParsing
-
-    Write-Host "  Decompressing ..."
+    Write-Host "  Extracting $pkg ..."
     $ErrorActionPreference = "Continue"
     & $zstdExe -d $localPath -o $tarPath --force 2>$null
     $ErrorActionPreference = "Stop"
@@ -103,8 +120,6 @@ foreach ($pkg in $packages) {
         Write-Host "ERROR: Failed to decompress $pkg" -ForegroundColor Red
         exit 1
     }
-
-    Write-Host "  Extracting ..."
     tar -xf $tarPath -C $extractDir
 }
 
