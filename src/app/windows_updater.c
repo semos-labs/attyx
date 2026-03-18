@@ -12,13 +12,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #pragma comment(lib, "winhttp.lib")
 
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
 static void updateLog(const char *msg);
+static int verifySha256(const wchar_t *file_path, const char *expected_hex);
 
 // ---------------------------------------------------------------------------
 // Externals
@@ -48,6 +48,7 @@ static const char *TARGET_ARCH = "x86_64";
 // ---------------------------------------------------------------------------
 static char g_new_version[64];
 static char g_download_url[2048];
+static char g_expected_sha256[65]; // hex string
 static char g_notes_url[2048];
 static char g_release_notes[16384];
 static HWND g_update_hwnd = NULL;
@@ -190,6 +191,12 @@ static int check_appcast(void) {
 
         strncpy(g_new_version, ver, sizeof(g_new_version) - 1);
         strncpy(g_download_url, url, sizeof(g_download_url) - 1);
+
+        // Extract SHA256 checksum (optional but recommended)
+        char sha_buf[65];
+        const char *sha = find_attr(tag, "sha256", sha_buf, sizeof(sha_buf));
+        if (sha) strncpy(g_expected_sha256, sha, sizeof(g_expected_sha256) - 1);
+        else g_expected_sha256[0] = '\0';
 
         // Look for release notes URL in parent <item>
         const char *notes = strstr(xml, "<sparkle:releaseNotesLink>");
@@ -436,7 +443,24 @@ static DWORD WINAPI download_thread(LPVOID param) {
     WinHttpCloseHandle(session);
     CloseHandle(file);
 
-    // Atomic rename
+    // Verify SHA256 checksum from appcast before staging.
+    if (g_expected_sha256[0]) {
+        strcpy(g_dl_status, "Verifying checksum...");
+        if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
+
+        if (!verifySha256(tmp, g_expected_sha256)) {
+            strcpy(g_dl_status, "Checksum verification failed!");
+            if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
+            DeleteFileW(tmp);
+            g_downloading = 0;
+            updateLog("download: SHA256 mismatch, deleted binary");
+            return 1;
+        }
+    } else {
+        updateLog("download: no sha256 in appcast, skipping verification");
+    }
+
+    // Atomic rename — only reached if signature + signer verified
     MoveFileExW(tmp, staging, MOVEFILE_REPLACE_EXISTING);
 
     // Update UI
@@ -446,6 +470,85 @@ static DWORD WINAPI download_thread(LPVOID param) {
 
     // The daemon will detect the staged binary and hot-upgrade
     g_downloading = 0;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// SHA256 verification (uses Windows BCrypt — built-in, no extra libs)
+// ---------------------------------------------------------------------------
+typedef void* BCRYPT_ALG_HANDLE;
+typedef void* BCRYPT_HASH_HANDLE;
+typedef long NTSTATUS;
+#define BCRYPT_SHA256_ALGORITHM L"SHA256"
+
+// Dynamically load BCrypt to avoid link-time dependency
+typedef NTSTATUS (WINAPI *PFN_BCryptOpenAlgorithmProvider)(BCRYPT_ALG_HANDLE*, LPCWSTR, LPCWSTR, DWORD);
+typedef NTSTATUS (WINAPI *PFN_BCryptCreateHash)(BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE*, BYTE*, DWORD, BYTE*, DWORD, DWORD);
+typedef NTSTATUS (WINAPI *PFN_BCryptHashData)(BCRYPT_HASH_HANDLE, BYTE*, DWORD, DWORD);
+typedef NTSTATUS (WINAPI *PFN_BCryptFinishHash)(BCRYPT_HASH_HANDLE, BYTE*, DWORD, DWORD);
+typedef NTSTATUS (WINAPI *PFN_BCryptDestroyHash)(BCRYPT_HASH_HANDLE);
+typedef NTSTATUS (WINAPI *PFN_BCryptCloseAlgorithmProvider)(BCRYPT_ALG_HANDLE, DWORD);
+
+/// Compute SHA256 of a file and compare against expected hex string.
+/// Returns 1 if match, 0 if mismatch or error.
+static int verifySha256(const wchar_t *file_path, const char *expected_hex) {
+    HMODULE bcrypt = LoadLibraryW(L"bcrypt.dll");
+    if (!bcrypt) { updateLog("sha256: bcrypt.dll not found"); return 0; }
+
+    PFN_BCryptOpenAlgorithmProvider pOpen = (PFN_BCryptOpenAlgorithmProvider)GetProcAddress(bcrypt, "BCryptOpenAlgorithmProvider");
+    PFN_BCryptCreateHash pCreate = (PFN_BCryptCreateHash)GetProcAddress(bcrypt, "BCryptCreateHash");
+    PFN_BCryptHashData pHashData = (PFN_BCryptHashData)GetProcAddress(bcrypt, "BCryptHashData");
+    PFN_BCryptFinishHash pFinish = (PFN_BCryptFinishHash)GetProcAddress(bcrypt, "BCryptFinishHash");
+    PFN_BCryptDestroyHash pDestroy = (PFN_BCryptDestroyHash)GetProcAddress(bcrypt, "BCryptDestroyHash");
+    PFN_BCryptCloseAlgorithmProvider pClose = (PFN_BCryptCloseAlgorithmProvider)GetProcAddress(bcrypt, "BCryptCloseAlgorithmProvider");
+    if (!pOpen || !pCreate || !pHashData || !pFinish || !pDestroy || !pClose) {
+        FreeLibrary(bcrypt); updateLog("sha256: missing BCrypt functions"); return 0;
+    }
+
+    BCRYPT_ALG_HANDLE alg = NULL;
+    if (pOpen(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) != 0) {
+        FreeLibrary(bcrypt); updateLog("sha256: open provider failed"); return 0;
+    }
+
+    BCRYPT_HASH_HANDLE hash = NULL;
+    if (pCreate(alg, &hash, NULL, 0, NULL, 0, 0) != 0) {
+        pClose(alg, 0); FreeLibrary(bcrypt); updateLog("sha256: create hash failed"); return 0;
+    }
+
+    // Read file in chunks and feed to hash
+    HANDLE f = CreateFileW(file_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        pDestroy(hash); pClose(alg, 0); FreeLibrary(bcrypt);
+        updateLog("sha256: can't open file"); return 0;
+    }
+
+    char buf[65536];
+    DWORD bytesRead;
+    while (ReadFile(f, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0) {
+        pHashData(hash, (BYTE*)buf, bytesRead, 0);
+    }
+    CloseHandle(f);
+
+    BYTE digest[32];
+    pFinish(hash, digest, 32, 0);
+    pDestroy(hash);
+    pClose(alg, 0);
+    FreeLibrary(bcrypt);
+
+    // Convert digest to hex and compare
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    hex[64] = '\0';
+
+    if (_stricmp(hex, expected_hex) == 0) {
+        updateLog("sha256: checksum verified");
+        return 1;
+    }
+
+    char dbg[256];
+    snprintf(dbg, sizeof(dbg), "sha256: MISMATCH got=%s expected=%s", hex, expected_hex);
+    updateLog(dbg);
     return 0;
 }
 

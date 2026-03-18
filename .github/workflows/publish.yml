@@ -116,23 +116,29 @@ jobs:
           WIN_ARM64_SIZE=$(stat -c%s assets/attyx-windows-arm64.exe 2>/dev/null || echo 0)
           WIN_X64_SIZE=$(stat -c%s assets/attyx-windows-x64.exe 2>/dev/null || echo 0)
 
+          # Compute SHA256 checksums for integrity verification
+          SHA_DARWIN_ARM64=$(sha256sum assets/attyx-darwin-arm64.zip 2>/dev/null | cut -d' ' -f1 || echo "")
+          SHA_DARWIN_X64=$(sha256sum assets/attyx-darwin-x64.zip 2>/dev/null | cut -d' ' -f1 || echo "")
+          SHA_WIN_ARM64=$(sha256sum assets/attyx-windows-arm64.exe 2>/dev/null | cut -d' ' -f1 || echo "")
+          SHA_WIN_X64=$(sha256sum assets/attyx-windows-x64.exe 2>/dev/null | cut -d' ' -f1 || echo "")
+
           # Build enclosure list (only include assets that exist)
           ENCLOSURES=""
           if [ "$DARWIN_ARM64_SIZE" -gt 0 ]; then
             ENCLOSURES="${ENCLOSURES}
-                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-arm64.zip\" os=\"macos\" arch=\"arm64\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-arm64.zip\" os=\"macos\" arch=\"arm64\" sha256=\"${SHA_DARWIN_ARM64}\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
           fi
           if [ "$DARWIN_X64_SIZE" -gt 0 ]; then
             ENCLOSURES="${ENCLOSURES}
-                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-x64.zip\" os=\"macos\" arch=\"x86_64\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_X64_SIZE}\" type=\"application/octet-stream\" />"
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-darwin-x64.zip\" os=\"macos\" arch=\"x86_64\" sha256=\"${SHA_DARWIN_X64}\" sparkle:version=\"${BUNDLE_VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${DARWIN_X64_SIZE}\" type=\"application/octet-stream\" />"
           fi
           if [ "$WIN_ARM64_SIZE" -gt 0 ]; then
             ENCLOSURES="${ENCLOSURES}
-                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-arm64.exe\" os=\"windows\" arch=\"arm64\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-arm64.exe\" os=\"windows\" arch=\"arm64\" sha256=\"${SHA_WIN_ARM64}\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_ARM64_SIZE}\" type=\"application/octet-stream\" />"
           fi
           if [ "$WIN_X64_SIZE" -gt 0 ]; then
             ENCLOSURES="${ENCLOSURES}
-                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-x64.exe\" os=\"windows\" arch=\"x86_64\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_X64_SIZE}\" type=\"application/octet-stream\" />"
+                <enclosure url=\"${DOWNLOAD_BASE}/attyx-windows-x64.exe\" os=\"windows\" arch=\"x86_64\" sha256=\"${SHA_WIN_X64}\" sparkle:version=\"${BUNDLE_VERSION}\" length=\"${WIN_X64_SIZE}\" type=\"application/octet-stream\" />"
           fi
 
           # Unified appcast (all platforms)
