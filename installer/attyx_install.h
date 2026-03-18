@@ -73,18 +73,27 @@ static bool AttyxSwapBinary(const wchar_t* installDir, const wchar_t* srcExe) {
 // Full install (fresh system)
 // ---------------------------------------------------------------------------
 
+// Error reporting: if non-NULL, receives a human-readable error on failure.
+static wchar_t g_install_error[512];
+
 typedef bool (*AttyxInstallProgressFn)(const wchar_t* status, int progress);
 
 // Install all files from payloadDir into installDir.
-// Calls progressFn (if non-NULL) with status updates. Return false from
-// progressFn to abort.
+// Calls progressFn (if non-NULL) with status updates.
+// On failure, g_install_error contains details.
 static bool AttyxInstallFiles(const wchar_t* installDir, const wchar_t* payloadDir,
                               AttyxInstallProgressFn progressFn) {
     wchar_t src[MAX_PATH], dst[MAX_PATH];
+    g_install_error[0] = 0;
 
     // Create install directory
     if (progressFn) progressFn(L"Creating directory...", 5);
-    SHCreateDirectoryExW(NULL, installDir, NULL);
+    int dirErr = SHCreateDirectoryExW(NULL, installDir, NULL);
+    if (dirErr != ERROR_SUCCESS && dirErr != ERROR_ALREADY_EXISTS
+        && dirErr != ERROR_FILE_EXISTS) {
+        swprintf(g_install_error, 512, L"Could not create directory: error %d", dirErr);
+        return false;
+    }
 
     // Close GUI if running
     CloseAttyxGui();
@@ -92,8 +101,14 @@ static bool AttyxInstallFiles(const wchar_t* installDir, const wchar_t* payloadD
     // Copy attyx.exe (using swap for safety)
     if (progressFn) progressFn(L"Copying files...", 10);
     swprintf(src, MAX_PATH, L"%s\\attyx.exe", payloadDir);
-    if (!AttyxSwapBinary(installDir, src))
+    if (!PathFileExistsW(src)) {
+        swprintf(g_install_error, 512, L"Payload not found: %s", src);
         return false;
+    }
+    if (!AttyxSwapBinary(installDir, src)) {
+        swprintf(g_install_error, 512, L"Could not install attyx.exe (error %lu)", GetLastError());
+        return false;
+    }
 
     // Copy uninstaller if present
     swprintf(src, MAX_PATH, L"%s\\attyx-uninstall.exe", payloadDir);

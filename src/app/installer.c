@@ -532,7 +532,10 @@ static DWORD WINAPI InstallThread(LPVOID param) {
     (void)param;
 
     if (!AttyxInstallFiles(g_install_dir, g_payload_dir, InstallerProgress)) {
-        SetStatus(L"Installation failed — could not copy files.");
+        if (g_install_error[0])
+            SetStatus(g_install_error);
+        else
+            SetStatus(L"Installation failed — could not copy files.");
         g_failed = true; g_done = true; g_installing = false;
         return 1;
     }
