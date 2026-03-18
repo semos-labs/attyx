@@ -323,7 +323,7 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
         shell: bash
         run: |
-          for f in attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip; do
+          for f in attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.exe attyx-${{ matrix.target }}-setup.zip; do
             gh release delete-asset "$RELEASE_TAG" "$f" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
           done
 
@@ -357,19 +357,20 @@ jobs:
         run: |
           copy zig-out\bin\attyx.exe attyx-${{ matrix.target }}.exe
 
-      - name: Package installer zip (exe + sysroot + setup)
+      - name: Build self-extracting installer
         shell: pwsh
         run: |
-          $staging = "installer-staging"
-          New-Item -ItemType Directory $staging -Force | Out-Null
-          Copy-Item zig-out\bin\attyx-setup.exe $staging\attyx-setup.exe
-          New-Item -ItemType Directory "$staging\dist" -Force | Out-Null
-          Copy-Item zig-out\bin\attyx.exe "$staging\dist\attyx.exe"
-          Copy-Item zig-out\bin\attyx-uninstall.exe "$staging\dist\attyx-uninstall.exe"
+          # Create payload zip with attyx.exe, uninstaller, and sysroot
+          $payload = "payload-staging"
+          New-Item -ItemType Directory $payload -Force | Out-Null
+          Copy-Item zig-out\bin\attyx.exe "$payload\attyx.exe"
+          Copy-Item zig-out\bin\attyx-uninstall.exe "$payload\attyx-uninstall.exe"
           if (Test-Path "zig-out\bin\share\msys2") {
-            Copy-Item "zig-out\bin\share\msys2" "$staging\dist\share\msys2" -Recurse -Force
+            Copy-Item "zig-out\bin\share\msys2" "$payload\share\msys2" -Recurse -Force
           }
-          Compress-Archive -Path "$staging\*" -DestinationPath "attyx-${{ matrix.target }}-setup.zip"
+          Compress-Archive -Path "$payload\*" -DestinationPath payload.zip
+          # Concatenate: setup exe + payload zip = self-extracting installer
+          cmd /c "copy /b zig-out\bin\attyx-setup.exe + payload.zip attyx-${{ matrix.target }}-setup.exe"
 
       - name: Upload artifacts to release
         env:
@@ -377,4 +378,4 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
         shell: bash
         run: |
-          gh release upload "$RELEASE_TAG" attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.zip --repo "$GITHUB_REPO" --clobber
+          gh release upload "$RELEASE_TAG" attyx-${{ matrix.target }}.exe attyx-${{ matrix.target }}-setup.exe --repo "$GITHUB_REPO" --clobber
