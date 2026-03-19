@@ -6,17 +6,28 @@
 
 #include <stdbool.h>
 
-// Close all running Attyx GUI windows (leaves daemon and host processes alive).
+// Close all running Attyx GUI windows and wait for the processes to exit.
+// Leaves daemon and host processes alive.
 // Returns true if any windows were found and closed.
 static bool CloseAttyxGui(void) {
     bool found = false;
     HWND hw;
     while ((hw = FindWindowW(L"AttyxWindow", NULL)) != NULL) {
         found = true;
+        // Get the process handle before sending WM_CLOSE
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hw, &pid);
+        HANDLE hProc = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : NULL;
+
         DWORD_PTR result = 0;
         SendMessageTimeoutW(hw, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 5000, &result);
+
+        // Wait for the process to actually exit and release file handles
+        if (hProc) {
+            WaitForSingleObject(hProc, 10000); // up to 10s
+            CloseHandle(hProc);
+        }
     }
-    if (found) Sleep(500); // Brief pause for process cleanup
     return found;
 }
 
