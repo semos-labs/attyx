@@ -9,10 +9,10 @@ Push-Location $root
 
 try {
     Write-Host "Building attyx ($Target)..."
-    zig build -Doptimize=$Optimize -Dtarget=$Target
+    zig build "-Doptimize=$Optimize" "-Dtarget=$Target"
 
     Write-Host "Building installer ($Target)..."
-    zig build installer -Doptimize=$Optimize -Dtarget=$Target
+    zig build installer "-Doptimize=$Optimize" "-Dtarget=$Target"
 
     # Assemble payload
     $staging = "build-staging"
