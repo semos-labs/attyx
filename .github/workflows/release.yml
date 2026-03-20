@@ -368,9 +368,10 @@ jobs:
           if (Test-Path "zig-out\bin\share\msys2") {
             Copy-Item "zig-out\bin\share\msys2" "$payload\share\msys2" -Recurse -Force
           }
-          Push-Location $payload
-          tar.exe -a -cf ..\payload.zip *
-          Pop-Location
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+              (Resolve-Path $payload).Path, "payload.zip",
+              [System.IO.Compression.CompressionLevel]::Optimal, $false)
           # Concatenate: setup exe + payload zip = self-extracting installer
           cmd /c "copy /b zig-out\bin\attyx-setup.exe + payload.zip attyx-${{ matrix.target }}-setup.exe"
 

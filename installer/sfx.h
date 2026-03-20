@@ -26,10 +26,16 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
     void* data = VirtualAlloc(NULL, fileSize, MEM_COMMIT, PAGE_READWRITE);
     if (!data) { CloseHandle(hFile); return false; }
 
-    DWORD bytesRead = 0;
-    BOOL ok = ReadFile(hFile, data, fileSize, &bytesRead, NULL);
+    // Read entire file (loop to handle partial reads)
+    DWORD totalRead = 0;
+    while (totalRead < fileSize) {
+        DWORD chunk = 0;
+        if (!ReadFile(hFile, (char*)data + totalRead, fileSize - totalRead, &chunk, NULL) || chunk == 0)
+            break;
+        totalRead += chunk;
+    }
     CloseHandle(hFile);
-    if (!ok || bytesRead != fileSize) { VirtualFree(data, 0, MEM_RELEASE); return false; }
+    if (totalRead != fileSize) { VirtualFree(data, 0, MEM_RELEASE); return false; }
 
     // miniz scans for the End of Central Directory record,
     // which works even when the zip is appended after exe bytes
