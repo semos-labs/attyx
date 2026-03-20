@@ -27,11 +27,14 @@ try {
         Copy-Item zig-out/bin/share/msys2 "$staging/share/msys2" -Recurse -Force
     }
 
-    # Create payload zip
+    # Create payload zip (use tar, not Compress-Archive — PowerShell
+    # creates ZIP64 which breaks miniz SFX offset calculation)
     Write-Host "Creating payload zip..."
     $zipPath = "build-staging-payload.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath }
-    Compress-Archive -Path "$staging/*" -DestinationPath $zipPath
+    Push-Location $staging
+    tar.exe -a -cf "../$zipPath" *
+    Pop-Location
 
     # Concatenate: setup exe + payload zip = self-extracting installer
     $arch = if ($Target -match "aarch64") { "arm64" } else { "x64" }
