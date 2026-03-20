@@ -39,33 +39,36 @@ static bool AttyxIsInstalled(wchar_t* installDir, int maxLen) {
 // Uses rename trick: exe → exe.old, copy new → exe, delete old.
 // Returns true on success. On failure, rolls back.
 static bool AttyxSwapBinary(const wchar_t* installDir, const wchar_t* srcExe) {
-    wchar_t exePath[MAX_PATH], oldPath[MAX_PATH];
+    wchar_t exePath[MAX_PATH];
     swprintf(exePath, MAX_PATH, L"%s\\attyx.exe", installDir);
-    swprintf(oldPath, MAX_PATH, L"%s\\attyx.exe.old", installDir);
-
-    // Close GUI windows before touching the exe
-    CloseAttyxGui();
 
     // If the target doesn't exist yet (fresh install), just copy
     if (!PathFileExistsW(exePath))
         return CopyFileW(srcExe, exePath, FALSE) != 0;
 
-    // Remove leftover .old from a previous upgrade
-    DeleteFileW(oldPath);
+    // Kill everything — GUI, daemon, host processes.
+    // On Windows there's no reliable way to hot-swap with a running daemon.
+    KillAttyxAll();
 
-    // Rename running exe → .old (Windows allows renaming a running exe)
-    if (!MoveFileExW(exePath, oldPath, MOVEFILE_REPLACE_EXISTING))
-        return false;
-
-    // Copy new binary into place
-    if (!CopyFileW(srcExe, exePath, FALSE)) {
-        // Rollback
-        MoveFileExW(oldPath, exePath, MOVEFILE_REPLACE_EXISTING);
-        return false;
+    // Clean up old binaries now that nothing holds them
+    WIN32_FIND_DATAW fd;
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%s\\attyx.exe.old*", installDir);
+    HANDLE hFind = FindFirstFileW(pattern, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            wchar_t victim[MAX_PATH];
+            swprintf(victim, MAX_PATH, L"%s\\%s", installDir, fd.cFileName);
+            DeleteFileW(victim);
+        } while (FindNextFileW(hFind, &fd));
+        FindClose(hFind);
     }
 
-    // Clean up old binary (may fail if still locked, that's fine)
-    DeleteFileW(oldPath);
+    // Delete and replace (everything is dead, no rename dance needed)
+    DeleteFileW(exePath);
+    if (!CopyFileW(srcExe, exePath, FALSE))
+        return false;
+
     return true;
 }
 
@@ -95,10 +98,7 @@ static bool AttyxInstallFiles(const wchar_t* installDir, const wchar_t* payloadD
         return false;
     }
 
-    // Close GUI if running
-    CloseAttyxGui();
-
-    // Copy attyx.exe (using swap for safety)
+    // Copy attyx.exe (kills all Attyx processes if needed)
     if (progressFn) progressFn(L"Copying files...", 10);
     swprintf(src, MAX_PATH, L"%s\\attyx.exe", payloadDir);
     if (!PathFileExistsW(src)) {

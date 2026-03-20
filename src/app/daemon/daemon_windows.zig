@@ -224,11 +224,23 @@ fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
 
 const update_check = @import("update_check_windows.zig");
 
+fn hasAliveSessions(state: *DaemonState) bool {
+    for (state.sessions) |slot| {
+        if (slot) |s| {
+            if (s.alive) return true;
+        }
+    }
+    return false;
+}
+
 fn daemonLoop(state: *DaemonState) void {
     var staged_check_tick: u32 = 0;
     var update_check_tick: u32 = 0;
+    var idle_ticks: u32 = 0; // Ticks with no clients and no alive sessions
     // ~6 hours in ticks: 6 * 3600 * 1000 / 50ms = 432000
     const update_check_interval: u32 = 432000;
+    // 5s grace period: 5000 / 50ms = 100 ticks
+    const idle_shutdown_ticks: u32 = 100;
 
     while (g_running) {
         pollAccept(state);
@@ -236,6 +248,19 @@ fn daemonLoop(state: *DaemonState) void {
         pollClients(state);
         pollProcNames(state);
         pollDeadSessions(state);
+
+        // Auto-shutdown: exit when no clients connected and no alive sessions.
+        // Grace period prevents exit during brief reconnection gaps.
+        if (state.client_count == 0 and !hasAliveSessions(state)) {
+            idle_ticks += 1;
+            if (idle_ticks >= idle_shutdown_ticks) {
+                daemonLog("idle shutdown: no clients, no alive sessions");
+                g_running = false;
+                break;
+            }
+        } else {
+            idle_ticks = 0;
+        }
 
         // Check for staged binary every ~2s (40 ticks × 50ms).
         // The installer/dev script or auto-updater drops upgrade.exe.

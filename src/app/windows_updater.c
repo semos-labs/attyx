@@ -791,10 +791,16 @@ static LRESULT CALLBACK UpdateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_LBUTTONDOWN: {
         int hit = UpdHitTest(LOWORD(lParam), HIWORD(lParam));
         if (hit == 1 && !g_downloading) {
-            g_downloading = 1;
-            strcpy(g_dl_status, "Downloading...");
-            InvalidateRect(hwnd, NULL, FALSE);
-            CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
+            int choice = MessageBoxW(hwnd,
+                L"To install this update, all running Attyx sessions "
+                L"will be closed.\n\nDo you want to continue?",
+                L"Attyx Update", MB_OKCANCEL | MB_ICONWARNING);
+            if (choice == IDOK) {
+                g_downloading = 1;
+                strcpy(g_dl_status, "Downloading...");
+                InvalidateRect(hwnd, NULL, FALSE);
+                CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
+            }
         }
         if (hit == 2) DestroyWindow(hwnd);
         if (hit == 3 && g_notes_url[0]) {

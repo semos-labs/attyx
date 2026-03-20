@@ -517,6 +517,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 static void DoInstall(void) {
     if (g_installing) return;
+
+    // If Attyx is running, warn that it will be killed
+    if (IsAttyxRunning()) {
+        int choice = MessageBoxW(g_hwnd,
+            L"Attyx is currently running. To continue, all running "
+            L"sessions will be closed.\n\nDo you want to continue?",
+            L"Attyx Setup", MB_OKCANCEL | MB_ICONWARNING);
+        if (choice != IDOK) return;
+    }
+
     g_installing = true;
     InvalidateRect(g_hwnd, NULL, FALSE);
     CreateThread(NULL, 0, InstallThread, NULL, 0, NULL);
@@ -561,48 +571,16 @@ static int DoSilentUpdate(void) {
     // Find where Attyx is installed
     wchar_t installDir[MAX_PATH] = {0};
     if (!AttyxIsInstalled(installDir, MAX_PATH) || !installDir[0]) {
-        // Not installed — fall through to normal installer
-        return -1;
+        return -1; // Not installed — fall through to normal installer UI
     }
 
-    // Close running GUI (daemon stays alive)
-    CloseAttyxGui();
+    // Kill everything and install fresh (no hot-swap on Windows)
+    AttyxInstallFiles(installDir, g_payload_dir, NULL);
 
-    // Copy sysroot to install dir (if payload has one)
-    wchar_t src[MAX_PATH], dst[MAX_PATH];
-    swprintf(src, MAX_PATH, L"%s\\share\\msys2", g_payload_dir);
-    if (PathFileExistsW(src)) {
-        swprintf(dst, MAX_PATH, L"%s\\share", installDir);
-        SHCreateDirectoryExW(NULL, dst, NULL);
-        swprintf(dst, MAX_PATH, L"%s\\share\\msys2", installDir);
-        wchar_t fromBuf[MAX_PATH + 2];
-        wcscpy(fromBuf, src);
-        fromBuf[wcslen(fromBuf) + 1] = 0;
-        wchar_t toBuf[MAX_PATH + 2];
-        wcscpy(toBuf, dst);
-        toBuf[wcslen(toBuf) + 1] = 0;
-        SHFILEOPSTRUCTW op = {0};
-        op.wFunc = FO_COPY;
-        op.pFrom = fromBuf;
-        op.pTo = toBuf;
-        op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-        SHFileOperationW(&op);
-    }
-
-    // Copy uninstaller if present
-    swprintf(src, MAX_PATH, L"%s\\attyx-uninstall.exe", g_payload_dir);
-    if (PathFileExistsW(src)) {
-        swprintf(dst, MAX_PATH, L"%s\\attyx-uninstall.exe", installDir);
-        CopyFileW(src, dst, FALSE);
-    }
-
-    // Stage exe for daemon hot-swap (daemon watches this path)
-    wchar_t appdata[MAX_PATH];
-    if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata) == S_OK) {
-        swprintf(src, MAX_PATH, L"%s\\attyx.exe", g_payload_dir);
-        swprintf(dst, MAX_PATH, L"%s\\attyx\\upgrade-dev.exe", appdata);
-        CopyFileW(src, dst, FALSE);
-    }
+    // Relaunch Attyx
+    wchar_t exe[MAX_PATH];
+    swprintf(exe, MAX_PATH, L"%s\\attyx.exe", installDir);
+    ShellExecuteW(NULL, L"open", exe, NULL, NULL, SW_SHOWNORMAL);
 
     DeleteDirTree(g_temp_dir);
     return 0;
