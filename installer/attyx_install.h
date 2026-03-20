@@ -106,7 +106,16 @@ static bool AttyxInstallFiles(const wchar_t* installDir, const wchar_t* payloadD
         return false;
     }
     if (!AttyxSwapBinary(installDir, src)) {
-        swprintf(g_install_error, 512, L"Could not install attyx.exe (error %lu)", GetLastError());
+        DWORD err = GetLastError();
+        wchar_t desc[256];
+        DWORD len = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                    NULL, err, 0, desc, 256, NULL);
+        if (len > 0) {
+            while (len > 0 && (desc[len-1] == '\n' || desc[len-1] == '\r')) desc[--len] = 0;
+            swprintf(g_install_error, 512, L"Could not install attyx.exe: %s", desc);
+        } else {
+            swprintf(g_install_error, 512, L"Could not install attyx.exe (error %lu)", err);
+        }
         return false;
     }
 
