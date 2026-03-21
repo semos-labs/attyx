@@ -29,7 +29,9 @@
 // Layout & colors (matches installer)
 // ---------------------------------------------------------------------------
 #define WIN_W       440
-#define WIN_H       260
+#define WIN_H       290
+#define CHECK_SZ    16
+#define CHECK_COLOR RGB(200, 80, 80)
 #define BG_COLOR    RGB(26, 26, 26)
 #define TEXT_COLOR   RGB(224, 224, 224)
 #define DIM_COLOR    RGB(128, 128, 128)
@@ -53,10 +55,11 @@ static wchar_t g_install_dir[MAX_PATH];
 static bool g_uninstalling = false;
 static bool g_done = false;
 static bool g_silent = false;
+static bool g_opt_remove_config = false;
 static int g_progress = 0;
 static wchar_t g_status[256] = L"";
 static int g_hover_btn = 0;
-static RECT g_rc_uninstall, g_rc_cancel;
+static RECT g_rc_uninstall, g_rc_cancel, g_rc_chk_config;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,8 +161,9 @@ static DWORD WINAPI UninstallThread(LPVOID param) {
     }
     g_progress = 75;
 
-    // 6. Remove config dir (%APPDATA%\attyx)
-    {
+    // 6. Remove config dir (%APPDATA%\attyx) — only if user opted in
+    if (g_opt_remove_config) {
+        SetStatus(L"Removing configuration...");
         wchar_t appdata[MAX_PATH];
         if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appdata) == S_OK) {
             wcscat(appdata, L"\\attyx");
@@ -239,9 +243,31 @@ static void DoPaint(HWND hwnd) {
     SetTextColor(mem, DIM_COLOR);
     if (!g_done && !g_uninstalling) {
         RECT sr = { MARGIN, y, W - MARGIN, y + LINE_H * 2 };
-        DrawTextW(mem, L"This will remove Attyx, its settings,\nand all associated data from your computer.", -1, &sr, DT_LEFT | DT_WORDBREAK);
+        DrawTextW(mem, L"This will remove Attyx and all associated\ndata from your computer.", -1, &sr, DT_LEFT | DT_WORDBREAK);
+        y += LINE_H * 2 + 12;
+
+        // Checkbox: remove config
+        g_rc_chk_config = (RECT){ MARGIN, y, W - MARGIN, y + LINE_H };
+        HPEN pen = CreatePen(PS_SOLID, 1, BTN_BORDER);
+        SelectObject(mem, pen);
+        SelectObject(mem, GetStockObject(NULL_BRUSH));
+        Rectangle(mem, MARGIN, y + 3, MARGIN + CHECK_SZ, y + 3 + CHECK_SZ);
+        DeleteObject(pen);
+        if (g_opt_remove_config) {
+            HPEN chk = CreatePen(PS_SOLID, 2, CHECK_COLOR);
+            SelectObject(mem, chk);
+            MoveToEx(mem, MARGIN + 3, y + 3 + CHECK_SZ / 2, NULL);
+            LineTo(mem, MARGIN + CHECK_SZ / 2, y + 3 + CHECK_SZ - 3);
+            LineTo(mem, MARGIN + CHECK_SZ - 2, y + 5);
+            DeleteObject(chk);
+        }
+        SetTextColor(mem, TEXT_COLOR);
+        RECT lr = { MARGIN + CHECK_SZ + 8, y + 2, W - MARGIN, y + 2 + LINE_H };
+        DrawTextW(mem, L"Also remove configuration files", -1, &lr, DT_LEFT | DT_SINGLELINE);
+        y += LINE_H + 12;
+    } else {
+        y += LINE_H * 2 + 16;
     }
-    y += LINE_H * 2 + 16;
 
     // Progress
     if (g_uninstalling || g_done) {
@@ -304,13 +330,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_hover_btn) { g_hover_btn = 0; InvalidateRect(hwnd, NULL, FALSE); }
         return 0;
     case WM_LBUTTONDOWN: {
-        int hit = HitTest(LOWORD(lParam), HIWORD(lParam));
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        int hit = HitTest(pt.x, pt.y);
         if (hit == 1 && !g_uninstalling) {
             g_uninstalling = true;
             InvalidateRect(hwnd, NULL, FALSE);
             CreateThread(NULL, 0, UninstallThread, NULL, 0, NULL);
         }
         if (hit == 2) PostQuitMessage(0);
+        // Checkbox toggle
+        if (!g_uninstalling && !g_done && PtInRect(&g_rc_chk_config, pt)) {
+            g_opt_remove_config = !g_opt_remove_config;
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
         return 0;
     }
     case WM_CLOSE:
