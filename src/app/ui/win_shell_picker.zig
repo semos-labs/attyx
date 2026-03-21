@@ -32,8 +32,9 @@ var g_selected: u8 = 0;
 
 fn buildEntries() void {
     g_entry_count = 0;
-    // Always include zsh (MSYS2)
-    g_entries[g_entry_count] = .{ .shell = .zsh, .label = "zsh (MSYS2)" };
+
+    // PowerShell first (default)
+    g_entries[g_entry_count] = .{ .shell = .pwsh, .label = "PowerShell" };
     g_entry_count += 1;
 
     // Git Bash — only if installed
@@ -42,8 +43,12 @@ fn buildEntries() void {
         g_entry_count += 1;
     }
 
-    g_entries[g_entry_count] = .{ .shell = .pwsh, .label = "PowerShell" };
-    g_entry_count += 1;
+    // zsh — only if installed (bundled sysroot or system MSYS2)
+    if (@import("../bundled_shell.zig").findBundledZsh()) |_| {
+        g_entries[g_entry_count] = .{ .shell = .zsh, .label = "zsh (MSYS2)" };
+        g_entry_count += 1;
+    }
+
     g_entries[g_entry_count] = .{ .shell = .cmd, .label = "Command Prompt" };
     g_entry_count += 1;
 }

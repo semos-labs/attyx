@@ -345,14 +345,6 @@ jobs:
       - name: Build installer
         run: zig build installer -Doptimize=ReleaseFast -Denv=production -Dtarget=${{ matrix.zig_target }}
 
-      - name: Fetch MSYS2 sysroot
-        shell: pwsh
-        run: |
-          $sysroot = "zig-out\bin\share\msys2"
-          if (-not (Test-Path "$sysroot\usr\bin\zsh.exe")) {
-            powershell -ExecutionPolicy Bypass -File scripts\fetch-msys2-sysroot.ps1 -OutputDir $sysroot
-          }
-
       - name: Package bare exe (for auto-updater)
         run: |
           copy zig-out\bin\attyx.exe attyx-${{ matrix.target }}.exe
@@ -360,14 +352,10 @@ jobs:
       - name: Build self-extracting installer
         shell: pwsh
         run: |
-          # Create payload zip with attyx.exe, uninstaller, and sysroot
           $payload = "payload-staging"
           New-Item -ItemType Directory $payload -Force | Out-Null
           Copy-Item zig-out\bin\attyx.exe "$payload\attyx.exe"
           Copy-Item zig-out\bin\attyx-uninstall.exe "$payload\attyx-uninstall.exe"
-          if (Test-Path "zig-out\bin\share\msys2") {
-            Copy-Item "zig-out\bin\share\msys2" "$payload\share\msys2" -Recurse -Force
-          }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           [System.IO.Compression.ZipFile]::CreateFromDirectory(
               (Resolve-Path $payload).Path, "payload.zip",

@@ -23,9 +23,6 @@ try {
     if (Test-Path zig-out\bin\attyx-uninstall.exe) {
         Copy-Item zig-out\bin\attyx-uninstall.exe "$dist\attyx-uninstall.exe"
     }
-    if (Test-Path zig-out\bin\share\msys2) {
-        Copy-Item zig-out\bin\share\msys2 "$dist\share\msys2" -Recurse -Force
-    }
 
     Write-Host "Done: zig-out\bin\attyx-setup.exe" -ForegroundColor Green
     Write-Host "Run it directly -- payload is in zig-out\bin\dist"

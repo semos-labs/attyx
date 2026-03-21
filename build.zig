@@ -219,17 +219,6 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("winhttp", .{});
         exe.root_module.linkSystemLibrary("advapi32", .{});
 
-        // Bundle MSYS2 sysroot (zsh + coreutils) next to the binary.
-        // On native Windows: auto-fetch + install on every build (idempotent).
-        if (builtin.os.tag == .windows) {
-            const fetch_and_install = b.addSystemCommand(&.{
-                "powershell", "-ExecutionPolicy", "Bypass", "-File",
-                "scripts\\fetch-msys2-sysroot.ps1",
-                "-OutputDir", "zig-out\\bin\\share\\msys2",
-            });
-            fetch_and_install.has_side_effects = true;
-            b.getInstallStep().dependOn(&fetch_and_install.step);
-        }
     }
 
     // This declares intent for the executable to be installed into the

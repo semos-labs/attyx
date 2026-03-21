@@ -757,32 +757,27 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
         .auto => {},
     }
 
-    // Auto-detection: bundled zsh is the highest priority.
-    // Return just the path; setupShellIntegration adds --login.
-    if (bundled_shell.findBundledZsh()) |zsh| {
-        bundled_shell.setupMsysEnv();
-        @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
-        S.buf[zsh.zsh_len] = 0;
-
-        return &S.buf;
-    }
-
-    // Try Git Bash — best fallback terminal experience on Windows.
-    if (findGitBash(&S.buf)) |shell_len| {
-        S.buf[shell_len] = 0;
-
-        return &S.buf;
-    }
-
-    // Try PowerShell: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
+    // Auto-detection: PowerShell first (native Windows experience).
     if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
-
         return &S.buf;
     }
     if (findOnPath("powershell.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
+        return &S.buf;
+    }
 
+    // Try zsh if installed (bundled sysroot or system MSYS2).
+    if (bundled_shell.findBundledZsh()) |zsh| {
+        bundled_shell.setupMsysEnv();
+        @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
+        S.buf[zsh.zsh_len] = 0;
+        return &S.buf;
+    }
+
+    // Try Git Bash.
+    if (findGitBash(&S.buf)) |shell_len| {
+        S.buf[shell_len] = 0;
         return &S.buf;
     }
 
