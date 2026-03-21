@@ -8,6 +8,7 @@
 
 #include "windows_internal.h"
 #include <dwmapi.h>
+#include <mmsystem.h>
 // DirectComposition — dynamically loaded for per-pixel alpha transparency.
 // We use DCompositionCreateDevice (not Device2/3) because IDCompositionDevice
 // has CreateTargetForHwnd at vtable slot 6.  IDCompositionDevice2/3 move it to
