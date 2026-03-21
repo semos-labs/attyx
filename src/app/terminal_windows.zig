@@ -134,9 +134,9 @@ pub fn run(
     var session_client: ?SessionClient = null;
     defer if (session_client) |*sc| sc.deinit();
 
-    // On Windows, always use daemon sessions for persistence (unless a custom
-    // argv was specified, which means the user wants a one-shot command).
-    if (config.argv == null) {
+    // Connect to daemon for session persistence (if enabled in config
+    // and no custom argv was specified).
+    if (config.sessions_enabled and config.argv == null) {
         if (SessionClient.connect(allocator)) |sc_val| {
             session_client = sc_val;
             if (sc_val.legacy_daemon) {
