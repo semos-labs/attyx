@@ -25,10 +25,79 @@ const ShellEntry = struct {
     shell_override: []const u8 = "",
 };
 
-const max_entries = 5;
+const max_entries = 12;
 var g_entries: [max_entries]ShellEntry = undefined;
 var g_entry_count: u8 = 0;
 var g_selected: u8 = 0;
+
+// Storage for dynamically built WSL labels (e.g. "Ubuntu (WSL)")
+const max_wsl_distros = 6;
+var g_wsl_labels: [max_wsl_distros][64]u8 = undefined;
+var g_wsl_overrides: [max_wsl_distros][80]u8 = undefined;
+
+// Registry bindings for WSL distro enumeration
+const HKEY = *opaque {};
+const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+const KEY_READ: u32 = 0x20019;
+const LPCWSTR = [*:0]const u16;
+const DWORD = u32;
+
+extern "advapi32" fn RegOpenKeyExW(hKey: HKEY, lpSubKey: LPCWSTR, ulOptions: DWORD, samDesired: DWORD, phkResult: *?HKEY) callconv(.winapi) DWORD;
+extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.winapi) DWORD;
+extern "advapi32" fn RegEnumKeyExW(hKey: HKEY, dwIndex: DWORD, lpName: [*]u16, lpcchName: *DWORD, lpReserved: ?*DWORD, lpClass: ?[*]u16, lpcchClass: ?*DWORD, lpftLastWriteTime: ?*u64) callconv(.winapi) DWORD;
+extern "advapi32" fn RegQueryValueExW(hKey: HKEY, lpValueName: ?LPCWSTR, lpReserved: ?*DWORD, lpType: ?*DWORD, lpData: ?[*]u8, lpcbData: ?*DWORD) callconv(.winapi) DWORD;
+
+fn addWslDistros() void {
+    const lxss_path = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
+    var lxss_key: ?HKEY = null;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, lxss_path, 0, KEY_READ, &lxss_key) != 0)
+        return;
+    defer _ = RegCloseKey(lxss_key.?);
+
+    var wsl_count: u8 = 0;
+    var idx: u32 = 0;
+    while (wsl_count < max_wsl_distros and g_entry_count < max_entries) {
+        var subkey_name: [256]u16 = undefined;
+        var subkey_len: u32 = subkey_name.len;
+        if (RegEnumKeyExW(lxss_key.?, idx, &subkey_name, &subkey_len, null, null, null, null) != 0)
+            break;
+        idx += 1;
+
+        var distro_key: ?HKEY = null;
+        if (RegOpenKeyExW(lxss_key.?, subkey_name[0..subkey_len :0], 0, KEY_READ, &distro_key) != 0)
+            continue;
+        defer _ = RegCloseKey(distro_key.?);
+
+        const val_name = std.unicode.utf8ToUtf16LeStringLiteral("DistributionName");
+        var distro_w: [128]u16 = undefined;
+        var distro_sz: u32 = @sizeOf(@TypeOf(distro_w));
+        var val_type: u32 = 0;
+        if (RegQueryValueExW(distro_key.?, val_name, null, &val_type, @ptrCast(&distro_w), &distro_sz) != 0)
+            continue;
+
+        // Convert UTF-16 distro name to UTF-8
+        const distro_w_len = distro_sz / 2 - 1; // exclude null terminator
+        var distro_utf8: [64]u8 = undefined;
+        const utf8_len = std.unicode.utf16LeToUtf8(&distro_utf8, distro_w[0..distro_w_len]) catch continue;
+        const distro_name = distro_utf8[0..utf8_len];
+
+        // Build label: "Ubuntu (WSL)"
+        const label_buf = &g_wsl_labels[wsl_count];
+        const label_slice = std.fmt.bufPrint(label_buf, "{s} (WSL)", .{distro_name}) catch continue;
+
+        // Build override: "wsl -d Ubuntu"
+        const override_buf = &g_wsl_overrides[wsl_count];
+        const override_slice = std.fmt.bufPrint(override_buf, "wsl -d {s}", .{distro_name}) catch continue;
+
+        g_entries[g_entry_count] = .{
+            .shell = .wsl,
+            .label = label_slice,
+            .shell_override = override_slice,
+        };
+        g_entry_count += 1;
+        wsl_count += 1;
+    }
+}
 
 fn buildEntries() void {
     g_entry_count = 0;
@@ -36,6 +105,9 @@ fn buildEntries() void {
     // PowerShell first (default)
     g_entries[g_entry_count] = .{ .shell = .pwsh, .label = "PowerShell" };
     g_entry_count += 1;
+
+    // WSL distros
+    addWslDistros();
 
     // Git Bash — only if installed
     if (@import("../pty_windows.zig").findGitBashUtf8()) |_| {
@@ -122,6 +194,7 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
             .zsh => "zsh",
             .pwsh => "pwsh.exe",
             .cmd => "cmd.exe",
+            .wsl => "wsl.exe",
             .auto => "",
         };
         sc.sendCreatePaneWithShell(rows, ctx.grid_cols, "", shell_name) catch {

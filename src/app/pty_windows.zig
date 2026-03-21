@@ -305,7 +305,7 @@ pub const Pty = struct {
     // fromInherited and markHandlesInheritable removed — host processes
     // own ConPTY independently; no handle inheritance needed for upgrades.
 
-    pub const ShellType = enum { auto, zsh, pwsh, cmd };
+    pub const ShellType = enum { auto, zsh, pwsh, cmd, wsl };
 
     pub const SpawnOpts = struct {
         rows: u16 = 24,
@@ -360,7 +360,7 @@ pub const Pty = struct {
             .y = @intCast(opts.rows),
         };
         var hpc: HPCON = undefined;
-        const use_passthrough = (opts.shell == .auto or opts.shell == .zsh);
+        const use_passthrough = (opts.shell == .auto or opts.shell == .zsh or opts.shell == .wsl);
         const passthrough_ok = use_passthrough and
             CreatePseudoConsole(size, pty_in_read, pty_out_write, PSEUDOCONSOLE_PASSTHROUGH, &hpc) == S_OK;
         if (!passthrough_ok) {
@@ -752,6 +752,12 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
             const cmd = comptime toUtf16Literal("cmd.exe");
             @memcpy(S.buf[0..cmd.len], &cmd);
             S.buf[cmd.len] = 0;
+            return &S.buf;
+        },
+        .wsl => {
+            const wsl = comptime toUtf16Literal("wsl.exe");
+            @memcpy(S.buf[0..wsl.len], &wsl);
+            S.buf[wsl.len] = 0;
             return &S.buf;
         },
         .auto => {},

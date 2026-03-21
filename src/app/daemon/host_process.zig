@@ -113,6 +113,8 @@ pub fn parseHostArgs(args: []const [:0]const u8) ?HostArgs {
                 result.shell = .pwsh;
             } else if (std.mem.eql(u8, s, "cmd")) {
                 result.shell = .cmd;
+            } else if (std.mem.eql(u8, s, "wsl")) {
+                result.shell = .wsl;
             }
         } else if (std.mem.eql(u8, arg, "--rows")) {
             i += 1;
