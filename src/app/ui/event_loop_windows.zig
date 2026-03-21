@@ -138,6 +138,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Kick off first async read so data is ready by the time the loop checks.
     ctx.tab_mgr.activePane().pty.startAsyncRead();
 
+    // Force full repaints for the first ~500ms to ensure initial shell output
+    // is rendered even if async read timing is tight (PowerShell startup race).
+    var startup_ticks: u32 = 0;
+    const startup_grace: u32 = 30; // ~500ms at 16ms/frame
+
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
     var prev_cursor_col: usize = 0;
@@ -286,7 +291,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
+        const in_startup = startup_ticks < startup_grace;
+        if (in_startup) startup_ticks += 1;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited or in_startup;
 
         if (need_update) {
             const now = std.time.nanoTimestamp();
