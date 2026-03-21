@@ -224,20 +224,29 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Read PTY data from all panes ──
         var got_data = false;
         {
-            const active_pane = ctx.tab_mgr.activePane();
-
-            // Active pane: check async read completion (non-blocking).
-            if (active_pane.daemon_pane_id == null) {
-                if (active_pane.pty.checkAsyncRead()) |data| {
-                    active_pane.feed(data);
-                    got_data = true;
+            // Drain all local panes via peek+sync read (no async overlap issues).
+            for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
+                const lay = &(maybe_layout.* orelse continue);
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id != null) continue;
+                    // Cancel any pending async read so we own the pipe cleanly.
+                    leaf.pane.pty.cancelAsyncRead();
+                    while (leaf.pane.pty.peekAvail() > 0) {
+                        const n = leaf.pane.pty.readSync(buf) catch break;
+                        if (n == 0) break;
+                        leaf.pane.feed(buf[0..n]);
+                        if (tab_idx == ctx.tab_mgr.active) got_data = true;
+                    }
                 }
-                // Restart async read immediately so we catch the next chunk.
-                active_pane.pty.startAsyncRead();
             }
 
-            // Background panes: drain via PeekNamedPipe (skips active pane).
-            drainBackgroundPanes(ctx, buf, &got_data);
+            // Keep an async read pending on active pane so ConPTY flushes output.
+            const active_pane = ctx.tab_mgr.activePane();
+            if (active_pane.daemon_pane_id == null) {
+                active_pane.pty.startAsyncRead();
+            }
         }
 
         // ── Daemon socket drain ──

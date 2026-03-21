@@ -500,6 +500,14 @@ pub const Pty = struct {
         return avail;
     }
 
+    /// Synchronous read — only call when peekAvail() > 0.
+    pub fn readSync(self: *Pty, buf: []u8) !usize {
+        var bytes_read: DWORD = 0;
+        if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
+            return error.ReadFailed;
+        return bytes_read;
+    }
+
     pub fn read(self: *Pty, buf: []u8) !usize {
         if (self.read_event == INVALID_HANDLE) {
             // Fallback: synchronous read (anonymous pipe).
