@@ -222,30 +222,26 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
+        // ConPTY requires a pending ReadFile to flush output. Each pane keeps
+        // one async read in flight. We check completion, feed data, restart.
         var got_data = false;
         {
-            // Drain all local panes via peek+sync read (no async overlap issues).
             for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
                 const lay = &(maybe_layout.* orelse continue);
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
                     if (leaf.pane.daemon_pane_id != null) continue;
-                    // Cancel any pending async read so we own the pipe cleanly.
-                    leaf.pane.pty.cancelAsyncRead();
-                    while (leaf.pane.pty.peekAvail() > 0) {
-                        const n = leaf.pane.pty.readSync(buf) catch break;
-                        if (n == 0) break;
-                        leaf.pane.feed(buf[0..n]);
+                    // Start async read if none pending (first iteration or after completion).
+                    if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
+                    // Check for completed read.
+                    if (leaf.pane.pty.checkAsyncRead()) |data| {
+                        leaf.pane.feed(data);
                         if (tab_idx == ctx.tab_mgr.active) got_data = true;
+                        // Restart immediately for the next chunk.
+                        leaf.pane.pty.startAsyncRead();
                     }
                 }
-            }
-
-            // Keep an async read pending on active pane so ConPTY flushes output.
-            const active_pane = ctx.tab_mgr.activePane();
-            if (active_pane.daemon_pane_id == null) {
-                active_pane.pty.startAsyncRead();
             }
         }
 
