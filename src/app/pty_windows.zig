@@ -360,7 +360,7 @@ pub const Pty = struct {
             .y = @intCast(opts.rows),
         };
         var hpc: HPCON = undefined;
-        const use_passthrough = (opts.shell == .auto or opts.shell == .zsh);
+        const use_passthrough = (opts.shell == .zsh);
         const passthrough_ok = use_passthrough and
             CreatePseudoConsole(size, pty_in_read, pty_out_write, PSEUDOCONSOLE_PASSTHROUGH, &hpc) == S_OK;
         if (!passthrough_ok) {
