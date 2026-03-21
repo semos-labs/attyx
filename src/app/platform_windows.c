@@ -868,6 +868,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     extern const char *attyx_get_version(void);  // from windows_stubs.zig
     attyx_updater_init(attyx_get_version());
 
+    // Set timer resolution to 1ms so Sleep(1) doesn't become Sleep(15).
+    // Without this, input latency can reach 30-60ms due to timer granularity.
+    timeBeginPeriod(1);
+
     // Message loop with 60fps frame pacing
     LARGE_INTEGER freq, last_frame;
     QueryPerformanceFrequency(&freq);
@@ -946,6 +950,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     }
 
     // Cleanup
+    timeEndPeriod(1);
     windows_font_cleanup(&g_gc);
     windows_renderer_cleanup();
     DestroyWindow(g_hwnd);
