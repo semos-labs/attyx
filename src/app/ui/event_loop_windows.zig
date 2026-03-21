@@ -351,12 +351,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
         } else {
-            // Wait for wake event (input) or poll timeout for PTY data.
-            if (ws.g_wake_event) |evt| {
-                _ = WaitForSingleObject(evt, 1);
-            } else {
-                Sleep(1);
-            }
+            Sleep(1);
         }
     }
     // Clean up search state
