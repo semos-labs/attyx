@@ -28,7 +28,7 @@ try {
     }
 
     Write-Host "Done: zig-out\bin\attyx-setup.exe" -ForegroundColor Green
-    Write-Host "Run it directly — payload is in zig-out\bin\dist\"
+    Write-Host "Run it directly -- payload is in zig-out\bin\dist"
 } finally {
     Pop-Location
 }
