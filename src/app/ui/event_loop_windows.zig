@@ -410,7 +410,7 @@ fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
 }
 
-fn drainBackgroundPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
+fn drainBackgroundPanes(ctx: *WinCtx, _: *[65536]u8, got_data: *bool) void {
     const active_pane = ctx.tab_mgr.activePane();
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
         const lay = &(maybe_layout.* orelse continue);
