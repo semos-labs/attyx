@@ -135,7 +135,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         publishState(eng);
     }
 
-    // No async read needed — we use peek+sync read in the main loop.
+    // Start async read — ConPTY requires a pending ReadFile to flush output.
+    ctx.tab_mgr.activePane().pty.startAsyncRead();
 
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
@@ -216,6 +217,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
+        // ConPTY requires a pending ReadFile to flush output. We keep one
+        // async read per pane to trigger flushing, then check completion.
         var got_data = false;
         {
             for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
@@ -224,13 +227,19 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
                     if (leaf.pane.daemon_pane_id != null) continue;
-                    // Drain all available data via peek+sync read.
-                    // ConPTY flushes on PeekNamedPipe for overlapped pipes.
-                    while (leaf.pane.pty.peekAvail() > 0) {
-                        const n = leaf.pane.pty.readSync(buf) catch break;
-                        if (n == 0) break;
-                        leaf.pane.feed(buf[0..n]);
+                    // Ensure a read is always pending (triggers ConPTY flush).
+                    if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
+                    // Check if the async read completed.
+                    if (leaf.pane.pty.checkAsyncRead()) |data| {
+                        leaf.pane.feed(data);
                         if (tab_idx == ctx.tab_mgr.active) got_data = true;
+                        // Immediately start next read to keep ConPTY flushing.
+                        leaf.pane.pty.startAsyncRead();
+                        // Drain any additional data that arrived.
+                        while (leaf.pane.pty.checkAsyncRead()) |more| {
+                            leaf.pane.feed(more);
+                            leaf.pane.pty.startAsyncRead();
+                        }
                     }
                 }
             }
@@ -351,7 +360,23 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
         } else {
-            Sleep(1);
+            // Wait on PTY read event + wake event.
+            var wait_handles: [2]HANDLE = undefined;
+            var wait_count: u32 = 0;
+            const active_pane = ctx.tab_mgr.activePane();
+            if (active_pane.daemon_pane_id == null and active_pane.pty.read_event != INVALID_HANDLE) {
+                wait_handles[wait_count] = active_pane.pty.read_event;
+                wait_count += 1;
+            }
+            if (ws.g_wake_event) |evt| {
+                wait_handles[wait_count] = evt;
+                wait_count += 1;
+            }
+            if (wait_count > 0) {
+                _ = WaitForMultipleObjects(wait_count, &wait_handles, 0, 2);
+            } else {
+                Sleep(1);
+            }
         }
     }
     // Clean up search state
