@@ -543,9 +543,13 @@ pub fn publishNativeTabTitles(ctx: *WinCtx) void {
 pub fn generateTabBar(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (ws.g_native_tabs_enabled != 0) return; // native tabs rendered by D3D11
-    if (ws.g_grid_top_offset <= 0) return;
-    if (ws.g_tab_bar_visible == 0) return;
-    if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
+    const should_show = ws.g_grid_top_offset > 0 and
+        ws.g_tab_bar_visible != 0 and
+        (ctx.tab_mgr.count > 1 or ws.g_tab_always_show != 0);
+    if (!should_show) {
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+        return;
+    }
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
