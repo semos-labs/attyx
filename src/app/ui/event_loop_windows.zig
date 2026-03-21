@@ -226,28 +226,18 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         {
             const active_pane = ctx.tab_mgr.activePane();
 
-            // Active pane: check async read completion first (non-blocking).
-            // This must happen before PeekNamedPipe to maintain data ordering.
+            // Active pane: check async read completion (non-blocking).
             if (active_pane.daemon_pane_id == null) {
                 if (active_pane.pty.checkAsyncRead()) |data| {
                     active_pane.feed(data);
                     got_data = true;
-                    // Drain any additional data now available via peek+read.
-                    while (active_pane.pty.peekAvail() > 0) {
-                        const n = active_pane.pty.read(buf) catch break;
-                        if (n == 0) break;
-                        active_pane.feed(buf[0..n]);
-                    }
                 }
-            }
-
-            // All panes (including active): drain via PeekNamedPipe.
-            drainAllPanes(ctx, buf, &got_data);
-
-            // Keep an async read pending on active pane so ConPTY flushes output.
-            if (active_pane.daemon_pane_id == null) {
+                // Restart async read immediately so we catch the next chunk.
                 active_pane.pty.startAsyncRead();
             }
+
+            // Background panes: drain via PeekNamedPipe (skips active pane).
+            drainBackgroundPanes(ctx, buf, &got_data);
         }
 
         // ── Daemon socket drain ──
@@ -420,20 +410,18 @@ fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
 }
 
-fn drainAllPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
+fn drainBackgroundPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
+    const active_pane = ctx.tab_mgr.activePane();
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
         const lay = &(maybe_layout.* orelse continue);
         var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
         const lc = lay.collectLeaves(&leaves);
         for (leaves[0..lc]) |leaf| {
+            if (leaf.pane == active_pane) continue; // Handled by async read path
             if (leaf.pane.daemon_pane_id != null) continue;
-            // Ensure every local pane always has a pending async read —
-            // ConPTY only flushes output when there's a pending ReadFile().
             if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
-            while (leaf.pane.pty.peekAvail() > 0) {
-                const n = leaf.pane.pty.read(buf) catch break;
-                if (n == 0) break;
-                leaf.pane.feed(buf[0..n]);
+            if (leaf.pane.pty.checkAsyncRead()) |data| {
+                leaf.pane.feed(data);
                 if (tab_idx == ctx.tab_mgr.active) got_data.* = true;
             }
         }
