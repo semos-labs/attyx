@@ -275,7 +275,7 @@ pub fn run(
                     active.feed(data);
                     break;
                 }
-                std.time.sleep(1 * std.time.ns_per_ms);
+                std.os.windows.kernel32.Sleep(1);
             }
             // Drain any additional data
             while (active.pty.consumeReaderData()) |more| {
