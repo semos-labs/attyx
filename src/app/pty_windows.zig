@@ -406,22 +406,6 @@ pub const Pty = struct {
             return error.CreateEventFailed;
         errdefer _ = CloseHandle(read_evt);
 
-        // Start reader thread BEFORE ConPTY/process creation so there's
-        // always a pending ReadFile when ConPTY first writes output.
-        // The thread blocks on ReadFile until data arrives.
-        var rs: ?*ReaderState = null;
-        var reader_thread: HANDLE = INVALID_HANDLE;
-        if (!opts.skip_console_alloc) {
-            const state = try allocator.create(ReaderState);
-            state.* = ReaderState{
-                .event = read_evt,
-                .pipe = pty_out_read,
-            };
-            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
-                return error.CreateThreadFailed;
-            rs = state;
-        }
-
         // Create the pseudo console.
         // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)
         // which bypasses ConPTY's diff engine and passes raw VT sequences
@@ -531,6 +515,21 @@ pub const Pty = struct {
         _ = CloseHandle(pty_out_write);
 
         _ = CloseHandle(pi.hThread);
+
+        // Start reader thread after process creation.
+        // Host processes manage their own reads via the async API.
+        var rs: ?*ReaderState = null;
+        var reader_thread: HANDLE = INVALID_HANDLE;
+        if (!opts.skip_console_alloc) {
+            const state = try allocator.create(ReaderState);
+            state.* = ReaderState{
+                .event = read_evt,
+                .pipe = pty_out_read,
+            };
+            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
+                return error.CreateThreadFailed;
+            rs = state;
+        }
 
         return Pty{
             .pipe_out_read = pty_out_read,
