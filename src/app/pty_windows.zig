@@ -546,12 +546,22 @@ pub const Pty = struct {
         };
     }
 
+    fn closePseudoConsoleThread(param: ?*anyopaque) callconv(.winapi) DWORD {
+        const hpc: HPCON = @ptrCast(@alignCast(param));
+        ClosePseudoConsole(hpc);
+        return 0;
+    }
+
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        // Kill the child process first so ClosePseudoConsole doesn't
-        // wait for it to exit (which can deadlock on the event loop).
+        // ClosePseudoConsole deadlocks on the event loop thread (conhost
+        // synchronization). Run it on a fire-and-forget thread.
         _ = TerminateProcess(self.process, 0);
+        const hpc = self.hpc;
+        if (CreateThread(null, 0, &closePseudoConsoleThread, @ptrCast(hpc), 0, null)) |t| {
+            _ = CloseHandle(t);
+        }
         // Close pipes — reader thread gets EOF and exits.
         _ = CloseHandle(self.pipe_in_write);
         _ = CloseHandle(self.pipe_out_read);
@@ -560,8 +570,6 @@ pub const Pty = struct {
             _ = CloseHandle(self.reader_thread);
         }
         if (self.reader_state) |rs| self.allocator.destroy(rs);
-        // Safe to close now — child is dead, reader is done.
-        ClosePseudoConsole(self.hpc);
         _ = CloseHandle(self.process);
         if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
         if (self.attr_list_buf.len > 0) {
