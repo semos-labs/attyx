@@ -859,6 +859,11 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         windows_renderer_present();
     }
 
+    Sleep(100); // TEST: give shell time to produce initial output
+    // Re-draw with any new content the event loop published during the wait
+    if (windows_renderer_draw_frame()) {
+        windows_renderer_present();
+    }
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
