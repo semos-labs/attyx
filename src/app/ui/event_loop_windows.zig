@@ -401,24 +401,6 @@ fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
 }
 
-fn drainBackgroundPanes(ctx: *WinCtx, _: *[65536]u8, got_data: *bool) void {
-    const active_pane = ctx.tab_mgr.activePane();
-    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
-        const lay = &(maybe_layout.* orelse continue);
-        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-        const lc = lay.collectLeaves(&leaves);
-        for (leaves[0..lc]) |leaf| {
-            if (leaf.pane == active_pane) continue; // Handled by async read path
-            if (leaf.pane.daemon_pane_id != null) continue;
-            if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
-            if (leaf.pane.pty.checkAsyncRead()) |data| {
-                leaf.pane.feed(data);
-                if (tab_idx == ctx.tab_mgr.active) got_data.* = true;
-            }
-        }
-    }
-}
-
 fn setCursorFromEngine(eng: *Engine, grid_top: i32) void {
     const vp = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
     c.attyx_set_cursor(

@@ -396,7 +396,7 @@ pub const Pty = struct {
 
         // Create event for reader thread to signal data availability (auto-reset).
         const read_evt = CreateEventW(null, 0, 0, null);
-        if (read_evt == null or read_evt == INVALID_HANDLE)
+        if (read_evt == INVALID_HANDLE)
             return error.CreateEventFailed;
         errdefer _ = CloseHandle(read_evt);
 
@@ -611,17 +611,19 @@ pub const Pty = struct {
         return error.ReadFailed;
     }
 
-    /// Start an async read into the internal buffer if one isn't already pending.
-    /// The pending read triggers ConPTY to flush its output buffer.
+    // ── Legacy async read methods (used by daemon/host process with named pipes) ──
+
+    async_pending: bool = false,
+    async_overlapped: OVERLAPPED = .{},
+    async_buf: [65536]u8 = undefined,
+
     pub fn startAsyncRead(self: *Pty) void {
         if (self.async_pending or self.read_event == INVALID_HANDLE) return;
-
         _ = ResetEvent(self.read_event);
         self.async_overlapped = OVERLAPPED{ .hEvent = self.read_event };
-
         var bytes_read: DWORD = 0;
         if (ReadFile(self.pipe_out_read, &self.async_buf, @intCast(self.async_buf.len), &bytes_read, @ptrCast(&self.async_overlapped)) != 0) {
-            self.async_pending = true; // Sync completion — event is signaled, checkAsyncRead will pick it up.
+            self.async_pending = true;
             return;
         }
         if (windows.kernel32.GetLastError() == .IO_PENDING) {
@@ -629,14 +631,10 @@ pub const Pty = struct {
         }
     }
 
-    /// Non-blocking check: did the pending async read complete?
-    /// Returns the data slice if yes, null if still pending or no read active.
     pub fn checkAsyncRead(self: *Pty) ?[]u8 {
         if (!self.async_pending) return null;
-
         const wait = WaitForSingleObject(self.read_event, 0);
-        if (wait != WAIT_OBJECT_0) return null; // Still pending.
-
+        if (wait != WAIT_OBJECT_0) return null;
         var bytes_read: DWORD = 0;
         self.async_pending = false;
         if (GetOverlappedResult(self.pipe_out_read, &self.async_overlapped, &bytes_read, 0) != 0 and bytes_read > 0) {
@@ -645,7 +643,6 @@ pub const Pty = struct {
         return null;
     }
 
-    /// Cancel a pending async read (must be called before deinit or sync reads).
     pub fn cancelAsyncRead(self: *Pty) void {
         if (!self.async_pending) return;
         _ = CancelIo(self.pipe_out_read);
