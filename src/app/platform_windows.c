@@ -833,12 +833,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         return;
     }
 
-    // Show window immediately after renderer init so the user sees something fast.
-    // Font init may resize it shortly after, but a black window is better than nothing.
-    ShowWindow(g_hwnd, SW_SHOW);
-    UpdateWindow(g_hwnd);
-
-    // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
+    // Initialize DirectWrite font + glyph cache BEFORE showing the window.
+    // This avoids a blank window flash — by the time the window appears,
+    // fonts are ready and the shell may have already produced output.
     if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
         g_cell_px_w = g_gc.glyph_w;
         g_cell_px_h = g_gc.glyph_h;
@@ -855,6 +852,15 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                      newRect.bottom - newRect.top,
                      SWP_NOMOVE | SWP_NOZORDER);
     }
+
+    // Draw the first frame before showing — the event loop thread may
+    // have already populated cells with shell output by now.
+    if (windows_renderer_draw_frame()) {
+        windows_renderer_present();
+    }
+
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
 
     // Apply window title if set
     if (g_title_len > 0) {
