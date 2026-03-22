@@ -9,6 +9,28 @@
 #include "attyx_setup.h"
 #include "miniz.h"
 
+// Find the start of an appended zip within a buffer by locating the EOCD record.
+// Returns the byte offset where the zip begins, or 0 if the buffer is a standalone zip.
+// miniz's mz_zip_reader_init_mem doesn't handle SFX-style exe+zip concatenation
+// (it only adjusts offsets for FILE-backed archives), so we strip the exe prefix first.
+static DWORD SfxFindZipStart(const unsigned char* buf, DWORD size) {
+    if (size < 22) return 0;
+    // Search backward for EOCD signature (PK\x05\x06).  Max zip comment is 65535 bytes.
+    DWORD searchFrom = (size > 65557) ? size - 65557 : 0;
+    for (DWORD i = size - 22; ; i--) {
+        if (buf[i] == 0x50 && buf[i+1] == 0x4B && buf[i+2] == 0x05 && buf[i+3] == 0x06) {
+            // Read central directory size and offset (little-endian, unaligned)
+            DWORD cdirSize = buf[i+12] | ((DWORD)buf[i+13]<<8) | ((DWORD)buf[i+14]<<16) | ((DWORD)buf[i+15]<<24);
+            DWORD cdirOfs  = buf[i+16] | ((DWORD)buf[i+17]<<8) | ((DWORD)buf[i+18]<<16) | ((DWORD)buf[i+19]<<24);
+            if (i >= cdirOfs + cdirSize)
+                return (DWORD)(i - cdirOfs - cdirSize);
+            return 0;
+        }
+        if (i <= searchFrom) break;
+    }
+    return 0;
+}
+
 // Extract appended zip from exePath into destDir.
 // Returns true if a valid zip was found and extracted successfully.
 // Returns false if no zip payload is appended (normal exe), allowing fallback.
@@ -37,10 +59,11 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
     CloseHandle(hFile);
     if (totalRead != fileSize) { VirtualFree(data, 0, MEM_RELEASE); return false; }
 
-    // miniz scans for the End of Central Directory record,
-    // which works even when the zip is appended after exe bytes
+    // Find where the appended zip starts (skip the exe prefix)
+    DWORD zipStart = SfxFindZipStart((const unsigned char*)data, fileSize);
+
     mz_zip_archive zip = {0};
-    if (!mz_zip_reader_init_mem(&zip, data, fileSize, 0)) {
+    if (!mz_zip_reader_init_mem(&zip, (char*)data + zipStart, fileSize - zipStart, 0)) {
         VirtualFree(data, 0, MEM_RELEASE);
         return false;
     }
