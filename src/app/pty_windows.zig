@@ -526,8 +526,7 @@ pub const Pty = struct {
         // (Windows subsystem), each forked child allocates a new visible console
         // window causing flash. Allocate a hidden console so children inherit it.
         // Host processes skip this — ConPTY provides the shell's console context.
-        // ensureHiddenConsole removed — AllocConsole deadlocks with
-        // CreatePseudoConsole when called on the event loop thread.
+        if (!opts.skip_console_alloc) ensureHiddenConsole();
 
         // Set up STARTUPINFOEXW.
         var si = std.mem.zeroes(STARTUPINFOEXW);

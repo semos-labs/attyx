@@ -148,11 +148,6 @@ pub fn main() !void {
 
     if (is_windows) {
         _ = win32.AttachConsole(win32.ATTACH_PARENT_PROCESS);
-        // Allocate a hidden console early — MSYS2's fork() emulation needs
-        // an inheritable console handle. Without one, msys-2.0.dll allocates
-        // consoles during init, adding ~2s startup delay. Must be called
-        // before any CreatePseudoConsole to avoid deadlock.
-        @import("app/pty_windows.zig").ensureHiddenConsole();
     }
 
     // Migrate runtime files from config dir to state dir (one-time, idempotent).

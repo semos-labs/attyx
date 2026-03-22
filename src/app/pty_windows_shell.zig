@@ -95,10 +95,11 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             _ = SetEnvironmentVariableW(&env_name, script_path);
         },
         .bash => {
-            // Write rcfile script and append --rcfile <path> to the command line.
-            // Avoids --login so we skip MSYS2's slow /etc/profile sourcing.
-            // The rcfile sources ~/.bashrc directly + injects OSC hooks.
-            setupBashRcfile(cmd_line);
+            // HOME redirect: write a shadow .bash_profile that restores real HOME,
+            // sources user profiles, then injects OSC 7/7337 hooks for CWD and PATH
+            // reporting. This is the bash equivalent of the ZDOTDIR trick for zsh.
+            setupBashHomeRedirect();
+            appendLoginFlag(cmd_line);
         },
         .zsh => {
             // ZDOTDIR redirect: write a shadow .zshenv that restores real ZDOTDIR,
