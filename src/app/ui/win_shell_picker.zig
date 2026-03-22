@@ -256,6 +256,8 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
     pane.engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
     pane.engine.state.dirty.markAll(pane.engine.state.ring.screen_rows);
     event_loop.switchActiveTab(ctx);
+    // Force immediate repaint so tab bar appears without waiting for shell output.
+    c.attyx_mark_all_dirty();
     event_loop.saveLayoutToDaemon(ctx);
     logging.info("shell-picker", "opened new tab with {s}", .{entry.label});
 }
