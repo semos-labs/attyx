@@ -48,8 +48,6 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    logging.info("startup", "begin init", .{});
-
     // Pre-spawn the shell so it boots in parallel with UI setup.
     // The reader thread buffers ConPTY output while we init themes, keybinds, etc.
     var early_pane: ?*Pane = null;
@@ -66,7 +64,6 @@ pub fn run(
         } else |_| {}
     }
 
-    logging.info("startup", "shell pre-spawned", .{});
 
     // Publish font config and globals
     publish.publishFontConfig(&config);
@@ -266,6 +263,18 @@ pub fn run(
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
+    // Pre-drain any shell output that arrived during setup.
+    // The reader thread has been buffering ConPTY output since spawn.
+    // Feed it to the engine now so the first rendered frame has content.
+    {
+        const active = tab_mgr.activePane();
+        if (active.daemon_pane_id == null) {
+            if (active.pty.consumeReaderData()) |data| {
+                active.feed(data);
+            }
+        }
+    }
+
     // Start IPC control server (named pipe)
     const ipc_server = @import("../ipc/server_windows.zig");
     ipc_server.start() catch |err| {
@@ -299,7 +308,6 @@ pub fn run(
         sendInitialFocusPanes(tab_mgr, hsc);
     }
 
-    logging.info("startup", "entering attyx_run", .{});
 
     // Enter Win32 message loop + D3D11 rendering
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
