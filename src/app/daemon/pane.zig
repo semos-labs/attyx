@@ -185,6 +185,7 @@ pub const DaemonPane = struct {
     fn deriveShellType(shell_str: []const u8) []const u8 {
         if (std.mem.indexOf(u8, shell_str, "wsl") != null) return "wsl";
         if (std.mem.indexOf(u8, shell_str, "zsh") != null) return "zsh";
+        if (std.mem.indexOf(u8, shell_str, "bash") != null) return "bash";
         if (std.mem.indexOf(u8, shell_str, "pwsh") != null) return "pwsh";
         if (std.mem.indexOf(u8, shell_str, "powershell") != null) return "pwsh";
         if (std.mem.indexOf(u8, shell_str, "cmd") != null) return "cmd";

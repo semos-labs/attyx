@@ -109,6 +109,8 @@ pub fn parseHostArgs(args: []const [:0]const u8) ?HostArgs {
                 result.shell = .auto;
             } else if (std.mem.eql(u8, s, "zsh")) {
                 result.shell = .zsh;
+            } else if (std.mem.eql(u8, s, "bash")) {
+                result.shell = .bash;
             } else if (std.mem.eql(u8, s, "pwsh")) {
                 result.shell = .pwsh;
             } else if (std.mem.eql(u8, s, "cmd")) {

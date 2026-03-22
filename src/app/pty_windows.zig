@@ -393,7 +393,7 @@ pub const Pty = struct {
     // fromInherited and markHandlesInheritable removed — host processes
     // own ConPTY independently; no handle inheritance needed for upgrades.
 
-    pub const ShellType = enum { auto, zsh, pwsh, cmd, wsl };
+    pub const ShellType = enum { auto, zsh, bash, pwsh, cmd, wsl };
 
     pub const SpawnOpts = struct {
         rows: u16 = 24,
@@ -936,6 +936,12 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
                 S.buf[zsh.zsh_len] = 0;
                 return &S.buf;
             }
+            if (findGitBash(&S.buf)) |shell_len| {
+                S.buf[shell_len] = 0;
+                return &S.buf;
+            }
+        },
+        .bash => {
             if (findGitBash(&S.buf)) |shell_len| {
                 S.buf[shell_len] = 0;
                 return &S.buf;

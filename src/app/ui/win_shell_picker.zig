@@ -111,7 +111,7 @@ fn buildEntries() void {
 
     // Git Bash — only if installed
     if (@import("../pty_windows.zig").findGitBashUtf8()) |_| {
-        g_entries[g_entry_count] = .{ .shell = .auto, .label = "Git Bash", .shell_override = "bash" };
+        g_entries[g_entry_count] = .{ .shell = .bash, .label = "Git Bash" };
         g_entry_count += 1;
     }
 
@@ -192,6 +192,7 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
         // Daemon mode: create daemon-backed pane with shell override.
         const shell_name: []const u8 = if (entry.shell_override.len > 0) entry.shell_override else switch (shell) {
             .zsh => "zsh",
+            .bash => "bash",
             .pwsh => "pwsh.exe",
             .cmd => "cmd.exe",
             .wsl => "wsl.exe",
@@ -220,15 +221,15 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
             var path_buf: [512:0]u8 = undefined;
         };
         var argv_slice: ?[]const [:0]const u8 = null;
-        if (entry.shell_override.len > 0) {
-            if (std.mem.eql(u8, entry.shell_override, "bash")) {
-                if (@import("../pty_windows.zig").findGitBashUtf8()) |path| {
-                    @memcpy(S.path_buf[0..path.len], path);
-                    S.path_buf[path.len] = 0;
-                    S.argv_storage[0] = S.path_buf[0..path.len :0];
-                    argv_slice = S.argv_storage[0..1];
-                }
-            } else if (std.mem.startsWith(u8, entry.shell_override, "wsl")) {
+        if (shell == .bash) {
+            if (@import("../pty_windows.zig").findGitBashUtf8()) |path| {
+                @memcpy(S.path_buf[0..path.len], path);
+                S.path_buf[path.len] = 0;
+                S.argv_storage[0] = S.path_buf[0..path.len :0];
+                argv_slice = S.argv_storage[0..1];
+            }
+        } else if (entry.shell_override.len > 0) {
+            if (std.mem.startsWith(u8, entry.shell_override, "wsl")) {
                 // WSL: pass the full "wsl -d DistroName" as argv
                 @memcpy(S.path_buf[0..entry.shell_override.len], entry.shell_override);
                 S.path_buf[entry.shell_override.len] = 0;
