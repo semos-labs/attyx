@@ -109,6 +109,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     const buf: *[65536]u8 = buf_slice[0..65536];
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
+    var last_tab_count: u8 = ctx.tab_mgr.count;
 
     // Initialize search state
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
@@ -149,7 +150,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         handleResize(ctx);
 
         // ── Tab actions ──
-        const prev_tab_count = ctx.tab_mgr.count;
         var tabs_changed = false;
         processTabActions(ctx, &tabs_changed);
         if (tabs_changed) saveLayoutToDaemon(ctx);
@@ -265,7 +265,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
 
         // ── Throttle & publish ──
         // Detect tab count changes from any source (shell picker, pane exit, etc.)
-        if (ctx.tab_mgr.count != prev_tab_count) tabs_changed = true;
+        if (ctx.tab_mgr.count != last_tab_count) {
+            tabs_changed = true;
+            last_tab_count = ctx.tab_mgr.count;
+        }
 
         const eng = &ctx.tab_mgr.activePane().engine;
         const viewport_offset = eng.state.viewport_offset;
