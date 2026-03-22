@@ -85,9 +85,14 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             setEnvW("PROMPT", shell_integration.cmd_prompt_string);
         },
         .powershell => {
+            // Write integration script and point env var to it.
+            // Don't use -Command to inject — it suppresses the banner until
+            // the script finishes, causing visible startup delay.
+            // Instead, set env var so users can opt in via $PROFILE.
             const script = shell_integration.getPowerShellScript();
             const script_path = writeIntegrationScript("powershell\\attyx.ps1", script) orelse return;
-            appendPowerShellArgs(cmd_line, script_path);
+            const env_name = comptime toUtf16Literal("__ATTYX_INTEGRATION");
+            _ = SetEnvironmentVariableW(&env_name, script_path);
         },
         .bash => {
             // HOME redirect: write a shadow .bash_profile that restores real HOME,

@@ -43,6 +43,7 @@ const INVALID_HANDLE = std.os.windows.INVALID_HANDLE_VALUE;
 const DWORD = std.os.windows.DWORD;
 
 extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) std.os.windows.BOOL;
 extern "kernel32" fn WaitForMultipleObjects(
     nCount: DWORD,
     lpHandles: [*]const HANDLE,
@@ -109,17 +110,12 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     const buf: *[65536]u8 = buf_slice[0..65536];
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
-    const min_frame_ns: i128 = 16 * std.time.ns_per_ms;
+    var last_tab_count: u8 = ctx.tab_mgr.count;
 
     // Initialize search state
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
-    // Publish initial (empty) cells immediately so the first frame renders clean.
-    // Shell output arrives naturally through the main loop — no startup drain needed.
     updateGridOffsets(ctx);
-    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d}", .{
-        ws.g_grid_top_offset, ws.g_grid_bottom_offset, ws.g_statusbar_visible, ws.g_tab_bar_visible,
-    });
     {
         const eng = &ctx.tab_mgr.activePane().engine;
         const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
@@ -134,9 +130,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         c.attyx_end_cell_update();
         publishState(eng);
     }
-
-    // Kick off first async read so data is ready by the time the loop checks.
-    ctx.tab_mgr.activePane().pty.startAsyncRead();
 
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
@@ -217,31 +210,21 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
+        // Each local pane has a dedicated reader thread doing blocking ReadFile.
+        // We just check if any data arrived and feed it to the terminal engine.
         var got_data = false;
         {
-            const active_pane = ctx.tab_mgr.activePane();
-
-            // Active pane: check async read completion first (non-blocking).
-            // This must happen before PeekNamedPipe to maintain data ordering.
-            if (active_pane.daemon_pane_id == null) {
-                if (active_pane.pty.checkAsyncRead()) |data| {
-                    active_pane.feed(data);
-                    got_data = true;
-                    // Drain any additional data now available via peek+read.
-                    while (active_pane.pty.peekAvail() > 0) {
-                        const n = active_pane.pty.read(buf) catch break;
-                        if (n == 0) break;
-                        active_pane.feed(buf[0..n]);
+            for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
+                const lay = &(maybe_layout.* orelse continue);
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.daemon_pane_id != null) continue;
+                    if (leaf.pane.pty.consumeReaderData()) |data| {
+                        leaf.pane.feed(data);
+                        if (tab_idx == ctx.tab_mgr.active) got_data = true;
                     }
                 }
-            }
-
-            // All panes (including active): drain via PeekNamedPipe.
-            drainAllPanes(ctx, buf, &got_data);
-
-            // Keep an async read pending on active pane so ConPTY flushes output.
-            if (active_pane.daemon_pane_id == null) {
-                active_pane.pty.startAsyncRead();
             }
         }
 
@@ -282,6 +265,12 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         }
 
         // ── Throttle & publish ──
+        // Detect tab count changes from any source (shell picker, pane exit, etc.)
+        if (ctx.tab_mgr.count != last_tab_count) {
+            tabs_changed = true;
+            last_tab_count = ctx.tab_mgr.count;
+        }
+
         const eng = &ctx.tab_mgr.activePane().engine;
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
@@ -289,8 +278,11 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
 
         if (need_update) {
+            // Coalesce rapid updates (4ms) to avoid cursor blink glitch,
+            // but don't delay enough to feel laggy.
             const now = std.time.nanoTimestamp();
-            if (!viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
+            const min_frame_ns: i128 = 4 * std.time.ns_per_ms;
+            if (got_data and !viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
                 Sleep(0);
                 continue;
             }
@@ -358,26 +350,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
         } else {
-            // Wait on PTY read event + wake event instead of sleeping.
-            // This wakes us immediately when ConPTY has output or the
-            // render thread sends input, instead of polling at 1ms
-            // (which may be 15ms in a VM).
-            var wait_handles: [2]HANDLE = undefined;
-            var wait_count: u32 = 0;
-            const active_pane = ctx.tab_mgr.activePane();
-            if (active_pane.daemon_pane_id == null and active_pane.pty.read_event != INVALID_HANDLE) {
-                wait_handles[wait_count] = active_pane.pty.read_event;
-                wait_count += 1;
-            }
-            if (ws.g_wake_event) |evt| {
-                wait_handles[wait_count] = evt;
-                wait_count += 1;
-            }
-            if (wait_count > 0) {
-                _ = WaitForMultipleObjects(wait_count, &wait_handles, 0, 2);
-            } else {
-                Sleep(1);
-            }
+            Sleep(1);
         }
     }
     // Clean up search state
@@ -411,26 +384,6 @@ const theme_mod = @import("../../theme/theme.zig");
 
 fn themeRgb(t: theme_mod.Rgb) Rgb {
     return .{ .r = t.r, .g = t.g, .b = t.b };
-}
-
-fn drainAllPanes(ctx: *WinCtx, buf: *[65536]u8, got_data: *bool) void {
-    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
-        const lay = &(maybe_layout.* orelse continue);
-        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-        const lc = lay.collectLeaves(&leaves);
-        for (leaves[0..lc]) |leaf| {
-            if (leaf.pane.daemon_pane_id != null) continue;
-            // Ensure every local pane always has a pending async read —
-            // ConPTY only flushes output when there's a pending ReadFile().
-            if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
-            while (leaf.pane.pty.peekAvail() > 0) {
-                const n = leaf.pane.pty.read(buf) catch break;
-                if (n == 0) break;
-                leaf.pane.feed(buf[0..n]);
-                if (tab_idx == ctx.tab_mgr.active) got_data.* = true;
-            }
-        }
-    }
 }
 
 fn setCursorFromEngine(eng: *Engine, grid_top: i32) void {
@@ -543,9 +496,13 @@ pub fn publishNativeTabTitles(ctx: *WinCtx) void {
 pub fn generateTabBar(ctx: *WinCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (ws.g_native_tabs_enabled != 0) return; // native tabs rendered by D3D11
-    if (ws.g_grid_top_offset <= 0) return;
-    if (ws.g_tab_bar_visible == 0) return;
-    if (ctx.tab_mgr.count <= 1 and ws.g_tab_always_show == 0) return;
+    const should_show = ws.g_grid_top_offset > 0 and
+        ws.g_tab_bar_visible != 0 and
+        (ctx.tab_mgr.count > 1 or ws.g_tab_always_show != 0);
+    if (!should_show) {
+        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+        return;
+    }
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
@@ -776,10 +733,11 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     ws.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
-    // Kick off an async read on the new active pane — ConPTY only flushes
-    // output when there's a pending ReadFile(), so without this, switching
-    // to a tab whose pane has no pending read shows a blank screen.
-    pane.pty.startAsyncRead();
+    // For daemon-backed panes, kick off async read to trigger ConPTY flush.
+    // Local panes already have a reader thread — don't start a conflicting read.
+    if (pane.daemon_pane_id != null) {
+        pane.pty.startAsyncRead();
+    }
     // Tell daemon which panes are now focused so it sends replay + output.
     sendFocusPanesForActiveTab(ctx);
     // Force full repaint so the renderer picks up the new tab's content.

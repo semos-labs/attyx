@@ -489,6 +489,7 @@ LRESULT win_handleMouseMove(HWND hwnd, LPARAM lParam) {
 #define CTX_ID_SPLIT_HORIZ    4
 #define CTX_ID_ROTATE         5
 #define CTX_ID_CLOSE_PANE     6
+#define CTX_ID_OPEN_CONFIG    7
 
 static void showContextMenu(HWND hwnd, int px, int py, int gridCol, int gridRow) {
     HMENU menu = CreatePopupMenu();
@@ -503,6 +504,8 @@ static void showContextMenu(HWND hwnd, int px, int py, int gridCol, int gridRow)
     AppendMenuW(menu, MF_STRING, CTX_ID_ROTATE,     L"Rotate Panes");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, CTX_ID_CLOSE_PANE, L"Close Pane");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, CTX_ID_OPEN_CONFIG, L"Open Config");
 
     // Convert client coords to screen coords for TrackPopupMenu
     POINT pt = { px, py };
@@ -519,6 +522,7 @@ static void showContextMenu(HWND hwnd, int px, int py, int gridCol, int gridRow)
         case CTX_ID_SPLIT_HORIZ: attyx_context_menu_action(54, gridCol, gridRow); break;
         case CTX_ID_ROTATE:      attyx_dispatch_action(78); break;
         case CTX_ID_CLOSE_PANE:  attyx_context_menu_action(55, gridCol, gridRow); break;
+        case CTX_ID_OPEN_CONFIG: attyx_dispatch_action(89); break;
         default: break;
     }
 }

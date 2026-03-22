@@ -6,6 +6,7 @@
 #define ATTYX_SFX_H
 
 #include <stdbool.h>
+#include "attyx_setup.h"
 #include "miniz.h"
 
 // Extract appended zip from exePath into destDir.
@@ -25,10 +26,16 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
     void* data = VirtualAlloc(NULL, fileSize, MEM_COMMIT, PAGE_READWRITE);
     if (!data) { CloseHandle(hFile); return false; }
 
-    DWORD bytesRead = 0;
-    BOOL ok = ReadFile(hFile, data, fileSize, &bytesRead, NULL);
+    // Read entire file (loop to handle partial reads)
+    DWORD totalRead = 0;
+    while (totalRead < fileSize) {
+        DWORD chunk = 0;
+        if (!ReadFile(hFile, (char*)data + totalRead, fileSize - totalRead, &chunk, NULL) || chunk == 0)
+            break;
+        totalRead += chunk;
+    }
     CloseHandle(hFile);
-    if (!ok || bytesRead != fileSize) { VirtualFree(data, 0, MEM_RELEASE); return false; }
+    if (totalRead != fileSize) { VirtualFree(data, 0, MEM_RELEASE); return false; }
 
     // miniz scans for the End of Central Directory record,
     // which works even when the zip is appended after exe bytes
@@ -103,19 +110,6 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
     mz_zip_reader_end(&zip);
     VirtualFree(data, 0, MEM_RELEASE);
     return success;
-}
-
-// Delete a directory tree. Safe to call with empty path (no-op).
-static void SfxCleanup(const wchar_t* dir) {
-    if (!dir || dir[0] == 0) return;
-    wchar_t from[MAX_PATH + 2];
-    wcscpy(from, dir);
-    from[wcslen(from) + 1] = 0; // double-null for SHFileOperation
-    SHFILEOPSTRUCTW op = {0};
-    op.wFunc = FO_DELETE;
-    op.pFrom = from;
-    op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-    SHFileOperationW(&op);
 }
 
 #endif // ATTYX_SFX_H

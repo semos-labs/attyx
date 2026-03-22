@@ -549,7 +549,9 @@ pub fn processToggles(ctx: *WinCtx) void {
     }
 
     if (@atomicRmw(i32, &ws.g_toggle_session_switcher, .Xchg, 0, .seq_cst) != 0) {
-        if (ws.g_session_picker_active != 0) {
+        if (ctx.session_client == null) {
+            // Session picker requires daemon — disabled in plain mode.
+        } else if (ws.g_session_picker_active != 0) {
             win_session_picker.close(ctx);
         } else {
             if (ws.g_command_palette_active != 0) closeCommandPalette(ctx);

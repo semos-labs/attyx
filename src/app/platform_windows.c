@@ -8,6 +8,7 @@
 
 #include "windows_internal.h"
 #include <dwmapi.h>
+#include <mmsystem.h>
 // DirectComposition — dynamically loaded for per-pixel alpha transparency.
 // We use DCompositionCreateDevice (not Device2/3) because IDCompositionDevice
 // has CreateTargetForHwnd at vtable slot 6.  IDCompositionDevice2/3 move it to
@@ -832,12 +833,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         return;
     }
 
-    // Show window immediately after renderer init so the user sees something fast.
-    // Font init may resize it shortly after, but a black window is better than nothing.
-    ShowWindow(g_hwnd, SW_SHOW);
-    UpdateWindow(g_hwnd);
-
-    // Initialize DirectWrite font + glyph cache (needs D3D device from renderer)
+    // Initialize DirectWrite font + glyph cache BEFORE showing the window.
+    // This avoids a blank window flash — by the time the window appears,
+    // fonts are ready and the shell may have already produced output.
     if (windows_font_init(&g_gc, g_d3d_device, g_content_scale)) {
         g_cell_px_w = g_gc.glyph_w;
         g_cell_px_h = g_gc.glyph_h;
@@ -855,6 +853,21 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
                      SWP_NOMOVE | SWP_NOZORDER);
     }
 
+    // Draw the first frame before showing — the event loop thread may
+    // have already populated cells with shell output by now.
+    if (windows_renderer_draw_frame()) {
+        windows_renderer_present();
+    }
+
+    // Draw the first frame before showing — cells were pre-populated
+    // by the Zig main thread before calling attyx_run.
+    attyx_mark_all_dirty();
+    if (windows_renderer_draw_frame()) {
+        windows_renderer_present();
+    }
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
+
     // Apply window title if set
     if (g_title_len > 0) {
         wchar_t wtitle[ATTYX_TITLE_MAX];
@@ -867,6 +880,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Initialize auto-updater (schedules first check after 5s)
     extern const char *attyx_get_version(void);  // from windows_stubs.zig
     attyx_updater_init(attyx_get_version());
+
+    // Set timer resolution to 1ms so Sleep(1) doesn't become Sleep(15).
+    // Without this, input latency can reach 30-60ms due to timer granularity.
+    timeBeginPeriod(1);
 
     // Message loop with 60fps frame pacing
     LARGE_INTEGER freq, last_frame;
@@ -946,6 +963,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     }
 
     // Cleanup
+    timeEndPeriod(1);
     windows_font_cleanup(&g_gc);
     windows_renderer_cleanup();
     DestroyWindow(g_hwnd);

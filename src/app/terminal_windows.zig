@@ -48,6 +48,28 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Allocate a hidden console — ConPTY needs a console attached to the process.
+    // Only do this once on the main thread (AllocConsole on the event loop thread
+    // causes CreatePseudoConsole to deadlock).
+    @import("pty_windows.zig").ensureHiddenConsole();
+
+    // Pre-spawn the shell so it boots in parallel with UI setup.
+    // The reader thread buffers ConPTY output while we init themes, keybinds, etc.
+    var early_pane: ?*Pane = null;
+    if (!config.sessions_enabled and config.argv == null) {
+        if (allocator.create(Pane)) |p| {
+            const sb_offset: i32 = if (config.statusbar) |sb| (if (sb.enabled) @as(i32, 1) else 0) else 0;
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - sb_offset));
+            if (Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines)) |spawned| {
+                p.* = spawned;
+                early_pane = p;
+            } else |_| {
+                allocator.destroy(p);
+            }
+        } else |_| {}
+    }
+
+
     // Publish font config and globals
     publish.publishFontConfig(&config);
     c.g_font_ligatures = @intFromBool(config.font_ligatures);
@@ -134,9 +156,9 @@ pub fn run(
     var session_client: ?SessionClient = null;
     defer if (session_client) |*sc| sc.deinit();
 
-    // On Windows, always use daemon sessions for persistence (unless a custom
-    // argv was specified, which means the user wants a one-shot command).
-    if (config.argv == null) {
+    // Connect to daemon for session persistence (if enabled in config
+    // and no custom argv was specified).
+    if (config.sessions_enabled and config.argv == null) {
         if (SessionClient.connect(allocator)) |sc_val| {
             session_client = sc_val;
             if (sc_val.legacy_daemon) {
@@ -182,6 +204,7 @@ pub fn run(
     const initial_pane = try buildInitialTabs(
         tab_mgr, allocator, heap_session_client, daemon_pane_id,
         pty_rows, config.cols, config.scrollback_lines, &theme, &config,
+        early_pane,
     );
 
     // Session manager wraps the initial TabManager (takes ownership).
@@ -245,6 +268,17 @@ pub fn run(
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
+    // Publish initial cells. Shell output will arrive via the reader thread
+    // once the shell starts (PowerShell 5.1 takes ~300-500ms, same as Windows Terminal).
+    {
+        const eng = &tab_mgr.activePane().engine;
+        const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+        c.attyx_begin_cell_update();
+        publish.fillCells(render_cells[0..total], eng, total, &theme, null);
+        c.attyx_mark_all_dirty();
+        c.attyx_end_cell_update();
+    }
+
     // Start IPC control server (named pipe)
     const ipc_server = @import("../ipc/server_windows.zig");
     ipc_server.start() catch |err| {
@@ -264,9 +298,6 @@ pub fn run(
     }
 
     // Start event loop thread
-    // Allocate a hidden console so child processes (git, statusbar scripts)
-    // inherit it instead of creating visible console windows that flash.
-    @import("pty_windows.zig").ensureHiddenConsole();
 
     // 8MB stack for reader thread — aarch64 Windows needs committed pages
     // for functions with >4KB frames (no __chkstk probes in Zig debug mode).
@@ -277,6 +308,7 @@ pub fn run(
     if (heap_session_client) |hsc| {
         sendInitialFocusPanes(tab_mgr, hsc);
     }
+
 
     // Enter Win32 message loop + D3D11 rendering
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
@@ -357,6 +389,7 @@ fn buildInitialTabs(
     scrollback: u32,
     theme: *const @import("../theme/registry.zig").Theme,
     config: *const @import("../config/config.zig").AppConfig,
+    early_pane: ?*Pane,
 ) !*Pane {
     // Try layout reconstruction from daemon.
     if (hsc) |sc| {
@@ -389,13 +422,13 @@ fn buildInitialTabs(
     }
 
     // Fallback: single pane (daemon-backed if we have a pane ID, local ConPTY otherwise).
-    const pane = try allocator.create(Pane);
-    errdefer allocator.destroy(pane);
+    const pane = if (early_pane) |ep| ep else try allocator.create(Pane);
+    errdefer if (early_pane == null) allocator.destroy(pane);
     if (daemon_pane_id != null) {
         pane.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
         pane.daemon_pane_id = daemon_pane_id;
         pane.session_client = hsc;
-    } else {
+    } else if (early_pane == null) {
         pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
     }
     pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);

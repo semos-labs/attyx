@@ -229,6 +229,15 @@ extern "kernel32" fn GetOverlappedResult(
 
 extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn CreateThread(
+    lpThreadAttributes: ?*const SECURITY_ATTRIBUTES,
+    dwStackSize: usize,
+    lpStartAddress: *const fn (?*anyopaque) callconv(.winapi) DWORD,
+    lpParameter: ?*anyopaque,
+    dwCreationFlags: DWORD,
+    lpThreadId: ?*DWORD,
+) callconv(.winapi) ?HANDLE;
 
 const OVERLAPPED = extern struct {
     Internal: usize = 0,
@@ -263,6 +272,80 @@ pub fn ensureHiddenConsole() void {
     }
 }
 
+// ── Reader thread shared state ──
+// The reader thread does blocking ReadFile on the ConPTY output pipe
+// and copies data into a double buffer. The event loop swaps buffers
+// to consume data without locking.
+
+pub const ReaderState = struct {
+    /// Ring buffer: reader appends, consumer reads.
+    buf: [256 * 1024]u8 = undefined,
+    /// Write position (reader thread only writes this).
+    write_pos: u32 = 0,
+    /// Read position (consumer only writes this).
+    read_pos: u32 = 0,
+    /// Set to 1 to tell the reader thread to exit.
+    stop: i32 = 0,
+    /// Event signaled when data is ready.
+    event: HANDLE = INVALID_HANDLE,
+    /// The pipe handle to read from.
+    pipe: HANDLE = INVALID_HANDLE,
+
+    fn availableSpace(self: *const ReaderState) u32 {
+        const w = @atomicLoad(u32, &self.write_pos, .seq_cst);
+        const r = @atomicLoad(u32, &self.read_pos, .seq_cst);
+        return @intCast(self.buf.len - 1 - ((w -% r) % self.buf.len));
+    }
+
+    fn availableData(self: *const ReaderState) u32 {
+        const w = @atomicLoad(u32, &self.write_pos, .seq_cst);
+        const r = @atomicLoad(u32, &self.read_pos, .seq_cst);
+        return (w -% r) % @as(u32, @intCast(self.buf.len));
+    }
+};
+
+fn readerThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
+    const state: *ReaderState = @ptrCast(@alignCast(param));
+    var tmp: [65536]u8 = undefined;
+    // Overlapped read event — needed because the pipe has FILE_FLAG_OVERLAPPED.
+    const read_evt = CreateEventW(null, 1, 0, null);
+    if (read_evt == INVALID_HANDLE) return 1;
+    defer _ = CloseHandle(read_evt);
+
+    while (@atomicLoad(i32, &state.stop, .seq_cst) == 0) {
+        // Overlapped read that we wait on synchronously.
+        var overlapped = OVERLAPPED{ .hEvent = read_evt };
+        _ = ResetEvent(read_evt);
+        var bytes_read: DWORD = 0;
+        const ok = ReadFile(state.pipe, &tmp, @intCast(tmp.len), &bytes_read, @ptrCast(&overlapped));
+        if (ok == 0) {
+            if (std.os.windows.kernel32.GetLastError() != .IO_PENDING) break;
+            // Wait for the read to complete.
+            _ = WaitForSingleObject(read_evt, INFINITE);
+            if (GetOverlappedResult(state.pipe, &overlapped, &bytes_read, 0) == 0) break;
+        }
+        if (bytes_read == 0) break;
+
+        // Copy into ring buffer
+        const n: u32 = bytes_read;
+        const buf_len: u32 = @intCast(state.buf.len);
+        var w = @atomicLoad(u32, &state.write_pos, .seq_cst);
+        var remaining = n;
+        var src_off: u32 = 0;
+        while (remaining > 0) {
+            const pos = w % buf_len;
+            const chunk = @min(remaining, buf_len - pos);
+            @memcpy(state.buf[pos..][0..chunk], tmp[src_off..][0..chunk]);
+            w +%= chunk;
+            src_off += chunk;
+            remaining -= chunk;
+        }
+        @atomicStore(u32, &state.write_pos, w, .seq_cst);
+        _ = SetEvent(state.event);
+    }
+    return 0;
+}
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -280,14 +363,19 @@ pub const Pty = struct {
     attr_list_buf: []align(8) u8,
     /// Allocator used for attr_list_buf.
     allocator: std.mem.Allocator,
-    /// Event handle for overlapped I/O on pipe_out_read.
+    /// Event signaled by the reader thread when data is available.
     read_event: HANDLE = INVALID_HANDLE,
-    /// Persistent async read state — keeps a read pending so ConPTY flushes output.
+    /// Reader thread handle.
+    reader_thread: HANDLE = INVALID_HANDLE,
+    /// Shared state between reader thread and event loop.
+    reader_state: ?*ReaderState = null,
+
+    exit_status: ?c_int = null,
+
+    // Legacy async read state (used by daemon/host process with named pipes).
     async_pending: bool = false,
     async_overlapped: OVERLAPPED = .{},
     async_buf: [65536]u8 = undefined,
-
-    exit_status: ?c_int = null,
 
     /// Return an inactive Pty (no process, no handles). Used for daemon-backed panes.
     pub fn initInactive() Pty {
@@ -305,7 +393,7 @@ pub const Pty = struct {
     // fromInherited and markHandlesInheritable removed — host processes
     // own ConPTY independently; no handle inheritance needed for upgrades.
 
-    pub const ShellType = enum { auto, zsh, pwsh, cmd };
+    pub const ShellType = enum { auto, zsh, bash, pwsh, cmd, wsl };
 
     pub const SpawnOpts = struct {
         rows: u16 = 24,
@@ -337,17 +425,24 @@ pub const Pty = struct {
             _ = CloseHandle(pty_in_write);
         }
 
-        // Output pipe needs overlapped I/O — ConPTY only flushes its buffer
-        // when there's a pending ReadFile, not for PeekNamedPipe.
+        // Output pipe: named pipe with overlapped flag. ConPTY flushes output
+        // more reliably to named pipes. The reader thread uses blocking reads
+        // (passes null for OVERLAPPED) which works on overlapped-capable pipes.
         const out_pipe = createOverlappedOutputPipe() orelse return error.CreatePipeFailed;
         pty_out_read = out_pipe.read;
         pty_out_write = out_pipe.write;
-        const read_evt = out_pipe.event;
         errdefer {
             _ = CloseHandle(pty_out_read);
             _ = CloseHandle(pty_out_write);
-            _ = CloseHandle(read_evt);
         }
+
+        // Manual-reset event — stays signaled until the event loop resets it
+        // after consuming data. Auto-reset events can fire while the event loop
+        // is in the publish path, causing missed wakeups.
+        const read_evt = CreateEventW(null, 1, 0, null);
+        if (read_evt == INVALID_HANDLE)
+            return error.CreateEventFailed;
+        errdefer _ = CloseHandle(read_evt);
 
         // Create the pseudo console.
         // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)
@@ -360,7 +455,7 @@ pub const Pty = struct {
             .y = @intCast(opts.rows),
         };
         var hpc: HPCON = undefined;
-        const use_passthrough = (opts.shell == .auto or opts.shell == .zsh);
+        const use_passthrough = (opts.shell == .zsh);
         const passthrough_ok = use_passthrough and
             CreatePseudoConsole(size, pty_in_read, pty_out_write, PSEUDOCONSOLE_PASSTHROUGH, &hpc) == S_OK;
         if (!passthrough_ok) {
@@ -459,45 +554,160 @@ pub const Pty = struct {
 
         _ = CloseHandle(pi.hThread);
 
-        var pty = Pty{
+        // Start reader thread after process creation.
+        // Host processes manage their own reads via the async API.
+        var rs: ?*ReaderState = null;
+        var reader_thread: HANDLE = INVALID_HANDLE;
+        if (!opts.skip_console_alloc) {
+            const state = try allocator.create(ReaderState);
+            state.* = ReaderState{
+                .event = read_evt,
+                .pipe = pty_out_read,
+            };
+            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
+                return error.CreateThreadFailed;
+            rs = state;
+        }
+
+        return Pty{
             .pipe_out_read = pty_out_read,
             .pipe_in_write = pty_in_write,
             .hpc = hpc,
             .process = pi.hProcess,
-            .thread = INVALID_HANDLE, // thread handle already closed above
+            .thread = INVALID_HANDLE,
             .attr_list_buf = attr_buf,
             .allocator = allocator,
             .read_event = read_evt,
+            .reader_thread = reader_thread,
+            .reader_state = rs,
         };
+    }
 
-        // Start first async read immediately — ConPTY only flushes output
-        // to the pipe when a ReadFile is pending. Without this, fast shells
-        // (cmd.exe, PowerShell) produce their banner before any read is
-        // queued and ConPTY never flushes it, causing a blank screen.
-        pty.startAsyncRead();
+    fn closePseudoConsoleThread(param: ?*anyopaque) callconv(.winapi) DWORD {
+        const hpc: HPCON = @ptrCast(@alignCast(param));
+        ClosePseudoConsole(hpc);
+        return 0;
+    }
 
-        return pty;
+    /// Async cleanup state — allocated on the heap so it outlives deinit.
+    const DeinitState = struct {
+        hpc: HPCON,
+        process: HANDLE,
+        pipe_in: HANDLE,
+        pipe_out: HANDLE,
+        reader_thread: HANDLE,
+        reader_state: ?*ReaderState,
+        read_event: HANDLE,
+        allocator: std.mem.Allocator,
+    };
+
+    fn deinitThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
+        const ds: *DeinitState = @ptrCast(@alignCast(param));
+        // Kill child process
+        _ = TerminateProcess(ds.process, 0);
+        // Close input pipe (shell sees EOF)
+        _ = CloseHandle(ds.pipe_in);
+        // ClosePseudoConsole — reader thread is still running to drain output
+        ClosePseudoConsole(ds.hpc);
+        // Close output pipe — reader gets EOF and exits
+        _ = CloseHandle(ds.pipe_out);
+        // Wait for reader thread
+        if (ds.reader_thread != INVALID_HANDLE) {
+            _ = WaitForSingleObject(ds.reader_thread, 5000);
+            _ = CloseHandle(ds.reader_thread);
+        }
+        if (ds.reader_state) |rs| ds.allocator.destroy(rs);
+        _ = CloseHandle(ds.process);
+        if (ds.read_event != INVALID_HANDLE) _ = CloseHandle(ds.read_event);
+        ds.allocator.destroy(ds);
+        return 0;
     }
 
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        self.cancelAsyncRead();
-        ClosePseudoConsole(self.hpc);
-        _ = CloseHandle(self.pipe_out_read);
-        _ = CloseHandle(self.pipe_in_write);
-        _ = CloseHandle(self.process);
-        if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
+        // Run the entire teardown on a background thread to avoid
+        // ClosePseudoConsole deadlocking the event loop.
+        if (self.allocator.create(DeinitState)) |ds| {
+            ds.* = .{
+                .hpc = self.hpc,
+                .process = self.process,
+                .pipe_in = self.pipe_in_write,
+                .pipe_out = self.pipe_out_read,
+                .reader_thread = self.reader_thread,
+                .reader_state = self.reader_state,
+                .read_event = self.read_event,
+                .allocator = self.allocator,
+            };
+            if (CreateThread(null, 0, &deinitThreadFn, @ptrCast(ds), 0, null)) |t| {
+                _ = CloseHandle(t); // detach
+            } else {
+                // Fallback: synchronous cleanup (may deadlock, but better than leaking)
+                ClosePseudoConsole(self.hpc);
+                _ = CloseHandle(self.pipe_in_write);
+                _ = CloseHandle(self.pipe_out_read);
+                _ = CloseHandle(self.process);
+                self.allocator.destroy(ds);
+            }
+        } else |_| {
+            // Can't allocate — just close handles and accept the leak
+            _ = CloseHandle(self.pipe_in_write);
+            _ = CloseHandle(self.pipe_out_read);
+            _ = CloseHandle(self.process);
+        }
+        // Clear fields so double-deinit is safe
+        self.pipe_out_read = INVALID_HANDLE;
+        self.pipe_in_write = INVALID_HANDLE;
+        self.reader_thread = INVALID_HANDLE;
+        self.reader_state = null;
         if (self.attr_list_buf.len > 0) {
             DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
             self.allocator.free(self.attr_list_buf);
         }
     }
 
+    /// Consume data from the reader thread's ring buffer. Returns data slice
+    /// or null if no data available. Slice is valid until the next call.
+    /// Caller must process the data before calling again.
+    pub fn consumeReaderData(self: *Pty) ?[]const u8 {
+        const S = struct {
+            var out_buf: [65536]u8 = undefined;
+        };
+        const rs = self.reader_state orelse return null;
+        const buf_len: u32 = @intCast(rs.buf.len);
+        const w = @atomicLoad(u32, &rs.write_pos, .seq_cst);
+        var r = @atomicLoad(u32, &rs.read_pos, .seq_cst);
+        if (w == r) return null; // No data
+
+        // Copy from ring into linear output buffer
+        const avail = (w -% r) % buf_len;
+        const n = @min(avail, @as(u32, @intCast(S.out_buf.len)));
+        var remaining = n;
+        var dst_off: u32 = 0;
+        while (remaining > 0) {
+            const pos = r % buf_len;
+            const chunk = @min(remaining, buf_len - pos);
+            @memcpy(S.out_buf[dst_off..][0..chunk], rs.buf[pos..][0..chunk]);
+            r +%= chunk;
+            dst_off += chunk;
+            remaining -= chunk;
+        }
+        @atomicStore(u32, &rs.read_pos, r, .seq_cst);
+        return S.out_buf[0..n];
+    }
+
     pub fn peekAvail(self: *Pty) usize {
         var avail: DWORD = 0;
         if (PeekNamedPipe(self.pipe_out_read, null, 0, null, &avail, null) == 0) return 0;
         return avail;
+    }
+
+    /// Synchronous read — only call when peekAvail() > 0.
+    pub fn readSync(self: *Pty, buf: []u8) !usize {
+        var bytes_read: DWORD = 0;
+        if (ReadFile(self.pipe_out_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0)
+            return error.ReadFailed;
+        return bytes_read;
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {
@@ -526,17 +736,15 @@ pub const Pty = struct {
         return error.ReadFailed;
     }
 
-    /// Start an async read into the internal buffer if one isn't already pending.
-    /// The pending read triggers ConPTY to flush its output buffer.
+    // ── Legacy async read methods (used by daemon/host process with named pipes) ──
+
     pub fn startAsyncRead(self: *Pty) void {
         if (self.async_pending or self.read_event == INVALID_HANDLE) return;
-
         _ = ResetEvent(self.read_event);
         self.async_overlapped = OVERLAPPED{ .hEvent = self.read_event };
-
         var bytes_read: DWORD = 0;
         if (ReadFile(self.pipe_out_read, &self.async_buf, @intCast(self.async_buf.len), &bytes_read, @ptrCast(&self.async_overlapped)) != 0) {
-            self.async_pending = true; // Sync completion — event is signaled, checkAsyncRead will pick it up.
+            self.async_pending = true;
             return;
         }
         if (windows.kernel32.GetLastError() == .IO_PENDING) {
@@ -544,14 +752,10 @@ pub const Pty = struct {
         }
     }
 
-    /// Non-blocking check: did the pending async read complete?
-    /// Returns the data slice if yes, null if still pending or no read active.
     pub fn checkAsyncRead(self: *Pty) ?[]u8 {
         if (!self.async_pending) return null;
-
         const wait = WaitForSingleObject(self.read_event, 0);
-        if (wait != WAIT_OBJECT_0) return null; // Still pending.
-
+        if (wait != WAIT_OBJECT_0) return null;
         var bytes_read: DWORD = 0;
         self.async_pending = false;
         if (GetOverlappedResult(self.pipe_out_read, &self.async_overlapped, &bytes_read, 0) != 0 and bytes_read > 0) {
@@ -560,7 +764,6 @@ pub const Pty = struct {
         return null;
     }
 
-    /// Cancel a pending async read (must be called before deinit or sync reads).
     pub fn cancelAsyncRead(self: *Pty) void {
         if (!self.async_pending) return;
         _ = CancelIo(self.pipe_out_read);
@@ -738,6 +941,12 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
                 return &S.buf;
             }
         },
+        .bash => {
+            if (findGitBash(&S.buf)) |shell_len| {
+                S.buf[shell_len] = 0;
+                return &S.buf;
+            }
+        },
         .pwsh => {
             if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
                 S.buf[shell_len] = 0;
@@ -754,35 +963,37 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
             S.buf[cmd.len] = 0;
             return &S.buf;
         },
+        .wsl => {
+            const wsl = comptime toUtf16Literal("wsl.exe");
+            @memcpy(S.buf[0..wsl.len], &wsl);
+            S.buf[wsl.len] = 0;
+            return &S.buf;
+        },
         .auto => {},
     }
 
-    // Auto-detection: bundled zsh is the highest priority.
-    // Return just the path; setupShellIntegration adds --login.
-    if (bundled_shell.findBundledZsh()) |zsh| {
-        bundled_shell.setupMsysEnv();
-        @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
-        S.buf[zsh.zsh_len] = 0;
-
-        return &S.buf;
-    }
-
-    // Try Git Bash — best fallback terminal experience on Windows.
-    if (findGitBash(&S.buf)) |shell_len| {
-        S.buf[shell_len] = 0;
-
-        return &S.buf;
-    }
-
-    // Try PowerShell: pwsh.exe (PS 7+), then powershell.exe (PS 5.1).
+    // Auto-detection: PowerShell first (native Windows experience).
+    // pwsh.exe (PS 7+) is faster to start than powershell.exe (5.1).
     if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
-
         return &S.buf;
     }
     if (findOnPath("powershell.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
+        return &S.buf;
+    }
 
+    // Try zsh if installed (bundled sysroot or system MSYS2).
+    if (bundled_shell.findBundledZsh()) |zsh| {
+        bundled_shell.setupMsysEnv();
+        @memcpy(S.buf[0..zsh.zsh_len], zsh.zsh_path[0..zsh.zsh_len]);
+        S.buf[zsh.zsh_len] = 0;
+        return &S.buf;
+    }
+
+    // Try Git Bash.
+    if (findGitBash(&S.buf)) |shell_len| {
+        S.buf[shell_len] = 0;
         return &S.buf;
     }
 

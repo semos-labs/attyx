@@ -49,6 +49,8 @@ static const char *TARGET_ARCH = "x86_64";
 static char g_new_version[64];
 static char g_download_url[2048];
 static char g_expected_sha256[65]; // hex string
+static char g_setup_url[2048];     // setup exe URL (includes sysroot)
+static char g_setup_sha256[65];    // setup exe checksum
 static char g_notes_url[2048];
 static char g_release_notes[16384];
 static HWND g_update_hwnd = NULL;
@@ -197,6 +199,15 @@ static int check_appcast(void) {
         const char *sha = find_attr(tag, "sha256", sha_buf, sizeof(sha_buf));
         if (sha) strncpy(g_expected_sha256, sha, sizeof(g_expected_sha256) - 1);
         else g_expected_sha256[0] = '\0';
+
+        // Setup exe URL (includes sysroot for full update)
+        char setup_url_buf[2048], setup_sha_buf[65];
+        const char *surl = find_attr(tag, "setup-url", setup_url_buf, sizeof(setup_url_buf));
+        const char *ssha = find_attr(tag, "setup-sha256", setup_sha_buf, sizeof(setup_sha_buf));
+        if (surl) strncpy(g_setup_url, surl, sizeof(g_setup_url) - 1);
+        else g_setup_url[0] = '\0';
+        if (ssha) strncpy(g_setup_sha256, ssha, sizeof(g_setup_sha256) - 1);
+        else g_setup_sha256[0] = '\0';
 
         // Look for release notes URL in parent <item>
         const char *notes = strstr(xml, "<sparkle:releaseNotesLink>");
@@ -369,8 +380,10 @@ static int get_staging_path(wchar_t *buf, int buf_len) {
 static DWORD WINAPI download_thread(LPVOID param) {
     (void)param;
 
-    // Parse URL
-    const char *url = g_download_url;
+    // Prefer setup exe (includes sysroot), fall back to bare exe
+    int use_setup = (g_setup_url[0] && g_setup_sha256[0]);
+    const char *url = use_setup ? g_setup_url : g_download_url;
+    const char *expected_sha = use_setup ? g_setup_sha256 : g_expected_sha256;
     const char *se = strstr(url, "://");
     if (!se) { g_downloading = 0; return 1; }
     const char *hs = se + 3;
@@ -444,11 +457,11 @@ static DWORD WINAPI download_thread(LPVOID param) {
     CloseHandle(file);
 
     // Verify SHA256 checksum from appcast before staging.
-    if (g_expected_sha256[0]) {
+    if (expected_sha[0]) {
         strcpy(g_dl_status, "Verifying checksum...");
         if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
 
-        if (!verifySha256(tmp, g_expected_sha256)) {
+        if (!verifySha256(tmp, expected_sha)) {
             strcpy(g_dl_status, "Checksum verification failed!");
             if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
             DeleteFileW(tmp);
@@ -460,13 +473,34 @@ static DWORD WINAPI download_thread(LPVOID param) {
         updateLog("download: no sha256 in appcast, skipping verification");
     }
 
-    // Atomic rename — only reached if signature + signer verified
-    MoveFileExW(tmp, staging, MOVEFILE_REPLACE_EXISTING);
+    if (use_setup) {
+        // Launch setup exe in silent update mode — it extracts payload,
+        // copies sysroot, and stages the binary for daemon hot-swap
+        MoveFileExW(tmp, staging, MOVEFILE_REPLACE_EXISTING);
+        g_dl_progress = 100;
+        strcpy(g_dl_status, "Installing update...");
+        if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
 
-    // Update UI
-    g_dl_progress = 100;
-    strcpy(g_dl_status, "Update downloaded. Restarting...");
-    if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
+        STARTUPINFOW si = { .cb = sizeof(si) };
+        PROCESS_INFORMATION pi = {0};
+        wchar_t cmdline[MAX_PATH + 32];
+        _snwprintf(cmdline, MAX_PATH + 32, L"\"%s\" /update", staging);
+        if (CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 30000); // Wait up to 30s
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        DeleteFileW(staging); // Clean up setup exe
+
+        strcpy(g_dl_status, "Update installed. Restarting...");
+        if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
+    } else {
+        // Legacy path: stage bare exe for daemon hot-swap (no sysroot update)
+        MoveFileExW(tmp, staging, MOVEFILE_REPLACE_EXISTING);
+        g_dl_progress = 100;
+        strcpy(g_dl_status, "Update downloaded. Restarting...");
+        if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
+    }
 
     // The daemon will detect the staged binary and hot-upgrade
     g_downloading = 0;
@@ -757,10 +791,16 @@ static LRESULT CALLBACK UpdateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_LBUTTONDOWN: {
         int hit = UpdHitTest(LOWORD(lParam), HIWORD(lParam));
         if (hit == 1 && !g_downloading) {
-            g_downloading = 1;
-            strcpy(g_dl_status, "Downloading...");
-            InvalidateRect(hwnd, NULL, FALSE);
-            CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
+            int choice = MessageBoxW(hwnd,
+                L"To install this update, all running Attyx sessions "
+                L"will be closed.\n\nDo you want to continue?",
+                L"Attyx Update", MB_OKCANCEL | MB_ICONWARNING);
+            if (choice == IDOK) {
+                g_downloading = 1;
+                strcpy(g_dl_status, "Downloading...");
+                InvalidateRect(hwnd, NULL, FALSE);
+                CreateThread(NULL, 0, download_thread, NULL, 0, NULL);
+            }
         }
         if (hit == 2) DestroyWindow(hwnd);
         if (hit == 3 && g_notes_url[0]) {

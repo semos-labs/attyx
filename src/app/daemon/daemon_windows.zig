@@ -222,13 +222,8 @@ fn daemonSetup(alloc: std.mem.Allocator) ?*DaemonState {
     return state;
 }
 
-const update_check = @import("update_check_windows.zig");
-
 fn daemonLoop(state: *DaemonState) void {
     var staged_check_tick: u32 = 0;
-    var update_check_tick: u32 = 0;
-    // ~6 hours in ticks: 6 * 3600 * 1000 / 50ms = 432000
-    const update_check_interval: u32 = 432000;
 
     while (g_running) {
         pollAccept(state);
@@ -245,14 +240,6 @@ fn daemonLoop(state: *DaemonState) void {
             if (!state.upgrade_requested and upgrade.hasStagedBinary()) {
                 daemonLog("upgrade: staged binary detected");
                 state.upgrade_requested = true;
-            }
-        }
-
-        // Auto-update check every ~6 hours. First check at ~30s after startup.
-        update_check_tick += 1;
-        if (update_check_tick == 600 or update_check_tick % update_check_interval == 0) {
-            if (!state.upgrade_requested) {
-                update_check.checkAndDownload();
             }
         }
 
