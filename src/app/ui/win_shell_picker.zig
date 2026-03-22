@@ -226,8 +226,7 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
                     @memcpy(S.path_buf[0..path.len], path);
                     S.path_buf[path.len] = 0;
                     S.argv_storage[0] = S.path_buf[0..path.len :0];
-                    S.argv_storage[1] = "--login";
-                    argv_slice = S.argv_storage[0..2];
+                    argv_slice = S.argv_storage[0..1];
                 }
             } else if (std.mem.startsWith(u8, entry.shell_override, "wsl")) {
                 // WSL: pass the full "wsl -d DistroName" as argv
