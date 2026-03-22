@@ -354,24 +354,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
         } else {
-            // Wait on active pane's read event + wake event.
-            // Read event is manual-reset — stays signaled until we consume data.
-            var wait_handles: [2]HANDLE = undefined;
-            var wait_count: u32 = 0;
-            const active_pane = ctx.tab_mgr.activePane();
-            if (active_pane.daemon_pane_id == null and active_pane.pty.read_event != INVALID_HANDLE) {
-                wait_handles[wait_count] = active_pane.pty.read_event;
-                wait_count += 1;
-            }
-            if (ws.g_wake_event) |evt| {
-                wait_handles[wait_count] = evt;
-                wait_count += 1;
-            }
-            if (wait_count > 0) {
-                _ = WaitForMultipleObjects(wait_count, &wait_handles, 0, 2);
-            } else {
-                Sleep(1);
-            }
+            Sleep(1);
         }
     }
     // Clean up search state
