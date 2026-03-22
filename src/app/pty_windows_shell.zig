@@ -191,37 +191,7 @@ fn makeDirsWindows(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch {};
 }
 
-/// Set up bash integration via --rcfile (no --login, no HOME redirect).
-/// Writes the rcfile script to %LOCALAPPDATA%\attyx\shell-integration\bash\attyx.bashrc,
-/// then appends --rcfile <msys-path> to the command line.
-fn setupBashRcfile(cmd_line: [*:0]u16) void {
-    const script = shell_integration.bash_rcfile_script;
-    const script_path = writeIntegrationScript("bash\\attyx.bashrc", script) orelse return;
-
-    // Convert Windows path to MSYS path for --rcfile argument.
-    // Extract the path length.
-    var path_len: usize = 0;
-    while (script_path[path_len] != 0) : (path_len += 1) {}
-
-    var msys_path: [512]u16 = undefined;
-    const msys_len = toMsysPath(script_path[0..path_len], &msys_path);
-    if (msys_len == 0) return;
-
-    // Append " --rcfile <msys_path>" to cmd_line.
-    var pos: usize = 0;
-    while (cmd_line[pos] != 0) : (pos += 1) {}
-
-    const prefix = comptime toUtf16Literal(" --rcfile ");
-    if (pos + prefix.len + msys_len >= 4095) return;
-
-    @memcpy(cmd_line[pos .. pos + prefix.len], &prefix);
-    pos += prefix.len;
-    @memcpy(cmd_line[pos .. pos + msys_len], msys_path[0..msys_len]);
-    pos += msys_len;
-    cmd_line[pos] = 0;
-}
-
-/// Set up HOME redirect for bash shell integration (login shell path).
+/// Set up HOME redirect for bash shell integration.
 /// 1. Saves real HOME to __ATTYX_REAL_HOME
 /// 2. Writes shadow .bash_profile to %LOCALAPPDATA%\attyx\bash-home\
 /// 3. Points HOME at the shadow dir so bash --login sources our profile
