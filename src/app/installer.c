@@ -55,6 +55,8 @@
 // ---------------------------------------------------------------------------
 
 static HWND g_hwnd;
+static HWND g_edit_path;           // editable install-path control
+static HBRUSH g_input_brush;       // background brush for edit control
 static HFONT g_font_hero, g_font_title, g_font_body, g_font_small, g_font_btn;
 static HICON g_icon;
 static wchar_t g_install_dir[MAX_PATH];
@@ -301,17 +303,11 @@ static void DoPaint(HWND hwnd) {
         DrawTextW(mem, L"INSTALL LOCATION", -1, &lb, DT_LEFT | DT_SINGLELINE);
         y += LINE_H + 6;
 
-        // Path input with card styling
+        // Path input with card styling (EDIT control overlays this)
         int pathRight = W - PAD - 90;
         RECT pathCard = { PAD, y, pathRight, y + 40 };
         FillRoundRect(mem, &pathCard, 6, INPUT_BG);
         StrokeRoundRect(mem, &pathCard, 6, INPUT_BORDER);
-
-        SelectObject(mem, g_font_body);
-        SetTextColor(mem, TEXT_PRI);
-        RECT pathText = { PAD + 14, y + 10, pathRight - 8, y + 30 };
-        DrawTextW(mem, g_install_dir, -1, &pathText,
-                  DT_LEFT | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
 
         // Browse button
         g_rc_browse = (RECT){ pathRight + 8, y, W - PAD, y + 40 };
@@ -439,6 +435,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         DoPaint(hwnd);
         return 0;
 
+    case WM_CTLCOLOREDIT:
+        if ((HWND)lParam == g_edit_path) {
+            SetTextColor((HDC)wParam, TEXT_PRI);
+            SetBkColor((HDC)wParam, INPUT_BG);
+            return (LRESULT)g_input_brush;
+        }
+        break;
+
     case WM_MOUSEMOVE: {
         int old = g_hover_btn;
         g_hover_btn = HitTest(LOWORD(lParam), HIWORD(lParam));
@@ -468,6 +472,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 size_t len = wcslen(g_install_dir);
                 if (len < 6 || _wcsicmp(g_install_dir + len - 6, L"\\Attyx") != 0)
                     swprintf(g_install_dir + len, MAX_PATH - len, L"\\Attyx");
+                SetWindowTextW(g_edit_path, g_install_dir);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
@@ -529,6 +534,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 static void DoInstall(void) {
     if (g_installing) return;
 
+    // Read current path from the edit control
+    GetWindowTextW(g_edit_path, g_install_dir, MAX_PATH);
+
     // If Attyx is running, warn that it will be killed
     if (IsAttyxRunning()) {
         int choice = MessageBoxW(g_hwnd,
@@ -538,6 +546,7 @@ static void DoInstall(void) {
         if (choice != IDOK) return;
     }
 
+    ShowWindow(g_edit_path, SW_HIDE);
     g_installing = true;
     InvalidateRect(g_hwnd, NULL, FALSE);
     CreateThread(NULL, 0, InstallThread, NULL, 0, NULL);
@@ -670,6 +679,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
         }
     }
 
+    // Editable path input — positioned to overlay the custom-drawn card
+    // Layout: y = PAD(40) + icon(48+8) + tagline(22+24) + sep(1+24) + label(22+6) = 195
+    int editY = PAD + 48 + 8 + LINE_H + 24 + 1 + 24 + LINE_H + 6;
+    int editRight = WIN_W - PAD - 90;
+    g_edit_path = CreateWindowExW(0, L"EDIT", g_install_dir,
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        PAD + 6, editY + 4, editRight - PAD - 12, 32,
+        g_hwnd, NULL, hInst, NULL);
+    SendMessageW(g_edit_path, WM_SETFONT, (WPARAM)g_font_body, TRUE);
+    g_input_brush = CreateSolidBrush(INPUT_BG);
+
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
@@ -684,6 +704,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     DeleteObject(g_font_body);
     DeleteObject(g_font_small);
     DeleteObject(g_font_btn);
+    DeleteObject(g_input_brush);
     DeleteDirTree(g_temp_dir);
     CoUninitialize();
     return 0;
