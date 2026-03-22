@@ -277,6 +277,14 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
 
         if (need_update) {
+            // Coalesce rapid updates (4ms) to avoid cursor blink glitch,
+            // but don't delay enough to feel laggy.
+            const now = std.time.nanoTimestamp();
+            const min_frame_ns: i128 = 4 * std.time.ns_per_ms;
+            if (got_data and !viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
+                Sleep(0);
+                continue;
+            }
 
             const layout = ctx.tab_mgr.activeLayout();
             const grid_top: i32 = ws.g_grid_top_offset;
