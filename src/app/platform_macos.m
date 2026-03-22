@@ -158,6 +158,13 @@ void attyx_mark_all_dirty(void) {
         __sync_fetch_and_or((volatile uint64_t*)&g_dirty[i], ~(uint64_t)0);
 }
 
+void attyx_clear_hover(void) {
+    g_hover_link_id = 0;
+    g_hover_row = -1;
+    g_detected_url_len = 0;
+    g_detected_url_row = -1;
+}
+
 void attyx_scroll_viewport(int delta) {
     int cur = g_viewport_offset;
     int sb = g_scrollback_count;

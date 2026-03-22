@@ -104,6 +104,9 @@ void attyx_scroll_viewport(int delta);
 // Mark all rows dirty (used after viewport changes).
 void attyx_mark_all_dirty(void);
 
+// Clear URL hover state (link underline). Called on tab/pane switch.
+void attyx_clear_hover(void);
+
 // Selection bounds (viewport-relative, 0-indexed). -1 = no selection.
 extern volatile int g_sel_start_row, g_sel_start_col;
 extern volatile int g_sel_end_row, g_sel_end_col;
