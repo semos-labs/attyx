@@ -278,13 +278,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
 
         if (need_update) {
-            const now = std.time.nanoTimestamp();
-            if (!viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
-                // Within frame budget — wait briefly for more data to coalesce
-                // instead of spinning. This also lets ConPTY flush output.
-                Sleep(1);
-                continue;
-            }
 
             const layout = ctx.tab_mgr.activeLayout();
             const grid_top: i32 = ws.g_grid_top_offset;
