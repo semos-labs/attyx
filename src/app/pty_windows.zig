@@ -400,8 +400,10 @@ pub const Pty = struct {
             _ = CloseHandle(pty_out_write);
         }
 
-        // Create event for reader thread to signal data availability (auto-reset).
-        const read_evt = CreateEventW(null, 0, 0, null);
+        // Manual-reset event — stays signaled until the event loop resets it
+        // after consuming data. Auto-reset events can fire while the event loop
+        // is in the publish path, causing missed wakeups.
+        const read_evt = CreateEventW(null, 1, 0, null);
         if (read_evt == INVALID_HANDLE)
             return error.CreateEventFailed;
         errdefer _ = CloseHandle(read_evt);
