@@ -178,10 +178,12 @@ pub const Pane = struct {
             self.captured_stdout = null;
         }
         if (self.daemon_pane_id == null) {
-            if (!is_windows) {
+            if (is_windows) {
+                // TEST: skip pty deinit entirely to confirm it's the hang source
+            } else {
                 _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
+                self.pty.deinit();
             }
-            self.pty.deinit();
         }
         self.engine.deinit();
     }
