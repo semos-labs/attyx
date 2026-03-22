@@ -48,6 +48,22 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Pre-spawn the shell so it boots in parallel with UI setup.
+    // The reader thread buffers ConPTY output while we init themes, keybinds, etc.
+    var early_pane: ?*Pane = null;
+    if (!config.sessions_enabled and config.argv == null) {
+        if (allocator.create(Pane)) |p| {
+            const sb_offset: i32 = if (config.statusbar) |sb| (if (sb.enabled) @as(i32, 1) else 0) else 0;
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - sb_offset));
+            if (Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines)) |spawned| {
+                p.* = spawned;
+                early_pane = p;
+            } else |_| {
+                allocator.destroy(p);
+            }
+        } else |_| {}
+    }
+
     // Publish font config and globals
     publish.publishFontConfig(&config);
     c.g_font_ligatures = @intFromBool(config.font_ligatures);
@@ -182,6 +198,7 @@ pub fn run(
     const initial_pane = try buildInitialTabs(
         tab_mgr, allocator, heap_session_client, daemon_pane_id,
         pty_rows, config.cols, config.scrollback_lines, &theme, &config,
+        early_pane,
     );
 
     // Session manager wraps the initial TabManager (takes ownership).
@@ -357,6 +374,7 @@ fn buildInitialTabs(
     scrollback: u32,
     theme: *const @import("../theme/registry.zig").Theme,
     config: *const @import("../config/config.zig").AppConfig,
+    early_pane: ?*Pane,
 ) !*Pane {
     // Try layout reconstruction from daemon.
     if (hsc) |sc| {
@@ -389,13 +407,13 @@ fn buildInitialTabs(
     }
 
     // Fallback: single pane (daemon-backed if we have a pane ID, local ConPTY otherwise).
-    const pane = try allocator.create(Pane);
-    errdefer allocator.destroy(pane);
+    const pane = if (early_pane) |ep| ep else try allocator.create(Pane);
+    errdefer if (early_pane == null) allocator.destroy(pane);
     if (daemon_pane_id != null) {
         pane.* = try Pane.initDaemonBacked(allocator, pty_rows, cols, scrollback);
         pane.daemon_pane_id = daemon_pane_id;
         pane.session_client = hsc;
-    } else {
+    } else if (early_pane == null) {
         pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
     }
     pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
