@@ -52,10 +52,10 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
         return false;
     }
 
-    bool success = true;
+    bool gotExe = false;
     for (int i = 0; i < numFiles; i++) {
         mz_zip_archive_file_stat stat;
-        if (!mz_zip_reader_file_stat(&zip, i, &stat)) { success = false; break; }
+        if (!mz_zip_reader_file_stat(&zip, i, &stat)) continue;
 
         wchar_t relPath[MAX_PATH];
         MultiByteToWideChar(CP_UTF8, 0, stat.m_filename, -1, relPath, MAX_PATH);
@@ -79,11 +79,10 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
         void* buf = NULL;
         if (uncomp_size > 0) {
             buf = VirtualAlloc(NULL, uncomp_size, MEM_COMMIT, PAGE_READWRITE);
-            if (!buf) { success = false; break; }
+            if (!buf) continue;
             if (!mz_zip_reader_extract_to_mem(&zip, i, buf, uncomp_size, 0)) {
                 VirtualFree(buf, 0, MEM_RELEASE);
-                success = false;
-                break;
+                continue;
             }
         }
 
@@ -91,8 +90,7 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hOut == INVALID_HANDLE_VALUE) {
             if (buf) VirtualFree(buf, 0, MEM_RELEASE);
-            success = false;
-            break;
+            continue;
         }
 
         DWORD written = 0;
@@ -102,14 +100,17 @@ static bool SfxExtract(const wchar_t* exePath, const wchar_t* destDir) {
         if (buf) VirtualFree(buf, 0, MEM_RELEASE);
 
         if (uncomp_size > 0 && written != (DWORD)uncomp_size) {
-            success = false;
-            break;
+            DeleteFileW(fullPath);  // partial write, clean up
+            continue;
         }
+
+        // Track whether we got the critical file
+        if (_wcsicmp(relPath, L"attyx.exe") == 0) gotExe = true;
     }
 
     mz_zip_reader_end(&zip);
     VirtualFree(data, 0, MEM_RELEASE);
-    return success;
+    return gotExe;
 }
 
 #endif // ATTYX_SFX_H

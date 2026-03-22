@@ -213,11 +213,18 @@ static void InitPaths(void) {
     if (SfxExtract(exePath, g_temp_dir)) {
         wcscpy(g_payload_dir, g_temp_dir);
     } else {
-        // Fallback: payload next to installer (dev/zip layout)
-        g_temp_dir[0] = 0;
-        swprintf(g_payload_dir, MAX_PATH, L"%s\\dist", g_exe_dir);
-        if (!PathFileExistsW(g_payload_dir))
-            wcscpy(g_payload_dir, g_exe_dir);
+        // SfxExtract failed — check if attyx.exe landed in temp dir anyway
+        wchar_t probe[MAX_PATH];
+        swprintf(probe, MAX_PATH, L"%s\\attyx.exe", g_temp_dir);
+        if (PathFileExistsW(probe)) {
+            wcscpy(g_payload_dir, g_temp_dir);
+        } else {
+            // Fallback: payload next to installer (dev/zip layout)
+            g_temp_dir[0] = 0;
+            swprintf(g_payload_dir, MAX_PATH, L"%s\\dist", g_exe_dir);
+            if (!PathFileExistsW(g_payload_dir))
+                wcscpy(g_payload_dir, g_exe_dir);
+        }
     }
 
     wchar_t localApp[MAX_PATH];
@@ -304,7 +311,7 @@ static void DoPaint(HWND hwnd) {
         SetTextColor(mem, TEXT_PRI);
         RECT pathText = { PAD + 14, y + 10, pathRight - 8, y + 30 };
         DrawTextW(mem, g_install_dir, -1, &pathText,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                  DT_LEFT | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
 
         // Browse button
         g_rc_browse = (RECT){ pathRight + 8, y, W - PAD, y + 40 };
@@ -457,6 +464,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (pidl) {
                 SHGetPathFromIDListW(pidl, g_install_dir);
                 CoTaskMemFree(pidl);
+                // Always ensure Attyx subfolder is part of the path
+                size_t len = wcslen(g_install_dir);
+                if (len < 6 || _wcsicmp(g_install_dir + len - 6, L"\\Attyx") != 0)
+                    swprintf(g_install_dir + len, MAX_PATH - len, L"\\Attyx");
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
