@@ -113,12 +113,28 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Initialize search state
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
-    // Publish initial (empty) cells immediately so the first frame renders clean.
-    // Shell output arrives naturally through the main loop — no startup drain needed.
+    // Wait briefly for the shell to produce initial output, then publish.
+    // This avoids the blank-screen flash on startup. The reader thread is
+    // already running from Pty.spawn — we just need the shell to emit its
+    // prompt. Give it up to 500ms, checking every 1ms.
     updateGridOffsets(ctx);
-    logging.info("overlay", "init: top_off={d} bot_off={d} sb_vis={d} tb_vis={d}", .{
-        ws.g_grid_top_offset, ws.g_grid_bottom_offset, ws.g_statusbar_visible, ws.g_tab_bar_visible,
-    });
+    {
+        const active_pane = ctx.tab_mgr.activePane();
+        if (active_pane.daemon_pane_id == null) {
+            var waited: u32 = 0;
+            while (waited < 500) : (waited += 1) {
+                if (active_pane.pty.consumeReaderData()) |data| {
+                    active_pane.feed(data);
+                    // Drain any additional data that arrived
+                    while (active_pane.pty.consumeReaderData()) |more| {
+                        active_pane.feed(more);
+                    }
+                    break;
+                }
+                Sleep(1);
+            }
+        }
+    }
     {
         const eng = &ctx.tab_mgr.activePane().engine;
         const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
@@ -133,8 +149,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         c.attyx_end_cell_update();
         publishState(eng);
     }
-
-    // Reader thread is already running from Pty.spawn — no setup needed.
 
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
