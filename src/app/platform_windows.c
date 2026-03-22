@@ -859,8 +859,10 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         windows_renderer_present();
     }
 
-    Sleep(100); // TEST: give shell time to produce initial output
-    // Re-draw with any new content the event loop published during the wait
+    // Give the event loop thread time to consume shell output and publish cells,
+    // then draw the first frame before showing the window.
+    Sleep(50);
+    attyx_mark_all_dirty();
     if (windows_renderer_draw_frame()) {
         windows_renderer_present();
     }
