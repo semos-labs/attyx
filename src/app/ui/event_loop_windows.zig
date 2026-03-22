@@ -109,7 +109,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     const buf: *[65536]u8 = buf_slice[0..65536];
     var last_published_vp: usize = 0;
     var last_publish_ns: i128 = 0;
-    const min_frame_ns: i128 = 16 * std.time.ns_per_ms;
 
     // Initialize search state
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
