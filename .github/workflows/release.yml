@@ -349,10 +349,9 @@ jobs:
         run: |
           copy zig-out\bin\attyx.exe attyx-${{ matrix.target }}.exe
 
-      - name: Build self-extracting installer
+      - name: Create payload zip
         shell: pwsh
         run: |
-          # Create payload zip with attyx.exe, uninstaller, and sysroot
           $payload = "payload-staging"
           New-Item -ItemType Directory $payload -Force | Out-Null
           Copy-Item zig-out\bin\attyx.exe "$payload\attyx.exe"
@@ -364,15 +363,14 @@ jobs:
           [System.IO.Compression.ZipFile]::CreateFromDirectory(
               (Resolve-Path $payload).Path, "payload.zip",
               [System.IO.Compression.CompressionLevel]::Optimal, $false)
-          # Concatenate: setup exe + payload zip = self-extracting installer
-          $sfxPath = "attyx-${{ matrix.target }}-setup.exe"
-          $out = [System.IO.File]::Create($sfxPath)
-          $exe = [System.IO.File]::ReadAllBytes("zig-out\bin\attyx-setup.exe")
-          $zip = [System.IO.File]::ReadAllBytes("payload.zip")
-          $out.Write($exe, 0, $exe.Length)
-          $out.Write($zip, 0, $zip.Length)
-          $out.Close()
-          Write-Host "SFX: $($exe.Length) + $($zip.Length) = $((Get-Item $sfxPath).Length) bytes"
+          Write-Host "payload.zip: $((Get-Item payload.zip).Length) bytes"
+          Write-Host "attyx-setup.exe: $((Get-Item zig-out\bin\attyx-setup.exe).Length) bytes"
+
+      - name: Build self-extracting installer
+        shell: cmd
+        run: |
+          copy /b zig-out\bin\attyx-setup.exe+payload.zip attyx-${{ matrix.target }}-setup.exe
+          dir attyx-${{ matrix.target }}-setup.exe
 
       - name: Upload artifacts to release
         env:
