@@ -263,27 +263,10 @@ pub fn run(
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
-    // Pre-drain shell output and publish cells on the main thread.
-    // This ensures the first rendered frame has content when the window appears.
+    // Publish initial cells. Shell output will arrive via the reader thread
+    // once the shell starts (PowerShell 5.1 takes ~300-500ms, same as Windows Terminal).
     {
-        const active = tab_mgr.activePane();
-        if (active.daemon_pane_id == null) {
-            // Wait up to 300ms for shell to produce output
-            var waited: u32 = 0;
-            while (waited < 300) : (waited += 1) {
-                if (active.pty.consumeReaderData()) |data| {
-                    active.feed(data);
-                    break;
-                }
-                std.os.windows.kernel32.Sleep(1);
-            }
-            // Drain any additional data
-            while (active.pty.consumeReaderData()) |more| {
-                active.feed(more);
-            }
-        }
-        // Publish cells to g_cells so the renderer can draw them
-        const eng = &active.engine;
+        const eng = &tab_mgr.activePane().engine;
         const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
         c.attyx_begin_cell_update();
         publish.fillCells(render_cells[0..total], eng, total, &theme, null);

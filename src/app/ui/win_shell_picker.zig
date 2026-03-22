@@ -213,9 +213,32 @@ fn spawnShellTab(ctx: *WinCtx, entry: ShellEntry) void {
         new_pane.session_client = sc;
         sc.sendFocusPanes(&.{pane_id}) catch {};
     } else {
-        // Local mode: spawn with shell override.
+        // Local mode: for custom shells (Git Bash, WSL distros), resolve
+        // the executable path and pass as argv.
+        const S = struct {
+            var argv_storage: [2][:0]const u8 = undefined;
+            var path_buf: [512:0]u8 = undefined;
+        };
+        var argv_slice: ?[]const [:0]const u8 = null;
+        if (entry.shell_override.len > 0) {
+            if (std.mem.eql(u8, entry.shell_override, "bash")) {
+                if (@import("../pty_windows.zig").findGitBashUtf8()) |path| {
+                    @memcpy(S.path_buf[0..path.len], path);
+                    S.path_buf[path.len] = 0;
+                    S.argv_storage[0] = S.path_buf[0..path.len :0];
+                    S.argv_storage[1] = "--login";
+                    argv_slice = S.argv_storage[0..2];
+                }
+            } else if (std.mem.startsWith(u8, entry.shell_override, "wsl")) {
+                // WSL: pass the full "wsl -d DistroName" as argv
+                @memcpy(S.path_buf[0..entry.shell_override.len], entry.shell_override);
+                S.path_buf[entry.shell_override.len] = 0;
+                S.argv_storage[0] = S.path_buf[0..entry.shell_override.len :0];
+                argv_slice = S.argv_storage[0..1];
+            }
+        }
         const new_pane = ctx.allocator.create(Pane) catch return;
-        new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines, .{ .shell = shell }) catch |err| {
+        new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, argv_slice, null, ctx.applied_scrollback_lines, .{ .shell = shell }) catch |err| {
             logging.err("shell-picker", "Pane.spawn failed: {}", .{err});
             ctx.allocator.destroy(new_pane);
             return;

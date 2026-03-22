@@ -853,6 +853,7 @@ fn buildCommandLine(opts: Pty.SpawnOpts) ?[*:0]u16 {
     }
 
     // Auto-detection: PowerShell first (native Windows experience).
+    // pwsh.exe (PS 7+) is faster to start than powershell.exe (5.1).
     if (findOnPath("pwsh.exe", &S.buf)) |shell_len| {
         S.buf[shell_len] = 0;
         return &S.buf;
