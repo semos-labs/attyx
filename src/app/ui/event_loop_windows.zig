@@ -748,10 +748,11 @@ pub fn switchActiveTab(ctx: *WinCtx) void {
     ws.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
     @atomicStore(i32, &ws.g_split_active, if (layout.pane_count > 1) @as(i32, 1) else @as(i32, 0), .seq_cst);
     @atomicStore(i32, &ws.tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
-    // Kick off an async read on the new active pane — ConPTY only flushes
-    // output when there's a pending ReadFile(), so without this, switching
-    // to a tab whose pane has no pending read shows a blank screen.
-    pane.pty.startAsyncRead();
+    // For daemon-backed panes, kick off async read to trigger ConPTY flush.
+    // Local panes already have a reader thread — don't start a conflicting read.
+    if (pane.daemon_pane_id != null) {
+        pane.pty.startAsyncRead();
+    }
     // Tell daemon which panes are now focused so it sends replay + output.
     sendFocusPanesForActiveTab(ctx);
     // Force full repaint so the renderer picks up the new tab's content.
