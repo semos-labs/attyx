@@ -859,9 +859,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         windows_renderer_present();
     }
 
-    // Give the event loop thread time to consume shell output and publish cells,
-    // then draw the first frame before showing the window.
-    Sleep(50);
+    // Draw the first frame before showing — cells were pre-populated
+    // by the Zig main thread before calling attyx_run.
     attyx_mark_all_dirty();
     if (windows_renderer_draw_frame()) {
         windows_renderer_present();

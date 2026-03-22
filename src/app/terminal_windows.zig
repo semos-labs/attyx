@@ -263,16 +263,32 @@ pub fn run(
 
     logging.info("pty", "spawning event loop ({d}x{d}, {d} pty rows)", .{ config.cols, config.rows, pty_rows });
 
-    // Pre-drain any shell output that arrived during setup.
-    // The reader thread has been buffering ConPTY output since spawn.
-    // Feed it to the engine now so the first rendered frame has content.
+    // Pre-drain shell output and publish cells on the main thread.
+    // This ensures the first rendered frame has content when the window appears.
     {
         const active = tab_mgr.activePane();
         if (active.daemon_pane_id == null) {
-            if (active.pty.consumeReaderData()) |data| {
-                active.feed(data);
+            // Wait up to 300ms for shell to produce output
+            var waited: u32 = 0;
+            while (waited < 300) : (waited += 1) {
+                if (active.pty.consumeReaderData()) |data| {
+                    active.feed(data);
+                    break;
+                }
+                Sleep(1);
+            }
+            // Drain any additional data
+            while (active.pty.consumeReaderData()) |more| {
+                active.feed(more);
             }
         }
+        // Publish cells to g_cells so the renderer can draw them
+        const eng = &active.engine;
+        const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+        c.attyx_begin_cell_update();
+        publish.fillCells(render_cells[0..total], eng, total, &theme, null);
+        c.attyx_mark_all_dirty();
+        c.attyx_end_cell_update();
     }
 
     // Start IPC control server (named pipe)
