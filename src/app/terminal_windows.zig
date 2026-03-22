@@ -48,6 +48,11 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Allocate a hidden console — ConPTY needs a console attached to the process.
+    // Only do this once on the main thread (AllocConsole on the event loop thread
+    // causes CreatePseudoConsole to deadlock).
+    @import("pty_windows.zig").ensureHiddenConsole();
+
     // Pre-spawn the shell so it boots in parallel with UI setup.
     // The reader thread buffers ConPTY output while we init themes, keybinds, etc.
     var early_pane: ?*Pane = null;
