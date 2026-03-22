@@ -307,10 +307,24 @@ pub const ReaderState = struct {
 fn readerThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
     const state: *ReaderState = @ptrCast(@alignCast(param));
     var tmp: [65536]u8 = undefined;
+    // Overlapped read event — needed because the pipe has FILE_FLAG_OVERLAPPED.
+    const read_evt = CreateEventW(null, 1, 0, null);
+    if (read_evt == INVALID_HANDLE) return 1;
+    defer _ = CloseHandle(read_evt);
+
     while (@atomicLoad(i32, &state.stop, .seq_cst) == 0) {
+        // Overlapped read that we wait on synchronously.
+        var overlapped = OVERLAPPED{ .hEvent = read_evt };
+        _ = ResetEvent(read_evt);
         var bytes_read: DWORD = 0;
-        const ok = ReadFile(state.pipe, &tmp, @intCast(tmp.len), &bytes_read, null);
-        if (ok == 0 or bytes_read == 0) break;
+        const ok = ReadFile(state.pipe, &tmp, @intCast(tmp.len), &bytes_read, @ptrCast(&overlapped));
+        if (ok == 0) {
+            if (std.os.windows.kernel32.GetLastError() != .IO_PENDING) break;
+            // Wait for the read to complete.
+            _ = WaitForSingleObject(read_evt, INFINITE);
+            if (GetOverlappedResult(state.pipe, &overlapped, &bytes_read, 0) == 0) break;
+        }
+        if (bytes_read == 0) break;
 
         // Copy into ring buffer
         const n: u32 = bytes_read;
@@ -411,11 +425,12 @@ pub const Pty = struct {
             _ = CloseHandle(pty_in_write);
         }
 
-        // Output pipe: anonymous pipe (ConPTY doesn't support overlapped I/O).
-        // A dedicated reader thread does blocking ReadFile on this pipe.
-        // 1MB buffer so ConPTY never blocks waiting for us to drain.
-        if (CreatePipe(&pty_out_read, &pty_out_write, null, 1024 * 1024) == 0)
-            return error.CreatePipeFailed;
+        // Output pipe: named pipe with overlapped flag. ConPTY flushes output
+        // more reliably to named pipes. The reader thread uses blocking reads
+        // (passes null for OVERLAPPED) which works on overlapped-capable pipes.
+        const out_pipe = createOverlappedOutputPipe() orelse return error.CreatePipeFailed;
+        pty_out_read = out_pipe.read;
+        pty_out_write = out_pipe.write;
         errdefer {
             _ = CloseHandle(pty_out_read);
             _ = CloseHandle(pty_out_write);
@@ -478,11 +493,9 @@ pub const Pty = struct {
 
         // Build the command line and set up shell integration.
         const cmd_line = buildCommandLine(opts) orelse return error.CommandLineFailed;
-        // TEST: disable shell integration to isolate startup delay
-        // if (!opts.skip_shell_integration) {
-        //     win_shell.setupShellIntegration(cmd_line);
-        // }
-        _ = win_shell;
+        if (!opts.skip_shell_integration) {
+            win_shell.setupShellIntegration(cmd_line);
+        }
 
         // Convert CWD to wide string if provided.
         // Buffer must outlive CreateProcessW — declare at function scope.
