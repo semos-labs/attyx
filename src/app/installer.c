@@ -594,8 +594,11 @@ static int DoSilentUpdate(void) {
         return -1; // Not installed — fall through to normal installer UI
     }
 
-    // Kill everything and install fresh (no hot-swap on Windows)
-    AttyxInstallFiles(installDir, g_payload_dir, NULL);
+    // Install files — if this fails, don't launch (exe may be missing)
+    if (!AttyxInstallFiles(installDir, g_payload_dir, NULL)) {
+        DeleteDirTree(g_temp_dir);
+        return 1;
+    }
 
     // Relaunch Attyx
     wchar_t exe[MAX_PATH];
@@ -685,9 +688,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLineA, int cmdShow
     int editRight = WIN_W - PAD - 90;
     g_edit_path = CreateWindowExW(0, L"EDIT", g_install_dir,
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-        PAD + 6, editY + 4, editRight - PAD - 12, 32,
+        PAD + 2, editY + 8, editRight - PAD - 4, 24,
         g_hwnd, NULL, hInst, NULL);
     SendMessageW(g_edit_path, WM_SETFONT, (WPARAM)g_font_body, TRUE);
+    SendMessageW(g_edit_path, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(8, 8));
     g_input_brush = CreateSolidBrush(INPUT_BG);
 
     ShowWindow(g_hwnd, SW_SHOW);

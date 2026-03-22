@@ -400,8 +400,17 @@ static DWORD WINAPI download_thread(LPVOID param) {
     for (int i = 0; i < pl && i < 2047; i++) path_w[i] = ps[i];
     path_w[pl] = 0;
 
+    // Setup exes use a separate staging path so the daemon doesn't mistake
+    // them for bare binaries and try to hot-swap with the installer.
     wchar_t staging[MAX_PATH];
-    if (!get_staging_path(staging, MAX_PATH)) { g_downloading = 0; return 1; }
+    if (use_setup) {
+        wchar_t appdata[MAX_PATH];
+        if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata)))
+            { g_downloading = 0; return 1; }
+        _snwprintf(staging, MAX_PATH, L"%s\\attyx\\setup-staging.exe", appdata);
+    } else {
+        if (!get_staging_path(staging, MAX_PATH)) { g_downloading = 0; return 1; }
+    }
 
     wchar_t tmp[MAX_PATH + 4];
     _snwprintf(tmp, MAX_PATH + 4, L"%s.tmp", staging);

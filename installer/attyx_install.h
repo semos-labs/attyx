@@ -64,11 +64,20 @@ static bool AttyxSwapBinary(const wchar_t* installDir, const wchar_t* srcExe) {
         FindClose(hFind);
     }
 
-    // Delete and replace (everything is dead, no rename dance needed)
-    DeleteFileW(exePath);
-    if (!CopyFileW(srcExe, exePath, FALSE))
+    // Rename old exe out of the way, then copy new one in.
+    // If copy fails, roll back so the user still has a working binary.
+    wchar_t oldPath[MAX_PATH];
+    swprintf(oldPath, MAX_PATH, L"%s\\attyx.exe.old", installDir);
+    if (!MoveFileW(exePath, oldPath)) {
+        // Can't move — try direct overwrite as last resort
+        return CopyFileW(srcExe, exePath, FALSE) != 0;
+    }
+    if (!CopyFileW(srcExe, exePath, FALSE)) {
+        // Copy failed — roll back
+        MoveFileW(oldPath, exePath);
         return false;
-
+    }
+    DeleteFileW(oldPath);
     return true;
 }
 
