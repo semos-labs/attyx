@@ -113,28 +113,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     // Initialize search state
     win_search.g_search = attyx.SearchState.init(ctx.tab_mgr.activePane().engine.state.ring.allocator);
 
-    // Wait briefly for the shell to produce initial output, then publish.
-    // This avoids the blank-screen flash on startup. The reader thread is
-    // already running from Pty.spawn — we just need the shell to emit its
-    // prompt. Give it up to 500ms, checking every 1ms.
     updateGridOffsets(ctx);
-    {
-        const active_pane = ctx.tab_mgr.activePane();
-        if (active_pane.daemon_pane_id == null) {
-            var waited: u32 = 0;
-            while (waited < 500) : (waited += 1) {
-                if (active_pane.pty.consumeReaderData()) |data| {
-                    active_pane.feed(data);
-                    // Drain any additional data that arrived
-                    while (active_pane.pty.consumeReaderData()) |more| {
-                        active_pane.feed(more);
-                    }
-                    break;
-                }
-                Sleep(1);
-            }
-        }
-    }
     {
         const eng = &ctx.tab_mgr.activePane().engine;
         const total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
