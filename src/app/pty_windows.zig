@@ -278,34 +278,55 @@ pub fn ensureHiddenConsole() void {
 // to consume data without locking.
 
 pub const ReaderState = struct {
-    /// Double buffer: reader writes to back, event loop reads from front.
-    bufs: [2][65536]u8 = undefined,
-    /// Length of data in each buffer.
-    lens: [2]u32 = .{ 0, 0 },
-    /// Which buffer the reader is currently writing to (0 or 1).
-    write_idx: u32 = 0,
-    /// Set to 1 by reader thread when it has data in the back buffer.
-    data_ready: i32 = 0,
+    /// Ring buffer: reader appends, consumer reads.
+    buf: [256 * 1024]u8 = undefined,
+    /// Write position (reader thread only writes this).
+    write_pos: u32 = 0,
+    /// Read position (consumer only writes this).
+    read_pos: u32 = 0,
     /// Set to 1 to tell the reader thread to exit.
     stop: i32 = 0,
     /// Event signaled when data is ready.
     event: HANDLE = INVALID_HANDLE,
     /// The pipe handle to read from.
     pipe: HANDLE = INVALID_HANDLE,
+
+    fn availableSpace(self: *const ReaderState) u32 {
+        const w = @atomicLoad(u32, &self.write_pos, .seq_cst);
+        const r = @atomicLoad(u32, &self.read_pos, .seq_cst);
+        return @intCast(self.buf.len - 1 - ((w -% r) % self.buf.len));
+    }
+
+    fn availableData(self: *const ReaderState) u32 {
+        const w = @atomicLoad(u32, &self.write_pos, .seq_cst);
+        const r = @atomicLoad(u32, &self.read_pos, .seq_cst);
+        return (w -% r) % @as(u32, @intCast(self.buf.len));
+    }
 };
 
 fn readerThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
     const state: *ReaderState = @ptrCast(@alignCast(param));
+    var tmp: [65536]u8 = undefined;
     while (@atomicLoad(i32, &state.stop, .seq_cst) == 0) {
-        const idx = @atomicLoad(u32, &state.write_idx, .seq_cst);
         var bytes_read: DWORD = 0;
-        const buf_ptr: [*]u8 = &state.bufs[idx];
-        const ok = ReadFile(state.pipe, buf_ptr, @intCast(state.bufs[idx].len), &bytes_read, null);
+        const ok = ReadFile(state.pipe, &tmp, @intCast(tmp.len), &bytes_read, null);
         if (ok == 0 or bytes_read == 0) break;
 
-        state.lens[idx] = bytes_read;
-        @atomicStore(u32, &state.write_idx, 1 - idx, .seq_cst);
-        @atomicStore(i32, &state.data_ready, 1, .seq_cst);
+        // Copy into ring buffer
+        const n: u32 = bytes_read;
+        const buf_len: u32 = @intCast(state.buf.len);
+        var w = @atomicLoad(u32, &state.write_pos, .seq_cst);
+        var remaining = n;
+        var src_off: u32 = 0;
+        while (remaining > 0) {
+            const pos = w % buf_len;
+            const chunk = @min(remaining, buf_len - pos);
+            @memcpy(state.buf[pos..][0..chunk], tmp[src_off..][0..chunk]);
+            w +%= chunk;
+            src_off += chunk;
+            remaining -= chunk;
+        }
+        @atomicStore(u32, &state.write_pos, w, .seq_cst);
         _ = SetEvent(state.event);
     }
     return 0;
@@ -631,16 +652,34 @@ pub const Pty = struct {
         }
     }
 
-    /// Consume data from the reader thread. Returns the data slice or null
-    /// if no data is available. The slice is valid until the next call.
+    /// Consume data from the reader thread's ring buffer. Returns data slice
+    /// or null if no data available. Slice is valid until the next call.
+    /// Caller must process the data before calling again.
     pub fn consumeReaderData(self: *Pty) ?[]const u8 {
+        const S = struct {
+            var out_buf: [65536]u8 = undefined;
+        };
         const rs = self.reader_state orelse return null;
-        if (@atomicRmw(i32, &rs.data_ready, .Xchg, 0, .seq_cst) == 0) return null;
-        // The reader just swapped write_idx, so the *other* buffer has the data.
-        const read_idx = 1 - @atomicLoad(u32, &rs.write_idx, .seq_cst);
-        const len = rs.lens[read_idx];
-        if (len == 0) return null;
-        return rs.bufs[read_idx][0..len];
+        const buf_len: u32 = @intCast(rs.buf.len);
+        const w = @atomicLoad(u32, &rs.write_pos, .seq_cst);
+        var r = @atomicLoad(u32, &rs.read_pos, .seq_cst);
+        if (w == r) return null; // No data
+
+        // Copy from ring into linear output buffer
+        const avail = (w -% r) % buf_len;
+        const n = @min(avail, @as(u32, @intCast(S.out_buf.len)));
+        var remaining = n;
+        var dst_off: u32 = 0;
+        while (remaining > 0) {
+            const pos = r % buf_len;
+            const chunk = @min(remaining, buf_len - pos);
+            @memcpy(S.out_buf[dst_off..][0..chunk], rs.buf[pos..][0..chunk]);
+            r +%= chunk;
+            dst_off += chunk;
+            remaining -= chunk;
+        }
+        @atomicStore(u32, &rs.read_pos, r, .seq_cst);
+        return S.out_buf[0..n];
     }
 
     pub fn peekAvail(self: *Pty) usize {

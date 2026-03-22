@@ -223,10 +223,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                     if (leaf.pane.pty.consumeReaderData()) |data| {
                         leaf.pane.feed(data);
                         if (tab_idx == ctx.tab_mgr.active) got_data = true;
-                        // Reset manual-reset event so we don't busy-loop.
-                        // The reader thread will signal it again when more data arrives.
-                        if (leaf.pane.pty.read_event != INVALID_HANDLE)
-                            _ = ResetEvent(leaf.pane.pty.read_event);
                     }
                 }
             }
