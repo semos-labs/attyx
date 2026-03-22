@@ -229,6 +229,15 @@ extern "kernel32" fn GetOverlappedResult(
 
 extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn CreateThread(
+    lpThreadAttributes: ?*const SECURITY_ATTRIBUTES,
+    dwStackSize: usize,
+    lpStartAddress: *const fn (?*anyopaque) callconv(.winapi) DWORD,
+    lpParameter: ?*anyopaque,
+    dwCreationFlags: DWORD,
+    lpThreadId: ?*DWORD,
+) callconv(.winapi) ?HANDLE;
 
 const OVERLAPPED = extern struct {
     Internal: usize = 0,
@@ -263,6 +272,45 @@ pub fn ensureHiddenConsole() void {
     }
 }
 
+// ── Reader thread shared state ──
+// The reader thread does blocking ReadFile on the ConPTY output pipe
+// and copies data into a double buffer. The event loop swaps buffers
+// to consume data without locking.
+
+pub const ReaderState = struct {
+    /// Double buffer: reader writes to back, event loop reads from front.
+    bufs: [2][65536]u8 = undefined,
+    /// Length of data in each buffer.
+    lens: [2]u32 = .{ 0, 0 },
+    /// Which buffer the reader is currently writing to (0 or 1).
+    write_idx: u32 = 0,
+    /// Set to 1 by reader thread when it has data in the back buffer.
+    data_ready: i32 = 0,
+    /// Set to 1 to tell the reader thread to exit.
+    stop: i32 = 0,
+    /// Event signaled when data is ready.
+    event: HANDLE = INVALID_HANDLE,
+    /// The pipe handle to read from.
+    pipe: HANDLE = INVALID_HANDLE,
+};
+
+fn readerThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
+    const state: *ReaderState = @ptrCast(@alignCast(param));
+    while (@atomicLoad(i32, &state.stop, .seq_cst) == 0) {
+        const idx = @atomicLoad(u32, &state.write_idx, .seq_cst);
+        var bytes_read: DWORD = 0;
+        const buf_ptr: [*]u8 = &state.bufs[idx];
+        const ok = ReadFile(state.pipe, buf_ptr, @intCast(state.bufs[idx].len), &bytes_read, null);
+        if (ok == 0 or bytes_read == 0) break;
+
+        state.lens[idx] = bytes_read;
+        @atomicStore(u32, &state.write_idx, 1 - idx, .seq_cst);
+        @atomicStore(i32, &state.data_ready, 1, .seq_cst);
+        _ = SetEvent(state.event);
+    }
+    return 0;
+}
+
 // ── Pty ──
 
 pub const Pty = struct {
@@ -280,12 +328,12 @@ pub const Pty = struct {
     attr_list_buf: []align(8) u8,
     /// Allocator used for attr_list_buf.
     allocator: std.mem.Allocator,
-    /// Event handle for overlapped I/O on pipe_out_read.
+    /// Event signaled by the reader thread when data is available.
     read_event: HANDLE = INVALID_HANDLE,
-    /// Persistent async read state — keeps a read pending so ConPTY flushes output.
-    async_pending: bool = false,
-    async_overlapped: OVERLAPPED = .{},
-    async_buf: [65536]u8 = undefined,
+    /// Reader thread handle.
+    reader_thread: HANDLE = INVALID_HANDLE,
+    /// Shared state between reader thread and event loop.
+    reader_state: ?*ReaderState = null,
 
     exit_status: ?c_int = null,
 
@@ -337,17 +385,20 @@ pub const Pty = struct {
             _ = CloseHandle(pty_in_write);
         }
 
-        // Output pipe needs overlapped I/O — ConPTY only flushes its buffer
-        // when there's a pending ReadFile, not for PeekNamedPipe.
-        const out_pipe = createOverlappedOutputPipe() orelse return error.CreatePipeFailed;
-        pty_out_read = out_pipe.read;
-        pty_out_write = out_pipe.write;
-        const read_evt = out_pipe.event;
+        // Output pipe: anonymous pipe (ConPTY doesn't support overlapped I/O).
+        // A dedicated reader thread does blocking ReadFile on this pipe.
+        if (CreatePipe(&pty_out_read, &pty_out_write, null, 0) == 0)
+            return error.CreatePipeFailed;
         errdefer {
             _ = CloseHandle(pty_out_read);
             _ = CloseHandle(pty_out_write);
-            _ = CloseHandle(read_evt);
         }
+
+        // Create event for reader thread to signal data availability (auto-reset).
+        const read_evt = CreateEventW(null, 0, 0, null);
+        if (read_evt == null or read_evt == INVALID_HANDLE)
+            return error.CreateEventFailed;
+        errdefer _ = CloseHandle(read_evt);
 
         // Create the pseudo console.
         // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)
@@ -459,39 +510,65 @@ pub const Pty = struct {
 
         _ = CloseHandle(pi.hThread);
 
-        var pty = Pty{
+        // Start reader thread — ConPTY requires a blocking ReadFile to
+        // flush output. The thread reads continuously and signals the
+        // event loop via read_evt when data arrives.
+        const rs = try allocator.create(ReaderState);
+        rs.* = ReaderState{
+            .event = read_evt,
+            .pipe = pty_out_read,
+        };
+        const reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(rs), 0, null);
+        if (reader_thread == null) return error.CreateThreadFailed;
+
+        return Pty{
             .pipe_out_read = pty_out_read,
             .pipe_in_write = pty_in_write,
             .hpc = hpc,
             .process = pi.hProcess,
-            .thread = INVALID_HANDLE, // thread handle already closed above
+            .thread = INVALID_HANDLE,
             .attr_list_buf = attr_buf,
             .allocator = allocator,
             .read_event = read_evt,
+            .reader_thread = reader_thread,
+            .reader_state = rs,
         };
-
-        // Start first async read immediately — ConPTY only flushes output
-        // to the pipe when a ReadFile is pending. Without this, fast shells
-        // (cmd.exe, PowerShell) produce their banner before any read is
-        // queued and ConPTY never flushes it, causing a blank screen.
-        pty.startAsyncRead();
-
-        return pty;
     }
 
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        self.cancelAsyncRead();
+        // Stop reader thread: signal it to exit, close the pipe (unblocks ReadFile),
+        // then wait for the thread to finish.
+        if (self.reader_state) |rs| {
+            @atomicStore(i32, &rs.stop, 1, .seq_cst);
+        }
         ClosePseudoConsole(self.hpc);
-        _ = CloseHandle(self.pipe_out_read);
         _ = CloseHandle(self.pipe_in_write);
+        _ = CloseHandle(self.pipe_out_read); // Unblocks the reader thread's ReadFile
+        if (self.reader_thread != INVALID_HANDLE) {
+            _ = WaitForSingleObject(self.reader_thread, 5000);
+            _ = CloseHandle(self.reader_thread);
+        }
+        if (self.reader_state) |rs| self.allocator.destroy(rs);
         _ = CloseHandle(self.process);
         if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
         if (self.attr_list_buf.len > 0) {
             DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
             self.allocator.free(self.attr_list_buf);
         }
+    }
+
+    /// Consume data from the reader thread. Returns the data slice or null
+    /// if no data is available. The slice is valid until the next call.
+    pub fn consumeReaderData(self: *Pty) ?[]const u8 {
+        const rs = self.reader_state orelse return null;
+        if (@atomicRmw(i32, &rs.data_ready, .Xchg, 0, .seq_cst) == 0) return null;
+        // The reader just swapped write_idx, so the *other* buffer has the data.
+        const read_idx = 1 - @atomicLoad(u32, &rs.write_idx, .seq_cst);
+        const len = rs.lens[read_idx];
+        if (len == 0) return null;
+        return rs.bufs[read_idx][0..len];
     }
 
     pub fn peekAvail(self: *Pty) usize {

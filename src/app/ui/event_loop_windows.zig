@@ -135,8 +135,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         publishState(eng);
     }
 
-    // Start async read — ConPTY requires a pending ReadFile to flush output.
-    ctx.tab_mgr.activePane().pty.startAsyncRead();
+    // Reader thread is already running from Pty.spawn — no setup needed.
 
     // Track last published cursor column so we can suppress the brief
     // cursor-at-col-0 flicker when shells redraw a line (CR + erase + reprint).
@@ -217,8 +216,8 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         flushPtyResizes(ctx);
 
         // ── Read PTY data from all panes ──
-        // ConPTY requires a pending ReadFile to flush output. We keep one
-        // async read per pane to trigger flushing, then check completion.
+        // Each local pane has a dedicated reader thread doing blocking ReadFile.
+        // We just check if any data arrived and feed it to the terminal engine.
         var got_data = false;
         {
             for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
@@ -227,19 +226,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
                     if (leaf.pane.daemon_pane_id != null) continue;
-                    // Ensure a read is always pending (triggers ConPTY flush).
-                    if (!leaf.pane.pty.async_pending) leaf.pane.pty.startAsyncRead();
-                    // Check if the async read completed.
-                    if (leaf.pane.pty.checkAsyncRead()) |data| {
+                    if (leaf.pane.pty.consumeReaderData()) |data| {
                         leaf.pane.feed(data);
                         if (tab_idx == ctx.tab_mgr.active) got_data = true;
-                        // Immediately start next read to keep ConPTY flushing.
-                        leaf.pane.pty.startAsyncRead();
-                        // Drain any additional data that arrived.
-                        while (leaf.pane.pty.checkAsyncRead()) |more| {
-                            leaf.pane.feed(more);
-                            leaf.pane.pty.startAsyncRead();
-                        }
                     }
                 }
             }
