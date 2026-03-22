@@ -392,7 +392,8 @@ pub const Pty = struct {
 
         // Output pipe: anonymous pipe (ConPTY doesn't support overlapped I/O).
         // A dedicated reader thread does blocking ReadFile on this pipe.
-        if (CreatePipe(&pty_out_read, &pty_out_write, null, 0) == 0)
+        // 1MB buffer so ConPTY never blocks waiting for us to drain.
+        if (CreatePipe(&pty_out_read, &pty_out_write, null, 1024 * 1024) == 0)
             return error.CreatePipeFailed;
         errdefer {
             _ = CloseHandle(pty_out_read);
@@ -404,6 +405,22 @@ pub const Pty = struct {
         if (read_evt == INVALID_HANDLE)
             return error.CreateEventFailed;
         errdefer _ = CloseHandle(read_evt);
+
+        // Start reader thread BEFORE ConPTY/process creation so there's
+        // always a pending ReadFile when ConPTY first writes output.
+        // The thread blocks on ReadFile until data arrives.
+        var rs: ?*ReaderState = null;
+        var reader_thread: HANDLE = INVALID_HANDLE;
+        if (!opts.skip_console_alloc) {
+            const state = try allocator.create(ReaderState);
+            state.* = ReaderState{
+                .event = read_evt,
+                .pipe = pty_out_read,
+            };
+            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
+                return error.CreateThreadFailed;
+            rs = state;
+        }
 
         // Create the pseudo console.
         // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)
@@ -514,23 +531,6 @@ pub const Pty = struct {
         _ = CloseHandle(pty_out_write);
 
         _ = CloseHandle(pi.hThread);
-
-        // Start reader thread for GUI-side local panes. ConPTY requires a
-        // blocking ReadFile to flush output — the thread does this continuously.
-        // Host processes (skip_console_alloc=true) manage their own reads via
-        // the async read API, so they don't get a reader thread.
-        var rs: ?*ReaderState = null;
-        var reader_thread: HANDLE = INVALID_HANDLE;
-        if (!opts.skip_console_alloc) {
-            const state = try allocator.create(ReaderState);
-            state.* = ReaderState{
-                .event = read_evt,
-                .pipe = pty_out_read,
-            };
-            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
-                return error.CreateThreadFailed;
-            rs = state;
-        }
 
         return Pty{
             .pipe_out_read = pty_out_read,
