@@ -365,7 +365,14 @@ jobs:
               (Resolve-Path $payload).Path, "payload.zip",
               [System.IO.Compression.CompressionLevel]::Optimal, $false)
           # Concatenate: setup exe + payload zip = self-extracting installer
-          cmd /c "copy /b zig-out\bin\attyx-setup.exe + payload.zip attyx-${{ matrix.target }}-setup.exe"
+          $sfxPath = "attyx-${{ matrix.target }}-setup.exe"
+          $out = [System.IO.File]::Create($sfxPath)
+          $exe = [System.IO.File]::ReadAllBytes("zig-out\bin\attyx-setup.exe")
+          $zip = [System.IO.File]::ReadAllBytes("payload.zip")
+          $out.Write($exe, 0, $exe.Length)
+          $out.Write($zip, 0, $zip.Length)
+          $out.Close()
+          Write-Host "SFX: $($exe.Length) + $($zip.Length) = $((Get-Item $sfxPath).Length) bytes"
 
       - name: Upload artifacts to release
         env:
