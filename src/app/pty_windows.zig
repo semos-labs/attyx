@@ -471,11 +471,9 @@ pub const Pty = struct {
 
         // Build the command line and set up shell integration.
         const cmd_line = buildCommandLine(opts) orelse return error.CommandLineFailed;
-        // TODO: re-enable shell integration after fixing startup delay
-        // if (!opts.skip_shell_integration) {
-        //     win_shell.setupShellIntegration(cmd_line);
-        // }
-        _ = win_shell;
+        if (!opts.skip_shell_integration) {
+            win_shell.setupShellIntegration(cmd_line);
+        }
 
         // Convert CWD to wide string if provided.
         // Buffer must outlive CreateProcessW — declare at function scope.
