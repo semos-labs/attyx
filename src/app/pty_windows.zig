@@ -523,8 +523,8 @@ pub const Pty = struct {
             .event = read_evt,
             .pipe = pty_out_read,
         };
-        const reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(rs), 0, null);
-        if (reader_thread == null) return error.CreateThreadFailed;
+        const reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(rs), 0, null) orelse
+            return error.CreateThreadFailed;
 
         return Pty{
             .pipe_out_read = pty_out_read,
