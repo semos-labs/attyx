@@ -346,7 +346,7 @@ pub const DaemonPane = struct {
                 return;
             }
         }
-        self.writeToPtyInput(bytes);
+        _ = self.pty.writeToPty(bytes) catch {};
     }
 
     /// Write input bytes to PTY master (keystrokes from client).
