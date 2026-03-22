@@ -552,26 +552,77 @@ pub const Pty = struct {
         return 0;
     }
 
+    /// Async cleanup state — allocated on the heap so it outlives deinit.
+    const DeinitState = struct {
+        hpc: HPCON,
+        process: HANDLE,
+        pipe_in: HANDLE,
+        pipe_out: HANDLE,
+        reader_thread: HANDLE,
+        reader_state: ?*ReaderState,
+        read_event: HANDLE,
+        allocator: std.mem.Allocator,
+    };
+
+    fn deinitThreadFn(param: ?*anyopaque) callconv(.winapi) DWORD {
+        const ds: *DeinitState = @ptrCast(@alignCast(param));
+        // Kill child process
+        _ = TerminateProcess(ds.process, 0);
+        // Close input pipe (shell sees EOF)
+        _ = CloseHandle(ds.pipe_in);
+        // ClosePseudoConsole — reader thread is still running to drain output
+        ClosePseudoConsole(ds.hpc);
+        // Close output pipe — reader gets EOF and exits
+        _ = CloseHandle(ds.pipe_out);
+        // Wait for reader thread
+        if (ds.reader_thread != INVALID_HANDLE) {
+            _ = WaitForSingleObject(ds.reader_thread, 5000);
+            _ = CloseHandle(ds.reader_thread);
+        }
+        if (ds.reader_state) |rs| ds.allocator.destroy(rs);
+        _ = CloseHandle(ds.process);
+        if (ds.read_event != INVALID_HANDLE) _ = CloseHandle(ds.read_event);
+        ds.allocator.destroy(ds);
+        return 0;
+    }
+
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        // ClosePseudoConsole deadlocks on the event loop thread (conhost
-        // synchronization). Run it on a fire-and-forget thread.
-        _ = TerminateProcess(self.process, 0);
-        const hpc = self.hpc;
-        if (CreateThread(null, 0, &closePseudoConsoleThread, @ptrCast(hpc), 0, null)) |t| {
-            _ = CloseHandle(t);
+        // Run the entire teardown on a background thread to avoid
+        // ClosePseudoConsole deadlocking the event loop.
+        if (self.allocator.create(DeinitState)) |ds| {
+            ds.* = .{
+                .hpc = self.hpc,
+                .process = self.process,
+                .pipe_in = self.pipe_in_write,
+                .pipe_out = self.pipe_out_read,
+                .reader_thread = self.reader_thread,
+                .reader_state = self.reader_state,
+                .read_event = self.read_event,
+                .allocator = self.allocator,
+            };
+            if (CreateThread(null, 0, &deinitThreadFn, @ptrCast(ds), 0, null)) |t| {
+                _ = CloseHandle(t); // detach
+            } else {
+                // Fallback: synchronous cleanup (may deadlock, but better than leaking)
+                ClosePseudoConsole(self.hpc);
+                _ = CloseHandle(self.pipe_in_write);
+                _ = CloseHandle(self.pipe_out_read);
+                _ = CloseHandle(self.process);
+                self.allocator.destroy(ds);
+            }
+        } else |_| {
+            // Can't allocate — just close handles and accept the leak
+            _ = CloseHandle(self.pipe_in_write);
+            _ = CloseHandle(self.pipe_out_read);
+            _ = CloseHandle(self.process);
         }
-        // Close pipes — reader thread gets EOF and exits.
-        _ = CloseHandle(self.pipe_in_write);
-        _ = CloseHandle(self.pipe_out_read);
-        if (self.reader_thread != INVALID_HANDLE) {
-            _ = WaitForSingleObject(self.reader_thread, 3000);
-            _ = CloseHandle(self.reader_thread);
-        }
-        if (self.reader_state) |rs| self.allocator.destroy(rs);
-        _ = CloseHandle(self.process);
-        if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
+        // Clear fields so double-deinit is safe
+        self.pipe_out_read = INVALID_HANDLE;
+        self.pipe_in_write = INVALID_HANDLE;
+        self.reader_thread = INVALID_HANDLE;
+        self.reader_state = null;
         if (self.attr_list_buf.len > 0) {
             DeleteProcThreadAttributeList(@ptrCast(self.attr_list_buf.ptr));
             self.allocator.free(self.attr_list_buf);
