@@ -515,16 +515,22 @@ pub const Pty = struct {
 
         _ = CloseHandle(pi.hThread);
 
-        // Start reader thread — ConPTY requires a blocking ReadFile to
-        // flush output. The thread reads continuously and signals the
-        // event loop via read_evt when data arrives.
-        const rs = try allocator.create(ReaderState);
-        rs.* = ReaderState{
-            .event = read_evt,
-            .pipe = pty_out_read,
-        };
-        const reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(rs), 0, null) orelse
-            return error.CreateThreadFailed;
+        // Start reader thread for GUI-side local panes. ConPTY requires a
+        // blocking ReadFile to flush output — the thread does this continuously.
+        // Host processes (skip_console_alloc=true) manage their own reads via
+        // the async read API, so they don't get a reader thread.
+        var rs: ?*ReaderState = null;
+        var reader_thread: HANDLE = INVALID_HANDLE;
+        if (!opts.skip_console_alloc) {
+            const state = try allocator.create(ReaderState);
+            state.* = ReaderState{
+                .event = read_evt,
+                .pipe = pty_out_read,
+            };
+            reader_thread = CreateThread(null, 0, &readerThreadFn, @ptrCast(state), 0, null) orelse
+                return error.CreateThreadFailed;
+            rs = state;
+        }
 
         return Pty{
             .pipe_out_read = pty_out_read,
