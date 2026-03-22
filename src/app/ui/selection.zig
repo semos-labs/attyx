@@ -7,6 +7,9 @@ const logging = @import("../../logging/log.zig");
 
 const Cell = attyx.grid.Cell;
 
+/// Set by copySelection() when text is copied; consumed by event loop to show toast.
+pub var g_copy_toast_pending: bool = false;
+
 /// Copy the current selection (g_sel_*) to the clipboard, reading from
 /// the unified ring buffer. Selection rows are viewport-relative
 /// (content-space, with g_grid_top_offset already subtracted).
@@ -109,6 +112,7 @@ pub fn copySelection(is_block: bool) void {
     if (pos > 0) {
         c.attyx_clipboard_copy(@ptrCast(&buf), @intCast(pos));
         logging.info("selection", "copied {d} bytes", .{pos});
+        g_copy_toast_pending = true;
     }
 }
 
