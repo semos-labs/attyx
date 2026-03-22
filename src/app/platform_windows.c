@@ -731,6 +731,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
 
+    case WM_VSCROLL:
+        if (windows_scrollbar_handle(hwnd, wParam)) return 0;
+        break;
+
     default:
         break;
     }
@@ -807,8 +811,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Borderless: keep WS_THICKFRAME for resize/snap but strip caption/menu
     // bits so DWM doesn't render ghost caption buttons.
     DWORD style = g_window_decorations
-        ? WS_OVERLAPPEDWINDOW
-        : (WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        ? (WS_OVERLAPPEDWINDOW | WS_VSCROLL)
+        : (WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_VSCROLL);
     BOOL has_menu = (hmenu != NULL) ? TRUE : FALSE;
     RECT rect = { 0, 0, winW, winH };
     AdjustWindowRect(&rect, style, has_menu);
@@ -962,6 +966,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
             if (windows_renderer_draw_frame()) {
                 windows_renderer_present();
             }
+            windows_scrollbar_update(g_hwnd);
             QueryPerformanceCounter(&last_frame);
         } else {
             // Sleep for ~1ms to avoid busy-waiting

@@ -139,6 +139,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = macos_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/macos_scrollbar.m"),   .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_popup.m"),      .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = macos_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/macos_ligature.m"),  .flags = macos_flags });
@@ -170,6 +171,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_input.c"),      .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_clipboard.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_overlay.c"),  .flags = &.{} });
+        exe.addCSourceFile(.{ .file = b.path("src/app/linux_scrollbar.c"), .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_popup.c"),   .flags = &.{} });
         exe.addCSourceFile(.{ .file = b.path("src/app/linux_ligature.c"), .flags = &.{} });
         exe.root_module.addIncludePath(b.path("src/app"));
@@ -193,6 +195,7 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_popup.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_mouse.c"),       .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_render_util.c"), .flags = win_flags });
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_scrollbar.c"),  .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_ligature.c"),  .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_font.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_glyph.c"),     .flags = win_flags });
@@ -344,6 +347,7 @@ pub fn build(b: *std.Build) void {
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_keyboard.m"),.flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_input_ime.m"),     .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_overlay.m"),     .flags = app_macos_flags });
+        app.addCSourceFile(.{ .file = b.path("src/app/macos_scrollbar.m"),   .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_native_tabs.m"), .flags = app_macos_flags });
         app.addCSourceFile(.{ .file = b.path("src/app/macos_ligature.m"),  .flags = app_macos_flags });
         if (std.mem.eql(u8, env, "production")) {

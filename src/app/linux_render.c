@@ -818,6 +818,9 @@ int drawFrame(void) {
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     }
 
+    // Scrollbar (custom-rendered, before overlays so overlays draw on top)
+    drawScrollbar(offX, offY, gw, gh, cols, visibleRows, viewport);
+
     // Overlay layers (debug card, etc.) — use baseOffY so overlays are NOT shifted
     drawOverlays(offX, baseOffY, gw, gh, viewport);
     lastOverlayGen = g_overlay_gen;

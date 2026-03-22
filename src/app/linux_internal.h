@@ -286,6 +286,13 @@ GLuint createProgram(const char* vertSrc, const char* fragSrc);
 void   setupVertexAttribs(void);
 
 // ---------------------------------------------------------------------------
+// Scrollbar (linux_scrollbar.c)
+// ---------------------------------------------------------------------------
+
+void drawScrollbar(float offX, float offY, float gw, float gh,
+                   int cols, int visibleRows, float viewport[2]);
+
+// ---------------------------------------------------------------------------
 // Overlay rendering (linux_overlay.c)
 // ---------------------------------------------------------------------------
 

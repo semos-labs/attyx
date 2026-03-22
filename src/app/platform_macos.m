@@ -464,6 +464,9 @@ void attyx_spawn_new_window(void) {
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
+    // Add native overlay scrollbar to the content parent view
+    attyx_scrollbar_init([_window contentView]);
+
     if (g_icon_png_len > 0) {
         NSData* iconData = [NSData dataWithBytesNoCopy:(void*)g_icon_png
                                                length:(NSUInteger)g_icon_png_len
