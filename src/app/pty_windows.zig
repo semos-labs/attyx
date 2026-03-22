@@ -337,6 +337,11 @@ pub const Pty = struct {
 
     exit_status: ?c_int = null,
 
+    // Legacy async read state (used by daemon/host process with named pipes).
+    async_pending: bool = false,
+    async_overlapped: OVERLAPPED = .{},
+    async_buf: [65536]u8 = undefined,
+
     /// Return an inactive Pty (no process, no handles). Used for daemon-backed panes.
     pub fn initInactive() Pty {
         return .{
@@ -612,10 +617,6 @@ pub const Pty = struct {
     }
 
     // ── Legacy async read methods (used by daemon/host process with named pipes) ──
-
-    async_pending: bool = false,
-    async_overlapped: OVERLAPPED = .{},
-    async_buf: [65536]u8 = undefined,
 
     pub fn startAsyncRead(self: *Pty) void {
         if (self.async_pending or self.read_event == INVALID_HANDLE) return;
