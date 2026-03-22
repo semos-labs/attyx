@@ -549,14 +549,14 @@ pub const Pty = struct {
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        // Stop reader thread: signal it to exit, close the pipe (unblocks ReadFile),
-        // then wait for the thread to finish.
-        if (self.reader_state) |rs| {
-            @atomicStore(i32, &rs.stop, 1, .seq_cst);
-        }
-        ClosePseudoConsole(self.hpc);
+        // Shutdown order matters to avoid ClosePseudoConsole deadlock:
+        // 1. Close input pipe (shell sees EOF, starts exiting)
+        // 2. ClosePseudoConsole (may emit final output — reader thread drains it)
+        // 3. Close output pipe (reader thread's ReadFile gets EOF, thread exits)
+        // 4. Wait for reader thread
         _ = CloseHandle(self.pipe_in_write);
-        _ = CloseHandle(self.pipe_out_read); // Unblocks the reader thread's ReadFile
+        ClosePseudoConsole(self.hpc);
+        _ = CloseHandle(self.pipe_out_read);
         if (self.reader_thread != INVALID_HANDLE) {
             _ = WaitForSingleObject(self.reader_thread, 5000);
             _ = CloseHandle(self.reader_thread);
