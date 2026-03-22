@@ -48,6 +48,8 @@ pub fn run(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    logging.info("startup", "begin init", .{});
+
     // Pre-spawn the shell so it boots in parallel with UI setup.
     // The reader thread buffers ConPTY output while we init themes, keybinds, etc.
     var early_pane: ?*Pane = null;
@@ -63,6 +65,8 @@ pub fn run(
             }
         } else |_| {}
     }
+
+    logging.info("startup", "shell pre-spawned", .{});
 
     // Publish font config and globals
     publish.publishFontConfig(&config);
@@ -294,6 +298,8 @@ pub fn run(
     if (heap_session_client) |hsc| {
         sendInitialFocusPanes(tab_mgr, hsc);
     }
+
+    logging.info("startup", "entering attyx_run", .{});
 
     // Enter Win32 message loop + D3D11 rendering
     c.attyx_run(render_cells.ptr, @intCast(config.cols), @intCast(config.rows));
