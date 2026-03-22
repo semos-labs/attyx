@@ -549,19 +549,20 @@ pub const Pty = struct {
     pub fn deinit(self: *Pty) void {
         // Inactive PTY (host-backed panes) — nothing to clean up.
         if (self.pipe_out_read == INVALID_HANDLE and self.pipe_in_write == INVALID_HANDLE) return;
-        // Shutdown order matters to avoid ClosePseudoConsole deadlock:
-        // 1. Close input pipe (shell sees EOF, starts exiting)
-        // 2. ClosePseudoConsole (may emit final output — reader thread drains it)
-        // 3. Close output pipe (reader thread's ReadFile gets EOF, thread exits)
-        // 4. Wait for reader thread
+        // Close input pipe first so the shell sees EOF.
         _ = CloseHandle(self.pipe_in_write);
-        ClosePseudoConsole(self.hpc);
+        self.pipe_in_write = INVALID_HANDLE;
+        // Close output pipe — unblocks reader thread's ReadFile.
         _ = CloseHandle(self.pipe_out_read);
+        self.pipe_out_read = INVALID_HANDLE;
+        // Wait for reader thread to exit (it got EOF from pipe close).
         if (self.reader_thread != INVALID_HANDLE) {
-            _ = WaitForSingleObject(self.reader_thread, 5000);
+            _ = WaitForSingleObject(self.reader_thread, 3000);
             _ = CloseHandle(self.reader_thread);
         }
         if (self.reader_state) |rs| self.allocator.destroy(rs);
+        // Now close the pseudo console — reader is done, no deadlock risk.
+        ClosePseudoConsole(self.hpc);
         _ = CloseHandle(self.process);
         if (self.read_event != INVALID_HANDLE) _ = CloseHandle(self.read_event);
         if (self.attr_list_buf.len > 0) {
