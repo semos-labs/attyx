@@ -168,6 +168,7 @@ pub const AppConfig = struct {
     // [tabs]
     tab_appearance: TabAppearance = .builtin,
     tab_always_show: bool = false,
+    tab_dim_unfocused: bool = false,
 
     // [sessions]
     sessions_enabled: bool = false,

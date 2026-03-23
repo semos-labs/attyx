@@ -38,6 +38,7 @@ pub const PaletteAction = union(enum) {
     none,
     execute: u8, // action_id
     close: void,
+    rename_tab: []const u8, // new tab name
 };
 
 pub const CommandPaletteState = struct {
@@ -50,15 +51,18 @@ pub const CommandPaletteState = struct {
     filtered_indices: [max_commands]u8 = undefined,
     filtered_count: u8 = 0,
     visible_rows: u8 = 10,
+    rename_mode: bool = false,
 
     /// Handle a character input. Appends to filter and refilters.
     pub fn handleChar(self: *CommandPaletteState, codepoint: u32) PaletteAction {
         if (codepoint >= 0x20 and codepoint < 0x7f and self.filter_len < 63) {
             self.filter_buf[self.filter_len] = @intCast(codepoint);
             self.filter_len += 1;
-            self.applyFilter();
-            self.selected = 0;
-            self.scroll_offset = 0;
+            if (!self.rename_mode) {
+                self.applyFilter();
+                self.selected = 0;
+                self.scroll_offset = 0;
+            }
         }
         return .none;
     }
@@ -67,6 +71,19 @@ pub const CommandPaletteState = struct {
     /// Command codes: 1=backspace, 7=escape/close, 8=enter/execute,
     /// 9=up, 10=down. Picker-specific codes (11-13) are ignored.
     pub fn handleCmd(self: *CommandPaletteState, cmd: i32) PaletteAction {
+        if (self.rename_mode) {
+            switch (cmd) {
+                1 => { // Backspace
+                    if (self.filter_len > 0) self.filter_len -= 1;
+                },
+                7 => return .close, // Escape
+                8 => { // Enter — apply rename
+                    return .{ .rename_tab = self.filter_buf[0..self.filter_len] };
+                },
+                else => {},
+            }
+            return .none;
+        }
         switch (cmd) {
             1 => { // Backspace
                 if (self.filter_len > 0) {
@@ -88,6 +105,13 @@ pub const CommandPaletteState = struct {
             else => {}, // Ignore picker-specific commands (11-13)
         }
         return .none;
+    }
+
+    /// Enter rename mode: clear filter and switch to text input for tab name.
+    pub fn enterRenameMode(self: *CommandPaletteState) void {
+        self.rename_mode = true;
+        self.filter_len = 0;
+        self.filtered_count = 0;
     }
 
     fn moveUp(self: *CommandPaletteState) void {

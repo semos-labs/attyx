@@ -370,6 +370,14 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    if (Lookup.get(root, "tabs", "dim_unfocused")) |v| {
+        if (v == .bool) {
+            config.tab_dim_unfocused = v.bool;
+        } else {
+            std.debug.print("error: {s}: tabs.dim_unfocused must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
 
     // [program]
     if (Lookup.get(root, "program", "shell")) |v| {

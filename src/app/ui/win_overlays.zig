@@ -114,8 +114,20 @@ fn processPaletteAction(ctx: *WinCtx, action: palette_state_mod.PaletteAction) b
             return true;
         },
         .execute => |action_id| {
+            if (action_id == @intFromEnum(keybinds.Action.tab_rename)) {
+                if (g_palette_state) |*state| {
+                    state.enterRenameMode();
+                    paletteRenderAndPublish(ctx);
+                }
+                return true;
+            }
             closeCommandPalette(ctx);
             _ = c.attyx_dispatch_action(action_id);
+            return true;
+        },
+        .rename_tab => |name| {
+            ctx.tab_mgr.activePane().setCustomTitle(name);
+            closeCommandPalette(ctx);
             return true;
         },
     }

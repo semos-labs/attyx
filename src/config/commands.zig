@@ -114,6 +114,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .close_all_tabs, .name = "close_all_tabs", .description = "Close all tabs", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .close_all_windows, .name = "close_all_windows", .description = "Close all windows", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .shell_picker_toggle, .name = "shell_picker", .description = "Pick shell for new tab", .scope = .global, .mac_hotkey = null, .linux_hotkey = if (builtin.os.tag == .windows) "alt+shift+t" else null },
+    .{ .action = .tab_rename, .name = "tab_rename", .description = "Rename current tab", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
 };
 
 // ---------------------------------------------------------------------------

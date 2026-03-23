@@ -70,8 +70,12 @@ pub fn fillCellsSplit(
     // 3. Fill each leaf's region from its engine
     var leaves: [max_panes]LeafEntry = undefined;
     const leaf_count = layout_ptr.collectLeaves(&leaves);
+    const dim = (@import("terminal.zig").g_tab_dim_unfocused != 0);
     for (leaves[0..leaf_count]) |leaf| {
         fillRegion(cells, &leaf.pane.engine, leaf.rect, grid_cols, theme);
+        if (dim and leaf.index != layout_ptr.focused) {
+            dimRegion(cells, leaf.rect, grid_cols);
+        }
     }
 }
 
@@ -95,6 +99,19 @@ fn fillRegion(
         const row_cells = eng.state.ring.viewportRow(vp, row);
         for (0..copy_cols) |col| {
             cells[dst_offset + col] = cellToRenderCell(row_cells[col], theme);
+        }
+    }
+}
+
+/// Dim foreground text in a rectangular region (unfocused pane).
+fn dimRegion(cells: [*]Cell, rect: Rect, grid_cols: u16) void {
+    for (0..rect.rows) |row| {
+        const offset = @as(usize, rect.row + @as(u16, @intCast(row))) * @as(usize, grid_cols) + rect.col;
+        for (0..rect.cols) |col| {
+            const c = &cells[offset + col];
+            c.fg_r = @intCast(@as(u16, c.fg_r) / 2);
+            c.fg_g = @intCast(@as(u16, c.fg_g) / 2);
+            c.fg_b = @intCast(@as(u16, c.fg_b) / 2);
         }
     }
 }

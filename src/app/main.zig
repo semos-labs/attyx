@@ -100,6 +100,7 @@ export var g_pane_rect_cols: i32 = 80;
 // Native tab stubs (terminal.zig provides the real implementations)
 export var g_native_tabs_enabled: i32 = 0;
 export var g_tab_always_show: i32 = 0;
+export var g_tab_dim_unfocused: i32 = 0;
 export var g_native_tab_count: i32 = 1;
 export var g_native_tab_active: i32 = 0;
 export var g_native_tab_titles_changed: i32 = 0;
