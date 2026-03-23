@@ -4,7 +4,10 @@
 // box-drawing separator characters between split regions.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const attyx = @import("attyx");
+const is_windows = builtin.os.tag == .windows;
+const term_globals = if (is_windows) @import("windows_stubs.zig") else @import("terminal.zig");
 const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const SplitLayout = @import("split_layout.zig").SplitLayout;
@@ -70,7 +73,7 @@ pub fn fillCellsSplit(
     // 3. Fill each leaf's region from its engine
     var leaves: [max_panes]LeafEntry = undefined;
     const leaf_count = layout_ptr.collectLeaves(&leaves);
-    const dim = (@import("terminal.zig").g_tab_dim_unfocused != 0);
+    const dim = (term_globals.g_tab_dim_unfocused != 0);
     for (leaves[0..leaf_count]) |leaf| {
         fillRegion(cells, &leaf.pane.engine, leaf.rect, grid_cols, theme);
         if (dim and leaf.index != layout_ptr.focused) {
