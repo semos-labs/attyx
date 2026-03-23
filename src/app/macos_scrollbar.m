@@ -1,4 +1,4 @@
-// Attyx — macOS native scrollbar (NSScroller overlay)
+// Attyx — macOS native scrollbar (NSScroller, legacy style)
 
 #import <Cocoa/Cocoa.h>
 #include "bridge.h"
@@ -26,7 +26,6 @@ static AttyxScrollTarget*  s_target   = nil;
     switch (sender.hitPart) {
         case NSScrollerKnob:
         case NSScrollerKnobSlot: {
-            // Map doubleValue (0=top, 1=bottom) to viewport_offset
             double val = sender.doubleValue;
             int targetPos = (int)((1.0 - val) * sb + 0.5);
             if (targetPos < 0) targetPos = 0;
@@ -57,15 +56,9 @@ void attyx_scrollbar_init(NSView* parent) {
 
     s_target = [[AttyxScrollTarget alloc] init];
 
-    NSRect frame = NSMakeRect(
-        parent.bounds.size.width - 12, 0,
-        12, parent.bounds.size.height
-    );
-    // Use legacy style for a persistently visible scrollbar.
-    // Overlay style auto-hides the knob and requires NSScrollView integration.
     CGFloat scrollerWidth = [NSScroller scrollerWidthForControlSize:NSControlSizeRegular
                                                      scrollerStyle:NSScrollerStyleLegacy];
-    frame = NSMakeRect(
+    NSRect frame = NSMakeRect(
         parent.bounds.size.width - scrollerWidth, 0,
         scrollerWidth, parent.bounds.size.height
     );
@@ -80,7 +73,7 @@ void attyx_scrollbar_init(NSView* parent) {
     [parent addSubview:s_scroller];
 }
 
-// Cache to avoid redundant updates and detect changes for flashing
+// Cache to avoid redundant updates
 static int s_prev_sb   = -1;
 static int s_prev_vp   = -1;
 static int s_prev_rows = -1;
@@ -100,12 +93,10 @@ void attyx_scrollbar_update(void) {
         return;
     }
 
-    // Only update when values actually changed
     if (sb == s_prev_sb && vp == s_prev_vp && rows == s_prev_rows)
         return;
 
-    BOOL wasHidden = s_scroller.hidden;
-    if (wasHidden) s_scroller.hidden = NO;
+    if (s_scroller.hidden) s_scroller.hidden = NO;
 
     double proportion = (double)rows / (double)(sb + rows);
     double value = (sb > 0) ? (double)(sb - vp) / (double)sb : 1.0;

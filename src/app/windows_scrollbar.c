@@ -1,75 +1,40 @@
-// Attyx — Windows native scrollbar (WS_VSCROLL + SetScrollInfo)
+// Attyx — Windows scrollbar (custom-rendered, Direct3D)
+// Draws a thin semi-transparent scrollbar on the right edge of the grid.
 
 #ifdef _WIN32
 
 #include "windows_internal.h"
+#include <math.h>
 
-// Cache previous values to avoid redundant SetScrollInfo calls
-static int s_prev_sb   = -1;
-static int s_prev_vp   = -1;
-static int s_prev_rows = -1;
-static int s_prev_alt  = -1;
+int winBuildScrollbar(WinVertex* verts, int vi, int vertCap,
+                      float offX, float offY, float gw, float gh,
+                      int cols, int visibleRows) {
+    int sb = g_scrollback_count;
+    int vp = g_viewport_offset;
+    if (sb <= 0 || g_alt_screen) return vi;
 
-void windows_scrollbar_update(HWND hwnd) {
-    int sb   = g_scrollback_count;
-    int vp   = g_viewport_offset;
-    int rows = g_rows;
-    int alt  = g_alt_screen;
+    float trackH = visibleRows * gh;
+    if (trackH <= 0) return vi;
 
-    if (sb == s_prev_sb && vp == s_prev_vp &&
-        rows == s_prev_rows && alt == s_prev_alt)
-        return;
+    float totalLines = (float)(sb + visibleRows);
+    float thumbH = fmaxf((visibleRows / totalLines) * trackH, 12.0f);
+    float scrollPos = (float)(sb - vp) / totalLines;
+    float thumbY = offY + scrollPos * (trackH - thumbH);
 
-    s_prev_sb   = sb;
-    s_prev_vp   = vp;
-    s_prev_rows = rows;
-    s_prev_alt  = alt;
+    float barW = 6.0f * g_content_scale;
+    float barX = offX + cols * gw - barW;
 
-    if (sb <= 0 || alt) {
-        ShowScrollBar(hwnd, SB_VERT, FALSE);
-        return;
-    }
+    float fg = g_theme_bg_r < 128 ? 1.0f : 0.0f;
 
-    ShowScrollBar(hwnd, SB_VERT, TRUE);
+    // Track
+    if (vi + 6 <= vertCap)
+        vi = winEmitRect(verts, vi, barX, offY, barW, trackH, fg, fg, fg, 0.06f);
 
-    SCROLLINFO si = {0};
-    si.cbSize = sizeof(si);
-    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin   = 0;
-    si.nMax   = sb + rows - 1;
-    si.nPage  = (UINT)rows;
-    si.nPos   = sb - vp;
-    SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
-}
+    // Thumb
+    if (vi + 6 <= vertCap)
+        vi = winEmitRect(verts, vi, barX, thumbY, barW, thumbH, fg, fg, fg, 0.35f);
 
-BOOL windows_scrollbar_handle(HWND hwnd, WPARAM wParam) {
-    int sb   = g_scrollback_count;
-    int rows = g_rows;
-    if (sb <= 0) return FALSE;
-
-    int delta = 0;
-    switch (LOWORD(wParam)) {
-        case SB_LINEUP:        delta = 1;     break;
-        case SB_LINEDOWN:      delta = -1;    break;
-        case SB_PAGEUP:        delta = rows;  break;
-        case SB_PAGEDOWN:      delta = -rows; break;
-        case SB_THUMBTRACK:
-        case SB_THUMBPOSITION: {
-            SCROLLINFO si = {0};
-            si.cbSize = sizeof(si);
-            si.fMask  = SIF_TRACKPOS;
-            GetScrollInfo(hwnd, SB_VERT, &si);
-            int newVp = sb - si.nTrackPos;
-            delta = newVp - g_viewport_offset;
-            break;
-        }
-        case SB_TOP:    delta = sb;  break;
-        case SB_BOTTOM: delta = -sb; break;
-        default: return FALSE;
-    }
-
-    if (delta != 0) attyx_scroll_viewport(delta);
-    return TRUE;
+    return vi;
 }
 
 #endif // _WIN32
