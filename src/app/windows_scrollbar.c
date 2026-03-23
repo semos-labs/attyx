@@ -1,5 +1,5 @@
 // Attyx — Windows scrollbar (custom-rendered, Direct3D)
-// Draws a thin semi-transparent scrollbar on the right edge of the grid.
+// Thin scroll indicator on the right edge, in the padding area.
 
 #ifdef _WIN32
 
@@ -17,22 +17,19 @@ int winBuildScrollbar(WinVertex* verts, int vi, int vertCap,
     if (trackH <= 0) return vi;
 
     float totalLines = (float)(sb + visibleRows);
-    float thumbH = fmaxf((visibleRows / totalLines) * trackH, 12.0f);
-    float scrollPos = (float)(sb - vp) / totalLines;
-    float thumbY = offY + scrollPos * (trackH - thumbH);
+    float thumbH = fmaxf((visibleRows / totalLines) * trackH, 16.0f);
+    // vp=0 → bottom, vp=sb → top
+    float thumbY = offY + (1.0f - (float)vp / (float)sb) * (trackH - thumbH);
 
-    float barW = 6.0f * g_content_scale;
-    float barX = offX + cols * gw - barW;
+    float barW = 3.0f * g_content_scale;
+    float gridRight = offX + cols * gw;
+    float barX = gridRight + 2.0f * g_content_scale;
 
     float fg = g_theme_bg_r < 128 ? 1.0f : 0.0f;
 
-    // Track
+    // Thumb only, no track
     if (vi + 6 <= vertCap)
-        vi = winEmitRect(verts, vi, barX, offY, barW, trackH, fg, fg, fg, 0.06f);
-
-    // Thumb
-    if (vi + 6 <= vertCap)
-        vi = winEmitRect(verts, vi, barX, thumbY, barW, thumbH, fg, fg, fg, 0.35f);
+        vi = winEmitRect(verts, vi, barX, thumbY, barW, thumbH, fg, fg, fg, 0.3f);
 
     return vi;
 }
