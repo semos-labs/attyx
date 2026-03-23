@@ -147,6 +147,7 @@ pub var g_tab_count: i32 = 1;
 // Native macOS tabs
 pub export var g_native_tabs_enabled: i32 = 0;
 pub export var g_tab_always_show: i32 = 0;
+pub export var g_tab_dim_unfocused: i32 = 0;
 pub export var g_native_tab_count: i32 = 1;
 pub export var g_native_tab_active: i32 = 0;
 pub export var g_native_tab_titles_changed: i32 = 0;
@@ -320,6 +321,7 @@ pub fn run(
     g_padding_bottom = @intCast(config.window_padding_bottom);
     g_native_tabs_enabled = if (config.tab_appearance == .native) @as(i32, 1) else @as(i32, 0);
     g_tab_always_show = if (config.tab_always_show) @as(i32, 1) else @as(i32, 0);
+    g_tab_dim_unfocused = if (config.tab_dim_unfocused) @as(i32, 1) else @as(i32, 0);
 
     var theme_registry = ThemeRegistry.init(allocator);
     defer theme_registry.deinit();

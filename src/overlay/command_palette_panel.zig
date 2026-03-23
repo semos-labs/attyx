@@ -22,6 +22,9 @@ pub fn renderCommandPalette(
     grid_rows: u16,
     theme: OverlayTheme,
 ) !PanelResult {
+    if (state.rename_mode)
+        return renderRenamePrompt(allocator, state, grid_cols, grid_rows, theme);
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const tmp = arena.allocator();
@@ -107,6 +110,53 @@ pub fn renderCommandPalette(
         .title = "Command Palette",
         .width = .{ .percent = 50 },
         .height = .{ .percent = 50 },
+        .border = .rounded,
+        .theme = theme,
+    };
+
+    return panel_mod.renderPanel(allocator, config, content, grid_cols, grid_rows);
+}
+
+fn renderRenamePrompt(
+    allocator: std.mem.Allocator,
+    state: *const CommandPaletteState,
+    grid_cols: u16,
+    grid_rows: u16,
+    theme: OverlayTheme,
+) !PanelResult {
+    const label = "Rename tab: ";
+    const input_children = [_]Element{
+        .{ .text = .{
+            .content = label,
+            .wrap = false,
+            .style = .{ .text_flags = .{ .bold = true } },
+        } },
+        .{ .input = .{
+            .value = state.filter_buf[0..state.filter_len],
+            .cursor_pos = state.filter_len,
+            .placeholder = "enter tab name...",
+        } },
+    };
+    const input_row = Element{ .box = .{
+        .children = &input_children,
+        .direction = .horizontal,
+        .fill_width = true,
+    } };
+
+    const hint_row = Element{ .hint = .{
+        .content = "enter confirm \xe2\x80\xa2 esc cancel",
+    } };
+
+    const content_children = [_]Element{ input_row, hint_row };
+    const content = Element{ .box = .{
+        .children = &content_children,
+        .direction = .vertical,
+    } };
+
+    const config = PanelConfig{
+        .title = "Rename Tab",
+        .width = .{ .percent = 40 },
+        .height = .{ .cells = 4 },
         .border = .rounded,
         .theme = theme,
     };

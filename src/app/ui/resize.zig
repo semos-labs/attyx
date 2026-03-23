@@ -10,6 +10,7 @@ const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 const ai = @import("ai.zig");
+const toast = attyx.overlay_toast;
 const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
@@ -139,6 +140,9 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
+    if (ctx.overlay_mgr) |mgr| {
+        toast.showResizeHint(mgr, @intCast(rc), @intCast(rr), @intCast(nc), @intCast(nr));
+    }
     publish.publishOverlays(ctx);
     if (ctx.popup_state) |ps| {
         const cfg = ctx.popup_configs[ps.config_index];

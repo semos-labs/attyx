@@ -354,6 +354,9 @@ int winBuildFrameVerts(AttyxCell* cells, const uint64_t dirty[4],
     bgVertCount = build_decorations(g_win_bg_verts, bgVertCount, g_win_bg_vert_cap,
                                      cells, visibleTotal, cols, offX, offY, gw, gh);
 
+    bgVertCount = winBuildScrollbar(g_win_bg_verts, bgVertCount, g_win_bg_vert_cap,
+                                     offX, offY, gw, gh, cols, visibleRows);
+
     // Build text vertices
     g_win_total_text_verts = build_text_verts(g_win_text_verts, cells,
                                               visibleRows, cols,

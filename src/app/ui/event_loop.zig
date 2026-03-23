@@ -27,6 +27,8 @@ const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
 const tab_picker_ui = @import("tab_picker_ui.zig");
 const copy_mode = @import("copy_mode.zig");
+const selection = @import("selection.zig");
+const toast = attyx.overlay_toast;
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
 
@@ -602,6 +604,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // fullScreenScroll's viewport_offset bump is not overwritten.
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
+        // Snapshot scrollback count before feeding data — used to adjust
+        // selection coordinates when new content scrolls the viewport.
+        const sb_before: i32 = @intCast(publish.ctxEngine(ctx).state.ring.scrollbackCount());
+
         // Drain session socket — route pane_output by daemon_pane_id.
         // First read new data from the socket, then process all buffered
         // messages (including leftovers from a previous continue :outer).
@@ -812,6 +818,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
         if (title_changed) got_data = true;
 
+        // When viewport is pinned to bottom and new content pushes lines
+        // into scrollback, adjust selection coordinates so the highlight
+        // tracks the same text instead of staying at stale row positions.
+        if (c.g_sel_active != 0 and got_data) {
+            const sb_after: i32 = @intCast(publish.ctxEngine(ctx).state.ring.scrollbackCount());
+            const sb_delta = sb_after - sb_before;
+            if (sb_delta > 0 and publish.ctxEngine(ctx).state.viewport_offset == 0) {
+                c.g_sel_start_row -= sb_delta;
+                c.g_sel_end_row -= sb_delta;
+            }
+        }
+
         const viewport_changed = (publish.ctxEngine(ctx).state.viewport_offset != last_published_vp);
         const need_update = got_data or viewport_changed;
 
@@ -926,6 +944,25 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if ((statusbar_refreshed or copy_search_dirty) and !need_update_final) {
             publish.generateStatusbar(ctx);
             publish.publishOverlays(ctx);
+        }
+
+        // Show "Copied" toast when selection was copied to clipboard.
+        if (selection.g_copy_toast_pending) {
+            selection.g_copy_toast_pending = false;
+            if (ctx.overlay_mgr) |mgr| {
+                const eng2 = publish.ctxEngine(ctx);
+                const tc: u16 = @intCast(eng2.state.ring.cols);
+                const tr: u16 = @intCast(eng2.state.ring.screen_rows);
+                toast.showToast(mgr, "Copied", tc, tr);
+                publish.publishOverlays(ctx);
+            }
+        }
+
+        // Auto-dismiss toast after timeout.
+        if (ctx.overlay_mgr) |mgr| {
+            if (toast.tickDismiss(mgr)) {
+                publish.publishOverlays(ctx);
+            }
         }
 
         // Periodically refresh tab titles for background tabs (~1s).

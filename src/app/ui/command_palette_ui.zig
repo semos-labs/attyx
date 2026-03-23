@@ -113,8 +113,21 @@ fn processAction(ctx: *PtyThreadCtx, action: palette_state_mod.PaletteAction) bo
             return true;
         },
         .execute => |action_id| {
+            // Intercept tab_rename: switch palette to rename input mode
+            if (action_id == @intFromEnum(keybinds.Action.tab_rename)) {
+                if (g_palette_state) |*state| {
+                    state.enterRenameMode();
+                    renderAndPublish(ctx);
+                }
+                return true;
+            }
             closeCommandPalette(ctx);
             _ = c.attyx_dispatch_action(action_id);
+            return true;
+        },
+        .rename_tab => |name| {
+            ctx.tab_mgr.activePane().setCustomTitle(name);
+            closeCommandPalette(ctx);
             return true;
         },
     }

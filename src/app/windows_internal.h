@@ -325,6 +325,14 @@ int renderBoxDraw(uint8_t* pixels, int stride, uint32_t cp,
                   int gw, int gh, float scale);
 
 // ---------------------------------------------------------------------------
+// Scrollbar (windows_scrollbar.c)
+// ---------------------------------------------------------------------------
+
+int winBuildScrollbar(WinVertex* verts, int vi, int vertCap,
+                      float offX, float offY, float gw, float gh,
+                      int cols, int visibleRows);
+
+// ---------------------------------------------------------------------------
 // Render utility functions (windows_render_util.c)
 // ---------------------------------------------------------------------------
 

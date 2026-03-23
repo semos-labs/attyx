@@ -57,6 +57,7 @@ pub const overlay_theme_picker = @import("overlay/theme_picker.zig");
 pub const overlay_theme_picker_panel = @import("overlay/theme_picker_panel.zig");
 pub const overlay_tab_picker = @import("overlay/tab_picker.zig");
 pub const overlay_tab_picker_panel = @import("overlay/tab_picker_panel.zig");
+pub const overlay_toast = @import("overlay/toast.zig");
 
 pub const finder = @import("finder/finder.zig");
 pub const finder_match = @import("finder/fuzzy_match.zig");

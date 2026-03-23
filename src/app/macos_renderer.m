@@ -191,6 +191,7 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
         attyx_apply_window_update();
     }
     [self drawFrameImpl:view];
+    attyx_scrollbar_update();
 }
 
 - (void)rebuildFont:(MTKView*)view {

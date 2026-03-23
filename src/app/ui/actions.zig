@@ -335,6 +335,9 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     terminal.g_pty_master = pane.pty.master;
     terminal.g_engine = &pane.engine;
 
+    // Clear URL hover state so link underlines don't carry over to the new tab.
+    c.attyx_clear_hover();
+
     // Update active daemon pane ID for input routing
     if (pane.daemon_pane_id) |dpid| {
         terminal.g_active_daemon_pane_id = dpid;
