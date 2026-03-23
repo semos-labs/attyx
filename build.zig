@@ -203,7 +203,10 @@ pub fn build(b: *std.Build) void {
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_text_util.c"), .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_menu.c"),      .flags = win_flags });
         exe.addCSourceFile(.{ .file = b.path("src/app/windows_native_tabs.c"), .flags = win_flags });
-        exe.addCSourceFile(.{ .file = b.path("src/app/windows_updater.c"), .flags = win_flags });
+        // Updater needs to know if this is a dev build so staging path matches
+        // the daemon's expected filename (upgrade-dev.exe vs upgrade.exe).
+        const updater_flags: []const []const u8 = if (optimize == .Debug) &.{"-DATTYX_DEV"} else &.{};
+        exe.addCSourceFile(.{ .file = b.path("src/app/windows_updater.c"), .flags = updater_flags });
         exe.addWin32ResourceFile(.{ .file = b.path("src/app/attyx.rc") });
         exe.subsystem = .Windows; // No console window — CLI paths use AttachConsole
         exe.root_module.linkSystemLibrary("kernel32", .{});

@@ -370,7 +370,11 @@ static int get_staging_path(wchar_t *buf, int buf_len) {
     wchar_t appdata[MAX_PATH];
     if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata)))
         return 0;
+#ifdef ATTYX_DEV
     _snwprintf(buf, buf_len, L"%s\\attyx\\upgrade-dev.exe", appdata);
+#else
+    _snwprintf(buf, buf_len, L"%s\\attyx\\upgrade.exe", appdata);
+#endif
     return 1;
 }
 
@@ -494,14 +498,25 @@ static DWORD WINAPI download_thread(LPVOID param) {
         PROCESS_INFORMATION pi = {0};
         wchar_t cmdline[MAX_PATH + 32];
         _snwprintf(cmdline, MAX_PATH + 32, L"\"%s\" /update", staging);
+        int setup_ok = 0;
         if (CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, 30000); // Wait up to 30s
+            WaitForSingleObject(pi.hProcess, 30000);
+            DWORD exit_code = 1;
+            GetExitCodeProcess(pi.hProcess, &exit_code);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
+            setup_ok = (exit_code == 0);
         }
         DeleteFileW(staging); // Clean up setup exe
 
-        strcpy(g_dl_status, "Update installed. Restarting...");
+        if (setup_ok) {
+            // Setup succeeded — it already relaunched attyx.exe via ShellExecute,
+            // and KillAttyxAll() will terminate this process shortly.
+            strcpy(g_dl_status, "Update installed. Restarting...");
+        } else {
+            strcpy(g_dl_status, "Update failed. Please try again.");
+            updateLog("download: setup /update failed or timed out");
+        }
         if (g_update_hwnd) InvalidateRect(g_update_hwnd, NULL, FALSE);
     } else {
         // Legacy path: stage bare exe for daemon hot-swap (no sysroot update)
