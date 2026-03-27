@@ -322,7 +322,7 @@ static int linux_detect_os_dark_mode(void) {
             if (strstr(buf, "uint32 2")) return 0;
         }
     }
-    // gsettings fallback (GNOME/GTK)
+    // gsettings color-scheme (GNOME/GTK)
     fp = popen("gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null", "r");
     if (fp) {
         int got = (fgets(buf, sizeof(buf), fp) != NULL);
@@ -330,6 +330,17 @@ static int linux_detect_os_dark_mode(void) {
         if (got) {
             if (strstr(buf, "prefer-dark"))  return 1;
             if (strstr(buf, "prefer-light")) return 0;
+        }
+    }
+    // gsettings gtk-theme name (Ubuntu sets "Yaru-dark" etc. without color-scheme)
+    fp = popen("gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "-dark") || strstr(buf, "-Dark") ||
+                strstr(buf, ":dark") || strstr(buf, ":Dark"))
+                return 1;
         }
     }
     // GTK_THEME env var (e.g. "Adwaita:dark", "Breeze-Dark")
