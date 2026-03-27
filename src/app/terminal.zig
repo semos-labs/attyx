@@ -86,6 +86,8 @@ pub const PtyThreadCtx = struct {
     session_finder_show_hidden: bool = false,
     // Split resize step in cells/rows per keypress
     split_resize_step: u16 = 4,
+    // Default program for new tabs (from config [program] shell)
+    default_program: ?[]const u8 = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -728,6 +730,7 @@ pub fn run(
         .last_focus_panes = initial_focus_panes,
         .last_focus_count = initial_focus_count,
         .split_resize_step = config.split_resize_step,
+        .default_program = config.program,
     };
 
     // Push theme colors to all pane engines (covers reconstructed daemon tabs too).

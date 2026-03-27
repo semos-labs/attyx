@@ -48,10 +48,17 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             if (ctx.sessions_enabled) {
                 // Session mode: daemon owns the PTY.
                 const sc = ctx.session_client orelse return;
-                sc.sendCreatePane(rows, cols, resolved.cwd orelse "") catch {
-                    logging.err("tabs", "send create_pane failed", .{});
-                    return;
-                };
+                if (ctx.default_program) |prog| {
+                    sc.sendCreatePaneWithShell(rows, cols, resolved.cwd orelse "", prog) catch {
+                        logging.err("tabs", "send create_pane failed", .{});
+                        return;
+                    };
+                } else {
+                    sc.sendCreatePane(rows, cols, resolved.cwd orelse "") catch {
+                        logging.err("tabs", "send create_pane failed", .{});
+                        return;
+                    };
+                }
                 const pane_id = sc.waitForPaneCreated(5000) catch |err| {
                     logging.err("tabs", "create daemon pane failed: {}", .{err});
                     return;
@@ -66,10 +73,23 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 // Non-session mode: spawn a local PTY with foreground CWD.
                 const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
                 defer if (cwd_z) |z| ctx.allocator.free(z);
-                ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch |err| {
-                    logging.err("tabs", "addTab failed: {}", .{err});
-                    return;
-                };
+                if (ctx.default_program) |prog| {
+                    const prog_z = ctx.allocator.dupeZ(u8, prog) catch {
+                        logging.err("tabs", "alloc program argv failed", .{});
+                        return;
+                    };
+                    defer ctx.allocator.free(prog_z);
+                    const argv: [1][:0]const u8 = .{prog_z};
+                    ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch |err| {
+                        logging.err("tabs", "addTab with program failed: {}", .{err});
+                        return;
+                    };
+                } else {
+                    ctx.tab_mgr.addTab(rows, cols, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch |err| {
+                        logging.err("tabs", "addTab failed: {}", .{err});
+                        return;
+                    };
+                }
             }
             publish.updateGridTopOffset(ctx);
             ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
@@ -685,6 +705,8 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
     }
     // Split resize step
     ctx.split_resize_step = new_cfg.split_resize_step;
+    // Default program for new tabs
+    ctx.default_program = new_cfg.program;
 
     c.attyx_mark_all_dirty();
     logging.info("config", "reloaded", .{});

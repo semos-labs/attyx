@@ -60,7 +60,18 @@ pub fn run(
         if (allocator.create(Pane)) |p| {
             const sb_offset: i32 = if (config.statusbar) |sb| (if (sb.enabled) @as(i32, 1) else 0) else 0;
             const pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - sb_offset));
-            if (Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines)) |spawned| {
+            const spawn_result = if (config.program) |prog| blk: {
+                const S = struct {
+                    var argv_storage: [1][:0]const u8 = undefined;
+                    var path_buf: [512:0]u8 = undefined;
+                };
+                @memcpy(S.path_buf[0..prog.len], prog);
+                S.path_buf[prog.len] = 0;
+                S.argv_storage[0] = S.path_buf[0..prog.len :0];
+                const shell_type = @import("pty_windows.zig").Pty.ShellType.fromProgram(prog);
+                break :blk Pane.spawnOpts(allocator, pty_rows, config.cols, &S.argv_storage, null, config.scrollback_lines, .{ .shell = shell_type });
+            } else Pane.spawn(allocator, pty_rows, config.cols, null, null, config.scrollback_lines);
+            if (spawn_result) |spawned| {
                 p.* = spawned;
                 early_pane = p;
             } else |_| {
@@ -262,6 +273,7 @@ pub fn run(
         .popup_config_count = popup_count,
         .session_mgr = &session_mgr,
         .session_client = heap_session_client,
+        .default_program = config.program,
         .finder_root = config.session_finder_root,
         .finder_depth = config.session_finder_depth,
         .finder_show_hidden = config.session_finder_show_hidden,
@@ -430,7 +442,19 @@ fn buildInitialTabs(
         pane.daemon_pane_id = daemon_pane_id;
         pane.session_client = hsc;
     } else if (early_pane == null) {
-        pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
+        if (config.program) |prog| {
+            const S = struct {
+                var argv_storage: [1][:0]const u8 = undefined;
+                var path_buf: [512:0]u8 = undefined;
+            };
+            @memcpy(S.path_buf[0..prog.len], prog);
+            S.path_buf[prog.len] = 0;
+            S.argv_storage[0] = S.path_buf[0..prog.len :0];
+            const shell_type = @import("pty_windows.zig").Pty.ShellType.fromProgram(prog);
+            pane.* = try Pane.spawnOpts(allocator, pty_rows, cols, &S.argv_storage, null, scrollback, .{ .shell = shell_type });
+        } else {
+            pane.* = try Pane.spawn(allocator, pty_rows, cols, null, null, scrollback);
+        }
     }
     pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     pane.engine.state.reflow_on_resize = config.reflow_enabled;

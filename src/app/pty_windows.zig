@@ -393,7 +393,34 @@ pub const Pty = struct {
     // fromInherited and markHandlesInheritable removed — host processes
     // own ConPTY independently; no handle inheritance needed for upgrades.
 
-    pub const ShellType = enum { auto, zsh, bash, pwsh, cmd, wsl };
+    pub const ShellType = enum {
+        auto,
+        zsh,
+        bash,
+        pwsh,
+        cmd,
+        wsl,
+
+        /// Detect shell type from a program string (e.g. "wsl -d Ubuntu", "pwsh.exe", "zsh").
+        pub fn fromProgram(program: []const u8) ShellType {
+            // Extract the first token (executable name, ignoring arguments).
+            const exe = blk: {
+                for (program, 0..) |ch, i| {
+                    if (ch == ' ') break :blk program[0..i];
+                }
+                break :blk program;
+            };
+            // Match against known shell names (with or without .exe suffix).
+            const base = if (std.mem.lastIndexOfScalar(u8, exe, '\\')) |pos| exe[pos + 1 ..] else exe;
+            if (std.ascii.eqlIgnoreCase(base, "wsl") or std.ascii.eqlIgnoreCase(base, "wsl.exe")) return .wsl;
+            if (std.ascii.eqlIgnoreCase(base, "pwsh") or std.ascii.eqlIgnoreCase(base, "pwsh.exe") or
+                std.ascii.eqlIgnoreCase(base, "powershell") or std.ascii.eqlIgnoreCase(base, "powershell.exe")) return .pwsh;
+            if (std.ascii.eqlIgnoreCase(base, "cmd") or std.ascii.eqlIgnoreCase(base, "cmd.exe")) return .cmd;
+            if (std.ascii.eqlIgnoreCase(base, "bash") or std.ascii.eqlIgnoreCase(base, "bash.exe")) return .bash;
+            if (std.ascii.eqlIgnoreCase(base, "zsh") or std.ascii.eqlIgnoreCase(base, "zsh.exe")) return .zsh;
+            return .auto;
+        }
+    };
 
     pub const SpawnOpts = struct {
         rows: u16 = 24,

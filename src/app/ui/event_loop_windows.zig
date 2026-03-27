@@ -76,6 +76,7 @@ pub const WinCtx = struct {
     popup_config_count: u8 = 0,
     session_mgr: ?*WinSessionManager = null,
     session_client: ?*@import("../session_client.zig").SessionClient = null,
+    default_program: ?[]const u8 = null,
     finder_root: []const u8 = "~",
     finder_depth: u8 = 4,
     finder_show_hidden: bool = false,
@@ -625,10 +626,17 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                 const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
                 if (ctx.session_client) |sc| {
                     // Session mode: daemon owns the PTY.
-                    sc.sendCreatePane(rows, ctx.grid_cols, "") catch {
-                        logging.err("tabs", "send create_pane failed", .{});
-                        return;
-                    };
+                    if (ctx.default_program) |prog| {
+                        sc.sendCreatePaneWithShell(rows, ctx.grid_cols, "", prog) catch {
+                            logging.err("tabs", "send create_pane failed", .{});
+                            return;
+                        };
+                    } else {
+                        sc.sendCreatePane(rows, ctx.grid_cols, "") catch {
+                            logging.err("tabs", "send create_pane failed", .{});
+                            return;
+                        };
+                    }
                     const pane_id = sc.waitForPaneCreated(5000) catch |err| {
                         logging.err("tabs", "create daemon pane failed: {}", .{err});
                         return;
@@ -644,10 +652,14 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                     logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
                 } else {
                     // No daemon: spawn local ConPTY.
-                    ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
-                        logging.err("tabs", "addTab failed: {}", .{err});
-                        return;
-                    };
+                    if (ctx.default_program) |prog| {
+                        spawnTabWithProgram(ctx, rows, prog);
+                    } else {
+                        ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch |err| {
+                            logging.err("tabs", "addTab failed: {}", .{err});
+                            return;
+                        };
+                    }
                 }
                 updateGridOffsets(ctx);
                 ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(ctx.theme);
@@ -723,6 +735,34 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
             tabs_changed.* = true;
         }
     }
+}
+
+/// Spawn a new tab using a configured default program string.
+/// Detects the shell type from the program name and passes it as argv.
+fn spawnTabWithProgram(ctx: *WinCtx, rows: u16, program: []const u8) void {
+    const Pty = @import("../pty_windows.zig").Pty;
+    const shell_type = Pty.ShellType.fromProgram(program);
+
+    const S = struct {
+        var argv_storage: [1][:0]const u8 = undefined;
+        var path_buf: [512:0]u8 = undefined;
+    };
+    @memcpy(S.path_buf[0..program.len], program);
+    S.path_buf[program.len] = 0;
+    S.argv_storage[0] = S.path_buf[0..program.len :0];
+
+    const new_pane = ctx.allocator.create(Pane) orelse return;
+    new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, &S.argv_storage, null, ctx.applied_scrollback_lines, .{ .shell = shell_type }) catch |err| {
+        logging.err("tabs", "spawn with program failed: {}", .{err});
+        ctx.allocator.destroy(new_pane);
+        return;
+    };
+    ctx.tab_mgr.addTabWithPane(new_pane, rows, ctx.grid_cols) catch |err| {
+        logging.err("tabs", "addTabWithPane failed: {}", .{err});
+        new_pane.deinit();
+        ctx.allocator.destroy(new_pane);
+        return;
+    };
 }
 
 pub fn switchActiveTab(ctx: *WinCtx) void {
@@ -841,6 +881,9 @@ fn doReloadConfig(ctx: *WinCtx) void {
             leaf.pane.engine.state.theme_colors = tc;
         }
     }
+
+    // Default program for new tabs
+    ctx.default_program = new_config.program;
 
     logging.info("config", "config reloaded", .{});
 }
