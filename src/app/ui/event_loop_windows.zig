@@ -751,7 +751,7 @@ fn spawnTabWithProgram(ctx: *WinCtx, rows: u16, program: []const u8) void {
     S.path_buf[program.len] = 0;
     S.argv_storage[0] = S.path_buf[0..program.len :0];
 
-    const new_pane = ctx.allocator.create(Pane) orelse return;
+    const new_pane = ctx.allocator.create(Pane) catch return;
     new_pane.* = Pane.spawnOpts(ctx.allocator, rows, ctx.grid_cols, &S.argv_storage, null, ctx.applied_scrollback_lines, .{ .shell = shell_type }) catch |err| {
         logging.err("tabs", "spawn with program failed: {}", .{err});
         ctx.allocator.destroy(new_pane);
