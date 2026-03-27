@@ -1231,6 +1231,26 @@ static void dropCallback(GLFWwindow* w, int count, const char** paths) {
 }
 
 // ---------------------------------------------------------------------------
+// Content scale change callback (monitor change / compositor scale change)
+// ---------------------------------------------------------------------------
+
+static void contentScaleCallback(GLFWwindow* w, float xscale, float yscale) {
+    (void)w; (void)yscale;
+    // Derive actual scale from framebuffer/window ratio rather than trusting
+    // the reported value — same logic as the startup correction.
+    int fb_w, fb_h, win_w, win_h;
+    glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+    glfwGetWindowSize(g_window, &win_w, &win_h);
+    float actual = (win_w > 0) ? (float)fb_w / (float)win_w : xscale;
+    if (actual < 0.5f) actual = xscale;
+
+    if (fabsf(actual - g_content_scale) > 0.01f) {
+        g_content_scale = actual;
+        g_needs_font_rebuild = 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Callback registration — called from attyx_run in platform_linux.c
 // ---------------------------------------------------------------------------
 
@@ -1244,6 +1264,7 @@ void linux_register_callbacks(GLFWwindow* win) {
     // Enable lock-key modifier bits so we get GLFW_MOD_NUM_LOCK in key callbacks.
     glfwSetInputMode(win, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
     glfwSetFramebufferSizeCallback(win, framebufferSizeCallback);
+    glfwSetWindowContentScaleCallback(win, contentScaleCallback);
     glfwSetKeyCallback(win, keyCallback);
     glfwSetCharCallback(win, charCallback);
     glfwSetMouseButtonCallback(win, mouseButtonCallback);

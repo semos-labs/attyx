@@ -446,6 +446,42 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // queue up behind the swap and typing feels laggy.
     glfwSwapInterval(0);
 
+    // Derive actual content scale from the real window.  On Wayland with
+    // fractional scaling (e.g. 1.1x), glfwGetMonitorContentScale may report the
+    // compositor's scale but GLFW 3.3 doesn't create a proportionally-scaled
+    // framebuffer.  Using fb/win ratio gives the true pixel density.
+    {
+        int fb_w, fb_h, win_w, win_h;
+        glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+        glfwGetWindowSize(g_window, &win_w, &win_h);
+        float actual_scale = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+        if (actual_scale < 0.5f) actual_scale = 1.0f; // sanity
+
+        if (fabsf(actual_scale - xscale) > 0.01f) {
+            ATTYX_LOG_INFO("platform",
+                "content scale corrected: monitor=%.2f actual=%.2f", xscale, actual_scale);
+            xscale = actual_scale;
+            yscale = actual_scale;
+            g_content_scale = actual_scale;
+
+            // Re-rasterize glyphs at the corrected scale
+            FT_Done_Face(g_gc.ft_face);
+            if (g_gc.ft_bold) FT_Done_Face(g_gc.ft_bold);
+            if (g_gc.ft_italic) FT_Done_Face(g_gc.ft_italic);
+            if (g_gc.ft_bold_italic) FT_Done_Face(g_gc.ft_bold_italic);
+            g_gc = createGlyphCache(ft_lib, actual_scale);
+            g_cell_px_w = g_gc.glyph_w;
+            g_cell_px_h = g_gc.glyph_h;
+            g_cell_w_pts = g_cell_px_w / actual_scale;
+            g_cell_h_pts = g_cell_px_h / actual_scale;
+
+            // Resize window to match corrected cell dimensions
+            winW = (int)(cols * g_cell_px_w / actual_scale) + g_padding_left + g_padding_right;
+            winH = (int)(rows * g_cell_px_h / actual_scale) + g_padding_top  + g_padding_bottom;
+            glfwSetWindowSize(g_window, winW, winH);
+        }
+    }
+
     // Set window icon from embedded PNG.
     linux_set_window_icon(g_window);
 
