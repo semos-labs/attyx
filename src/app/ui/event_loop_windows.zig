@@ -934,4 +934,8 @@ fn flushPtyResizes(ctx: *WinCtx) void {
             }
         }
     }
+    // Flush debounced PTY resize for popup pane too.
+    if (ctx.popup_state) |ps| {
+        ps.pane.flushPtyResize();
+    }
 }

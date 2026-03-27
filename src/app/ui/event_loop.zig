@@ -215,6 +215,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 }
             }
         }
+        // Flush debounced PTY resize for popup pane too.
+        if (ctx.popup_state) |ps| {
+            ps.pane.flushPtyResize();
+        }
 
         // Drain IPC command queue
         while (ipc_queue.dequeue()) |cmd| {

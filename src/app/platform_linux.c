@@ -384,9 +384,20 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     glfwDestroyWindow(tmpWin);
 
-    // Create the real window
-    int winW = (int)(cols * g_cell_px_w / xscale) + g_padding_left + g_padding_right;
-    int winH = (int)(rows * g_cell_px_h / yscale) + g_padding_top  + g_padding_bottom;
+    // Size the window to 60% × 80% of the screen, centered.
+    int winW, winH;
+    int winX = 0, winY = 0;
+    if (primary) {
+        int waX, waY, waW, waH;
+        glfwGetMonitorWorkarea(primary, &waX, &waY, &waW, &waH);
+        winW = (int)(waW * 0.6);
+        winH = (int)(waH * 0.8);
+        winX = waX + (waW - winW) / 2;
+        winY = waY + (waH - winH) / 2;
+    } else {
+        winW = (int)(cols * g_cell_px_w / xscale) + g_padding_left + g_padding_right;
+        winH = (int)(rows * g_cell_px_h / yscale) + g_padding_top  + g_padding_bottom;
+    }
 
     if (g_background_opacity < 1.0f) {
         glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
@@ -402,6 +413,11 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         FT_Done_FreeType(ft_lib);
         glfwTerminate();
         return;
+    }
+
+    // Center the window on the work area.
+    if (primary) {
+        glfwSetWindowPos(g_window, winX, winY);
     }
 
     glfwMakeContextCurrent(g_window);

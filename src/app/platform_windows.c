@@ -787,8 +787,13 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     g_cell_w_pts = 8.0f;
     g_cell_h_pts = 16.0f;
 
-    int winW = (int)(cols * g_cell_px_w / g_content_scale) + g_padding_left + g_padding_right;
-    int winH = (int)(rows * g_cell_px_h / g_content_scale) + g_padding_top + g_padding_bottom;
+    // Size the window to 60% × 80% of the work area, centered.
+    RECT workArea;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    int waW = workArea.right - workArea.left;
+    int waH = workArea.bottom - workArea.top;
+    int winW = (int)(waW * 0.6);
+    int winH = (int)(waH * 0.8);
 
     // Register window class
     WNDCLASSEXW wc = {0};
@@ -815,14 +820,17 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     // DirectComposition requires WS_EX_NOREDIRECTIONBITMAP for per-pixel alpha
     DWORD exStyle = (g_background_opacity < 1.0f) ? 0x00200000L : 0;  // WS_EX_NOREDIRECTIONBITMAP
+    int frameW = rect.right - rect.left;
+    int frameH = rect.bottom - rect.top;
+    int initX = workArea.left + (waW - frameW) / 2;
+    int initY = workArea.top  + (waH - frameH) / 2;
     g_hwnd = CreateWindowExW(
         exStyle,
         L"AttyxWindow",
         L"Attyx",
         style,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
+        initX, initY,
+        frameW, frameH,
         NULL, hmenu, hInstance, NULL
     );
 
@@ -849,15 +857,18 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         g_cell_w_pts = g_gc.glyph_w / g_content_scale;
         g_cell_h_pts = g_gc.glyph_h / g_content_scale;
 
-        // Resize window to fit real cell metrics
-        int newW = (int)(cols * g_cell_w_pts) + g_padding_left + g_padding_right;
-        int newH = (int)(rows * g_cell_h_pts) + g_padding_top + g_padding_bottom;
+        // Re-center window with real cell metrics (keep 60%×80% of work area).
+        int newW = winW;
+        int newH = winH;
         RECT newRect = { 0, 0, newW, newH };
         AdjustWindowRect(&newRect, style, TRUE);
-        SetWindowPos(g_hwnd, NULL, 0, 0,
-                     newRect.right - newRect.left,
-                     newRect.bottom - newRect.top,
-                     SWP_NOMOVE | SWP_NOZORDER);
+        int newFrameW = newRect.right - newRect.left;
+        int newFrameH = newRect.bottom - newRect.top;
+        int newX = workArea.left + (waW - newFrameW) / 2;
+        int newY = workArea.top  + (waH - newFrameH) / 2;
+        SetWindowPos(g_hwnd, NULL, newX, newY,
+                     newFrameW, newFrameH,
+                     SWP_NOZORDER);
     }
 
     // Draw the first frame before showing — the event loop thread may

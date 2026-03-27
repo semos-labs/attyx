@@ -390,10 +390,14 @@ void attyx_spawn_new_window(void) {
     g_cell_w_pts = (float)g_cell_pt_w;
     g_cell_h_pts = (float)g_cell_pt_h;
 
-    CGFloat winW = g_cols * g_cell_pt_w + g_padding_left + g_padding_right;
-    CGFloat winH = g_rows * g_cell_pt_h + g_padding_top  + g_padding_bottom;
+    // Size the window to 60% × 80% of the screen, centered.
+    NSRect screenFrame = [[NSScreen mainScreen] visibleFrame];
+    CGFloat winW = roundf(screenFrame.size.width  * 0.6f);
+    CGFloat winH = roundf(screenFrame.size.height * 0.8f);
+    CGFloat winX = screenFrame.origin.x + roundf((screenFrame.size.width  - winW) / 2.0f);
+    CGFloat winY = screenFrame.origin.y + roundf((screenFrame.size.height - winH) / 2.0f);
 
-    NSRect frame = NSMakeRect(200, 200, winW, winH);
+    NSRect frame = NSMakeRect(winX, winY, winW, winH);
     NSUInteger mask = NSWindowStyleMaskTitled
                     | NSWindowStyleMaskClosable
                     | NSWindowStyleMaskMiniaturizable
