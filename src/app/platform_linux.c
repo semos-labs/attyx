@@ -301,13 +301,52 @@ void attyx_spawn_new_window(void) {
 }
 
 // ---------------------------------------------------------------------------
-// X11 window theme variant (dark/light title bar)
+// OS dark mode detection + X11 window theme variant
 // ---------------------------------------------------------------------------
 
-// Tell the window manager whether to use dark or light decorations by setting
-// the _GTK_THEME_VARIANT property on the X11 window.  On pure Wayland sessions
-// (no XWayland / no DISPLAY) this is a no-op.
+// Returns: 1 = dark, 0 = light, -1 = unknown.
+static int linux_detect_os_dark_mode(void) {
+    char buf[256];
+    // freedesktop portal (GNOME, KDE, Niri, Sway, etc.)
+    // color-scheme: 0 = no pref, 1 = dark, 2 = light
+    FILE* fp = popen("gdbus call --session "
+        "--dest org.freedesktop.portal.Desktop "
+        "--object-path /org/freedesktop/portal/desktop "
+        "--method org.freedesktop.portal.Settings.Read "
+        "'org.freedesktop.appearance' 'color-scheme' 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "uint32 1")) return 1;
+            if (strstr(buf, "uint32 2")) return 0;
+        }
+    }
+    // gsettings fallback (GNOME/GTK)
+    fp = popen("gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "prefer-dark"))  return 1;
+            if (strstr(buf, "prefer-light")) return 0;
+        }
+    }
+    // GTK_THEME env var (e.g. "Adwaita:dark", "Breeze-Dark")
+    const char* gtk = getenv("GTK_THEME");
+    if (gtk && (strstr(gtk, ":dark") || strstr(gtk, ":Dark") ||
+                strstr(gtk, "-dark") || strstr(gtk, "-Dark")))
+        return 1;
+    return -1;
+}
+
+// Set _GTK_THEME_VARIANT on the X11 window to match the OS color scheme.
+// On pure Wayland (no DISPLAY), the compositor handles decoration theming
+// directly — this is a no-op in that case.
 static void linux_set_theme_variant(GLFWwindow* window) {
+    int dark = linux_detect_os_dark_mode();
+    if (dark < 0) return; // unknown — let the WM decide
+
     const char* display_env = getenv("DISPLAY");
     if (!display_env || !display_env[0]) return;
 
@@ -317,10 +356,7 @@ static void linux_set_theme_variant(GLFWwindow* window) {
 
     Atom prop = XInternAtom(dpy, "_GTK_THEME_VARIANT", False);
     Atom utf8 = XInternAtom(dpy, "UTF8_STRING", False);
-
-    // Dark if perceived luminance < 128 (BT.601 weights)
-    int is_dark = (g_theme_bg_r * 299 + g_theme_bg_g * 587 + g_theme_bg_b * 114) / 1000 < 128;
-    const char* variant = is_dark ? "dark" : "light";
+    const char* variant = dark ? "dark" : "light";
 
     XChangeProperty(dpy, win, prop, utf8, 8, PropModeReplace,
                     (const unsigned char*)variant, (int)strlen(variant));
@@ -365,9 +401,6 @@ void attyx_apply_window_update(void) {
         g_pending_resize_rows = new_rows;
         g_pending_resize_cols = new_cols;
     }
-    // Re-apply decoration theme in case theme colors changed
-    linux_set_theme_variant(g_window);
-
     g_full_redraw = 1;
     attyx_mark_all_dirty();
 }
