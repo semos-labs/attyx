@@ -713,6 +713,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
 
+    case WM_NCLBUTTONDBLCLK:
+        if ((int)wParam == HTCAPTION) {
+            ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            return 0;
+        }
+        break;
+
     case WM_LBUTTONDOWN:
         if (g_native_tabs_enabled) {
             POINT lp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
