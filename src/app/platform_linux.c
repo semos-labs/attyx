@@ -6,6 +6,11 @@
 
 #include "linux_internal.h"
 #include <png.h>
+// X11 interop for setting window decoration theme variant.
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
 
 // ---------------------------------------------------------------------------
 // Shared state definitions
@@ -296,6 +301,33 @@ void attyx_spawn_new_window(void) {
 }
 
 // ---------------------------------------------------------------------------
+// X11 window theme variant (dark/light title bar)
+// ---------------------------------------------------------------------------
+
+// Tell the window manager whether to use dark or light decorations by setting
+// the _GTK_THEME_VARIANT property on the X11 window.  On pure Wayland sessions
+// (no XWayland / no DISPLAY) this is a no-op.
+static void linux_set_theme_variant(GLFWwindow* window) {
+    const char* display_env = getenv("DISPLAY");
+    if (!display_env || !display_env[0]) return;
+
+    Display* dpy = glfwGetX11Display();
+    Window   win = glfwGetX11Window(window);
+    if (!dpy || !win) return;
+
+    Atom prop = XInternAtom(dpy, "_GTK_THEME_VARIANT", False);
+    Atom utf8 = XInternAtom(dpy, "UTF8_STRING", False);
+
+    // Dark if perceived luminance < 128 (BT.601 weights)
+    int is_dark = (g_theme_bg_r * 299 + g_theme_bg_g * 587 + g_theme_bg_b * 114) / 1000 < 128;
+    const char* variant = is_dark ? "dark" : "light";
+
+    XChangeProperty(dpy, win, prop, utf8, 8, PropModeReplace,
+                    (const unsigned char*)variant, (int)strlen(variant));
+    XFlush(dpy);
+}
+
+// ---------------------------------------------------------------------------
 // Hot-reload: apply window property changes (decorations, padding, opacity)
 // Called from main loop when g_needs_window_update is set.
 // ---------------------------------------------------------------------------
@@ -333,6 +365,9 @@ void attyx_apply_window_update(void) {
         g_pending_resize_rows = new_rows;
         g_pending_resize_cols = new_cols;
     }
+    // Re-apply decoration theme in case theme colors changed
+    linux_set_theme_variant(g_window);
+
     g_full_redraw = 1;
     attyx_mark_all_dirty();
 }
@@ -413,6 +448,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     // Set window icon from embedded PNG.
     linux_set_window_icon(g_window);
+
+    // Set dark/light decoration theme to match terminal theme.
+    linux_set_theme_variant(g_window);
 
     // Re-create glyph cache texture in the new context
     GLuint tex;

@@ -177,6 +177,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addIncludePath(b.path("src/app"));
         exe.root_module.linkSystemLibrary("glfw3", .{ .preferred_link_mode = .static });
         exe.root_module.linkSystemLibrary("gl", .{});
+        exe.root_module.linkSystemLibrary("x11", .{});
         exe.root_module.linkSystemLibrary("freetype2", .{});
         exe.root_module.linkSystemLibrary("fontconfig", .{});
         exe.root_module.linkSystemLibrary("libpng", .{});
