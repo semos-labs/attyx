@@ -258,6 +258,8 @@ const OPEN_EXISTING: DWORD = 3;
 
 extern "kernel32" fn AllocConsole() callconv(.winapi) BOOL;
 extern "kernel32" fn GetConsoleWindow() callconv(.winapi) ?std.os.windows.HWND;
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: c_uint) callconv(.winapi) BOOL;
+extern "kernel32" fn SetConsoleCP(wCodePageID: c_uint) callconv(.winapi) BOOL;
 extern "user32" fn ShowWindow(hWnd: std.os.windows.HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 
 var hidden_console_ready: bool = false;
@@ -265,7 +267,16 @@ var hidden_console_ready: bool = false;
 pub fn ensureHiddenConsole() void {
     if (hidden_console_ready) return;
     hidden_console_ready = true;
+    // Set console code page to UTF-8 BEFORE AllocConsole so ConPTY
+    // inherits UTF-8 mode.  Without this, PUA codepoints (Nerd Font
+    // icons, Powerline glyphs) get mangled through the default OEM
+    // code page which can't represent them.
+    _ = SetConsoleOutputCP(65001); // CP_UTF8
+    _ = SetConsoleCP(65001);
     if (AllocConsole() != 0) {
+        // Re-apply after AllocConsole — the new console may reset the code page.
+        _ = SetConsoleOutputCP(65001);
+        _ = SetConsoleCP(65001);
         if (GetConsoleWindow()) |con_hwnd| {
             _ = ShowWindow(con_hwnd, 0); // SW_HIDE
         }
@@ -470,6 +481,14 @@ pub const Pty = struct {
         if (read_evt == INVALID_HANDLE)
             return error.CreateEventFailed;
         errdefer _ = CloseHandle(read_evt);
+
+        // Ensure the process's console code page is UTF-8 before creating
+        // the pseudoconsole.  ConPTY inherits the code page from the
+        // creating process — without this, codepoints outside the OEM
+        // code page (Nerd Font icons, Powerline glyphs, CJK, etc.) get
+        // replaced with '?' in the output stream.
+        _ = SetConsoleOutputCP(65001);
+        _ = SetConsoleCP(65001);
 
         // Create the pseudo console.
         // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)

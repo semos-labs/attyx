@@ -184,10 +184,14 @@ pub fn run(
         }
     }
 
+    // Resolve initial cwd and shell from config.
+    const initial_cwd: []const u8 = config.working_directory orelse "";
+    const initial_shell: []const u8 = config.program orelse "";
+
     // Attach-or-create: if daemon connected, get a session with panes.
     var daemon_pane_id: ?u32 = null;
     if (session_client) |*sc| daemon_blk: {
-        const result = attachOrCreate(sc, pty_rows, config.cols) catch |err| {
+        const result = attachOrCreate(sc, pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
             logging.err("session", "attach-or-create failed: {}", .{err});
             sc.deinit();
             session_client = null;
@@ -267,6 +271,10 @@ pub fn run(
         .config_path = config_path,
         .args = args,
         .applied_scrollback_lines = config.scrollback_lines,
+        .applied_cursor_shape = config.cursor_shape,
+        .applied_cursor_blink = config.cursor_blink,
+        .applied_cursor_trail = config.cursor_trail,
+        .applied_font_ligatures = config.font_ligatures,
         .statusbar = if (statusbar) |*sb| sb else null,
         .overlay_mgr = &overlay_mgr,
         .split_resize_step = config.split_resize_step,
@@ -331,10 +339,10 @@ pub fn run(
 const AttachResult = struct { session_id: u32, pane_id: u32 };
 
 /// Try to attach to an existing alive session, or create a new one.
-fn attachOrCreate(sc: *SessionClient, rows: u16, cols: u16) !AttachResult {
+fn attachOrCreate(sc: *SessionClient, rows: u16, cols: u16, cwd: []const u8, shell: []const u8) !AttachResult {
     // Try listing existing sessions first.
     sc.requestListSync(2000) catch {
-        const sid = try sc.createSession("main", rows, cols, "", "");
+        const sid = try sc.createSession("main", rows, cols, cwd, shell);
         return doAttach(sc, sid, rows, cols);
     };
 
@@ -344,7 +352,7 @@ fn attachOrCreate(sc: *SessionClient, rows: u16, cols: u16) !AttachResult {
     if (found_alive) |sid| {
         const result = doAttach(sc, sid, rows, cols) catch {
             // Attach failed — create new.
-            const new_sid = try sc.createSession("main", rows, cols, "", "");
+            const new_sid = try sc.createSession("main", rows, cols, cwd, shell);
             return doAttach(sc, new_sid, rows, cols);
         };
         logging.info("session", "reattached to session {d}", .{sid});
@@ -352,7 +360,7 @@ fn attachOrCreate(sc: *SessionClient, rows: u16, cols: u16) !AttachResult {
     }
 
     // No alive sessions — create a new one.
-    const sid = try sc.createSession("main", rows, cols, "", "");
+    const sid = try sc.createSession("main", rows, cols, cwd, shell);
     const result = try doAttach(sc, sid, rows, cols);
     logging.info("session", "created and attached to session {d}", .{sid});
     return result;
