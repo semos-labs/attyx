@@ -567,6 +567,29 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // Register GLFW window callbacks
     linux_register_callbacks(g_window);
 
+    // On Wayland, tiling compositors (niri, sway) resize the window immediately
+    // after creation — before callbacks are registered.  Process any pending
+    // events and trigger an initial resize so the grid fills the window.
+    glfwPollEvents();
+    {
+        int fb_w, fb_h;
+        glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+        if (g_cell_px_w > 0 && g_cell_px_h > 0) {
+            float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+            float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
+            int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.01f);
+            int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.01f);
+            if (new_cols < 1) new_cols = 1;
+            if (new_rows < 1) new_rows = 1;
+            if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
+            if (new_rows > ATTYX_MAX_ROWS) new_rows = ATTYX_MAX_ROWS;
+            if (new_cols != cols || new_rows != rows) {
+                g_pending_resize_rows = new_rows;
+                g_pending_resize_cols = new_cols;
+            }
+        }
+    }
+
     // Main loop — use glfwWaitEventsTimeout to sleep when idle instead of
     // busy-spinning with glfwPollEvents.  The PTY thread wakes us via
     // glfwPostEmptyEvent (called from attyx_end_cell_update / attyx_mark_all_dirty).
