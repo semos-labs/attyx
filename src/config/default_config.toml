@@ -1,0 +1,342 @@
+# Attyx Configuration
+#
+# This is the default configuration file for Attyx terminal emulator.
+# All options are commented out and show their default values.
+# Uncomment and modify any option to customize your setup.
+#
+# Changes marked [live] take effect immediately on save (Ctrl+Shift+R to reload).
+# Changes marked [restart] require restarting Attyx.
+#
+# Config location:
+#   macOS/Linux: ~/.config/attyx/attyx.toml (or $XDG_CONFIG_HOME/attyx/attyx.toml)
+#   Windows:     %APPDATA%\attyx\attyx.toml
+
+
+# ── Font ──────────────────────────────────────────────────────────────
+
+[font]
+
+# Font family name. Any font installed on your system.  [live]
+# family = "JetBrains Mono"
+
+# Font size in points. Must be > 0.  [live]
+# size = 14
+
+# Cell width override. Controls horizontal character spacing.  [live]
+# Values: 0 or "auto" (derive from font metrics), a number in points,
+#         or a percentage string like "110%" (relative to font metrics).
+# cell_width = 0
+
+# Cell height override. Controls vertical line spacing.  [live]
+# Same values as cell_width.
+# cell_height = 0
+
+# Fallback fonts for glyphs not found in the primary font.  [live]
+# Searched in order. Useful for emoji, CJK, or icon fonts.
+# fallback = ["Noto Color Emoji", "Noto Sans CJK"]
+
+# Enable font ligatures (programming ligatures like => -> !=).  [live]
+# Uses the font's `calt` (Contextual Alternates) OpenType feature.
+# ligatures = true
+
+
+# ── Theme ─────────────────────────────────────────────────────────────
+
+[theme]
+
+# Theme name. Use "default" for the built-in theme, or the name of a  [live]
+# .toml file in ~/.config/attyx/themes/ (without extension).
+# Use the theme picker (Cmd+Shift+P -> "Pick theme") to preview themes.
+# name = "default"
+
+# Override the theme's background color. Hex format "#RRGGBB".  [live]
+# background = "#1a1b26"
+
+
+# ── Cursor ────────────────────────────────────────────────────────────
+
+[cursor]
+
+# Cursor shape: "block", "beam", or "underline".  [live]
+# shape = "block"
+
+# Whether the cursor blinks.  [live]
+# blink = true
+
+# Animated cursor trail effect.  [live]
+# trail = false
+
+
+# ── Scrollback ───────────────────────────────────────────────────────
+
+[scrollback]
+
+# Number of lines to keep in scrollback buffer.  [live]
+# Memory usage: lines x columns x 32 bytes (e.g. 5000 x 80 = ~12 MB).
+# lines = 5000
+
+
+# ── Reflow ────────────────────────────────────────────────────────────
+
+[reflow]
+
+# Re-wrap text when the terminal is resized.  [live]
+# enabled = true
+
+
+# ── Background ───────────────────────────────────────────────────────
+
+[background]
+
+# Window background opacity. Float from 0.0 (fully transparent) to  [live]
+# 1.0 (fully opaque). Values below 1.0 enable transparency.
+# Also available as [window] opacity.
+# opacity = 1.0
+
+# Background blur radius (0-100). Only visible when opacity < 1.0.  [live]
+# macOS uses NSVisualEffectView; the exact appearance depends on the OS.
+# Also available as [window] blur.
+# blur = 30
+
+
+# ── Window ────────────────────────────────────────────────────────────
+
+[window]
+
+# Show window title bar and decorations.  [live]
+# decorations = true
+
+# Padding around the terminal content, in pixels.  [live]
+# Use `padding` to set all four sides at once, `padding_x`/`padding_y`
+# for horizontal/vertical pairs, or individual sides.
+# More specific values override less specific ones.
+# padding = 0
+# padding_x = 0
+# padding_y = 0
+# padding_top = 0
+# padding_bottom = 0
+# padding_left = 0
+# padding_right = 0
+
+
+# ── Tabs ──────────────────────────────────────────────────────────────
+
+[tabs]
+
+# Tab appearance: "builtin" (overlay tab bar) or "native" (macOS  [restart]
+# native window tabs). On Linux, only "builtin" is supported.
+# appearance = "builtin"
+
+# Show the tab bar even when only one tab is open.  [live]
+# always_show = false
+
+# Dim inactive/unfocused tabs.  [restart]
+# dim_unfocused = false
+
+
+# ── Splits ────────────────────────────────────────────────────────────
+
+[splits]
+
+# Pixels per step when resizing panes. Range: 1-50.  [live]
+# resize_step = 4
+
+
+# ── Program ───────────────────────────────────────────────────────────
+
+[program]
+
+# Shell or program to run. Defaults to your $SHELL (or /bin/sh).
+# shell = "/bin/zsh"
+
+# Extra arguments passed to the shell/program.
+# args = ["--login"]
+
+# Initial working directory. Defaults to your home directory.
+# working-directory = "~"
+
+
+# ── Sessions ──────────────────────────────────────────────────────────
+
+[sessions]
+
+# Enable session management (named sessions with persist/switch).  [restart]
+# enabled = false
+
+# Root directory for the session finder to search.  [restart]
+# root = "~"
+
+# How many directory levels deep the session finder searches (1-8).  [restart]
+# finder_depth = 4
+
+# Show hidden directories (dotfiles) in the session finder.  [restart]
+# finder_show_hidden = false
+
+# Icons used in the session switcher UI. Can be any UTF-8 string.  [restart]
+# icon_filter = ">"
+# icon_session = ""
+# icon_new = "+"
+# icon_active = "●"
+# icon_recent = "○"
+# icon_folder = "▸"
+
+
+# ── Statusbar ────────────────────────────────────────────────────────
+
+# The statusbar displays widgets at the top or bottom of the terminal.
+# Adding any widget sub-table auto-enables the statusbar.
+
+[statusbar]
+
+# Enable the statusbar.  [restart]
+# enabled = false
+
+# Position: "top" or "bottom".  [restart]
+# position = "bottom"
+
+# Statusbar background opacity (0-255).  [restart]
+# background_opacity = 0
+
+# Statusbar background color, hex "#RRGGBB".  [restart]
+# background = "#1E1E28"
+
+# Widgets are defined as sub-tables of [statusbar].
+# Each widget has a `side` ("left"/"right"), an `interval` in seconds,
+# and any number of custom key=value parameters.
+#
+# Example:
+# [statusbar.time]
+# side = "right"
+# interval = 1
+# format = "%H:%M"
+#
+# [statusbar.cwd]
+# side = "left"
+# interval = 5
+
+
+# ── Logging ──────────────────────────────────────────────────────────
+
+[logging]
+
+# Log level: "debug", "info", "warn", "error".  [restart]
+# level = "warn"
+
+# Log to a file instead of stderr.  [restart]
+# file = "/tmp/attyx.log"
+
+
+# ── Updates ──────────────────────────────────────────────────────────
+
+[updates]
+
+# Check for updates on startup.  [restart]
+# check_updates = true
+
+
+# ── Keybindings ──────────────────────────────────────────────────────
+#
+# Override default keybindings. Set an action to "none" to unbind it.
+# Key format: modifier+modifier+key (e.g. "ctrl+shift+c")
+# Modifiers: ctrl, shift, alt (option), cmd (super)
+#
+# All available actions and their defaults (macOS / Linux):
+#
+#   copy                    (system) / ctrl+shift+c
+#   paste                   (system) / ctrl+shift+v
+#   search_toggle           cmd+f / ctrl+f
+#   search_next             cmd+g / ctrl+g
+#   search_prev             cmd+shift+g / ctrl+shift+g
+#   scroll_page_up          shift+page_up
+#   scroll_page_down        shift+page_down
+#   scroll_to_top           shift+home
+#   scroll_to_bottom        shift+end
+#   config_reload           ctrl+shift+r
+#   debug_toggle            ctrl+shift+d / ctrl+shift+f12
+#   tab_new                 cmd+t / ctrl+shift+t
+#   tab_close               cmd+w / ctrl+shift+w
+#   tab_next                ctrl+tab
+#   tab_prev                ctrl+shift+tab
+#   tab_select_1..9         cmd+1..9 / alt+1..9
+#   tab_move_left           cmd+ctrl+shift+left / ctrl+alt+shift+left
+#   tab_move_right          cmd+ctrl+shift+right / ctrl+alt+shift+right
+#   tab_rename              (unbound)
+#   tab_picker              cmd+shift+t / ctrl+alt+t
+#   split_vertical          cmd+d / ctrl+shift+d
+#   split_horizontal        cmd+shift+d / ctrl+shift+e
+#   split_left              (unbound)
+#   split_up                (unbound)
+#   pane_close              cmd+shift+w / ctrl+shift+q
+#   pane_focus_up           ctrl+k
+#   pane_focus_down         ctrl+j
+#   pane_focus_left         ctrl+h
+#   pane_focus_right        ctrl+l
+#   pane_resize_up          cmd+ctrl+k / ctrl+alt+k
+#   pane_resize_down        cmd+ctrl+j / ctrl+alt+j
+#   pane_resize_left        cmd+ctrl+h / ctrl+alt+h
+#   pane_resize_right       cmd+ctrl+l / ctrl+alt+l
+#   pane_resize_grow        cmd+ctrl+= / ctrl+alt+=
+#   pane_resize_shrink      cmd+ctrl+- / ctrl+alt+-
+#   pane_rotate             ctrl+shift+o
+#   pane_zoom_toggle        cmd+shift+z / ctrl+shift+z
+#   clear_screen            cmd+k / ctrl+shift+k
+#   copy_mode               ctrl+shift+space
+#   command_palette_toggle  cmd+shift+p / ctrl+shift+p
+#   session_switcher_toggle cmd+shift+s / ctrl+shift+s
+#   session_create          ctrl+shift+n
+#   session_kill            ctrl+d
+#   font_size_increase      cmd+= / ctrl+=
+#   font_size_decrease      cmd+- / ctrl+-
+#   font_size_reset         cmd+0 / ctrl+0
+#   theme_picker            (unbound)
+#   open_config             cmd+, / ctrl+,
+#   new_window              (unbound)
+#   close_window            ctrl+shift+w / (unbound)
+#   close_all_tabs          (unbound)
+#   close_all_windows       (unbound)
+
+[keybindings]
+
+# Examples:
+# copy = "ctrl+c"
+# paste = "ctrl+v"
+# tab_new = "ctrl+t"
+# search_toggle = "none"
+
+
+# ── Sequences ────────────────────────────────────────────────────────
+#
+# Send raw escape sequences on key combos. Useful for custom terminal
+# commands or integration with TUI apps.
+# Format: "key+combo" = "\x1b[..."
+
+[sequences]
+
+# Examples:
+# "ctrl+shift+k" = "\x1b[3J"
+# "ctrl+shift+l" = "\x1b[2J\x1b[H"
+
+
+# ── Popups ───────────────────────────────────────────────────────────
+#
+# Floating popup windows for TUI tools. Up to 32 popups.
+# Each [[popup]] entry defines a hotkey-triggered overlay.
+
+# [[popup]]
+# hotkey = "ctrl+shift+g"      # Key combo to toggle this popup
+# command = "lazygit"           # Command to run inside the popup
+# width = "80%"                 # Popup width (percentage or pixels)
+# height = "80%"               # Popup height
+# border = "single"            # Border style: "single", "double", "rounded", "heavy", "none"
+# border_color = "#78829a"     # Border color, hex "#RRGGBB"
+# background_opacity = 1.0     # Popup background opacity (0.0-1.0)
+# background = ""              # Background color override, hex "#RRGGBB" (empty = theme)
+# on_return_cmd = ""           # Command to run with popup output on exit code 0
+# inject_alt = false           # Inject on_return_cmd even when alt screen is active
+# padding = 0                  # Padding on all sides
+# padding_x = 0               # Horizontal padding
+# padding_y = 0               # Vertical padding
+# padding_top = 0
+# padding_bottom = 0
+# padding_left = 0
+# padding_right = 0

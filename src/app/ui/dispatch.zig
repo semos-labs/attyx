@@ -16,6 +16,8 @@ const c = terminal.c;
 const copy_mode = @import("copy_mode.zig");
 const input = @import("input.zig");
 
+const default_config = @embedFile("../../config/default_config.toml");
+
 // ---------------------------------------------------------------------------
 // Platform callbacks (implemented in platform C files)
 // ---------------------------------------------------------------------------
@@ -292,13 +294,15 @@ fn openConfigInEditor() void {
     else
         std.fmt.bufPrintZ(&path_buf, "{s}/.config/attyx/attyx.toml", .{home}) catch return;
 
-    // Ensure the config file exists (create empty if missing)
+    // Ensure the config file exists (write default template if missing)
     if (std.fs.accessAbsolute(config_path, .{})) {} else |_| {
         if (std.mem.lastIndexOfScalar(u8, config_path, '/')) |i| {
             std.fs.makeDirAbsolute(config_path[0..i]) catch {};
         }
-        const f = std.fs.createFileAbsolute(config_path, .{ .exclusive = true }) catch null;
-        if (f) |file| file.close();
+        if (std.fs.createFileAbsolute(config_path, .{ .exclusive = true })) |file| {
+            file.writeAll(default_config) catch {};
+            file.close();
+        } else |_| {}
     }
 
     const editor_raw = std.posix.getenv("VISUAL") orelse
@@ -343,13 +347,15 @@ fn openConfigInEditorWindows() void {
     var path_buf: [512]u8 = undefined;
     const config_path = std.fmt.bufPrintZ(&path_buf, "{s}\\attyx\\attyx.toml", .{appdata}) catch return;
 
-    // Ensure file exists
+    // Ensure file exists (write default template if missing)
     if (std.fs.accessAbsolute(config_path, .{})) {} else |_| {
         var dir_buf: [512]u8 = undefined;
         const dir = std.fmt.bufPrint(&dir_buf, "{s}\\attyx", .{appdata}) catch "";
         if (dir.len > 0) std.fs.makeDirAbsolute(dir) catch {};
-        const f = std.fs.createFileAbsolute(config_path, .{ .exclusive = true }) catch null;
-        if (f) |file| file.close();
+        if (std.fs.createFileAbsolute(config_path, .{ .exclusive = true })) |file| {
+            file.writeAll(default_config) catch {};
+            file.close();
+        } else |_| {}
     }
 
     // Open with the default .toml editor (or Notepad)
