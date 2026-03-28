@@ -85,8 +85,11 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     free(fontPath);
 
     // Font size: prefer config (g_font_size), in points.
+    // Convert points to pixels: 1pt = 1/72 inch, standard desktop = 96 DPI,
+    // so px = pt * 96/72 * contentScale.  This matches how Ghostty, Kitty,
+    // and other terminals size fonts on Linux.
     float basePt = (g_font_size > 0) ? (float)g_font_size : 14.0f;
-    int fontSize = (int)(basePt * contentScale);
+    int fontSize = (int)(basePt * contentScale * 96.0f / 72.0f + 0.5f);
     FT_Set_Pixel_Sizes(face, 0, fontSize);
 
     float ascender = (float)(face->size->metrics.ascender >> 6);
