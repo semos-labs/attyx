@@ -8,58 +8,6 @@
 #include "windows_internal.h"
 
 // ---------------------------------------------------------------------------
-// canBeWide — East Asian Width W/F detection (same as macOS/Linux)
-// ---------------------------------------------------------------------------
-
-static bool canBeWide(uint32_t cp) {
-    if (cp < 0x1100) return false;
-    if (cp <= 0x115F) return true;
-    if (cp == 0x2329 || cp == 0x232A) return true;
-    if (cp >= 0x2E80 && cp <= 0x303E) return true;
-    if (cp >= 0x3041 && cp <= 0x33FF) return true;
-    if (cp >= 0x3400 && cp <= 0x4DBF) return true;
-    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
-    if (cp >= 0xA000 && cp <= 0xA4CF) return true;
-    if (cp >= 0xA960 && cp <= 0xA97F) return true;
-    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
-    if (cp >= 0xE000 && cp <= 0xF8FF) return true;
-    if (cp >= 0xF900 && cp <= 0xFAFF) return true;
-    if (cp >= 0xFE10 && cp <= 0xFE6F) return true;
-    if (cp >= 0xFF01 && cp <= 0xFF60) return true;
-    if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;
-    if (cp >= 0x1B000 && cp <= 0x1B2FF) return true;
-    if (cp >= 0x1F300 && cp <= 0x1F64F) return true;
-    if (cp >= 0x1F680 && cp <= 0x1F6FF) return true;
-    if (cp >= 0x1F7E0 && cp <= 0x1F7FF) return true;
-    if (cp >= 0x1F900 && cp <= 0x1FAFF) return true;
-    if (cp >= 0x20000 && cp <= 0x2FFFD) return true;
-    if (cp >= 0x30000 && cp <= 0x3FFFD) return true;
-    if (cp == 0x231A || cp == 0x231B) return true;
-    if (cp >= 0x23E9 && cp <= 0x23F3) return true;
-    if (cp >= 0x25FD && cp <= 0x25FE) return true;
-    if (cp == 0x2614 || cp == 0x2615) return true;
-    if (cp >= 0x2648 && cp <= 0x2653) return true;
-    if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
-    if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
-    if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
-    if (cp == 0x26FA || cp == 0x26FD) return true;
-    if (cp == 0x2702 || cp == 0x2705) return true;
-    if (cp >= 0x2708 && cp <= 0x270D) return true;
-    if (cp == 0x2728) return true;
-    if (cp == 0x2744 || cp == 0x2747) return true;
-    if (cp == 0x274C || cp == 0x274E) return true;
-    if (cp >= 0x2753 && cp <= 0x2755) return true;
-    if (cp == 0x2757) return true;
-    if (cp == 0x2763 || cp == 0x2764) return true;
-    if (cp >= 0x2795 && cp <= 0x2797) return true;
-    if (cp == 0x27A1 || cp == 0x27B0 || cp == 0x27BF) return true;
-    if (cp == 0x2934 || cp == 0x2935) return true;
-    if (cp >= 0x2B05 && cp <= 0x2B07) return true;
-    if (cp == 0x2B1B || cp == 0x2B1C || cp == 0x2B50 || cp == 0x2B55) return true;
-    return false;
-}
-
-// ---------------------------------------------------------------------------
 // Codepoint to UTF-16
 // ---------------------------------------------------------------------------
 
@@ -333,9 +281,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     bool isBoxDraw   = (baseCp >= 0x2500 && baseCp <= 0x257F);
     bool isBlock     = (baseCp >= 0x2580 && baseCp <= 0x259F);
 
-    // Wide detection
+    // Wide detection: measure any non-Latin glyph (>= U+0100).
+    // The 1.05× threshold prevents false positives from slightly-wider
+    // regular glyphs, while ensuring symbols like ⌘ from Nerd Fonts aren't clipped.
     bool wide = false;
-    if (haveGlyph && !isPowerline && !isBlock && canBeWide(baseCp)) {
+    if (haveGlyph && !isPowerline && !isBlock && baseCp >= 0x100) {
         DWRITE_GLYPH_METRICS gm;
         IDWriteFontFace_GetDesignGlyphMetrics(face, &glyphIndex, 1, &gm, FALSE);
         DWRITE_FONT_METRICS fm;

@@ -18,56 +18,6 @@ extern CTFontRef createFuzzyMatchFont(CFStringRef reqName, CGFloat fontSize);
 /// property is W (Wide) or F (Fullwidth) — i.e. it occupies 2 terminal cells.
 /// Characters with EAW = N / Na / H must return false even if the font
 /// happens to draw them wider than one cell (e.g. regional indicators).
-static bool canBeWide(uint32_t cp) {
-    if (cp < 0x1100) return false;
-    if (cp <= 0x115F) return true;   // Hangul Jamo
-    if (cp == 0x2329 || cp == 0x232A) return true;
-    if (cp >= 0x2E80 && cp <= 0x303E) return true;  // CJK Radicals, Kangxi, Bopomofo
-    if (cp >= 0x3041 && cp <= 0x33FF) return true;  // Kana, CJK symbols, Compatibility
-    if (cp >= 0x3400 && cp <= 0x4DBF) return true;  // CJK Unified Ext-A
-    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;  // CJK Unified
-    if (cp >= 0xA000 && cp <= 0xA4CF) return true;  // Yi
-    if (cp >= 0xA960 && cp <= 0xA97F) return true;  // Hangul Jamo Ext-A
-    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;  // Hangul Syllables
-    if (cp >= 0xF900 && cp <= 0xFAFF) return true;  // CJK Compatibility Ideographs
-    if (cp >= 0xFE10 && cp <= 0xFE6F) return true;  // Vertical / Compat forms
-    if (cp >= 0xFF01 && cp <= 0xFF60) return true;  // Fullwidth ASCII
-    if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;  // Fullwidth signs
-    if (cp >= 0x1B000 && cp <= 0x1B2FF) return true; // Kana Supplement / Extended
-    if (cp >= 0x1F300 && cp <= 0x1F64F) return true; // Misc Symbols, Emoticons (NOT 1F1E0-1F1FF)
-    if (cp >= 0x1F680 && cp <= 0x1F6FF) return true; // Transport & Map Symbols
-    if (cp >= 0x1F7E0 && cp <= 0x1F7FF) return true; // Coloured circles/squares
-    if (cp >= 0x1F900 && cp <= 0x1FAFF) return true; // Supplemental Symbols & Pictographs
-    if (cp >= 0x20000 && cp <= 0x2FFFD) return true; // CJK Ext B–F
-    if (cp >= 0x30000 && cp <= 0x3FFFD) return true; // CJK Ext G–H
-    // Common emoji with Emoji_Presentation that are unambiguously 2-cell:
-    if (cp == 0x231A || cp == 0x231B) return true;
-    if (cp >= 0x23E9 && cp <= 0x23F3) return true;
-    if (cp >= 0x25FD && cp <= 0x25FE) return true;
-    if (cp == 0x2614 || cp == 0x2615) return true;
-    if (cp >= 0x2648 && cp <= 0x2653) return true;
-    if (cp == 0x267F || cp == 0x2693 || cp == 0x26A1) return true;
-    if (cp == 0x26CE || cp == 0x26D4 || cp == 0x26EA) return true;
-    if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true;
-    if (cp == 0x26FA || cp == 0x26FD) return true;
-    if (cp == 0x2702 || cp == 0x2705) return true;
-    if (cp == 0x2708) return true;                           // ✈ airplane
-    if (cp >= 0x270A && cp <= 0x270B) return true;          // ✊✋ fists
-    if (cp == 0x270D) return true;                           // ✍ writing hand
-    if (cp == 0x2728) return true;
-    if (cp == 0x2744 || cp == 0x2747) return true;
-    if (cp == 0x274C || cp == 0x274E) return true;
-    if (cp >= 0x2753 && cp <= 0x2755) return true;
-    if (cp == 0x2757) return true;
-    if (cp == 0x2763 || cp == 0x2764) return true;
-    if (cp >= 0x2795 && cp <= 0x2797) return true;
-    if (cp == 0x27A1 || cp == 0x27B0 || cp == 0x27BF) return true;
-    if (cp == 0x2934 || cp == 0x2935) return true;
-    if (cp >= 0x2B05 && cp <= 0x2B07) return true;
-    if (cp == 0x2B1B || cp == 0x2B1C || cp == 0x2B50 || cp == 0x2B55) return true;
-    return false;
-}
-
 void glyphCacheInsert(GlyphCache* gc, uint32_t cp, int slot) {
     uint32_t idx = (cp * 2654435761u) % GLYPH_CACHE_CAP;
     for (int probe = 0; probe < GLYPH_CACHE_CAP; probe++) {
@@ -205,16 +155,14 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
 
     // 3. Classify: detect wide glyphs (advance or ink > 1.05× cell width).
     //    Wide glyphs get a 2-cell atlas slot and a 2×gw wide renderer quad.
-    //    canBeWide() gates this check: characters with EAW = N/Na/H (e.g. regional
-    //    indicator symbols U+1F1E0–U+1F1FF) must never be given a 2-cell slot even
-    //    if the font happens to draw them wider than one cell — they are 1-cell
-    //    characters in the terminal model, and 2-cell allocation causes bleed into
-    //    adjacent cells.
+    //    We measure any non-Latin glyph (>= U+0100) — the 1.05× threshold
+    //    prevents false positives from slightly-wider regular glyphs, while
+    //    ensuring symbols like ⌘ (U+2318) from Nerd Fonts aren't clipped.
     bool isPowerline = (baseCp >= 0xE0B0 && baseCp <= 0xE0D4);
     bool isBoxDraw   = (baseCp >= 0x2500 && baseCp <= 0x257F);
     bool isBlock     = (baseCp >= 0x2580 && baseCp <= 0x259F);
     bool wide = false;
-    if (haveGlyph && !isPowerline && !isBlock && canBeWide(baseCp)) {
+    if (haveGlyph && !isPowerline && !isBlock && baseCp >= 0x100) {
         CGRect bbox;
         CTFontGetBoundingRectsForGlyphs(drawFont, kCTFontOrientationDefault, &glyph, &bbox, 1);
         CGSize adv;
