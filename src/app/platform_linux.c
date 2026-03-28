@@ -6,6 +6,11 @@
 
 #include "linux_internal.h"
 #include <png.h>
+// X11 interop for setting window decoration theme variant.
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
 
 // ---------------------------------------------------------------------------
 // Shared state definitions
@@ -296,6 +301,80 @@ void attyx_spawn_new_window(void) {
 }
 
 // ---------------------------------------------------------------------------
+// OS dark mode detection + X11 window theme variant
+// ---------------------------------------------------------------------------
+
+// Returns: 1 = dark, 0 = light, -1 = unknown.
+static int linux_detect_os_dark_mode(void) {
+    char buf[256];
+    // freedesktop portal (GNOME, KDE, Niri, Sway, etc.)
+    // color-scheme: 0 = no pref, 1 = dark, 2 = light
+    FILE* fp = popen("gdbus call --session "
+        "--dest org.freedesktop.portal.Desktop "
+        "--object-path /org/freedesktop/portal/desktop "
+        "--method org.freedesktop.portal.Settings.Read "
+        "'org.freedesktop.appearance' 'color-scheme' 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "uint32 1")) return 1;
+            if (strstr(buf, "uint32 2")) return 0;
+        }
+    }
+    // gsettings color-scheme (GNOME/GTK)
+    fp = popen("gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "prefer-dark"))  return 1;
+            if (strstr(buf, "prefer-light")) return 0;
+        }
+    }
+    // gsettings gtk-theme name (Ubuntu sets "Yaru-dark" etc. without color-scheme)
+    fp = popen("gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null", "r");
+    if (fp) {
+        int got = (fgets(buf, sizeof(buf), fp) != NULL);
+        pclose(fp);
+        if (got) {
+            if (strstr(buf, "-dark") || strstr(buf, "-Dark") ||
+                strstr(buf, ":dark") || strstr(buf, ":Dark"))
+                return 1;
+        }
+    }
+    // GTK_THEME env var (e.g. "Adwaita:dark", "Breeze-Dark")
+    const char* gtk = getenv("GTK_THEME");
+    if (gtk && (strstr(gtk, ":dark") || strstr(gtk, ":Dark") ||
+                strstr(gtk, "-dark") || strstr(gtk, "-Dark")))
+        return 1;
+    return -1;
+}
+
+// Set _GTK_THEME_VARIANT on the X11 window to match the OS color scheme.
+// On pure Wayland (no DISPLAY), the compositor handles decoration theming
+// directly — this is a no-op in that case.
+static void linux_set_theme_variant(GLFWwindow* window) {
+    int dark = linux_detect_os_dark_mode();
+    if (dark < 0) return; // unknown — let the WM decide
+
+    const char* display_env = getenv("DISPLAY");
+    if (!display_env || !display_env[0]) return;
+
+    Display* dpy = glfwGetX11Display();
+    Window   win = glfwGetX11Window(window);
+    if (!dpy || !win) return;
+
+    Atom prop = XInternAtom(dpy, "_GTK_THEME_VARIANT", False);
+    Atom utf8 = XInternAtom(dpy, "UTF8_STRING", False);
+    const char* variant = dark ? "dark" : "light";
+
+    XChangeProperty(dpy, win, prop, utf8, 8, PropModeReplace,
+                    (const unsigned char*)variant, (int)strlen(variant));
+    XFlush(dpy);
+}
+
+// ---------------------------------------------------------------------------
 // Hot-reload: apply window property changes (decorations, padding, opacity)
 // Called from main loop when g_needs_window_update is set.
 // ---------------------------------------------------------------------------
@@ -362,6 +441,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     float xscale = 1.0f, yscale = 1.0f;
     if (primary) glfwGetMonitorContentScale(primary, &xscale, &yscale);
     g_content_scale = xscale;
+    ATTYX_LOG_INFO("platform", "monitor content scale: x=%.2f y=%.2f", xscale, yscale);
 
     // Initialize FreeType
     FT_Library ft_lib;
@@ -381,6 +461,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     g_cell_px_h = g_gc.glyph_h;
     g_cell_w_pts = g_cell_px_w / xscale;
     g_cell_h_pts = g_cell_px_h / yscale;
+    ATTYX_LOG_INFO("platform", "glyph cache: cell_px=%.0fx%.0f cell_pts=%.1fx%.1f",
+        g_cell_px_w, g_cell_px_h, g_cell_w_pts, g_cell_h_pts);
 
     glfwDestroyWindow(tmpWin);
 
@@ -427,8 +509,49 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     // queue up behind the swap and typing feels laggy.
     glfwSwapInterval(0);
 
+    // Derive actual content scale from the real window.  On Wayland with
+    // fractional scaling (e.g. 1.1x), glfwGetMonitorContentScale may report the
+    // compositor's scale but GLFW 3.3 doesn't create a proportionally-scaled
+    // framebuffer.  Using fb/win ratio gives the true pixel density.
+    {
+        int fb_w, fb_h, win_w, win_h;
+        glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+        glfwGetWindowSize(g_window, &win_w, &win_h);
+        float actual_scale = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+        if (actual_scale < 0.5f) actual_scale = 1.0f; // sanity
+        ATTYX_LOG_INFO("platform", "window: fb=%dx%d win=%dx%d actual_scale=%.2f monitor_scale=%.2f",
+            fb_w, fb_h, win_w, win_h, actual_scale, xscale);
+
+        if (fabsf(actual_scale - xscale) > 0.01f) {
+            ATTYX_LOG_INFO("platform",
+                "content scale corrected: monitor=%.2f actual=%.2f", xscale, actual_scale);
+            xscale = actual_scale;
+            yscale = actual_scale;
+            g_content_scale = actual_scale;
+
+            // Re-rasterize glyphs at the corrected scale
+            FT_Done_Face(g_gc.ft_face);
+            if (g_gc.ft_bold) FT_Done_Face(g_gc.ft_bold);
+            if (g_gc.ft_italic) FT_Done_Face(g_gc.ft_italic);
+            if (g_gc.ft_bold_italic) FT_Done_Face(g_gc.ft_bold_italic);
+            g_gc = createGlyphCache(ft_lib, actual_scale);
+            g_cell_px_w = g_gc.glyph_w;
+            g_cell_px_h = g_gc.glyph_h;
+            g_cell_w_pts = g_cell_px_w / actual_scale;
+            g_cell_h_pts = g_cell_px_h / actual_scale;
+
+            // Resize window to match corrected cell dimensions
+            winW = (int)(cols * g_cell_px_w / actual_scale) + g_padding_left + g_padding_right;
+            winH = (int)(rows * g_cell_px_h / actual_scale) + g_padding_top  + g_padding_bottom;
+            glfwSetWindowSize(g_window, winW, winH);
+        }
+    }
+
     // Set window icon from embedded PNG.
     linux_set_window_icon(g_window);
+
+    // Set dark/light decoration theme to match terminal theme.
+    linux_set_theme_variant(g_window);
 
     // Re-create glyph cache texture in the new context
     GLuint tex;
@@ -459,6 +582,29 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
 
     // Register GLFW window callbacks
     linux_register_callbacks(g_window);
+
+    // On Wayland, tiling compositors (niri, sway) resize the window immediately
+    // after creation — before callbacks are registered.  Process any pending
+    // events and trigger an initial resize so the grid fills the window.
+    glfwPollEvents();
+    {
+        int fb_w, fb_h;
+        glfwGetFramebufferSize(g_window, &fb_w, &fb_h);
+        if (g_cell_px_w > 0 && g_cell_px_h > 0) {
+            float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
+            float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
+            int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.01f);
+            int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.01f);
+            if (new_cols < 1) new_cols = 1;
+            if (new_rows < 1) new_rows = 1;
+            if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
+            if (new_rows > ATTYX_MAX_ROWS) new_rows = ATTYX_MAX_ROWS;
+            if (new_cols != cols || new_rows != rows) {
+                g_pending_resize_rows = new_rows;
+                g_pending_resize_cols = new_cols;
+            }
+        }
+    }
 
     // Main loop — use glfwWaitEventsTimeout to sleep when idle instead of
     // busy-spinning with glfwPollEvents.  The PTY thread wakes us via
