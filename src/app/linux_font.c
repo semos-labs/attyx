@@ -124,6 +124,16 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     float baseline_y_offset = (gh - naturalH) / 2.0f;
     float x_offset = (gw - naturalW) / 2.0f;
 
+    ATTYX_LOG_INFO("glyph", "font: base=%.0fpt scale=%.2f fontSize=%dpx",
+        basePt, contentScale, fontSize);
+    ATTYX_LOG_INFO("glyph", "font: ascender=%.2f height=%.2f advance=%.2f (raw 26.6: asc=%ld h=%ld adv=%ld)",
+        ascender, naturalH, naturalW,
+        face->size->metrics.ascender, face->size->metrics.height,
+        FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0 ? face->glyph->advance.x : face->size->metrics.max_advance);
+    ATTYX_LOG_INFO("glyph", "font: cell_w_cfg=%d cell_h_cfg=%d -> gw=%.1f gh=%.1f",
+        g_cell_width, g_cell_height, gw, gh);
+    ATTYX_LOG_INFO("glyph", "font: baseline_y_off=%.2f x_off=%.2f", baseline_y_offset, x_offset);
+
     int cols = 32;
     int initRows = 32;
     int atlasW = (int)(gw * cols);
