@@ -4,10 +4,10 @@
 const std = @import("std");
 const split_layout_mod = @import("../split_layout.zig");
 const SplitLayout = split_layout_mod.SplitLayout;
+const publish = @import("publish.zig");
+const c = publish.c;
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
-const c = terminal.c;
-const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 const statusbar = @import("../statusbar.zig");
 
