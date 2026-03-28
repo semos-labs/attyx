@@ -242,12 +242,7 @@ pub const TerminalState = struct {
             },
             .scroll_up => |n| {
                 const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.scroll_top + 1);
-                const blank = self.bceCell();
-                if (self.isFullScreenScroll()) {
-                    for (0..count) |_| self.fullScreenScroll();
-                } else {
-                    for (0..count) |_| self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom, blank);
-                }
+                self.scrollUpActiveRegion(count);
                 self.dirty.markRange(self.scroll_top, self.scroll_bottom);
             },
             .scroll_down => |n| {
@@ -400,6 +395,13 @@ pub const TerminalState = struct {
         }
     }
 
+    fn topAnchoredRegionScroll(self: *TerminalState) void {
+        self.ring.scrollUpTopAnchoredRegionWithScrollback(self.scroll_bottom, self.bceCell());
+        if (self.viewport_offset > 0) {
+            self.viewport_offset = @min(self.viewport_offset + 1, self.ring.scrollbackCount());
+        }
+    }
+
     /// Returns true when a scroll should use zero-copy ring advance
     /// (full-screen on main buffer with scroll region covering all rows).
     fn isFullScreenScroll(self: *const TerminalState) bool {
@@ -408,13 +410,31 @@ pub const TerminalState = struct {
             self.scroll_bottom == self.ring.screen_rows - 1;
     }
 
+    fn isTopAnchoredMainScroll(self: *const TerminalState) bool {
+        return !self.alt_active and
+            self.scroll_top == 0 and
+            self.scroll_bottom < self.ring.screen_rows - 1;
+    }
+
+    fn scrollUpActiveRegion(self: *TerminalState, count: usize) void {
+        if (count == 0) return;
+
+        if (self.isFullScreenScroll()) {
+            for (0..count) |_| self.fullScreenScroll();
+            return;
+        }
+
+        if (self.isTopAnchoredMainScroll()) {
+            for (0..count) |_| self.topAnchoredRegionScroll();
+            return;
+        }
+
+        self.ring.scrollUpRegionN(self.scroll_top, self.scroll_bottom, count, self.bceCell());
+    }
+
     fn cursorDown(self: *TerminalState) void {
         if (self.cursor.row == self.scroll_bottom) {
-            if (self.isFullScreenScroll()) {
-                self.fullScreenScroll();
-            } else {
-                self.ring.scrollUpRegion(self.scroll_top, self.scroll_bottom, self.bceCell());
-            }
+            self.scrollUpActiveRegion(1);
             self.dirty.markRange(self.scroll_top, self.scroll_bottom);
         } else if (self.cursor.row < self.ring.screen_rows - 1) {
             self.cursor.row += 1;

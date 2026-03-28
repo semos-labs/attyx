@@ -3,6 +3,15 @@ const RingBuffer = @import("../../term/ring.zig").RingBuffer;
 const Cell = @import("../../term/grid.zig").Cell;
 const Engine = @import("../../term/engine.zig").Engine;
 
+fn fillRows(engine: *Engine, rows: []const u8) void {
+    for (rows, 0..) |ch, i| {
+        var buf: [3]u8 = undefined;
+        const len = std.unicode.utf8Encode(ch, &buf) catch unreachable;
+        engine.feed(buf[0..len]);
+        if (i + 1 < rows.len) engine.feed("\r\n");
+    }
+}
+
 test "scrollback: push and get single line" {
     const alloc = std.testing.allocator;
     // 1 screen row, 3 cols, 4 scrollback capacity
@@ -109,6 +118,156 @@ test "scrollback: alt screen does not save" {
     try std.testing.expect(!engine.state.alt_active);
 }
 
+test "scrollback: DECSTBM top-anchored LF saves row 0 and preserves tail" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[3;1H");
+    engine.feed("\n");
+
+    try std.testing.expectEqual(@as(usize, 1), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getRow(0)[0].char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM top-anchored CSI S saves exact rows and preserves tail" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 6, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDEF");
+    engine.feed("\x1b[1;4r");
+    engine.feed("\x1b[2S");
+
+    try std.testing.expectEqual(@as(usize, 2), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getRow(0)[0].char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getRow(1)[0].char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+    try std.testing.expectEqual(@as(u21, 'F'), engine.state.ring.getScreenCell(5, 0).char);
+}
+
+test "scrollback: DECSTBM non-top-anchored LF stays local" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[2;4r");
+    engine.feed("\x1b[4;1H");
+    engine.feed("\n");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM non-top-anchored CSI S stays local" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[2;4r");
+    engine.feed("\x1b[S");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM top-anchored LF in alt screen does not push scrollback" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    engine.feed("\x1b[?1049h");
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[3;1H");
+    engine.feed("\n");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM top-anchored CSI S in alt screen stays local" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    engine.feed("\x1b[?1049h");
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[S");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM top-anchored RI stays local" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[1;1H");
+    engine.feed("\x1bM");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM transcript mixes CSI S and RI without extra history" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[2S");
+    engine.feed("\x1b[1;1H");
+    engine.feed("\x1bM");
+
+    try std.testing.expectEqual(@as(usize, 2), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.getRow(0)[0].char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getRow(1)[0].char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
 test "scrollback: CSI scroll_up saves multiple rows" {
     const alloc = std.testing.allocator;
     var engine = try Engine.init(alloc, 4, 3, 100);
@@ -144,6 +303,62 @@ test "scrollback: viewport_offset bumped on scroll when >0" {
     // viewport_offset should have been bumped from 1 to 2
     try std.testing.expectEqual(@as(usize, 2), engine.state.viewport_offset);
     try std.testing.expectEqual(@as(usize, 2), engine.state.ring.scrollbackCount());
+}
+
+test "scrollback: DECSTBM top-anchored path bumps viewport_offset when >0" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 100);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[3;1H");
+    engine.feed("\n");
+    try std.testing.expectEqual(@as(usize, 1), engine.state.ring.scrollbackCount());
+
+    engine.state.viewport_offset = 1;
+    engine.feed("\x1b[3;1H");
+    engine.feed("\n");
+
+    try std.testing.expectEqual(@as(usize, 2), engine.state.viewport_offset);
+    try std.testing.expectEqual(@as(usize, 2), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'A'), engine.state.ring.viewportRow(engine.state.viewport_offset, 0)[0].char);
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.viewportRow(engine.state.viewport_offset, 1)[0].char);
+}
+
+test "scrollback: DECSTBM top-anchored LF with zero scrollback stays visible-only" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 0);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[3;1H");
+    engine.feed("\n");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
+}
+
+test "scrollback: DECSTBM top-anchored CSI S with zero scrollback stays visible-only" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 5, 1, 0);
+    defer engine.deinit();
+
+    fillRows(&engine, "ABCDE");
+    engine.feed("\x1b[1;3r");
+    engine.feed("\x1b[S");
+
+    try std.testing.expectEqual(@as(usize, 0), engine.state.ring.scrollbackCount());
+    try std.testing.expectEqual(@as(u21, 'B'), engine.state.ring.getScreenCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), engine.state.ring.getScreenCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), engine.state.ring.getScreenCell(2, 0).char);
+    try std.testing.expectEqual(@as(u21, 'D'), engine.state.ring.getScreenCell(3, 0).char);
+    try std.testing.expectEqual(@as(u21, 'E'), engine.state.ring.getScreenCell(4, 0).char);
 }
 
 test "scrollback: resize migrates scrollback on column change" {

@@ -243,6 +243,27 @@ pub const RingBuffer = struct {
         for (0..count) |_| self.scrollUpRegion(top, bottom, blank);
     }
 
+    /// Scroll up within a top-anchored scroll region [0, bottom], preserving
+    /// rows below the region while still pushing the old row 0 into scrollback.
+    pub fn scrollUpTopAnchoredRegionWithScrollback(self: *RingBuffer, bottom: usize, blank: Cell) void {
+        if (bottom >= self.screen_rows) return;
+
+        _ = self.advanceScreen();
+
+        if (bottom + 1 < self.screen_rows) {
+            var r = self.screen_rows - 1;
+            while (r > bottom) : (r -= 1) {
+                const dst = self.getScreenRowMut(r);
+                const src = self.getScreenRow(r - 1);
+                @memcpy(dst, src);
+                self.setScreenWrapped(r, self.getScreenWrapped(r - 1));
+            }
+        }
+
+        @memset(self.getScreenRowMut(bottom), blank);
+        self.setScreenWrapped(bottom, false);
+    }
+
     /// Scroll down N times.
     pub fn scrollDownRegionN(self: *RingBuffer, top: usize, bottom: usize, n: usize, blank: Cell) void {
         if (top >= bottom or n == 0) return;
@@ -411,6 +432,28 @@ test "ring: scrollDownRegion partial" {
     try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(1, 0).char);
     try testing.expectEqual(@as(u21, 'B'), ring.getScreenCell(2, 0).char);
     try testing.expectEqual(@as(u21, 'C'), ring.getScreenCell(3, 0).char);
+    try testing.expectEqual(@as(u21, 'E'), ring.getScreenCell(4, 0).char);
+}
+
+test "ring: scrollUpTopAnchoredRegionWithScrollback preserves fixed tail rows" {
+    const alloc = testing.allocator;
+    var ring = try RingBuffer.init(alloc, 5, 1, 10);
+    defer ring.deinit();
+
+    ring.setScreenCell(0, 0, .{ .char = 'A' });
+    ring.setScreenCell(1, 0, .{ .char = 'B' });
+    ring.setScreenCell(2, 0, .{ .char = 'C' });
+    ring.setScreenCell(3, 0, .{ .char = 'D' });
+    ring.setScreenCell(4, 0, .{ .char = 'E' });
+
+    ring.scrollUpTopAnchoredRegionWithScrollback(2, Cell{});
+
+    try testing.expectEqual(@as(usize, 1), ring.scrollbackCount());
+    try testing.expectEqual(@as(u21, 'A'), ring.getRow(0)[0].char);
+    try testing.expectEqual(@as(u21, 'B'), ring.getScreenCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'C'), ring.getScreenCell(1, 0).char);
+    try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(2, 0).char);
+    try testing.expectEqual(@as(u21, 'D'), ring.getScreenCell(3, 0).char);
     try testing.expectEqual(@as(u21, 'E'), ring.getScreenCell(4, 0).char);
 }
 
