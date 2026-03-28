@@ -49,6 +49,10 @@ src/
 - Do not swallow errors silently.
 - Parsing: ignore malformed sequences gracefully by default; log them in strict mode.
 
+## Configuration
+
+- When adding or renaming a config option, always update `src/config/default_config.toml` to include it with a comment explaining what it does.
+
 ## Performance
 
 - No per-character allocations.
@@ -79,4 +83,5 @@ All tests must run in headless mode. No rendering required for core tests.
 - Focus on the user-facing side of features: what users can do, how to use it, and why it matters.
 - No technical deep dives, internal architecture details, or implementation specifics.
 - Keep descriptions concise and practical — a user reading these should immediately understand what changed and how it affects them.
+- Always include PR links for each fix or feature (e.g. `(#178)`). Link to the specific PR that introduced the change.
 

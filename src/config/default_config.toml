@@ -118,6 +118,9 @@
 # padding_left = 0
 # padding_right = 0
 
+# Show the scrollbar when scrolling through terminal history.  [live]
+# scrollbar = true
+
 
 # ── Tabs ──────────────────────────────────────────────────────────────
 
