@@ -33,6 +33,7 @@ const win_popup = @import("win_popup.zig");
 const win_session_picker = @import("win_session_picker.zig");
 const win_daemon = @import("win_daemon.zig");
 const popup_mod = @import("../popup.zig");
+const split_actions = @import("split_actions.zig");
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler_windows.zig");
 const session_win = @import("../session_windows.zig");
@@ -68,6 +69,10 @@ pub const WinCtx = struct {
     config_path: ?[]const u8,
     args: []const [:0]const u8,
     applied_scrollback_lines: u32,
+    applied_cursor_shape: config_mod.CursorShapeConfig = .block,
+    applied_cursor_blink: bool = true,
+    applied_cursor_trail: bool = false,
+    applied_font_ligatures: bool = true,
     statusbar: ?*statusbar_mod.Statusbar = null,
     overlay_mgr: ?*OverlayManager = null,
     split_resize_step: u16 = 4,
@@ -859,7 +864,7 @@ fn handleResize(ctx: *WinCtx) void {
 // ── Config reload ──
 
 fn doReloadConfig(ctx: *WinCtx) void {
-    var new_config = reload_mod.loadReloadedConfig(
+    var new_cfg = reload_mod.loadReloadedConfig(
         ctx.allocator,
         ctx.no_config,
         ctx.config_path,
@@ -868,18 +873,31 @@ fn doReloadConfig(ctx: *WinCtx) void {
         logging.err("config", "reload failed: {}", .{err});
         return;
     };
-    defer new_config.deinit();
+    defer new_cfg.deinit();
 
-    // Cursor
-    const eng = &ctx.tab_mgr.activePane().engine;
-    eng.state.cursor_shape = publish.cursorShapeFromConfig(new_config.cursor_shape, new_config.cursor_blink);
-    c.g_cursor_trail = @intFromBool(new_config.cursor_trail);
-    c.g_font_ligatures = @intFromBool(new_config.font_ligatures);
+    // Cursor (hot)
+    if (new_cfg.cursor_shape != ctx.applied_cursor_shape or
+        new_cfg.cursor_blink != ctx.applied_cursor_blink)
+    {
+        ctx.tab_mgr.activePane().engine.state.cursor_shape =
+            publish.cursorShapeFromConfig(new_cfg.cursor_shape, new_cfg.cursor_blink);
+        ctx.applied_cursor_shape = new_cfg.cursor_shape;
+        ctx.applied_cursor_blink = new_cfg.cursor_blink;
+    }
+    if (new_cfg.cursor_trail != ctx.applied_cursor_trail) {
+        c.g_cursor_trail = @intFromBool(new_cfg.cursor_trail);
+        ctx.applied_cursor_trail = new_cfg.cursor_trail;
+    }
+    if (new_cfg.font_ligatures != ctx.applied_font_ligatures) {
+        c.g_font_ligatures = @intFromBool(new_cfg.font_ligatures);
+        ctx.applied_font_ligatures = new_cfg.font_ligatures;
+    }
 
     // Scrollback
-    if (new_config.scrollback_lines != ctx.applied_scrollback_lines) {
+    if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {
+        const eng = &ctx.tab_mgr.activePane().engine;
         const ring = &eng.state.ring;
-        ring.resizeScrollback(new_config.scrollback_lines) catch |err| {
+        ring.resizeScrollback(new_cfg.scrollback_lines) catch |err| {
             logging.err("config", "scrollback resize failed: {}", .{err});
         };
         ctx.applied_scrollback_lines = @intCast(ring.capacity - ring.screen_rows);
@@ -894,21 +912,19 @@ fn doReloadConfig(ctx: *WinCtx) void {
     const current_font_size: u16 = @intCast(c.g_font_size);
     const current_family_len: usize = @intCast(c.g_font_family_len);
     const current_family = c.g_font_family[0..current_family_len];
-    const font_changed = new_config.font_size != current_font_size or
-        !std.mem.eql(u8, new_config.font_family, current_family) or
-        new_config.cell_width.encode() != c.g_cell_width or
-        new_config.cell_height.encode() != c.g_cell_height;
+    const font_changed = new_cfg.font_size != current_font_size or
+        !std.mem.eql(u8, new_cfg.font_family, current_family) or
+        new_cfg.cell_width.encode() != c.g_cell_width or
+        new_cfg.cell_height.encode() != c.g_cell_height;
     if (font_changed) {
-        publish.publishFontConfig(&new_config);
-        c.g_needs_font_rebuild = 1;
+        publish.publishFontConfig(&new_cfg);
+        ws.g_needs_font_rebuild = 1;
     }
 
     // Theme
-    var new_theme = ctx.theme_registry.resolve(new_config.theme_name);
-    if (new_config.theme_background) |bg| new_theme.background = bg;
-    ctx.theme.* = new_theme;
+    ctx.theme.* = ctx.theme_registry.resolve(new_cfg.theme_name);
+    if (new_cfg.theme_background) |bg| ctx.theme.background = bg;
     publish.publishTheme(ctx.theme);
-
     // Apply theme to all engines
     const tc = publish.themeToEngineColors(ctx.theme);
     for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
@@ -924,28 +940,28 @@ fn doReloadConfig(ctx: *WinCtx) void {
     {
         var needs_window_update = false;
 
-        if (new_config.background_opacity != ws.g_background_opacity) {
-            ws.g_background_opacity = new_config.background_opacity;
+        if (new_cfg.background_opacity != ws.g_background_opacity) {
+            ws.g_background_opacity = new_cfg.background_opacity;
             needs_window_update = true;
         }
-        const new_blur: i32 = @intCast(new_config.background_blur);
+        const new_blur: i32 = @intCast(new_cfg.background_blur);
         if (new_blur != ws.g_background_blur) {
             ws.g_background_blur = new_blur;
             needs_window_update = true;
         }
-        const new_deco: i32 = if (new_config.window_decorations) 1 else 0;
+        const new_deco: i32 = if (new_cfg.window_decorations) 1 else 0;
         if (new_deco != ws.g_window_decorations) {
             ws.g_window_decorations = new_deco;
             needs_window_update = true;
         }
-        const new_scrollbar: i32 = if (new_config.window_scrollbar) 1 else 0;
+        const new_scrollbar: i32 = if (new_cfg.window_scrollbar) 1 else 0;
         if (new_scrollbar != ws.g_window_scrollbar) {
             ws.g_window_scrollbar = new_scrollbar;
         }
-        const new_pl: i32 = @intCast(new_config.window_padding_left);
-        const new_pr: i32 = @intCast(new_config.window_padding_right);
-        const new_pt: i32 = @intCast(new_config.window_padding_top);
-        const new_pb: i32 = @intCast(new_config.window_padding_bottom);
+        const new_pl: i32 = @intCast(new_cfg.window_padding_left);
+        const new_pr: i32 = @intCast(new_cfg.window_padding_right);
+        const new_pt: i32 = @intCast(new_cfg.window_padding_top);
+        const new_pb: i32 = @intCast(new_cfg.window_padding_bottom);
         if (new_pl != ws.g_padding_left or new_pr != ws.g_padding_right or
             new_pt != ws.g_padding_top or new_pb != ws.g_padding_bottom)
         {
@@ -957,22 +973,24 @@ fn doReloadConfig(ctx: *WinCtx) void {
         }
         if (needs_window_update) {
             ws.g_needs_window_update = 1;
+            const gaps = split_actions.computeSplitGaps();
+            ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
         }
     }
 
     // Tab always_show
-    const new_always: i32 = if (new_config.tab_always_show) 1 else 0;
+    const new_always: i32 = if (new_cfg.tab_always_show) 1 else 0;
     if (new_always != ws.g_tab_always_show) {
         ws.g_tab_always_show = new_always;
         updateGridOffsets(ctx);
     }
-    eng.state.reflow_on_resize = new_config.reflow_enabled;
+    ctx.tab_mgr.activePane().engine.state.reflow_on_resize = new_cfg.reflow_enabled;
 
-    // Keybindings
+    // Keybind table rebuild
     {
         var ph: [4]keybinds_mod.PopupHotkey = undefined;
         var ph_count: u8 = 0;
-        if (new_config.popup_configs) |entries| {
+        if (new_cfg.popup_configs) |entries| {
             for (entries) |entry| {
                 if (ph_count >= 4) break;
                 ph[ph_count] = .{ .index = ph_count, .hotkey = entry.hotkey };
@@ -980,20 +998,20 @@ fn doReloadConfig(ctx: *WinCtx) void {
             }
         }
         const new_table = keybinds_mod.buildTable(
-            new_config.keybind_overrides,
-            new_config.sequence_entries,
+            new_cfg.keybind_overrides,
+            new_cfg.sequence_entries,
             ph[0..ph_count],
         );
         keybinds_mod.installTable(&new_table);
     }
 
     // Split resize step
-    ctx.split_resize_step = new_config.split_resize_step;
+    ctx.split_resize_step = new_cfg.split_resize_step;
     // Default program for new tabs
-    ctx.default_program = new_config.program;
+    ctx.default_program = new_cfg.program;
 
     c.attyx_mark_all_dirty();
-    logging.info("config", "reloaded", .{});
+    logging.info("config", "config reloaded", .{});
 }
 
 // ── Grid offsets ──
