@@ -738,6 +738,65 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
 
+    case WM_DROPFILES: {
+        HDROP hDrop = (HDROP)wParam;
+        UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+        if (fileCount == 0) { DragFinish(hDrop); return 0; }
+
+        // Compute buffer size: each file path up to MAX_PATH, shell-escaped
+        int totalMax = 0;
+        for (UINT i = 0; i < fileCount; i++) {
+            UINT len = DragQueryFileW(hDrop, i, NULL, 0);
+            totalMax += (int)len * 4 * 3 + 3; // worst case UTF-8 expansion + quoting + space
+        }
+        char* buf = (char*)malloc(totalMax);
+        if (!buf) { DragFinish(hDrop); return 0; }
+        int pos = 0;
+
+        for (UINT i = 0; i < fileCount; i++) {
+            WCHAR wpath[MAX_PATH];
+            if (!DragQueryFileW(hDrop, i, wpath, MAX_PATH)) continue;
+
+            // Convert to UTF-8
+            int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, NULL, 0, NULL, NULL);
+            if (utf8Len <= 0) continue;
+            char* utf8 = (char*)malloc(utf8Len);
+            if (!utf8) continue;
+            WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8, utf8Len, NULL, NULL);
+
+            if (i > 0) buf[pos++] = ' ';
+            // Shell-escape: wrap in single quotes, replace ' with '\''
+            buf[pos++] = '\'';
+            for (const char* p = utf8; *p; p++) {
+                if (*p == '\'') {
+                    buf[pos++] = '\'';
+                    buf[pos++] = '\\';
+                    buf[pos++] = '\'';
+                    buf[pos++] = '\'';
+                } else {
+                    buf[pos++] = *p;
+                }
+            }
+            buf[pos++] = '\'';
+            free(utf8);
+        }
+        DragFinish(hDrop);
+
+        if (pos > 0) {
+            void (*send_fn)(const uint8_t*, int) =
+                g_popup_active ? attyx_popup_send_input : attyx_send_input;
+            if (g_bracketed_paste) {
+                send_fn((const uint8_t*)"\x1b[200~", 6);
+                send_fn((const uint8_t*)buf, pos);
+                send_fn((const uint8_t*)"\x1b[201~", 6);
+            } else {
+                send_fn((const uint8_t*)buf, pos);
+            }
+        }
+        free(buf);
+        return 0;
+    }
+
     default:
         break;
     }
@@ -842,6 +901,9 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     );
 
     if (!g_hwnd) return;
+
+    // Accept drag-and-drop files
+    DragAcceptFiles(g_hwnd, TRUE);
 
     // Apply dark mode title bar
     win_apply_dark_mode(g_hwnd);
