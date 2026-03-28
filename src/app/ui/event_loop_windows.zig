@@ -130,6 +130,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         c.attyx_mark_all_dirty();
         c.attyx_end_cell_update();
         publishState(eng);
+        c.g_viewport_offset = @intCast(eng.state.viewport_offset);
     }
 
     // Track last published cursor column so we can suppress the brief
@@ -205,6 +206,7 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
+        const synced_vp: i32 = @bitCast(c.g_viewport_offset);
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
 
         // ── Flush debounced PTY resizes ──
@@ -284,6 +286,9 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             const now = std.time.nanoTimestamp();
             const min_frame_ns: i128 = 4 * std.time.ns_per_ms;
             if (got_data and !viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
+                // Always keep scrollback count current so scroll
+                // clamping uses the real range, even on throttled frames.
+                c.g_scrollback_count = @intCast(eng.state.ring.scrollbackCount());
                 Sleep(0);
                 continue;
             }
@@ -347,6 +352,13 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
             win_search.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publishState(eng);
+            // Write viewport offset back to C only if the user hasn't
+            // scrolled since we synced.
+            const engine_vp: i32 = @intCast(eng.state.viewport_offset);
+            const current_c_vp: i32 = @bitCast(c.g_viewport_offset);
+            if (current_c_vp == synced_vp) {
+                c.g_viewport_offset = engine_vp;
+            }
 
             last_published_vp = viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
@@ -406,7 +418,6 @@ fn publishState(eng: *Engine) void {
     );
     c.g_scrollback_count = @intCast(eng.state.ring.scrollbackCount());
     c.g_alt_screen = @intFromBool(eng.state.alt_active);
-    c.g_viewport_offset = @intCast(eng.state.viewport_offset);
     c.g_cursor_shape = @intFromEnum(eng.state.cursor_shape);
     c.g_cursor_visible = @intFromBool(eng.state.cursor_visible);
     ws.g_kitty_kbd_flags = @intCast(eng.state.kittyFlags());
@@ -848,22 +859,49 @@ fn handleResize(ctx: *WinCtx) void {
 // ── Config reload ──
 
 fn doReloadConfig(ctx: *WinCtx) void {
-    var new_config = config_mod.AppConfig{};
-    if (!ctx.no_config) {
-        if (ctx.config_path) |path| {
-            config_mod.loadFromFile(ctx.allocator, path, &new_config) catch return;
-        } else {
-            config_mod.loadFromDefaultPath(ctx.allocator, &new_config) catch return;
-        }
-    }
-    const cli = @import("../../config/cli.zig");
-    cli.applyCliOverrides(ctx.args, &new_config);
+    var new_config = reload_mod.loadReloadedConfig(
+        ctx.allocator,
+        ctx.no_config,
+        ctx.config_path,
+        ctx.args,
+    ) catch |err| {
+        logging.err("config", "reload failed: {}", .{err});
+        return;
+    };
+    defer new_config.deinit();
 
-    // Apply hot-reloadable settings
-    publish.publishFontConfig(&new_config);
-    c.g_font_ligatures = @intFromBool(new_config.font_ligatures);
+    // Cursor
+    const eng = &ctx.tab_mgr.activePane().engine;
+    eng.state.cursor_shape = publish.cursorShapeFromConfig(new_config.cursor_shape, new_config.cursor_blink);
     c.g_cursor_trail = @intFromBool(new_config.cursor_trail);
-    ws.g_background_opacity = new_config.background_opacity;
+    c.g_font_ligatures = @intFromBool(new_config.font_ligatures);
+
+    // Scrollback
+    if (new_config.scrollback_lines != ctx.applied_scrollback_lines) {
+        const ring = &eng.state.ring;
+        ring.resizeScrollback(new_config.scrollback_lines) catch |err| {
+            logging.err("config", "scrollback resize failed: {}", .{err});
+        };
+        ctx.applied_scrollback_lines = @intCast(ring.capacity - ring.screen_rows);
+        if (eng.state.viewport_offset > ring.scrollbackCount()) {
+            eng.state.viewport_offset = ring.scrollbackCount();
+            c.g_viewport_offset = @intCast(eng.state.viewport_offset);
+        }
+        c.g_scrollback_count = @intCast(ring.scrollbackCount());
+    }
+
+    // Font
+    const current_font_size: u16 = @intCast(c.g_font_size);
+    const current_family_len: usize = @intCast(c.g_font_family_len);
+    const current_family = c.g_font_family[0..current_family_len];
+    const font_changed = new_config.font_size != current_font_size or
+        !std.mem.eql(u8, new_config.font_family, current_family) or
+        new_config.cell_width.encode() != c.g_cell_width or
+        new_config.cell_height.encode() != c.g_cell_height;
+    if (font_changed) {
+        publish.publishFontConfig(&new_config);
+        c.g_needs_font_rebuild = 1;
+    }
 
     // Theme
     var new_theme = ctx.theme_registry.resolve(new_config.theme_name);
@@ -882,10 +920,80 @@ fn doReloadConfig(ctx: *WinCtx) void {
         }
     }
 
+    // Window properties
+    {
+        var needs_window_update = false;
+
+        if (new_config.background_opacity != ws.g_background_opacity) {
+            ws.g_background_opacity = new_config.background_opacity;
+            needs_window_update = true;
+        }
+        const new_blur: i32 = @intCast(new_config.background_blur);
+        if (new_blur != ws.g_background_blur) {
+            ws.g_background_blur = new_blur;
+            needs_window_update = true;
+        }
+        const new_deco: i32 = if (new_config.window_decorations) 1 else 0;
+        if (new_deco != ws.g_window_decorations) {
+            ws.g_window_decorations = new_deco;
+            needs_window_update = true;
+        }
+        const new_scrollbar: i32 = if (new_config.window_scrollbar) 1 else 0;
+        if (new_scrollbar != ws.g_window_scrollbar) {
+            ws.g_window_scrollbar = new_scrollbar;
+        }
+        const new_pl: i32 = @intCast(new_config.window_padding_left);
+        const new_pr: i32 = @intCast(new_config.window_padding_right);
+        const new_pt: i32 = @intCast(new_config.window_padding_top);
+        const new_pb: i32 = @intCast(new_config.window_padding_bottom);
+        if (new_pl != ws.g_padding_left or new_pr != ws.g_padding_right or
+            new_pt != ws.g_padding_top or new_pb != ws.g_padding_bottom)
+        {
+            ws.g_padding_left = new_pl;
+            ws.g_padding_right = new_pr;
+            ws.g_padding_top = new_pt;
+            ws.g_padding_bottom = new_pb;
+            needs_window_update = true;
+        }
+        if (needs_window_update) {
+            ws.g_needs_window_update = 1;
+        }
+    }
+
+    // Tab always_show
+    const new_always: i32 = if (new_config.tab_always_show) 1 else 0;
+    if (new_always != ws.g_tab_always_show) {
+        ws.g_tab_always_show = new_always;
+        updateGridOffsets(ctx);
+    }
+    eng.state.reflow_on_resize = new_config.reflow_enabled;
+
+    // Keybindings
+    {
+        var ph: [4]keybinds_mod.PopupHotkey = undefined;
+        var ph_count: u8 = 0;
+        if (new_config.popup_configs) |entries| {
+            for (entries) |entry| {
+                if (ph_count >= 4) break;
+                ph[ph_count] = .{ .index = ph_count, .hotkey = entry.hotkey };
+                ph_count += 1;
+            }
+        }
+        const new_table = keybinds_mod.buildTable(
+            new_config.keybind_overrides,
+            new_config.sequence_entries,
+            ph[0..ph_count],
+        );
+        keybinds_mod.installTable(&new_table);
+    }
+
+    // Split resize step
+    ctx.split_resize_step = new_config.split_resize_step;
     // Default program for new tabs
     ctx.default_program = new_config.program;
 
-    logging.info("config", "config reloaded", .{});
+    c.attyx_mark_all_dirty();
+    logging.info("config", "reloaded", .{});
 }
 
 // ── Grid offsets ──

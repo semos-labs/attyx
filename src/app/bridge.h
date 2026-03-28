@@ -278,6 +278,7 @@ extern int            g_app_version_len;
 extern volatile float g_background_opacity; // 0.0 = transparent, 1.0 = opaque
 extern volatile int   g_background_blur;    // >0 = blur enabled (macOS: NSVisualEffectView)
 extern volatile int   g_window_decorations; // 1 = show title bar, 0 = hide title bar
+extern volatile int   g_window_scrollbar;   // 1 = show scrollbar, 0 = hide scrollbar
 
 // ---------------------------------------------------------------------------
 // Theme colors (written by Zig at startup and on config reload)

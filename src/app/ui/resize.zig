@@ -152,4 +152,5 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     }
     c.attyx_end_cell_update();
     publish.publishState(ctx);
+    c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
 }

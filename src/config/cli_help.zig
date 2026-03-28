@@ -150,6 +150,7 @@ const options =
     opt("--background-opacity <f>   ", "Background opacity 0.0\u{2013}1.0 (default: 1.0)") ++
     opt("--background-blur <int>    ", "Blur radius when opacity < 1 (default: 30)") ++
     opt("--decorations              ", "Show/hide title bar " ++ d ++ "(--no-decorations)" ++ r) ++
+    opt("--scrollbar                ", "Show/hide scrollbar " ++ d ++ "(--no-scrollbar, default: on)" ++ r) ++
     opt("--padding <int>            ", "Window padding on all sides") ++
     opt("--padding-x / --padding-y  ", "Horizontal / vertical padding") ++
     opt("--log-level <level>        ", "Log level: err, warn, info, debug, trace") ++

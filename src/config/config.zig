@@ -132,6 +132,7 @@ pub const AppConfig = struct {
 
     // [window]
     window_decorations: bool = true,
+    window_scrollbar: bool = true,
     window_padding_left: u16 = 0,
     window_padding_right: u16 = 0,
     window_padding_top: u16 = 0,

@@ -26,6 +26,7 @@ export fn attyx_log(_: c_int, _: [*:0]const u8, _: [*:0]const u8) void {}
 export var g_background_opacity: f32 = 1.0;
 export var g_background_blur: i32 = 30;
 export var g_window_decorations: i32 = 1;
+export var g_window_scrollbar: i32 = 1;
 export var g_padding_left: i32 = 0;
 export var g_padding_right: i32 = 0;
 export var g_padding_top: i32 = 0;

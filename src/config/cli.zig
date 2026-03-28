@@ -164,6 +164,10 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             result.config.window_decorations = true;
         } else if (std.mem.eql(u8, arg, "--no-decorations")) {
             result.config.window_decorations = false;
+        } else if (std.mem.eql(u8, arg, "--scrollbar")) {
+            result.config.window_scrollbar = true;
+        } else if (std.mem.eql(u8, arg, "--no-scrollbar")) {
+            result.config.window_scrollbar = false;
         } else if (std.mem.eql(u8, arg, "--padding")) {
             const val = requireArg(args, &i, "--padding");
             const p = std.fmt.parseInt(u16, val, 10) catch fatal("invalid --padding value");
@@ -296,6 +300,10 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
             config.window_decorations = true;
         } else if (std.mem.eql(u8, arg, "--no-decorations")) {
             config.window_decorations = false;
+        } else if (std.mem.eql(u8, arg, "--scrollbar")) {
+            config.window_scrollbar = true;
+        } else if (std.mem.eql(u8, arg, "--no-scrollbar")) {
+            config.window_scrollbar = false;
         } else if (std.mem.eql(u8, arg, "--padding")) {
             i += 1;
             if (i < args.len) {
@@ -363,7 +371,9 @@ pub fn applyCliOverrides(args: []const [:0]const u8, config: *config_mod.AppConf
             std.mem.eql(u8, arg, "--help") or
             std.mem.eql(u8, arg, "-h") or
             std.mem.eql(u8, arg, "--decorations") or
-            std.mem.eql(u8, arg, "--no-decorations"))
+            std.mem.eql(u8, arg, "--no-decorations") or
+            std.mem.eql(u8, arg, "--scrollbar") or
+            std.mem.eql(u8, arg, "--no-scrollbar"))
         {
             if (std.mem.eql(u8, arg, "--config")) i += 1;
         }

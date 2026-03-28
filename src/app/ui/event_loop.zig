@@ -606,6 +606,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Sync viewport from C BEFORE feeding PTY data, so that
         // fullScreenScroll's viewport_offset bump is not overwritten.
+        // Snapshot the C value so we can detect user scrolls later.
+        const synced_vp: i32 = @bitCast(c.g_viewport_offset);
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
         // Snapshot scrollback count before feeding data — used to adjust
@@ -864,6 +866,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             const now_ns = std.time.nanoTimestamp();
             if (now_ns - last_publish_ns < min_frame_ns) {
                 throttled_frames +|= 1;
+                // Always keep scrollback count current so scroll
+                // clamping uses the real range, even on throttled frames.
+                c.g_scrollback_count = @intCast(publish.ctxEngine(ctx).state.ring.scrollbackCount());
                 continue;
             }
         }
@@ -931,6 +936,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             publish.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publish.publishState(ctx);
+            // Write viewport offset back to C only if the user hasn't
+            // scrolled since we synced — avoids overwriting scroll events
+            // that arrived on the main thread during this iteration.
+            const engine_vp: i32 = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
+            const current_c_vp: i32 = @bitCast(c.g_viewport_offset);
+            if (current_c_vp == synced_vp) {
+                c.g_viewport_offset = engine_vp;
+            }
             last_published_vp = publish.ctxEngine(ctx).state.viewport_offset;
             last_publish_ns = std.time.nanoTimestamp();
 

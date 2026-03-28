@@ -419,6 +419,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     }
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
+    c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
     publish.generateTabBar(ctx);
     // Tick statusbar widgets immediately so cwd/git refresh for the new
     // pane before we generate the overlay — avoids a flash of stale data.
@@ -658,6 +659,10 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
         if (new_deco != c.g_window_decorations) {
             c.g_window_decorations = new_deco;
             needs_window_update = true;
+        }
+        const new_scrollbar: i32 = if (new_cfg.window_scrollbar) 1 else 0;
+        if (new_scrollbar != c.g_window_scrollbar) {
+            c.g_window_scrollbar = new_scrollbar;
         }
         const new_pl: i32 = @intCast(new_cfg.window_padding_left);
         const new_pr: i32 = @intCast(new_cfg.window_padding_right);

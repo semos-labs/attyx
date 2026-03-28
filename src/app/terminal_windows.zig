@@ -88,6 +88,7 @@ pub fn run(
     ws.g_background_opacity = config.background_opacity;
     ws.g_background_blur = @intCast(config.background_blur);
     ws.g_window_decorations = if (config.window_decorations) 1 else 0;
+    ws.g_window_scrollbar = if (config.window_scrollbar) 1 else 0;
     ws.g_padding_left = @intCast(config.window_padding_left);
     ws.g_padding_right = @intCast(config.window_padding_right);
     ws.g_padding_top = @intCast(config.window_padding_top);

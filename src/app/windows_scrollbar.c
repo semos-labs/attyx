@@ -9,6 +9,8 @@
 int winBuildScrollbar(WinVertex* verts, int vi, int vertCap,
                       float offX, float offY, float gw, float gh,
                       int cols, int visibleRows) {
+    if (!g_window_scrollbar) return vi;
+
     int sb = g_scrollback_count;
     int vp = g_viewport_offset;
     if (sb <= 0 || g_alt_screen) return vi;

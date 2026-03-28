@@ -395,7 +395,6 @@ pub fn publishState(ctx: *PtyThreadCtx) void {
     );
     c.g_scrollback_count = @intCast(ctxEngine(ctx).state.ring.scrollbackCount());
     c.g_alt_screen = @intFromBool(ctxEngine(ctx).state.alt_active);
-    c.g_viewport_offset = @intCast(ctxEngine(ctx).state.viewport_offset);
 
     c.g_cursor_shape = @intFromEnum(ctxEngine(ctx).state.cursor_shape);
     c.g_cursor_visible = @intFromBool(ctxEngine(ctx).state.cursor_visible);

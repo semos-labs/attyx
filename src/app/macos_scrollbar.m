@@ -81,6 +81,11 @@ static int s_prev_rows = -1;
 void attyx_scrollbar_update(void) {
     if (!s_scroller) return;
 
+    if (!g_window_scrollbar) {
+        if (!s_scroller.hidden) s_scroller.hidden = YES;
+        return;
+    }
+
     int sb = g_scrollback_count;
     int vp = g_viewport_offset;
     int rows = g_rows;

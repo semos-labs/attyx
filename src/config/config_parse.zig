@@ -244,6 +244,14 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    if (Lookup.get(root, "window", "scrollbar")) |v| {
+        if (v == .bool) {
+            config.window_scrollbar = v.bool;
+        } else {
+            std.debug.print("error: {s}: window.scrollbar must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
     // window.opacity / window.blur — aliases for background.opacity / background.blur
     if (Lookup.get(root, "window", "opacity")) |v| {
         const raw: f64 = if (v == .float) v.float

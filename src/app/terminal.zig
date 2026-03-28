@@ -110,6 +110,7 @@ pub export var g_needs_window_update: i32 = 0;
 pub export var g_background_opacity: f32 = 1.0;
 pub export var g_background_blur: i32 = 30;
 pub export var g_window_decorations: i32 = 1;
+pub export var g_window_scrollbar: i32 = 1;
 pub export var g_padding_left: i32 = 0;
 pub export var g_padding_right: i32 = 0;
 pub export var g_padding_top: i32 = 0;
@@ -317,6 +318,7 @@ pub fn run(
     g_background_opacity = config.background_opacity;
     g_background_blur = @intCast(config.background_blur);
     g_window_decorations = if (config.window_decorations) 1 else 0;
+    g_window_scrollbar = if (config.window_scrollbar) 1 else 0;
     g_padding_left = @intCast(config.window_padding_left);
     g_padding_right = @intCast(config.window_padding_right);
     g_padding_top = @intCast(config.window_padding_top);
