@@ -441,6 +441,7 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     float xscale = 1.0f, yscale = 1.0f;
     if (primary) glfwGetMonitorContentScale(primary, &xscale, &yscale);
     g_content_scale = xscale;
+    ATTYX_LOG_INFO("platform", "monitor content scale: x=%.2f y=%.2f", xscale, yscale);
 
     // Initialize FreeType
     FT_Library ft_lib;
@@ -460,6 +461,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
     g_cell_px_h = g_gc.glyph_h;
     g_cell_w_pts = g_cell_px_w / xscale;
     g_cell_h_pts = g_cell_px_h / yscale;
+    ATTYX_LOG_INFO("platform", "glyph cache: cell_px=%.0fx%.0f cell_pts=%.1fx%.1f",
+        g_cell_px_w, g_cell_px_h, g_cell_w_pts, g_cell_h_pts);
 
     glfwDestroyWindow(tmpWin);
 
@@ -500,6 +503,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         glfwGetWindowSize(g_window, &win_w, &win_h);
         float actual_scale = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
         if (actual_scale < 0.5f) actual_scale = 1.0f; // sanity
+        ATTYX_LOG_INFO("platform", "window: fb=%dx%d win=%dx%d actual_scale=%.2f monitor_scale=%.2f",
+            fb_w, fb_h, win_w, win_h, actual_scale, xscale);
 
         if (fabsf(actual_scale - xscale) > 0.01f) {
             ATTYX_LOG_INFO("platform",
