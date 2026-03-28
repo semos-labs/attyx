@@ -216,7 +216,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     // isBlock declared above (needed before the early-return check)
     bool wide = false;
     if (!isPowerline && !isBlock && baseCp >= 0x100) {
-        int adv_px   = (int)(face->glyph->advance.x >> 6);
+        int adv_px   = (int)roundf(face->glyph->advance.x / 64.0f);
         int ink_right = face->glyph->bitmap_left + (int)bmp->width;
         int src_w    = adv_px > ink_right ? adv_px : ink_right;
         wide = (src_w > (int)(gw * 1.05f));
@@ -243,7 +243,7 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     if (isColorGlyph) {
         uint8_t* pixels = (uint8_t*)calloc(renderW * gh * 4, 1);
         int bx0 = face->glyph->bitmap_left;
-        int by0 = (int)gc->ascender - face->glyph->bitmap_top;
+        int by0 = (int)roundf(gc->ascender) - face->glyph->bitmap_top;
         for (int dy = 0; dy < gh; dy++) {
             int src_row = dy - by0;
             if (src_row < 0 || src_row >= (int)bmp->rows) continue;
@@ -275,10 +275,10 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
 
     if (isPowerline && bmp->rows > 0 && bmp->width > 0) {
         // Scale to full cell using advance × (asc+desc) as reference rect.
-        int adv_px  = (int)(face->glyph->advance.x >> 6);
+        int adv_px  = (int)roundf(face->glyph->advance.x / 64.0f);
         if (adv_px < 1) adv_px = bmp->width;
-        int asc_px  = (int)(face->size->metrics.ascender  >> 6);
-        int desc_px = -(int)(face->size->metrics.descender >> 6);
+        int asc_px  = (int)roundf(face->size->metrics.ascender  / 64.0f);
+        int desc_px = -(int)roundf(face->size->metrics.descender / 64.0f);
         int srcH    = asc_px + desc_px;
         if (srcH < 1) srcH = bmp->rows;
         int srcW    = adv_px;
@@ -391,11 +391,11 @@ int glyphCacheRasterize(GlyphCache* gc, uint32_t cp) {
     } else {
         int bl    = face->glyph->bitmap_left;
         int bt    = face->glyph->bitmap_top;
-        int asc   = (int)gc->ascender;
-        int y_off = (int)gc->baseline_y_offset;
+        int asc   = (int)roundf(gc->ascender);
+        int y_off = (int)roundf(gc->baseline_y_offset);
         // Wide: draw at natural position in renderW-wide buffer (no centering offset).
         // Normal: apply x_offset centering for the primary font cell width.
-        int x_off = wide ? 0 : (int)gc->x_offset;
+        int x_off = wide ? 0 : (int)roundf(gc->x_offset);
         for (unsigned row = 0; row < bmp->rows; row++) {
             int dy = asc - bt + (int)row + y_off;
             if (dy < 0 || dy >= gh) continue;
@@ -505,8 +505,8 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
     // 3. Render base glyph (same blit logic as regular rasterizer)
     if (FT_Load_Glyph(face, baseIdx, FT_LOAD_RENDER) == 0) {
         FT_Bitmap* bm = &face->glyph->bitmap;
-        int bx = face->glyph->bitmap_left + (int)gc->x_offset;
-        int by = (int)gc->ascender - face->glyph->bitmap_top + (int)gc->baseline_y_offset;
+        int bx = face->glyph->bitmap_left + (int)roundf(gc->x_offset);
+        int by = (int)roundf(gc->ascender) - face->glyph->bitmap_top + (int)roundf(gc->baseline_y_offset);
         for (unsigned r = 0; r < bm->rows; r++) {
             int dy = by + (int)r;
             if (dy < 0 || dy >= gh) continue;
@@ -528,8 +528,8 @@ int glyphCacheRasterizeCombined(GlyphCache* gc, uint32_t base, uint32_t c1, uint
         if (!mIdx) continue;
         if (FT_Load_Glyph(face, mIdx, FT_LOAD_RENDER) != 0) continue;
         FT_Bitmap* bm = &face->glyph->bitmap;
-        int bx = face->glyph->bitmap_left + (int)gc->x_offset;
-        int by = (int)gc->ascender - face->glyph->bitmap_top + (int)gc->baseline_y_offset;
+        int bx = face->glyph->bitmap_left + (int)roundf(gc->x_offset);
+        int by = (int)roundf(gc->ascender) - face->glyph->bitmap_top + (int)roundf(gc->baseline_y_offset);
         for (unsigned r = 0; r < bm->rows; r++) {
             int dy = by + (int)r;
             if (dy < 0 || dy >= gh) continue;

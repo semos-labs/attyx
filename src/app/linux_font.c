@@ -92,15 +92,19 @@ GlyphCache createGlyphCache(FT_Library ft_lib, float contentScale) {
     int fontSize = (int)(basePt * contentScale * 96.0f / 72.0f + 0.5f);
     FT_Set_Pixel_Sizes(face, 0, fontSize);
 
-    float ascender = (float)(face->size->metrics.ascender >> 6);
-    float naturalH = (float)(face->size->metrics.height >> 6);
+    // Use /64.0f (not >>6) to preserve sub-pixel precision from FreeType's
+    // 26.6 fixed-point metrics.  At small font sizes (e.g. 8pt) the fractional
+    // part matters — truncation can shift glyphs by a full pixel and produce
+    // wrong cell dimensions when percentage overrides are applied.
+    float ascender = face->size->metrics.ascender / 64.0f;
+    float naturalH = face->size->metrics.height / 64.0f;
 
     // Measure actual monospace cell width from a reference ASCII glyph.
     float naturalW;
     if (FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0) {
-        naturalW = (float)(face->glyph->advance.x >> 6);
+        naturalW = face->glyph->advance.x / 64.0f;
     } else {
-        naturalW = (float)(face->size->metrics.max_advance >> 6);
+        naturalW = face->size->metrics.max_advance / 64.0f;
     }
     float gh = naturalH;
     float gw = naturalW;
