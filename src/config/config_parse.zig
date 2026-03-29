@@ -665,6 +665,27 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    // [xyron]
+    if (Lookup.get(root, "xyron", "enabled")) |v| {
+        if (v == .bool) {
+            config.xyron_enabled = v.bool;
+        } else {
+            std.debug.print("error: {s}: xyron.enabled must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "xyron", "path")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_xyron_path) |old| allocator.free(old);
+            config.xyron_path = dupe;
+            config._owned_xyron_path = dupe;
+        } else {
+            std.debug.print("error: {s}: xyron.path must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [statusbar]
     if (try statusbar_config.parseStatusbar(allocator, root, path)) |sb| {
         if (config._owned_statusbar) {

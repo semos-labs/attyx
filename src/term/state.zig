@@ -564,7 +564,7 @@ pub const TerminalState = struct {
     const startHyperlink = @import("state_osc.zig").startHyperlink;
     const endHyperlink = @import("state_osc.zig").endHyperlink;
     pub const setTitle = @import("state_osc.zig").setTitle;
-    const setCwd = @import("state_osc.zig").setCwd;
+    pub const setCwd = @import("state_osc.zig").setCwd;
     const setShellPath = @import("state_osc.zig").setShellPath;
 
     // -- Kitty keyboard protocol ---------------------------------------------

@@ -193,6 +193,11 @@ pub const AppConfig = struct {
     // [updates]
     check_updates: bool = true,
 
+    // [xyron]
+    xyron_enabled: bool = false,
+    xyron_path: ?[]const u8 = null,
+    _owned_xyron_path: ?[]const u8 = null,
+
     // Runtime (CLI-only, not from config file)
     rows: u16 = 24,
     cols: u16 = 80,
@@ -224,6 +229,7 @@ pub const AppConfig = struct {
         }
         if (self._owned_log_level) |s| alloc.free(s);
         if (self._owned_log_file)  |s| alloc.free(s);
+        if (self._owned_xyron_path) |s| alloc.free(s);
         if (self._owned_working_directory) |s| alloc.free(s);
         if (self._owned_session_finder_root) |s| alloc.free(s);
         if (self._owned_session_icon_folder) |s| alloc.free(s);

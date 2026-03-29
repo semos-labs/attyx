@@ -88,6 +88,8 @@ pub const PtyThreadCtx = struct {
     split_resize_step: u16 = 4,
     // Default program for new tabs (from config [program] shell)
     default_program: ?[]const u8 = null,
+    // Xyron: when set, new panes get a xyron client instead of a shell PTY.
+    xyron_path: ?[:0]const u8 = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ pub var g_popup_pty_master: posix.fd_t = -1;
 pub var g_popup_engine: ?*attyx.Engine = null;
 pub var g_session_client: ?*SessionClient = null;
 pub var g_active_daemon_pane_id: u32 = 0;
+pub var g_xyron_client: ?*@import("../xyron/client.zig").XyronClient = null;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
@@ -518,7 +521,43 @@ pub fn run(
     const cwd_z: ?[:0]u8 = if (config.working_directory) |d| allocator.dupeZ(u8, d) catch null else null;
     defer if (cwd_z) |z| allocator.free(z);
     const cwd_ptr: ?[*:0]const u8 = if (cwd_z) |z| z.ptr else null;
-    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
+
+    // Xyron integration: detect path and spawn for the initial pane.
+    // The detected path is heap-duped so it persists for new-tab creation.
+    const xyron_detect = @import("../xyron/detect.zig");
+    const XyronClientMod = @import("../xyron/client.zig");
+    var xyron_heap_path: ?[:0]const u8 = null;
+    defer if (xyron_heap_path) |p| allocator.free(p);
+
+    const use_xyron = blk: {
+        if (!config.xyron_enabled) break :blk false;
+        logging.info("xyron", "searching for binary", .{});
+        var xp_buf: [xyron_detect.max_path]u8 = undefined;
+        const xp = xyron_detect.findXyron(config.xyron_path, &xp_buf) orelse {
+            logging.warn("xyron", "enabled but binary not found, falling back to shell", .{});
+            break :blk false;
+        };
+        logging.info("xyron", "detected xyron at {s}, launching headless", .{xp});
+        // Heap-dupe so the path outlives the stack buffer
+        xyron_heap_path = allocator.dupeZ(u8, xp) catch break :blk false;
+        const heap_xc = allocator.create(XyronClientMod.XyronClient) catch break :blk false;
+        heap_xc.* = XyronClientMod.XyronClient.spawn(xyron_heap_path.?, cwd_ptr) catch |err| {
+            logging.err("xyron", "spawn failed: {}, falling back to shell", .{err});
+            allocator.destroy(heap_xc);
+            break :blk false;
+        };
+        heap_xc.sendResize(initial_pty_rows, config.cols);
+        initial_pane.* = Pane.spawnXyron(allocator, initial_pty_rows, config.cols, config.scrollback_lines, heap_xc) catch |err| {
+            logging.err("xyron", "pane init failed: {}, falling back to shell", .{err});
+            heap_xc.deinit();
+            allocator.destroy(heap_xc);
+            break :blk false;
+        };
+        break :blk true;
+    };
+    if (!use_xyron) {
+        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
+    }
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&initial_theme);
@@ -597,9 +636,36 @@ pub fn run(
         initial_focus_count = @intCast(focus_count);
     }
 
+    // Xyron + sessions: attach xyron clients to all panes.
+    // Daemon keeps its pane IDs for layout tracking, but xyron handles I/O.
+    if (use_xyron) {
+        if (xyron_heap_path) |xhp| {
+            for (tab_mgr.tabs[0..tab_mgr.count]) |*maybe_layout| {
+                if (maybe_layout.*) |*lay| {
+                    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                    const lc = lay.collectLeaves(&leaves);
+                    for (leaves[0..lc]) |leaf| {
+                        if (leaf.pane.xyron != null) continue;
+                        const heap_xc = allocator.create(XyronClientMod.XyronClient) catch continue;
+                        heap_xc.* = XyronClientMod.XyronClient.spawn(xhp, cwd_ptr) catch {
+                            allocator.destroy(heap_xc);
+                            continue;
+                        };
+                        heap_xc.sendResize(initial_pty_rows, config.cols);
+                        leaf.pane.xyron = heap_xc;
+                        // Keep daemon_pane_id — daemon tracks layout.
+                        // Xyron handles I/O; daemon pane_output is filtered in event loop.
+                    }
+                }
+            }
+            logging.info("xyron", "attached xyron to {d} session pane(s)", .{tab_mgr.count});
+        }
+    }
+
     g_pty_master = tab_mgr.activePane().pty.master;
     g_engine = &tab_mgr.activePane().engine;
     g_session_client = heap_session_client;
+    g_xyron_client = tab_mgr.activePane().xyron;
 
     // Set split-active flag so input dispatch enables pane navigation keybinds.
     {
@@ -733,6 +799,7 @@ pub fn run(
         .last_focus_count = initial_focus_count,
         .split_resize_step = config.split_resize_step,
         .default_program = config.program,
+        .xyron_path = xyron_heap_path,
     };
 
     // Push theme colors to all pane engines (covers reconstructed daemon tabs too).

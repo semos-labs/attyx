@@ -45,6 +45,48 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             var osc7_buf: [statusbar.max_output_len]u8 = undefined;
             const resolved = resolveFocusedCwd(ctx, &osc7_buf);
             defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+
+            // Xyron mode: create a xyron pane instead of a shell PTY
+            if (ctx.xyron_path) |xp| {
+                const XyronClientMod = @import("../../xyron/client.zig");
+                const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
+                defer if (cwd_z) |z| ctx.allocator.free(z);
+                const cwd_p: ?[*:0]const u8 = if (cwd_z) |z| z.ptr else null;
+                const heap_xc = ctx.allocator.create(XyronClientMod.XyronClient) catch {
+                    logging.err("tabs", "xyron client alloc failed", .{});
+                    return;
+                };
+                heap_xc.* = XyronClientMod.XyronClient.spawn(xp, cwd_p) catch {
+                    ctx.allocator.destroy(heap_xc);
+                    logging.err("tabs", "xyron spawn failed", .{});
+                    return;
+                };
+                heap_xc.sendResize(rows, cols);
+                const Pane = @import("../pane.zig").Pane;
+                const new_pane = ctx.tab_mgr.allocator.create(Pane) catch {
+                    heap_xc.deinit();
+                    ctx.allocator.destroy(heap_xc);
+                    return;
+                };
+                new_pane.* = Pane.spawnXyron(ctx.allocator, rows, cols, ctx.applied_scrollback_lines, heap_xc) catch {
+                    heap_xc.deinit();
+                    ctx.allocator.destroy(heap_xc);
+                    ctx.tab_mgr.allocator.destroy(new_pane);
+                    return;
+                };
+                ctx.tab_mgr.addTabWithPane(new_pane, rows, cols) catch {
+                    new_pane.deinit();
+                    ctx.tab_mgr.allocator.destroy(new_pane);
+                    return;
+                };
+                publish.updateGridTopOffset(ctx);
+                ctx.tab_mgr.activePane().engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                switchActiveTab(ctx);
+                saveSessionLayout(ctx);
+                logging.info("tabs", "new xyron tab {d}/{d}", .{ ctx.tab_mgr.active + 1, ctx.tab_mgr.count });
+                return;
+            }
+
             if (ctx.sessions_enabled) {
                 // Session mode: daemon owns the PTY.
                 const sc = ctx.session_client orelse return;
@@ -354,6 +396,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     const pane = ctx.tab_mgr.activePane();
     terminal.g_pty_master = pane.pty.master;
     terminal.g_engine = &pane.engine;
+    terminal.g_xyron_client = pane.xyron;
 
     // Clear URL hover state so link underlines don't carry over to the new tab.
     c.attyx_clear_hover();

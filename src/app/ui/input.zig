@@ -407,6 +407,20 @@ pub fn sendInput(bytes: [*]const u8, len: c_int) void {
     if (len <= 0) return;
     const data = bytes[0..@intCast(@as(c_uint, @bitCast(len)))];
 
+    // Xyron mode: route through binary protocol.
+    if (terminal.g_xyron_client) |xc| {
+        switch (xc.state) {
+            .running_command => {
+                xc.sendInput(data);
+                // Ctrl+C also sends interrupt signal to foreground process
+                if (data.len == 1 and data[0] == 0x03) xc.sendInterrupt();
+            },
+            .idle => xc.appendIdleInput(data),
+            .waiting_ready => {},
+        }
+        return;
+    }
+
     // Session mode: route input through daemon to active pane
     if (terminal.g_session_client) |sc| {
         sc.sendPaneInput(terminal.g_active_daemon_pane_id, data) catch {};
@@ -478,6 +492,19 @@ pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: 
     );
 
     if (encoded.len > 0) {
+        // Xyron mode: route through binary protocol
+        if (terminal.g_xyron_client) |xc| {
+            switch (xc.state) {
+                .running_command => {
+                    xc.sendInput(encoded);
+                    if (encoded.len == 1 and encoded[0] == 0x03) xc.sendInterrupt();
+                },
+                .idle => xc.appendIdleInput(encoded),
+                .waiting_ready => {},
+            }
+            return;
+        }
+
         // Session mode: route through daemon to active pane
         if (terminal.g_session_client) |sc| {
             sc.sendPaneInput(terminal.g_active_daemon_pane_id, encoded) catch {};

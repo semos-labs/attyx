@@ -237,6 +237,21 @@
 # check_updates = true
 
 
+# ── Xyron ────────────────────────────────────────────────────────────
+#
+# Xyron shell integration. When enabled and xyron is detected,
+# Attyx replaces the default shell with xyron and renders a
+# block-based UI with bordered command output. macOS/Linux only.
+
+[xyron]
+
+# Enable xyron integration.  [restart]
+# enabled = false
+
+# Explicit path to the xyron binary. If unset, searches PATH.  [restart]
+# path = "/usr/local/bin/xyron"
+
+
 # ── Keybindings ──────────────────────────────────────────────────────
 #
 # Override default keybindings. Set an action to "none" to unbind it.

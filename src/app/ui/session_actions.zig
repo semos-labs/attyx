@@ -97,6 +97,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     ctx.tab_mgr.reset();
     terminal.g_engine = null;
     terminal.g_pty_master = -1;
+    terminal.g_xyron_client = null;
 
     // Attach to new session
     sc.attach(session_id, pty_rows, ctx.grid_cols) catch return;
@@ -123,12 +124,34 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
         ctx.tab_mgr.active = 0;
     }
 
+    // Xyron: attach xyron clients to reconstructed panes
+    if (ctx.xyron_path) |xp| {
+        const XyronClientMod = @import("../../xyron/client.zig");
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const lc = lay.collectLeaves(&leaves);
+                for (leaves[0..lc]) |leaf| {
+                    if (leaf.pane.xyron != null) continue;
+                    const heap_xc = ctx.allocator.create(XyronClientMod.XyronClient) catch continue;
+                    heap_xc.* = XyronClientMod.XyronClient.spawn(xp, null) catch {
+                        ctx.allocator.destroy(heap_xc);
+                        continue;
+                    };
+                    heap_xc.sendResize(pty_rows, ctx.grid_cols);
+                    leaf.pane.xyron = heap_xc;
+                }
+            }
+        }
+    }
+
     // Update globals
     if (ctx.tab_mgr.count > 0) {
         const ap = ctx.tab_mgr.activePane();
         terminal.g_engine = &ap.engine;
         terminal.g_pty_master = ap.pty.master;
         terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
+        terminal.g_xyron_client = ap.xyron;
     }
 
     // Compute rects and resize daemon PTYs to match each pane's dimensions.
@@ -244,6 +267,7 @@ pub fn handleLayoutSync(ctx: *PtyThreadCtx, layout_data: []const u8) void {
     terminal.g_engine = &ap.engine;
     terminal.g_pty_master = ap.pty.master;
     terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
+    terminal.g_xyron_client = ap.xyron;
 
     ctx.last_focus_count = 0;
     actions.switchActiveTab(ctx);
