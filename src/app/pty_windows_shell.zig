@@ -365,7 +365,7 @@ fn appendPowerShellArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
     var pos: usize = 0;
     while (cmd_line[pos] != 0) : (pos += 1) {}
 
-    const prefix = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -Command \". $PROFILE 2>$null; . '");
+    const prefix = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -Command \"if(Test-Path $PROFILE){. $PROFILE}; . '");
     const suffix = comptime toUtf16Literal("'\"");
 
     var sp_len: usize = 0;
