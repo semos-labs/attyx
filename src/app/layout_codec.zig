@@ -4,6 +4,8 @@ const std = @import("std");
 
 pub const max_tabs = 16;
 pub const max_nodes_per_tab = 15;
+const layout_v2_flag: u8 = 0x80;
+pub const title_flag_explicit: u8 = 0x01;
 
 pub const NodeTag = enum(u8) { leaf = 0, branch = 1 };
 pub const SplitDirection = enum(u8) { vertical = 0, horizontal = 1 };
@@ -26,12 +28,17 @@ pub const TabLayout = struct {
     root_idx: u8 = 0,
     focused_idx: u8 = 0,
     title_len: u8 = 0,
+    title_flags: u8 = 0,
     title: [max_title_len]u8 = undefined,
     nodes: [max_nodes_per_tab]LayoutNode = undefined,
 
     pub fn getTitle(self: *const TabLayout) ?[]const u8 {
         if (self.title_len == 0) return null;
         return self.title[0..self.title_len];
+    }
+
+    pub fn isExplicitTitle(self: *const TabLayout) bool {
+        return (self.title_flags & title_flag_explicit) != 0;
     }
 };
 
@@ -48,7 +55,7 @@ pub fn serialize(info: *const LayoutInfo, buf: []u8) !u16 {
 
     // Header: tab_count(u8), active_tab(u8), focused_pane_id(u32)
     if (buf.len < 6) return error.BufferTooSmall;
-    buf[pos] = info.tab_count;
+    buf[pos] = layout_v2_flag | info.tab_count;
     pos += 1;
     buf[pos] = info.active_tab;
     pos += 1;
@@ -58,8 +65,8 @@ pub fn serialize(info: *const LayoutInfo, buf: []u8) !u16 {
     // Per tab
     for (0..info.tab_count) |ti| {
         const tab = &info.tabs[ti];
-        // tab header: node_count(u8), root_idx(u8), focused_idx(u8), title_len(u8), title(...)
-        if (pos + 4 > buf.len) return error.BufferTooSmall;
+        // tab header: node_count(u8), root_idx(u8), focused_idx(u8), title_len(u8), title_flags(u8), title(...)
+        if (pos + 5 > buf.len) return error.BufferTooSmall;
         buf[pos] = tab.node_count;
         pos += 1;
         buf[pos] = tab.root_idx;
@@ -67,6 +74,8 @@ pub fn serialize(info: *const LayoutInfo, buf: []u8) !u16 {
         buf[pos] = tab.focused_idx;
         pos += 1;
         buf[pos] = tab.title_len;
+        pos += 1;
+        buf[pos] = tab.title_flags;
         pos += 1;
         if (tab.title_len > 0) {
             if (pos + tab.title_len > buf.len) return error.BufferTooSmall;
@@ -110,7 +119,9 @@ pub fn deserialize(data: []const u8) !LayoutInfo {
     if (data.len < 6) return error.DataTooShort;
 
     var pos: usize = 0;
-    info.tab_count = data[pos];
+    const header = data[pos];
+    const is_v2 = (header & layout_v2_flag) != 0;
+    info.tab_count = if (is_v2) header & ~layout_v2_flag else header;
     pos += 1;
     info.active_tab = data[pos];
     pos += 1;
@@ -120,7 +131,8 @@ pub fn deserialize(data: []const u8) !LayoutInfo {
     if (info.tab_count > max_tabs) return error.TooManyTabs;
 
     for (0..info.tab_count) |ti| {
-        if (pos + 4 > data.len) return error.DataTooShort;
+        const header_len: usize = if (is_v2) 5 else 4;
+        if (pos + header_len > data.len) return error.DataTooShort;
         var tab = &info.tabs[ti];
         tab.node_count = data[pos];
         pos += 1;
@@ -130,6 +142,11 @@ pub fn deserialize(data: []const u8) !LayoutInfo {
         pos += 1;
         tab.title_len = data[pos];
         pos += 1;
+        tab.title_flags = if (is_v2) blk: {
+            const flags = data[pos];
+            pos += 1;
+            break :blk flags;
+        } else 0;
         if (tab.title_len > max_title_len) return error.TitleTooLong;
         if (tab.title_len > 0) {
             if (pos + tab.title_len > data.len) return error.DataTooShort;
@@ -331,6 +348,7 @@ test "round-trip with tab titles" {
     info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = 1 };
     @memcpy(info.tabs[0].title[0..3], "vim");
     info.tabs[0].title_len = 3;
+    info.tabs[0].title_flags = title_flag_explicit;
 
     // Tab 1 with no title
     info.tabs[1].node_count = 1;
@@ -346,8 +364,32 @@ test "round-trip with tab titles" {
     try std.testing.expectEqual(@as(u8, 2), decoded.tab_count);
     try std.testing.expectEqual(@as(u8, 3), decoded.tabs[0].title_len);
     try std.testing.expectEqualStrings("vim", decoded.tabs[0].getTitle().?);
+    try std.testing.expect(decoded.tabs[0].isExplicitTitle());
     try std.testing.expectEqual(@as(u8, 0), decoded.tabs[1].title_len);
     try std.testing.expect(decoded.tabs[1].getTitle() == null);
+}
+
+test "deserialize v1 layout keeps raw tab titles" {
+    const data = [_]u8{
+        0x01, // tab_count
+        0x00, // active_tab
+        0x2A, 0x00, 0x00, 0x00, // focused_pane_id
+        0x01, // node_count
+        0x00, // root_idx
+        0x00, // focused_idx
+        0x04, // title_len
+        'c',
+        'o',
+        'd',
+        'e',
+        0x00, // node tag = leaf
+        0x2A, 0x00, 0x00, 0x00, // pane_id
+    };
+
+    const decoded = try deserialize(&data);
+    try std.testing.expectEqual(@as(u8, 1), decoded.tab_count);
+    try std.testing.expectEqualStrings("code", decoded.tabs[0].getTitle().?);
+    try std.testing.expect(!decoded.tabs[0].isExplicitTitle());
 }
 
 test "collectLeafPaneIds: collects all leaves" {

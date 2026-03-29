@@ -404,10 +404,10 @@ pub fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     sendOk(cmd, "");
 }
 
-/// Rename a specific tab's focused pane. Payload: [tab_idx:u8][name...]
+/// Rename a specific tab. Payload: [tab_idx:u8][name...]
 pub fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    if (cmd.payload_len < 2) {
-        sendError(cmd, "missing tab index or name");
+    if (cmd.payload_len < 1) {
+        sendError(cmd, "missing tab index");
         return;
     }
     const ti = cmd.payload[0];
@@ -420,7 +420,8 @@ pub fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         return;
     });
     const name = cmd.payload[1..cmd.payload_len];
-    layout.focusedPane().setCustomTitle(name);
+    layout.setTitle(name);
+    actions.saveSessionLayout(ctx);
     sendOk(cmd, "");
 }
 
@@ -475,7 +476,6 @@ pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void
     sendOk(cmd, "");
 }
 
-
 /// Build $SHELL -c '<command>' argv, with PATH injection from shell integration.
 pub fn buildShellArgv(ctx: *PtyThreadCtx, command: []const u8) ?[3][:0]const u8 {
     const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
@@ -489,10 +489,10 @@ pub fn buildShellArgv(ctx: *PtyThreadCtx, command: []const u8) ?[3][:0]const u8 
     const cmd_z = if (shell_path) |sp| blk: {
         const wrapped = std.fmt.allocPrint(ctx.allocator, "export PATH='{s}'; {s}", .{ sp, command }) catch
             break :blk ctx.allocator.dupeZ(u8, command) catch {
-            ctx.allocator.free(c_flag);
-            ctx.allocator.free(shell_z);
-            return null;
-        };
+                ctx.allocator.free(c_flag);
+                ctx.allocator.free(shell_z);
+                return null;
+            };
         defer ctx.allocator.free(wrapped);
         break :blk ctx.allocator.dupeZ(u8, wrapped) catch {
             ctx.allocator.free(c_flag);

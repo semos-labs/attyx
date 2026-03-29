@@ -56,7 +56,6 @@ extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.winapi) c_uint;
 
 const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 
-
 pub const WinCtx = struct {
     tab_mgr: *TabManager,
     cells: [*]c.AttyxCell,
@@ -143,7 +142,6 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
     var prev_cursor_col: usize = 0;
 
     while (c.attyx_should_quit() == 0) {
-
         if (ctx.tab_mgr.count == 0) {
             c.attyx_request_quit();
             break;
@@ -173,7 +171,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         win_session_picker.tickFinder(ctx);
 
         // Guard: an overlay action (e.g. close window) may have killed all tabs
-        if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+        if (ctx.tab_mgr.count == 0) {
+            c.attyx_request_quit();
+            break;
+        }
 
         // ── IPC commands ──
         while (ipc_queue.dequeue()) |cmd| {
@@ -208,7 +209,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         // ── Pane exit detection ──
         var pane_exited = false;
         checkPaneExits(ctx, &pane_exited);
-        if (ctx.tab_mgr.count == 0) { c.attyx_request_quit(); break; }
+        if (ctx.tab_mgr.count == 0) {
+            c.attyx_request_quit();
+            break;
+        }
 
         // ── Sync viewport from C (scroll sets c.g_viewport_offset) ──
         const synced_vp: i32 = @bitCast(c.g_viewport_offset);
@@ -450,18 +454,30 @@ fn resolveTabTitles(
     titles.* = .{null} ** tab_bar_mod.max_tabs;
     for (0..ctx.tab_mgr.count) |i| {
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        const pane = layout.focusedPane();
-        const raw_title = pane.engine.state.title orelse {
-            titles[i] = "cmd";
+        if (layout.getTitle()) |title| {
+            titles[i] = title;
             continue;
-        };
-        titles[i] = cleanWindowsTitle(raw_title, &name_bufs[i]) orelse raw_title;
+        }
+        const pane = layout.focusedPane();
+        if (pane.engine.state.title) |raw_title| {
+            titles[i] = cleanWindowsTitle(raw_title, &name_bufs[i]) orelse raw_title;
+            continue;
+        }
+        if (pane.getDaemonProcName()) |name| {
+            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
+            continue;
+        }
+        if (layout.getHintTitle()) |name| {
+            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
+            continue;
+        }
+        titles[i] = "cmd";
     }
 }
 
 /// Strip MSYS2 environment prefix (e.g. "MINGW64:/c/Users/foo" → "foo")
 /// and extract the basename from the path portion.
-fn cleanWindowsTitle(title: []const u8, buf: *[256]u8) ?[]const u8 {
+pub fn cleanWindowsTitle(title: []const u8, buf: *[256]u8) ?[]const u8 {
     // Look for "ENV:/path" pattern (MSYS2 sets title as MSYSTEM:PWD)
     var path: []const u8 = title;
     if (std.mem.indexOf(u8, title, ":/")) |colon_pos| {
@@ -703,13 +719,31 @@ fn processTabActions(ctx: *WinCtx, tabs_changed: *bool) void {
                 updateGridOffsets(ctx);
                 switchActiveTab(ctx);
             },
-            .tab_next => { ctx.tab_mgr.nextTab(); switchActiveTab(ctx); },
-            .tab_prev => { ctx.tab_mgr.prevTab(); switchActiveTab(ctx); },
-            .tab_move_left => { ctx.tab_mgr.moveTabLeft(); switchActiveTab(ctx); },
-            .tab_move_right => { ctx.tab_mgr.moveTabRight(); switchActiveTab(ctx); },
-            .tab_select_1, .tab_select_2, .tab_select_3,
-            .tab_select_4, .tab_select_5, .tab_select_6,
-            .tab_select_7, .tab_select_8, .tab_select_9,
+            .tab_next => {
+                ctx.tab_mgr.nextTab();
+                switchActiveTab(ctx);
+            },
+            .tab_prev => {
+                ctx.tab_mgr.prevTab();
+                switchActiveTab(ctx);
+            },
+            .tab_move_left => {
+                ctx.tab_mgr.moveTabLeft();
+                switchActiveTab(ctx);
+            },
+            .tab_move_right => {
+                ctx.tab_mgr.moveTabRight();
+                switchActiveTab(ctx);
+            },
+            .tab_select_1,
+            .tab_select_2,
+            .tab_select_3,
+            .tab_select_4,
+            .tab_select_5,
+            .tab_select_6,
+            .tab_select_7,
+            .tab_select_8,
+            .tab_select_9,
             => {
                 const idx: u8 = @intFromEnum(action) - @intFromEnum(Action.tab_select_1);
                 if (idx < ctx.tab_mgr.count) {
@@ -816,7 +850,10 @@ pub fn sendFocusPanesForActiveTab(ctx: *WinCtx) void {
             // Mark for engine reinit on first replay byte (see win_daemon.zig).
             var was_focused = false;
             for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
-                if (old_id == dpid) { was_focused = true; break; }
+                if (old_id == dpid) {
+                    was_focused = true;
+                    break;
+                }
             }
             if (!was_focused) leaf.pane.needs_engine_reinit = true;
         }

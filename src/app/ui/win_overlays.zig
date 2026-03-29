@@ -21,6 +21,7 @@ const platform = @import("../../platform/platform.zig");
 const toml_edit = @import("../../config/toml_edit.zig");
 const win_session_picker = @import("win_session_picker.zig");
 const win_shell_picker = @import("win_shell_picker.zig");
+const event_loop = @import("event_loop_windows.zig");
 // Note: can't import actions.zig (depends on terminal.zig/POSIX).
 // Use c.attyx_mark_all_dirty() directly for force-redraw instead.
 
@@ -126,7 +127,8 @@ fn processPaletteAction(ctx: *WinCtx, action: palette_state_mod.PaletteAction) b
             return true;
         },
         .rename_tab => |name| {
-            ctx.tab_mgr.activePane().setCustomTitle(name);
+            ctx.tab_mgr.activeLayout().setTitle(name);
+            event_loop.saveLayoutToDaemon(ctx);
             closeCommandPalette(ctx);
             return true;
         },

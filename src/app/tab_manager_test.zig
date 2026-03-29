@@ -5,6 +5,8 @@ const Allocator = std.mem.Allocator;
 const TabManager = @import("tab_manager.zig").TabManager;
 const Pane = @import("pane.zig").Pane;
 const layout_codec = @import("layout_codec.zig");
+const split_layout_mod = @import("split_layout.zig");
+const SplitLayout = split_layout_mod.SplitLayout;
 
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
@@ -16,6 +18,15 @@ fn createTestPane(allocator: Allocator) !*Pane {
         .pty = undefined,
         .allocator = allocator,
     };
+    return pane;
+}
+
+fn createManagedTestPane(allocator: Allocator, daemon_pane_id: u32) !*Pane {
+    const pane = try allocator.create(Pane);
+    errdefer allocator.destroy(pane);
+    pane.* = try Pane.initDaemonBacked(allocator, 24, 80, attyx.RingBuffer.default_max_scrollback);
+    pane.daemon_pane_id = daemon_pane_id;
+    pane.ipc_id = daemon_pane_id;
     return pane;
 }
 
@@ -198,4 +209,145 @@ test "reconstructFromLayout: high daemon ids near u32 max" {
 
     // next_ipc_id should have wrapped past 0 to 1
     try std.testing.expectEqual(@as(u32, 1), mgr.next_ipc_id);
+}
+
+test "serialize/reconstruct preserves explicit tab titles" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    const second = try createManagedTestPane(allocator, 2);
+    mgr.tabs[1] = SplitLayout.init(second);
+    mgr.count = 2;
+    mgr.tabs[0].?.setTitle("editor");
+    mgr.tabs[1].?.setTitle("logs");
+
+    var buf: [4096]u8 = undefined;
+    const len = try mgr.serializeLayout(&buf);
+    const layout = try layout_codec.deserialize(buf[0..len]);
+
+    try std.testing.expect(layout.tabs[0].isExplicitTitle());
+    try std.testing.expect(layout.tabs[1].isExplicitTitle());
+    var restored = TabManager{ .allocator = allocator };
+    try restored.reconstructFromLayout(&layout, 24, 80, 100);
+    defer destroyMgr(&restored);
+
+    try std.testing.expectEqualStrings("editor", restored.tabs[0].?.getTitle().?);
+    try std.testing.expectEqualStrings("logs", restored.tabs[1].?.getTitle().?);
+}
+
+test "serialize/reconstruct preserves fallback title hints for unnamed tabs" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    mgr.tabs[0].?.focusedPane().engine.feed("\x1b]0;htop\x07");
+
+    var buf: [4096]u8 = undefined;
+    const len = try mgr.serializeLayout(&buf);
+    const layout = try layout_codec.deserialize(buf[0..len]);
+
+    try std.testing.expect(!layout.tabs[0].isExplicitTitle());
+    try std.testing.expectEqualStrings("htop", layout.tabs[0].getTitle().?);
+
+    var restored = TabManager{ .allocator = allocator };
+    try restored.reconstructFromLayout(&layout, 24, 80, 100);
+    defer destroyMgr(&restored);
+
+    try std.testing.expect(restored.tabs[0].?.getTitle() == null);
+    try std.testing.expectEqualStrings("htop", restored.tabs[0].?.getHintTitle().?);
+    try std.testing.expect(restored.tabs[0].?.focusedPane().getDaemonProcName() == null);
+}
+
+test "moveTabTo keeps explicit tab titles attached to the tab" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    const second = try createManagedTestPane(allocator, 2);
+    mgr.tabs[1] = SplitLayout.init(second);
+    mgr.count = 2;
+    mgr.active = 0;
+    mgr.tabs[0].?.setTitle("editor");
+    mgr.tabs[1].?.setTitle("logs");
+
+    mgr.moveTabTo(0, 1);
+
+    try std.testing.expectEqual(@as(u8, 1), mgr.active);
+    try std.testing.expectEqualStrings("logs", mgr.tabs[0].?.getTitle().?);
+    try std.testing.expectEqualStrings("editor", mgr.tabs[1].?.getTitle().?);
+}
+
+test "explicit tab title survives focus changes within a split tab" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    const second = try createManagedTestPane(allocator, 2);
+    try mgr.tabs[0].?.splitPaneWith(.vertical, second);
+    mgr.tabs[0].?.setTitle("editor");
+
+    var leaves: [8]split_layout_mod.LeafEntry = undefined;
+    const leaf_count = mgr.tabs[0].?.collectLeaves(&leaves);
+    try std.testing.expectEqual(@as(u8, 2), leaf_count);
+
+    const original_focus = mgr.tabs[0].?.focused;
+    const next_focus = if (leaves[0].index == original_focus) leaves[1].index else leaves[0].index;
+    mgr.tabs[0].?.focused = next_focus;
+
+    try std.testing.expectEqualStrings("editor", mgr.tabs[0].?.getTitle().?);
+
+    var buf: [4096]u8 = undefined;
+    const len = try mgr.serializeLayout(&buf);
+    const layout = try layout_codec.deserialize(buf[0..len]);
+
+    try std.testing.expect(layout.tabs[0].isExplicitTitle());
+    try std.testing.expectEqualStrings("editor", layout.tabs[0].getTitle().?);
+}
+
+test "syncFromLayout preserves explicit tab titles" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    var layout = makeLayout(&[_]u32{1});
+    @memcpy(layout.tabs[0].title[0..6], "editor");
+    layout.tabs[0].title_len = 6;
+    layout.tabs[0].title_flags = layout_codec.title_flag_explicit;
+
+    try mgr.syncFromLayout(&layout, 24, 80, 100);
+
+    try std.testing.expectEqualStrings("editor", mgr.tabs[0].?.getTitle().?);
+}
+
+test "syncFromLayout clears stale unnamed-tab hints when new layout has no title" {
+    const allocator = std.testing.allocator;
+
+    const first = try createManagedTestPane(allocator, 1);
+    var mgr = TabManager.init(allocator, first);
+    defer destroyMgr(&mgr);
+
+    var hinted = makeLayout(&[_]u32{1});
+    @memcpy(hinted.tabs[0].title[0..4], "htop");
+    hinted.tabs[0].title_len = 4;
+
+    try mgr.syncFromLayout(&hinted, 24, 80, 100);
+    try std.testing.expectEqualStrings("htop", mgr.tabs[0].?.getHintTitle().?);
+
+    var clear = makeLayout(&[_]u32{1});
+    try mgr.syncFromLayout(&clear, 24, 80, 100);
+
+    try std.testing.expect(mgr.tabs[0].?.getTitle() == null);
+    try std.testing.expect(mgr.tabs[0].?.getHintTitle() == null);
 }

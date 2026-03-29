@@ -12,6 +12,7 @@ const Action = keybinds.Action;
 const terminal = @import("../app/terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
 const publish = @import("../app/ui/publish.zig");
+const actions = @import("../app/ui/actions.zig");
 
 const handler_cmd = @import("handler_cmd.zig");
 const handler_query = @import("handler_query.zig");
@@ -88,10 +89,9 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             sendOk(cmd, "");
         },
         .tab_rename => {
-            if (cmd.payload_len > 0) {
-                const name = cmd.payload[0..cmd.payload_len];
-                ctx.tab_mgr.activePane().setCustomTitle(name);
-            }
+            const name = cmd.payload[0..cmd.payload_len];
+            ctx.tab_mgr.activeLayout().setTitle(name);
+            actions.saveSessionLayout(ctx);
             sendOk(cmd, "");
         },
 

@@ -589,7 +589,9 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
     for (0..rows) |row| {
         const row_cells = eng.state.ring.viewportRow(vp, row);
         wrapped[row] = @intFromBool(eng.state.ring.viewportRowWrapped(vp, row));
-        if (dirty) |d| { if (!d.isDirty(row)) continue; }
+        if (dirty) |d| {
+            if (!d.isDirty(row)) continue;
+        }
         for (0..cols) |col| {
             cells[row * cols + col] = cellToAttyxCell(row_cells[col], theme);
         }
@@ -652,8 +654,8 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
 }
 pub const updateGridTopOffset = updateGridOffsets;
 
-/// Resolve a display title for each tab: prefer OSC title, fall back to
-/// the foreground process name (local PTY or daemon-reported).
+/// Resolve a display title for each tab: prefer an explicit tab title, then
+/// fall back to the focused pane's OSC title / process name chain.
 pub fn resolveTabTitles(
     ctx: *PtyThreadCtx,
     titles: *tab_bar_mod.TabTitles,
@@ -663,14 +665,16 @@ pub fn resolveTabTitles(
     for (0..ctx.tab_mgr.count) |i| {
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
         const pane = layout.focusedPane();
-        if (pane.getCustomTitle()) |ct| {
-            titles[i] = ct;
+        if (layout.getTitle()) |title| {
+            titles[i] = title;
         } else if (pane.engine.state.title) |t| {
             titles[i] = t;
         } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
             titles[i] = name;
+        } else if (pane.getDaemonProcName()) |name| {
+            titles[i] = name;
         } else {
-            titles[i] = pane.getDaemonProcName();
+            titles[i] = layout.getHintTitle();
         }
     }
 }
