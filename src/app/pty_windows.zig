@@ -491,17 +491,18 @@ pub const Pty = struct {
         _ = SetConsoleCP(65001);
 
         // Create the pseudo console.
-        // For VT-native shells (zsh/MSYS2), try passthrough mode (Win11 22H2+)
-        // which bypasses ConPTY's diff engine and passes raw VT sequences
-        // through, avoiding scroll-related rendering artifacts.
-        // cmd.exe and PowerShell use Win32 console APIs and need ConPTY's
-        // translation layer — passthrough would produce no output.
+        // VT-native shells (zsh, bash/MSYS2, WSL, pwsh 7+) use passthrough
+        // mode (Win11 22H2+) which relays raw VT sequences directly, letting
+        // OSC 7/7337 reach the terminal. Without passthrough, ConPTY's
+        // diff engine consumes OSC sequences internally and never emits them.
+        // cmd.exe uses Win32 console APIs and needs ConPTY's translation.
+        // Falls back to standard mode on older Windows automatically.
         const size = COORD{
             .x = @intCast(opts.cols),
             .y = @intCast(opts.rows),
         };
         var hpc: HPCON = undefined;
-        const use_passthrough = (opts.shell == .zsh);
+        const use_passthrough = (opts.shell != .cmd and opts.shell != .auto);
         const passthrough_ok = use_passthrough and
             CreatePseudoConsole(size, pty_in_read, pty_out_write, PSEUDOCONSOLE_PASSTHROUGH, &hpc) == S_OK;
         if (!passthrough_ok) {
