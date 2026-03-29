@@ -405,11 +405,20 @@ fn isWslCommand(cmd: []const u8) bool {
 /// and appends `-- sh <wsl_path_to_bootstrap>` to the command line so the inner
 /// shell starts with CWD/PATH reporting hooks.
 fn setupWslIntegration(cmd_line: [*:0]u16) void {
-    // Write bootstrap script.
+    // Write bootstrap script first — writeIntegrationScript uses a single
+    // static buffer, so we must copy the path before subsequent calls.
     const init_path = writeIntegrationScript(
         "wsl\\init.sh",
         win_scripts.wsl_bootstrap_script,
     ) orelse return;
+
+    // Copy init.sh path before it gets overwritten.
+    var saved_path: [1024:0]u16 = undefined;
+    var sp_len: usize = 0;
+    while (init_path[sp_len] != 0) : (sp_len += 1) {
+        saved_path[sp_len] = init_path[sp_len];
+    }
+    saved_path[sp_len] = 0;
 
     // Write bash integration.
     _ = writeIntegrationScript("wsl\\bashrc", shell_integration.bash_script);
@@ -424,7 +433,7 @@ fn setupWslIntegration(cmd_line: [*:0]u16) void {
     _ = writeIntegrationScript("wsl\\fish\\fish\\vendor_conf.d\\attyx.fish", shell_integration.fish_script);
 
     // Convert Windows path of init.sh to WSL path and append exec args.
-    appendWslBootstrapArgs(cmd_line, init_path);
+    appendWslBootstrapArgs(cmd_line, &saved_path);
 }
 
 /// Append " -- sh <wsl_path>" to the WSL command line.
