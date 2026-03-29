@@ -351,7 +351,7 @@ pub const zsh_rc_script =
 ;
 
 /// .zprofile wrapper — sources user's .zprofile.
-const zsh_profile_script =
+pub const zsh_profile_script =
     \\#!/bin/zsh
     \\# Attyx shell integration (zsh .zprofile)
     \\__ATTYX_ZDOTDIR="${__ATTYX_ORIGINAL_ZDOTDIR:-$HOME}"
@@ -360,7 +360,7 @@ const zsh_profile_script =
 ;
 
 /// .zlogin wrapper — sources user's .zlogin.
-const zsh_login_script =
+pub const zsh_login_script =
     \\#!/bin/zsh
     \\# Attyx shell integration (zsh .zlogin)
     \\[[ -f "$ZDOTDIR/.zlogin" ]] && source "$ZDOTDIR/.zlogin"
@@ -397,7 +397,7 @@ pub const bash_script =
     \\
 ;
 
-const fish_script =
+pub const fish_script =
     \\# Attyx shell integration (fish)
     \\if set -q __ATTYX_BIN_DIR; and not contains $__ATTYX_BIN_DIR $PATH
     \\  set -gx PATH $__ATTYX_BIN_DIR $PATH

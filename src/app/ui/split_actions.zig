@@ -50,7 +50,11 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
         var osc7_buf: [statusbar.max_output_len]u8 = undefined;
         const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
         defer if (resolved.owned) if (resolved.cwd) |cwd_alloc| ctx.allocator.free(cwd_alloc);
-        sc.sendCreatePane(sz.rows, sz.cols, resolved.cwd orelse "") catch return;
+        if (ctx.default_program) |prog| {
+            sc.sendCreatePaneWithShell(sz.rows, sz.cols, resolved.cwd orelse "", prog) catch return;
+        } else {
+            sc.sendCreatePane(sz.rows, sz.cols, resolved.cwd orelse "") catch return;
+        }
         const pane_id = sc.waitForPaneCreated(5000) catch return;
         const new_pane = ctx.allocator.create(Pane) catch return;
         new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols, ctx.applied_scrollback_lines) catch {
