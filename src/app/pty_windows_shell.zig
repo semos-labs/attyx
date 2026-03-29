@@ -79,6 +79,12 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
     }
     const cmd_utf8 = utf8_buf[0..utf8_len];
 
+    // WSL is a launcher, not a shell — detect it before shell dispatch.
+    if (isWslCommand(cmd_utf8)) {
+        setupWslIntegration(cmd_line);
+        return;
+    }
+
     const shell = shell_integration.detectShell(cmd_utf8);
     switch (shell) {
         .cmd => {
@@ -377,6 +383,104 @@ fn appendPowerShellArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
     cmd_line[pos] = 0;
 }
 
+// ── WSL integration ──
+
+const win_scripts = @import("shell_scripts_windows.zig");
+
+/// Check if the command string starts with "wsl" (case-insensitive).
+fn isWslCommand(cmd: []const u8) bool {
+    // Extract first token.
+    const exe = blk: {
+        for (cmd, 0..) |ch, i| {
+            if (ch == ' ') break :blk cmd[0..i];
+        }
+        break :blk cmd;
+    };
+    return std.ascii.eqlIgnoreCase(exe, "wsl") or
+        std.ascii.eqlIgnoreCase(exe, "wsl.exe");
+}
+
+/// Set up shell integration for WSL panes.
+/// Writes POSIX integration scripts to %LOCALAPPDATA%\attyx\shell-integration\wsl\
+/// and appends `-- sh <wsl_path_to_bootstrap>` to the command line so the inner
+/// shell starts with CWD/PATH reporting hooks.
+fn setupWslIntegration(cmd_line: [*:0]u16) void {
+    // Write bootstrap script.
+    const init_path = writeIntegrationScript(
+        "wsl\\init.sh",
+        win_scripts.wsl_bootstrap_script,
+    ) orelse return;
+
+    // Write bash integration.
+    _ = writeIntegrationScript("wsl\\bashrc", shell_integration.bash_script);
+
+    // Write zsh integration (full startup chain).
+    _ = writeIntegrationScript("wsl\\zsh\\.zshenv", shell_integration.zsh_script);
+    _ = writeIntegrationScript("wsl\\zsh\\.zshrc", shell_integration.zsh_rc_script);
+    _ = writeIntegrationScript("wsl\\zsh\\.zprofile", shell_integration.zsh_profile_script);
+    _ = writeIntegrationScript("wsl\\zsh\\.zlogin", shell_integration.zsh_login_script);
+
+    // Write fish integration (vendor_conf.d structure).
+    _ = writeIntegrationScript("wsl\\fish\\fish\\vendor_conf.d\\attyx.fish", shell_integration.fish_script);
+
+    // Convert Windows path of init.sh to WSL path and append exec args.
+    appendWslBootstrapArgs(cmd_line, init_path);
+}
+
+/// Append " -- sh <wsl_path>" to the WSL command line.
+/// The `--` separates WSL flags (like -d Ubuntu) from the Linux command.
+fn appendWslBootstrapArgs(cmd_line: [*:0]u16, init_path_w: [*:0]const u16) void {
+    // Find end of current command line.
+    var pos: usize = 0;
+    while (cmd_line[pos] != 0) : (pos += 1) {}
+
+    // Get length of init path.
+    var path_len: usize = 0;
+    while (init_path_w[path_len] != 0) : (path_len += 1) {}
+
+    // " -- sh " = 7 chars, plus WSL path (slightly longer due to /mnt/ prefix).
+    const prefix = comptime toUtf16Literal(" -- sh ");
+    const wsl_extra: usize = 4; // "/mnt" replaces drive "X:" — net +2, but /mnt/x/ vs X:\ is +3 chars
+    if (pos + prefix.len + path_len + wsl_extra >= 4095) return;
+
+    // Append " -- sh ".
+    @memcpy(cmd_line[pos .. pos + prefix.len], &prefix);
+    pos += prefix.len;
+
+    // Convert Windows path to WSL path inline: C:\foo\bar → /mnt/c/foo/bar
+    pos += toWslPathUtf16(init_path_w[0..path_len], cmd_line[pos..]);
+    cmd_line[pos] = 0;
+}
+
+/// Convert a Windows UTF-16 path (C:\Users\Foo) to WSL-style (/mnt/c/Users/Foo).
+/// Writes into `out` and returns the number of u16 code units written.
+fn toWslPathUtf16(win_path: []const u16, out: []u16) usize {
+    if (win_path.len < 2) return 0;
+    const drive = win_path[0];
+    if (win_path[1] != ':') return 0;
+
+    // /mnt/x  = 5 chars, replacing X: = 2 chars → need 3 extra
+    const needed = win_path.len + 3;
+    if (out.len < needed) return 0;
+
+    // /mnt/
+    const mnt = comptime toUtf16Literal("/mnt/");
+    @memcpy(out[0..mnt.len], &mnt);
+    var pos: usize = mnt.len;
+
+    // Lowercase drive letter.
+    out[pos] = if (drive >= 'A' and drive <= 'Z') drive + ('a' - 'A') else drive;
+    pos += 1;
+
+    // Copy rest of path, converting backslash to forward slash.
+    var i: usize = 2;
+    while (i < win_path.len) : (i += 1) {
+        out[pos] = if (win_path[i] == '\\') '/' else win_path[i];
+        pos += 1;
+    }
+    return pos;
+}
+
 // ── Tests ──
 
 test "toUtf16Literal basic" {
@@ -407,4 +511,45 @@ test "toMsysPath lowercase drive letter" {
     try std.testing.expectEqual(@as(u16, '/'), out[0]);
     try std.testing.expectEqual(@as(u16, 'd'), out[1]);
     try std.testing.expectEqual(@as(u16, '/'), out[2]);
+}
+
+test "isWslCommand detects wsl variants" {
+    try std.testing.expect(isWslCommand("wsl"));
+    try std.testing.expect(isWslCommand("wsl.exe"));
+    try std.testing.expect(isWslCommand("WSL"));
+    try std.testing.expect(isWslCommand("wsl -d Ubuntu"));
+    try std.testing.expect(isWslCommand("WSL.EXE -d Debian"));
+    try std.testing.expect(!isWslCommand("bash"));
+    try std.testing.expect(!isWslCommand("pwsh.exe"));
+    try std.testing.expect(!isWslCommand("wslconfig"));
+}
+
+test "toWslPathUtf16 converts drive paths" {
+    // C:\Users\Foo → /mnt/c/Users/Foo
+    const input = comptime toUtf16Literal("C:\\Users\\Foo");
+    var out: [64]u16 = undefined;
+    const len = toWslPathUtf16(&input, &out);
+    try std.testing.expectEqual(@as(usize, 15), len);
+    // /mnt/c/Users/Foo
+    try std.testing.expectEqual(@as(u16, '/'), out[0]);
+    try std.testing.expectEqual(@as(u16, 'm'), out[1]);
+    try std.testing.expectEqual(@as(u16, 'n'), out[2]);
+    try std.testing.expectEqual(@as(u16, 't'), out[3]);
+    try std.testing.expectEqual(@as(u16, '/'), out[4]);
+    try std.testing.expectEqual(@as(u16, 'c'), out[5]);
+    try std.testing.expectEqual(@as(u16, '/'), out[6]);
+    try std.testing.expectEqual(@as(u16, 'U'), out[7]);
+}
+
+test "toWslPathUtf16 lowercase drive letter" {
+    const input = comptime toUtf16Literal("D:\\work");
+    var out: [64]u16 = undefined;
+    const len = toWslPathUtf16(&input, &out);
+    try std.testing.expectEqual(@as(usize, 9), len);
+    try std.testing.expectEqual(@as(u16, '/'), out[0]);
+    try std.testing.expectEqual(@as(u16, 'm'), out[1]);
+    try std.testing.expectEqual(@as(u16, 'n'), out[2]);
+    try std.testing.expectEqual(@as(u16, 't'), out[3]);
+    try std.testing.expectEqual(@as(u16, '/'), out[4]);
+    try std.testing.expectEqual(@as(u16, 'd'), out[5]);
 }

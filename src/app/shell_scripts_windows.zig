@@ -92,3 +92,37 @@ pub const bash_login_profile =
     \\PROMPT_COMMAND="__attyx_first_prompt"
     \\
 ;
+
+/// WSL bootstrap script — launched via `wsl.exe -- sh <path>`.
+/// Detects the user's login shell inside WSL and exec's into it
+/// with the appropriate integration hooks already configured.
+pub const wsl_bootstrap_script =
+    \\#!/bin/sh
+    \\# Attyx WSL shell integration bootstrap
+    \\INT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    \\_shell_name="$(basename "${SHELL:-/bin/bash}")"
+    \\export TERM_PROGRAM=attyx
+    \\export ATTYX=1
+    \\case "$_shell_name" in
+    \\  zsh)
+    \\    export __ATTYX_ORIGINAL_ZDOTDIR="${ZDOTDIR:-$HOME}"
+    \\    export ZDOTDIR="$INT_DIR/zsh"
+    \\    exec zsh -l
+    \\    ;;
+    \\  bash)
+    \\    exec bash --rcfile "$INT_DIR/bashrc"
+    \\    ;;
+    \\  fish)
+    \\    if [ -n "$XDG_DATA_DIRS" ]; then
+    \\      export XDG_DATA_DIRS="$INT_DIR/fish:$XDG_DATA_DIRS"
+    \\    else
+    \\      export XDG_DATA_DIRS="$INT_DIR/fish:/usr/local/share:/usr/share"
+    \\    fi
+    \\    exec fish -l
+    \\    ;;
+    \\  *)
+    \\    exec "${SHELL:-/bin/bash}" -l
+    \\    ;;
+    \\esac
+    \\
+;

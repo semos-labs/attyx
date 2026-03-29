@@ -34,7 +34,11 @@ pub fn processSplitActions(ctx: *WinCtx) void {
             if (ctx.session_client) |sc| {
                 // Daemon mode: ask daemon to create the pane.
                 const sz = layout.splitChildSize(dir, layout.pool[layout.focused].rect) orelse return;
-                sc.sendCreatePane(sz.rows, sz.cols, "") catch return;
+                if (ctx.default_program) |prog| {
+                    sc.sendCreatePaneWithShell(sz.rows, sz.cols, "", prog) catch return;
+                } else {
+                    sc.sendCreatePane(sz.rows, sz.cols, "") catch return;
+                }
                 const pane_id = sc.waitForPaneCreated(5000) catch return;
                 const new_pane = ctx.allocator.create(Pane) catch return;
                 new_pane.* = Pane.initDaemonBacked(ctx.allocator, sz.rows, sz.cols, ctx.applied_scrollback_lines) catch {
