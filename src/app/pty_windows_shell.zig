@@ -448,7 +448,8 @@ fn appendWslBootstrapArgs(cmd_line: [*:0]u16, init_path_w: [*:0]const u16) void 
     pos += prefix.len;
 
     // Convert Windows path to WSL path inline: C:\foo\bar → /mnt/c/foo/bar
-    pos += toWslPathUtf16(init_path_w[0..path_len], cmd_line[pos..]);
+    const dest: [*]u16 = cmd_line + pos;
+    pos += toWslPathUtf16(init_path_w[0..path_len], dest[0 .. 4095 - pos]);
     cmd_line[pos] = 0;
 }
 
