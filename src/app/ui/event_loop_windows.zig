@@ -856,6 +856,10 @@ fn handleResize(ctx: *WinCtx) void {
     c.attyx_set_grid_size(rc, rr);
     generateTabBar(ctx);
     generateStatusbar(ctx);
+    // Relayout overlays at new grid size (command palette, theme picker, etc.)
+    win_overlays.paletteRelayout(ctx);
+    win_overlays.pickerRelayout(ctx);
+    win_session_picker.relayout(ctx);
     win_search.publishOverlays(ctx);
     c.attyx_end_cell_update();
     publishState(eng);
