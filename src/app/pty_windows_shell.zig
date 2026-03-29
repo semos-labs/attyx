@@ -91,14 +91,13 @@ pub fn setupShellIntegration(cmd_line: [*:0]u16) void {
             setEnvW("PROMPT", shell_integration.cmd_prompt_string);
         },
         .powershell => {
-            // Write integration script and point env var to it.
-            // Don't use -Command to inject — it suppresses the banner until
-            // the script finishes, causing visible startup delay.
-            // Instead, set env var so users can opt in via $PROFILE.
+            // Write integration script, then inject via -Command.
+            // Explicitly source $PROFILE first so user customizations
+            // (oh-my-posh, Starship, aliases) load before our wrapper
+            // captures $function:prompt.
             const script = shell_integration.getPowerShellScript();
             const script_path = writeIntegrationScript("powershell\\attyx.ps1", script) orelse return;
-            const env_name = comptime toUtf16Literal("__ATTYX_INTEGRATION");
-            _ = SetEnvironmentVariableW(&env_name, script_path);
+            appendPowerShellArgs(cmd_line, script_path);
         },
         .bash => {
             // HOME redirect: write a shadow .bash_profile that restores real HOME,
@@ -358,15 +357,15 @@ fn appendLoginFlag(cmd_line: [*:0]u16) void {
     cmd_line[pos] = 0;
 }
 
-/// Append " -ExecutionPolicy Bypass -NoExit -Command ". '<script_path>'"" to the
-/// PowerShell command line. Uses -Command with dot-sourcing (not -File) so that
-/// $PROFILE loads automatically — users get their aliases, oh-my-posh, Starship, etc.
+/// Append PowerShell args that load $PROFILE, then dot-source our integration
+/// script. -NoExit keeps the session interactive after the command runs.
 /// -ExecutionPolicy Bypass is scoped to this process only.
+/// Result: `pwsh -ExecutionPolicy Bypass -NoExit -Command ". $PROFILE 2>$null; . '<script>'"`.
 fn appendPowerShellArgs(cmd_line: [*:0]u16, script_path: [*:0]const u16) void {
     var pos: usize = 0;
     while (cmd_line[pos] != 0) : (pos += 1) {}
 
-    const prefix = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -Command \". '");
+    const prefix = comptime toUtf16Literal(" -ExecutionPolicy Bypass -NoExit -Command \". $PROFILE 2>$null; . '");
     const suffix = comptime toUtf16Literal("'\"");
 
     var sp_len: usize = 0;
