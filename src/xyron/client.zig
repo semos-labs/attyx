@@ -210,6 +210,10 @@ pub const XyronClient = struct {
     /// On Ctrl+C (0x03), clears the buffer.
     /// Called from the main thread — pipe writes are atomic for small sizes.
     pub fn appendIdleInput(self: *XyronClient, data: []const u8) void {
+        // Escape sequences (arrow keys, etc.) — ignore for now
+        // TODO: arrow up/down for history
+        if (data.len > 0 and data[0] == 0x1b) return;
+
         for (data) |byte| {
             switch (byte) {
                 0x0D, 0x0A => { // Enter
@@ -219,28 +223,39 @@ pub const XyronClient = struct {
                         self.cmd_input_len = 0;
                     }
                 },
-                0x7F, 0x08 => { // Backspace/Delete
+                0x7F, 0x08 => { // Backspace
                     if (self.cmd_input_len > 0) {
                         self.cmd_input_len -= 1;
-                        self.echoBytes("\x08 \x08"); // BS + space + BS
+                        self.echoBytes("\x08 \x08");
                     }
                 },
-                0x03 => { // Ctrl+C
-                    if (self.cmd_input_len > 0) {
-                        // Erase typed text then show ^C
-                        self.echoBytes("^C\r\n");
-                        self.cmd_input_len = 0;
-                        // Re-feed prompt
-                        self.echoBytes(self.prompt_buf[0..self.prompt_len]);
+                0x17 => { // Ctrl+W — delete word backward
+                    // Delete back to previous space or start
+                    while (self.cmd_input_len > 0 and self.cmd_input[self.cmd_input_len - 1] == ' ') {
+                        self.cmd_input_len -= 1;
+                        self.echoBytes("\x08 \x08");
                     }
+                    while (self.cmd_input_len > 0 and self.cmd_input[self.cmd_input_len - 1] != ' ') {
+                        self.cmd_input_len -= 1;
+                        self.echoBytes("\x08 \x08");
+                    }
+                },
+                0x03 => { // Ctrl+C — clear line
+                    self.echoBytes("^C\r\n");
+                    self.cmd_input_len = 0;
+                    self.echoBytes(self.prompt_buf[0..self.prompt_len]);
                 },
                 0x15 => { // Ctrl+U — kill line
-                    // Erase all typed chars visually
                     var i: usize = 0;
                     while (i < self.cmd_input_len) : (i += 1) {
                         self.echoBytes("\x08 \x08");
                     }
                     self.cmd_input_len = 0;
+                },
+                0x0C => { // Ctrl+L — clear screen
+                    self.echoBytes("\x1b[2J\x1b[H"); // clear + home
+                    self.echoBytes(self.prompt_buf[0..self.prompt_len]);
+                    self.echoBytes(self.cmd_input[0..self.cmd_input_len]);
                 },
                 else => {
                     if (byte >= 0x20 and self.cmd_input_len < self.cmd_input.len) {
