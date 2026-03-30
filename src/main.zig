@@ -328,6 +328,8 @@ test {
         _ = @import("app/pty_windows.zig");
     }
     _ = @import("config/config.zig");
+    _ = @import("config/cli_ipc.zig");
+    _ = @import("ipc/client.zig");
     if (!is_windows) {
         _ = @import("app/daemon/session_test.zig");
     }

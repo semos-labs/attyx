@@ -323,11 +323,11 @@ fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         return;
     }
     const idx = cmd.payload[0];
-    if (idx == 0 or idx > ctx.tab_mgr.count) {
+    if (idx >= ctx.tab_mgr.count) {
         sendError(cmd, "invalid tab index");
         return;
     }
-    ctx.tab_mgr.closeTab(idx - 1);
+    ctx.tab_mgr.closeTab(idx);
     if (ctx.tab_mgr.count == 0) {
         @import("../app/ui/publish.zig").c.attyx_request_quit();
     } else {

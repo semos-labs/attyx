@@ -49,11 +49,16 @@ pub const TabLayout = struct {
     }
 };
 
+const empty_tab_layout = TabLayout{
+    .title = undefined,
+    .nodes = undefined,
+};
+
 pub const LayoutInfo = struct {
     tab_count: u8 = 0,
     active_tab: u8 = 0,
     focused_pane_id: u32 = 0,
-    tabs: [max_tabs]TabLayout = undefined,
+    tabs: [max_tabs]TabLayout = [_]TabLayout{empty_tab_layout} ** max_tabs,
 };
 
 fn hasTitleTrailer(info: *const LayoutInfo) bool {
@@ -364,6 +369,27 @@ test "empty layout" {
     const decoded = try deserialize(buf[0..len]);
 
     try std.testing.expectEqual(@as(u8, 0), decoded.tab_count);
+}
+
+test "partially initialized layout info keeps title fields empty" {
+    var info = LayoutInfo{};
+    info.tab_count = 1;
+    info.active_tab = 0;
+    info.focused_pane_id = 42;
+    info.tabs[0].node_count = 1;
+    info.tabs[0].root_idx = 0;
+    info.tabs[0].focused_idx = 0;
+    info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = 42 };
+
+    var buf: [256]u8 = undefined;
+    const len = try serialize(&info, &buf);
+    try std.testing.expectEqual(@as(u16, 15), len);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..len], title_trailer_magic) == null);
+
+    const decoded = try deserialize(buf[0..len]);
+    try std.testing.expectEqual(@as(u8, 0), decoded.tabs[0].title_len);
+    try std.testing.expect(decoded.tabs[0].getTitle() == null);
+    try std.testing.expect(!decoded.tabs[0].isExplicitTitle());
 }
 
 test "error on too short data" {
