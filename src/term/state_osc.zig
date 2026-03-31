@@ -56,3 +56,21 @@ pub fn setShellPath(self: *TerminalState, path: []const u8) void {
     }
     self.shell_path = alloc.dupe(u8, path) catch null;
 }
+
+/// Handle OSC 7339;xyron:{json} event.
+/// Parses minimal JSON to extract socket path from ipc_ready events.
+pub fn handleXyronEvent(self: *TerminalState, json: []const u8) void {
+    // Extract "socket":"<path>" from the JSON payload.
+    // Minimal parsing — no full JSON parser needed.
+    const socket_key = "\"socket\":\"";
+    const idx = std.mem.indexOf(u8, json, socket_key) orelse return;
+    const path_start = idx + socket_key.len;
+    if (path_start >= json.len) return;
+    const path_end = std.mem.indexOfScalar(u8, json[path_start..], '"') orelse return;
+    const path = json[path_start..][0..path_end];
+    if (path.len == 0) return;
+
+    const alloc = self.ring.allocator;
+    if (self.xyron_ipc_socket) |old| alloc.free(old);
+    self.xyron_ipc_socket = alloc.dupe(u8, path) catch null;
+}

@@ -27,6 +27,9 @@ pub const MsgType = enum(u8) {
     inspect_job = 0x0A,
     get_prompt = 0x0B,
     resize = 0x0C,
+    query_history = 0x0D,
+    get_completions = 0x10,
+    get_ghost = 0x11,
 
     // Responses: Xyron → Attyx
     resp_success = 0x80,

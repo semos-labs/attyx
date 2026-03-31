@@ -67,6 +67,7 @@ pub const TerminalState = struct {
     title_changed: bool = false,
     working_directory: ?[]const u8 = null,
     shell_path: ?[]const u8 = null,
+    xyron_ipc_socket: ?[]const u8 = null,
 
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
@@ -141,6 +142,7 @@ pub const TerminalState = struct {
         if (self.title) |t| alloc.free(t);
         if (self.working_directory) |wd| alloc.free(wd);
         if (self.shell_path) |sp| alloc.free(sp);
+        if (self.xyron_ipc_socket) |xs| alloc.free(xs);
         if (self.graphics_store) |gs| {
             gs.deinit();
             alloc.destroy(gs);
@@ -174,7 +176,7 @@ pub const TerminalState = struct {
         }
 
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .xyron_event, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify => {},
             else => {
                 self.wrap_next = false;
             },
@@ -262,6 +264,7 @@ pub const TerminalState = struct {
             .set_title => |t| self.setTitle(t),
             .set_cwd => |u| self.setCwd(u),
             .set_shell_path => |p| self.setShellPath(p),
+            .xyron_event => |json| self.handleXyronEvent(json),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -566,6 +569,7 @@ pub const TerminalState = struct {
     pub const setTitle = @import("state_osc.zig").setTitle;
     pub const setCwd = @import("state_osc.zig").setCwd;
     const setShellPath = @import("state_osc.zig").setShellPath;
+    const handleXyronEvent = @import("state_osc.zig").handleXyronEvent;
 
     // -- Kitty keyboard protocol ---------------------------------------------
 

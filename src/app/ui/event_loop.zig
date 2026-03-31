@@ -109,7 +109,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     // events — if glfwPostEmptyEvent was dropped (g_window not yet set), the
     // cells stay blank until an input event arrives.  Draining here ensures the
     // cell buffer has content before the first drawFrame.
-    if (ctx.session_client == null and !ctx.tab_mgr.activePane().isXyron()) {
+    if (ctx.session_client == null) {
         const startup_pane = ctx.tab_mgr.activePane();
 
         var startup_fds = [1]posix.pollfd{.{
@@ -169,98 +169,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
         }
-    }
-
-    // Xyron startup drain: wait for evt_ready + evt_prompt from ALL xyron panes.
-    {
-        const xyron_proto = @import("../../xyron/protocol.zig");
-        var xyron_pane_count: usize = 0;
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const lc = lay.collectLeaves(&leaves);
-                for (leaves[0..lc]) |leaf| {
-                    const xc = leaf.pane.xyron orelse continue;
-                    xyron_pane_count += 1;
-                    var xfds = [1]posix.pollfd{.{ .fd = xc.pollFd(), .events = POLLIN, .revents = 0 }};
-                    for (0..20) |_| {
-                        xfds[0].revents = 0;
-                        _ = posix.poll(&xfds, 100) catch break;
-                        if (xfds[0].revents & POLLIN == 0) {
-                            if (xc.state != .waiting_ready) break;
-                            continue;
-                        }
-                        while (xc.readEvent()) |frame| {
-                            const act = xc.handleFrame(frame);
-                            if (act == .output_chunk) {
-                                var r = xyron_proto.PayloadReader.init(frame.payload);
-                                _ = r.readStr();
-                                const data = r.readStr();
-                                if (data.len > 0) leaf.pane.feedXyron(data);
-                            }
-                        }
-                        if (xc.state != .waiting_ready) break;
-                    }
-                }
-            }
-        }
-        if (xyron_pane_count > 0) {
-            logging.info("xyron", "startup drain: {d} pane(s) ready", .{xyron_pane_count});
-        }
-        // Reset engine and feed prompt so xyron starts clean
-        // (daemon may have replayed shell content into the engine during attach)
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                var leaves2: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const lc2 = lay.collectLeaves(&leaves2);
-                for (leaves2[0..lc2]) |leaf| {
-                    const lxc = leaf.pane.xyron orelse continue;
-                    // Reinit engine to wipe any daemon replay content
-                    const rows: u16 = @intCast(leaf.pane.engine.state.ring.screen_rows);
-                    const cols: u16 = @intCast(leaf.pane.engine.state.ring.cols);
-                    const sl = leaf.pane.engine.state.ring.capacity - leaf.pane.engine.state.ring.screen_rows;
-                    const new_eng = @import("attyx").Engine.init(leaf.pane.allocator, rows, cols, sl) catch continue;
-                    leaf.pane.engine.deinit();
-                    leaf.pane.engine = new_eng;
-                    leaf.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-                    // Set initial CWD from process working directory
-                    var init_cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (posix.getcwd(&init_cwd_buf)) |init_cwd| {
-                        var uri_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
-                        if (std.fmt.bufPrint(&uri_buf, "file://localhost{s}", .{init_cwd})) |uri| {
-                            leaf.pane.engine.state.setCwd(uri);
-                        } else |_| {}
-                    } else |_| {}
-                    // Feed the xyron prompt to engine
-                    const xyron_render = @import("../../xyron/render.zig");
-                    xyron_render.feedPromptToEngine(leaf.pane, lxc);
-                }
-            }
-        }
-        // Update global engine pointer after reinit
-        terminal.g_engine = &ctx.tab_mgr.activePane().engine;
-        terminal.g_xyron_client = ctx.tab_mgr.activePane().xyron;
-
-        // Publish initial xyron state
-        if (ctx.tab_mgr.activePane().xyron != null) {
-            const eng = &ctx.tab_mgr.activePane().engine;
-            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
-            c.attyx_begin_cell_update();
-            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
-            c.attyx_set_cursor(
-                @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                @intCast(eng.state.cursor.col),
-            );
-            c.attyx_mark_all_dirty();
-            eng.state.dirty.clear();
-            c.attyx_end_cell_update();
-        }
-    }
-
-    // Force first frame to publish — xyron prompt was fed during startup drain
-    // but the renderer may not have picked it up yet.
-    if (ctx.tab_mgr.activePane().isXyron()) {
-        actions.g_force_full_redraw = true;
     }
 
     var got_data = false;
@@ -659,25 +567,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             break :blk idx;
         } else null;
 
-        // Local PTY fds (non-session, non-xyron panes only)
-        // Xyron panes are polled via their protocol fd, not a PTY master.
-        var xyron_fd_idx: ?usize = null;
+        // Local PTY fds (non-session panes only)
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_i| {
             if (maybe_layout.*) |*lay| {
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
-                    if (leaf.pane.isXyron()) {
-                        // Only poll the active xyron pane's protocol fd
-                        if (xyron_fd_idx == null) {
-                            xyron_fd_idx = nfds;
-                            fds[nfds] = .{ .fd = leaf.pane.xyron.?.pollFd(), .events = POLLIN, .revents = 0 };
-                            fd_panes[nfds] = leaf.pane;
-                            fd_tab_idx[nfds] = @intCast(tab_i);
-                            nfds += 1;
-                        }
-                        continue;
-                    }
                     if (leaf.pane.daemon_pane_id != null) continue;
                     fds[nfds] = .{ .fd = leaf.pane.pty.master, .events = POLLIN, .revents = 0 };
                     fd_panes[nfds] = leaf.pane;
@@ -737,8 +632,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 switch (msg) {
                     .pane_output => |out| {
                         if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
-                            // Xyron panes handle their own I/O — skip daemon output.
-                            if (result.pane.xyron != null) continue;
                             // Deferred engine reinit: if the daemon is replaying
                             // scrollback for a newly-focused pane, reinit the
                             // engine NOW (right before feeding data) to prevent
@@ -773,8 +666,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     .pane_died => |died| {
                         logging.info("tabs", "daemon pane_died: pane_id={d}", .{died.pane_id});
                         if (findPaneByDaemonId(ctx, died.pane_id)) |result| {
-                            // Xyron panes manage their own lifecycle — ignore daemon deaths.
-                            if (result.pane.xyron != null) continue;
                             logging.info("tabs", "pane_died: found pane at tab={d} pool={d} pane_count={d}", .{ result.tab_idx, result.pool_idx, ctx.tab_mgr.tabs[result.tab_idx].?.pane_count });
                             // Store exit code so pane.deinit() can notify --wait clients.
                             result.pane.stored_exit_code = died.exit_code;
@@ -864,99 +755,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Drain xyron protocol events
-        if (xyron_fd_idx) |xi| {
-            if (fds[xi].revents & (POLLIN | POLLHUP) != 0) {
-                const xpane = fd_panes[xi];
-                if (xpane.xyron) |xc| {
-                    const xyron_proto = @import("../../xyron/protocol.zig");
-                    while (xc.readEvent()) |frame| {
-                        const action = xc.handleFrame(frame);
-                        switch (action) {
-                            .output_chunk => {
-                                // Extract raw bytes from payload and feed to engine
-                                var r = xyron_proto.PayloadReader.init(frame.payload);
-                                _ = r.readStr(); // stream name ("stdout"/"stderr")
-                                const data = r.readStr();
-                                if (data.len > 0) {
-                                    xpane.feedXyron(data);
-                                    if (fd_tab_idx[xi] == ctx.tab_mgr.active) got_data = true;
-                                }
-                            },
-                            .command_started, .command_finished => {
-                                got_data = true;
-                            },
-                            .block_started => {
-                                var r = xyron_proto.PayloadReader.init(frame.payload);
-                                const block_id: u64 = @intCast(r.readInt());
-                                const group_id: u64 = @intCast(r.readInt());
-                                const raw_input = r.readStr();
-                                const blk_cwd = r.readStr();
-                                const is_bg = r.readU8() != 0;
-                                const cursor_row = xpane.engine.state.cursor.row;
-                                _ = xpane.xyron_blocks.start(
-                                    block_id, group_id, raw_input, blk_cwd, is_bg, cursor_row,
-                                );
-                                got_data = true;
-                            },
-                            .block_finished => {
-                                var r = xyron_proto.PayloadReader.init(frame.payload);
-                                const block_id: u64 = @intCast(r.readInt());
-                                const exit_code = r.readU8();
-                                const duration_ms = r.readInt();
-                                const cursor_row = xpane.engine.state.cursor.row;
-                                xpane.xyron_blocks.finish(block_id, exit_code, duration_ms, cursor_row);
-                                got_data = true;
-                            },
-                            .prompt_updated => {
-                                const xr = @import("../../xyron/render.zig");
-                                xr.feedPromptToEngine(xpane, xc);
-                                got_data = true;
-                            },
-                            .ready => {
-                                got_data = true;
-                            },
-                            .cwd_changed => {
-                                // Set engine working_directory as file:// URI so
-                                // statusbar CWD/git widgets pick it up.
-                                const new_cwd = xc.cwdText();
-                                if (new_cwd.len > 0) {
-                                    var uri_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
-                                    const uri = std.fmt.bufPrint(&uri_buf, "file://localhost{s}", .{new_cwd}) catch null;
-                                    if (uri) |u| xpane.engine.state.setCwd(u);
-                                }
-                                got_data = true;
-                            },
-                            else => {},
-                        }
-                    }
-                }
-                if (fds[xi].revents & POLLHUP != 0) {
-                    // Xyron died — treat like shell exit
-                    got_data = true;
-                }
-            }
-        }
-
-        // Drain xyron echo buffer (keystrokes typed on main thread)
-        if (xyron_fd_idx) |xi| {
-            const xpane = fd_panes[xi];
-            if (xpane.xyron) |xc| {
-                var echo_tmp: [4096]u8 = undefined;
-                const echo_n = xc.drainEcho(&echo_tmp);
-                if (echo_n > 0) {
-                    xpane.feedXyron(echo_tmp[0..echo_n]);
-                    if (fd_tab_idx[xi] == ctx.tab_mgr.active) got_data = true;
-                }
-            }
-        }
-
         // Drain local PTY data from non-session panes
         {
             const local_start = if (session_fd_idx != null) @as(usize, 1) else @as(usize, 0);
             for (local_start..nfds) |i| {
                 if (fd_tab_idx[i] == 0xFF) continue; // popup handled separately
-                if (xyron_fd_idx != null and i == xyron_fd_idx.?) continue; // handled above
                 if (fds[i].revents & POLLIN == 0) continue;
                 const p = fd_panes[i];
                 while (true) {
@@ -1020,6 +823,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
         if (title_changed) got_data = true;
+
+        // Detect xyron IPC socket path from OSC 7339 event
+        if (ctx.tab_mgr.activePane().engine.state.xyron_ipc_socket) |sock_path| {
+            if (terminal.g_xyron_ipc_socket == null) {
+                logging.info("xyron", "IPC socket discovered: {s}", .{sock_path});
+                terminal.g_xyron_ipc_socket = sock_path;
+            }
+        }
 
         // When viewport is pinned to bottom and new content pushes lines
         // into scrollback, adjust selection coordinates so the highlight
@@ -1340,33 +1151,11 @@ fn reconstructTabsFromDaemon(
     };
     if (ctx.tab_mgr.count == 0) return;
 
-    // Xyron: attach xyron clients to reconstructed panes
-    if (ctx.xyron_path) |xp| {
-        const XyronClientMod = @import("../../xyron/client.zig");
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                var rleaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const rlc = lay.collectLeaves(&rleaves);
-                for (rleaves[0..rlc]) |leaf| {
-                    if (leaf.pane.xyron != null) continue;
-                    const heap_xc = ctx.allocator.create(XyronClientMod.XyronClient) catch continue;
-                    heap_xc.* = XyronClientMod.XyronClient.spawn(xp, null) catch {
-                        ctx.allocator.destroy(heap_xc);
-                        continue;
-                    };
-                    heap_xc.sendResize(pty_rows, ctx.grid_cols);
-                    leaf.pane.xyron = heap_xc;
-                }
-            }
-        }
-    }
-
     // Update terminal globals for the new active pane
     const active_pane = ctx.tab_mgr.activePane();
     terminal.g_engine = &active_pane.engine;
     terminal.g_pty_master = active_pane.pty.master;
     terminal.g_active_daemon_pane_id = active_pane.daemon_pane_id orelse 0;
-    terminal.g_xyron_client = active_pane.xyron;
 
     // Push theme colors to all reconstructed engines
     publish.publishThemeToEngines(ctx);
@@ -1402,7 +1191,6 @@ fn createFreshSession(ctx: *PtyThreadCtx, sc: *@import("../session_client.zig").
     terminal.g_engine = &pane.engine;
     terminal.g_pty_master = pane.pty.master;
     terminal.g_active_daemon_pane_id = pane.daemon_pane_id orelse 0;
-    terminal.g_xyron_client = pane.xyron;
     ctx.session_client = sc;
     terminal.g_session_client = sc;
     return true;
@@ -1426,7 +1214,6 @@ fn hardResetToLocalPty(ctx: *PtyThreadCtx) void {
     terminal.g_engine = &pane.engine;
     terminal.g_pty_master = pane.pty.master;
     terminal.g_active_daemon_pane_id = 0;
-    terminal.g_xyron_client = pane.xyron;
     @import("../session_connect.zig").setNonBlocking(pane.pty.master);
 }
 

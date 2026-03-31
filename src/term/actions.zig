@@ -178,6 +178,10 @@ pub const Action = union(enum) {
     /// Payload borrowed from parser osc_buf, valid until next parser call.
     set_shell_path: []const u8,
 
+    /// OSC 7339;xyron:{json} — xyron shell event.
+    /// Payload is the JSON portion after "xyron:", borrowed from parser osc_buf.
+    xyron_event: []const u8,
+
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.
     dcs_passthrough: []const u8,

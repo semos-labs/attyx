@@ -11,9 +11,6 @@ const Allocator = std.mem.Allocator;
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
-const XyronClient = @import("../xyron/client.zig").XyronClient;
-const XyronBlock = @import("../xyron/block.zig");
-const XyronInput = @import("../xyron/input.zig");
 const logging = @import("../logging/log.zig");
 const c = @cImport({
     @cInclude("bridge.h");
@@ -66,13 +63,6 @@ pub const Pane = struct {
     pending_pty_cols: u16 = 0,
     pending_pty_resize: bool = false,
     last_pty_resize_ns: i128 = 0,
-
-    /// Xyron shell client (set when this pane runs xyron headless).
-    xyron: ?*XyronClient = null,
-    /// Block list tracking command output boundaries.
-    xyron_blocks: XyronBlock.BlockList = .{},
-    /// Input buffer for command line editing (xyron idle state).
-    xyron_input: XyronInput.InputBuffer = .{},
 
     pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
         if (self.daemon_proc_name_len == 0) return null;
@@ -159,37 +149,6 @@ pub const Pane = struct {
         };
     }
 
-    /// Create a Pane backed by xyron headless (engine only, no shell PTY).
-    pub fn spawnXyron(
-        allocator: Allocator,
-        rows: u16,
-        cols: u16,
-        scrollback_lines: usize,
-        xyron_client: *XyronClient,
-    ) !Pane {
-        const engine = try Engine.init(allocator, rows, cols, scrollback_lines);
-        return .{
-            .engine = engine,
-            .pty = Pty.initInactive(),
-            .allocator = allocator,
-            .xyron = xyron_client,
-        };
-    }
-
-    /// Feed raw bytes from xyron output_chunk into the engine.
-    /// Unlike regular feed(), does NOT write DA responses back (no PTY).
-    pub fn feedXyron(self: *Pane, data: []const u8) void {
-        self.engine.feed(data);
-        // Discard any DA response — xyron doesn't need it
-        _ = self.engine.state.drainResponse();
-        _ = self.engine.state.drainNotification();
-    }
-
-    /// Check if this pane is xyron-backed.
-    pub fn isXyron(self: *const Pane) bool {
-        return self.xyron != null;
-    }
-
     pub fn deinit(self: *Pane) void {
         // Drain any remaining stdout before sending exit response.
         self.drainCapturedStdout();
@@ -218,11 +177,7 @@ pub const Pane = struct {
             self.allocator.destroy(cs);
             self.captured_stdout = null;
         }
-        if (self.xyron) |xc| {
-            xc.deinit();
-            self.allocator.destroy(xc);
-            self.xyron = null;
-        } else if (self.daemon_pane_id == null) {
+        if (self.daemon_pane_id == null) {
             if (!is_windows) {
                 _ = std.posix.kill(self.pty.pid, std.posix.SIG.HUP) catch {};
             }
@@ -284,9 +239,7 @@ pub const Pane = struct {
         const now = std.time.nanoTimestamp();
         if (now - self.last_pty_resize_ns < pty_resize_throttle_ns) return;
 
-        if (self.xyron) |xc| {
-            xc.sendResize(self.pending_pty_rows, self.pending_pty_cols);
-        } else if (self.daemon_pane_id) |dpid| {
+        if (self.daemon_pane_id) |dpid| {
             if (self.session_client) |sc| {
                 sc.sendPaneResize(dpid, self.pending_pty_rows, self.pending_pty_cols) catch {};
             }
@@ -306,8 +259,6 @@ pub const Pane = struct {
     }
 
     pub fn childExited(self: *Pane) bool {
-        // Xyron panes: check if xyron process is alive
-        if (self.xyron) |xc| return !xc.isAlive();
         // Session-backed panes: the local PTY is idle — ignore its exit.
         // The daemon pane lifecycle is managed via the session socket.
         if (self.daemon_pane_id != null) return false;

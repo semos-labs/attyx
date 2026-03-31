@@ -495,6 +495,15 @@ pub const Parser = struct {
         return .{ .notify = .{ .title = "", .body = after } };
     }
 
+    fn dispatchOsc7339(rest: []const u8) Action {
+        // Format: "xyron:{json}"
+        const prefix = "xyron:";
+        if (rest.len > prefix.len and std.mem.eql(u8, rest[0..prefix.len], prefix)) {
+            return .{ .xyron_event = rest[prefix.len..] };
+        }
+        return .nop;
+    }
+
     fn dispatchOsc7337(rest: []const u8) Action {
         // Format: "write-main;<payload>"
         const write_prefix = "write-main;";
@@ -549,6 +558,7 @@ pub const Parser = struct {
             // OSC 777 — rxvt/Kitty-style: ESC]777;notify;title;body BEL
             777 => dispatchOsc777(rest),
             7337 => dispatchOsc7337(rest),
+            7339 => dispatchOsc7339(rest),
             else => .nop,
         };
     }
