@@ -171,6 +171,42 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
+    // When xyron is enabled in session mode, the daemon may not have output
+    // yet (xyron just started). Wait briefly for initial prompt data.
+    if (ctx.session_client != null and ctx.xyron_path != null) {
+        const startup_pane = ctx.tab_mgr.activePane();
+        if (startup_pane.daemon_pane_id != null) {
+            for (0..10) |_| {
+                if (ctx.session_client) |sc| {
+                    _ = sc.recvData();
+                    while (sc.readMessage()) |msg| {
+                        switch (msg) {
+                            .pane_output => |out| {
+                                startup_pane.engine.feed(out.data);
+                                _ = startup_pane.engine.state.drainResponse();
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                if (startup_pane.engine.state.cursor.row > 0 or startup_pane.engine.state.cursor.col > 0) break;
+                posix.nanosleep(0, 50_000_000); // 50ms
+            }
+            // Publish whatever we got
+            const eng = &startup_pane.engine;
+            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
+            c.attyx_begin_cell_update();
+            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+            c.attyx_set_cursor(
+                @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
+                @intCast(eng.state.cursor.col),
+            );
+            c.attyx_mark_all_dirty();
+            eng.state.dirty.clear();
+            c.attyx_end_cell_update();
+        }
+    }
+
     var got_data = false;
     var throttled_frames: u8 = 0; // count frames skipped by rate limiter
     outer: while (c.attyx_should_quit() == 0) {
@@ -829,6 +865,20 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             if (terminal.g_xyron_ipc_socket == null) {
                 logging.info("xyron", "IPC socket discovered: {s}", .{sock_path});
                 terminal.g_xyron_ipc_socket = sock_path;
+            }
+        }
+
+        // Xyron IPC: poll shell state for CWD on statusbar refresh only
+        if (terminal.g_xyron_ipc_socket != null and statusbar_refreshed) {
+            const xyron_ipc = @import("../../xyron/ipc.zig");
+            const ipc = xyron_ipc.IpcClient.init(terminal.g_xyron_ipc_socket.?);
+            if (ipc.getShellState(0)) |state| {
+                if (state.cwd.len > 0) {
+                    var uri_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
+                    if (std.fmt.bufPrint(&uri_buf, "file://localhost{s}", .{state.cwd})) |uri| {
+                        ctx.tab_mgr.activePane().engine.state.setCwd(uri);
+                    } else |_| {}
+                }
             }
         }
 

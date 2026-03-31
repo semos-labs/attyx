@@ -32,9 +32,14 @@ pub const IpcClient = struct {
         @memcpy(path_z[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
         path_z[self.socket_path_len] = 0;
 
-        // Connect
+        // Connect with short timeout to avoid blocking the event loop
         const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
         defer posix.close(fd);
+
+        // Set socket receive timeout (100ms)
+        const tv = posix.timeval{ .sec = 0, .usec = 100_000 };
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
 
         var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
         @memset(&addr.path, 0);
