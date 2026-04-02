@@ -480,7 +480,7 @@ int windows_renderer_draw_frame(void) {
                                           visibleRows, visibleTotal);
 
     // Activate cursor trail before updating prev-cursor (needs old position)
-    if (g_cursor_trail && curVis && cursorChanged && g_win_prev_cursor_row >= 0) {
+    if (g_cursor_trail && curVis && g_win_prev_cursor_vis == 1 && cursorChanged && g_win_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_win_prev_cursor_row)
                      + abs(curCol - g_win_prev_cursor_col);
         if (cellDist > 1) {

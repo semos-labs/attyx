@@ -58,6 +58,7 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
 
     if (self.reflow_on_resize and !self.alt_active) {
         // Full reflow through the ring (scrollback + screen)
+        const old_cursor_row = self.cursor.row;
         const result = try ring_reflow.resize(
             &self.ring,
             new_rows,
@@ -70,6 +71,18 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
         old_ring.deinit();
         self.cursor.row = result.cursor_row;
         self.cursor.col = result.cursor_col;
+
+        // Preserve cursor's screen-relative row.  The shell tracks cursor
+        // position internally; if reflow moves the cursor to a higher screen
+        // row (because content above it wrapped), the shell's SIGWINCH redraw
+        // won't clear the old reflowed content — leaving ghost/duplicate prompt
+        // lines.  Clamping the cursor back to the old screen row ensures the
+        // shell's relative cursor movements land in the right place; the shell
+        // will clear-to-end-of-screen and redraw the prompt area itself.
+        const target_row = @min(old_cursor_row, new_rows - 1);
+        if (self.cursor.row > target_row) {
+            self.cursor.row = target_row;
+        }
     } else {
         // No reflow (alt screen or disabled)
         const new_ring = try ring_reflow.resizeNoReflow(

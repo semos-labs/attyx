@@ -106,6 +106,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
         static float s_popupTrailX, s_popupTrailY;
         static double s_popupTrailLastTime;
         static int   s_popupPrevRow = -1, s_popupPrevCol = -1;
+        static int   s_popupPrevVis = 0;
 
         int curCol = desc.cursor_col;
         int curRow = desc.cursor_row;
@@ -167,7 +168,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
 
         // Cursor trail (Neovide-style exponential-decay comet)
         double now = glfwGetTime();
-        if (g_cursor_trail && desc.cursor_visible && cursorChanged && s_popupPrevRow >= 0) {
+        if (g_cursor_trail && desc.cursor_visible && s_popupPrevVis && cursorChanged && s_popupPrevRow >= 0) {
             int cellDist = abs(curRow - s_popupPrevRow) + abs(curCol - s_popupPrevCol);
             if (cellDist > 1) {
                 s_popupTrailX = offX + (desc.col + s_popupPrevCol) * gw;
@@ -247,6 +248,7 @@ void drawPopup(float offX, float offY, float gw, float gh,
 
         s_popupPrevRow = curRow;
         s_popupPrevCol = curCol;
+        s_popupPrevVis = desc.cursor_visible;
     }
 }
 
