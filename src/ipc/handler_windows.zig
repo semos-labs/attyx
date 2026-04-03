@@ -13,6 +13,7 @@ const event_loop = @import("../app/ui/event_loop_windows.zig");
 const WinCtx = event_loop.WinCtx;
 const Pane = @import("../app/pane.zig").Pane;
 const session_win = @import("../app/session_windows.zig");
+const tab_rename = @import("tab_rename.zig");
 
 extern fn attyx_dispatch_action(action_raw: u8) u8;
 extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
@@ -26,10 +27,19 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     switch (msg_type) {
         // ── Tab commands ──
         .tab_create => handleTabCreate(cmd, ctx),
-        .tab_close => { dispatch(.tab_close); sendOk(cmd, ""); },
+        .tab_close => {
+            dispatch(.tab_close);
+            sendOk(cmd, "");
+        },
         .tab_close_targeted => handleTabCloseTargeted(cmd, ctx),
-        .tab_next => { dispatch(.tab_next); sendOk(cmd, ""); },
-        .tab_prev => { dispatch(.tab_prev); sendOk(cmd, ""); },
+        .tab_next => {
+            dispatch(.tab_next);
+            sendOk(cmd, "");
+        },
+        .tab_prev => {
+            dispatch(.tab_prev);
+            sendOk(cmd, "");
+        },
         .tab_select => {
             if (cmd.payload_len >= 1) {
                 const idx = cmd.payload[0];
@@ -40,37 +50,82 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
             }
             sendOk(cmd, "");
         },
-        .tab_move_left => { dispatch(.tab_move_left); sendOk(cmd, ""); },
-        .tab_move_right => { dispatch(.tab_move_right); sendOk(cmd, ""); },
+        .tab_move_left => {
+            dispatch(.tab_move_left);
+            sendOk(cmd, "");
+        },
+        .tab_move_right => {
+            dispatch(.tab_move_right);
+            sendOk(cmd, "");
+        },
         .tab_rename => {
-            if (cmd.payload_len > 0) {
-                ctx.tab_mgr.activePane().setCustomTitle(cmd.payload[0..cmd.payload_len]);
-            }
+            const name = tab_rename.parseActivePayload(cmd.payload[0..cmd.payload_len]) catch {
+                sendError(cmd, "missing tab title");
+                return;
+            };
+            ctx.tab_mgr.activeLayout().setTitle(name);
+            event_loop.saveLayoutToDaemon(ctx);
             sendOk(cmd, "");
         },
 
         // ── Split / pane ──
         .split_vertical => handleSplit(cmd, ctx, .vertical),
         .split_horizontal => handleSplit(cmd, ctx, .horizontal),
-        .pane_close => { dispatch(.pane_close); sendOk(cmd, ""); },
+        .pane_close => {
+            dispatch(.pane_close);
+            sendOk(cmd, "");
+        },
         .pane_close_targeted => handlePaneCloseTargeted(cmd, ctx),
-        .pane_rotate => { dispatch(.pane_rotate); sendOk(cmd, ""); },
-        .pane_zoom_toggle => { dispatch(.pane_zoom_toggle); sendOk(cmd, ""); },
+        .pane_rotate => {
+            dispatch(.pane_rotate);
+            sendOk(cmd, "");
+        },
+        .pane_zoom_toggle => {
+            dispatch(.pane_zoom_toggle);
+            sendOk(cmd, "");
+        },
 
         // ── Focus ──
-        .focus_up => { dispatch(.pane_focus_up); sendOk(cmd, ""); },
-        .focus_down => { dispatch(.pane_focus_down); sendOk(cmd, ""); },
-        .focus_left => { dispatch(.pane_focus_left); sendOk(cmd, ""); },
-        .focus_right => { dispatch(.pane_focus_right); sendOk(cmd, ""); },
+        .focus_up => {
+            dispatch(.pane_focus_up);
+            sendOk(cmd, "");
+        },
+        .focus_down => {
+            dispatch(.pane_focus_down);
+            sendOk(cmd, "");
+        },
+        .focus_left => {
+            dispatch(.pane_focus_left);
+            sendOk(cmd, "");
+        },
+        .focus_right => {
+            dispatch(.pane_focus_right);
+            sendOk(cmd, "");
+        },
 
         // ── Scroll ──
-        .scroll_to_top => { dispatch(.scroll_to_top); sendOk(cmd, ""); },
-        .scroll_to_bottom => { dispatch(.scroll_to_bottom); sendOk(cmd, ""); },
-        .scroll_page_up => { dispatch(.scroll_page_up); sendOk(cmd, ""); },
-        .scroll_page_down => { dispatch(.scroll_page_down); sendOk(cmd, ""); },
+        .scroll_to_top => {
+            dispatch(.scroll_to_top);
+            sendOk(cmd, "");
+        },
+        .scroll_to_bottom => {
+            dispatch(.scroll_to_bottom);
+            sendOk(cmd, "");
+        },
+        .scroll_page_up => {
+            dispatch(.scroll_page_up);
+            sendOk(cmd, "");
+        },
+        .scroll_page_down => {
+            dispatch(.scroll_page_down);
+            sendOk(cmd, "");
+        },
 
         // ── Config ──
-        .config_reload => { dispatch(.config_reload); sendOk(cmd, ""); },
+        .config_reload => {
+            dispatch(.config_reload);
+            sendOk(cmd, "");
+        },
 
         // ── Text / IO ──
         .send_keys, .send_text => {
@@ -263,10 +318,16 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
 }
 
 fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
-    if (cmd.payload_len < 1) { sendError(cmd, "missing tab index"); return; }
+    if (cmd.payload_len < 1) {
+        sendError(cmd, "missing tab index");
+        return;
+    }
     const idx = cmd.payload[0];
-    if (idx == 0 or idx > ctx.tab_mgr.count) { sendError(cmd, "invalid tab index"); return; }
-    ctx.tab_mgr.closeTab(idx - 1);
+    if (idx >= ctx.tab_mgr.count) {
+        sendError(cmd, "invalid tab index");
+        return;
+    }
+    ctx.tab_mgr.closeTab(idx);
     if (ctx.tab_mgr.count == 0) {
         @import("../app/ui/publish.zig").c.attyx_request_quit();
     } else {
@@ -277,7 +338,10 @@ fn handleTabCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
 }
 
 fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
-    if (cmd.payload_len < 4) { sendError(cmd, "missing pane ID"); return; }
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing pane ID");
+        return;
+    }
     const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
     const ws = @import("../app/windows_stubs.zig");
     const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse {
@@ -310,10 +374,14 @@ fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
 
 // ── Query builders ──
 
-fn resolveTitle(pane: *Pane) []const u8 {
-    return pane.getCustomTitle() orelse
-        pane.engine.state.title orelse
-        "shell";
+fn resolvePaneTitle(pane: *Pane, buf: *[256]u8) ?[]const u8 {
+    if (pane.engine.state.title) |title| {
+        return event_loop.cleanWindowsTitle(title, buf) orelse title;
+    }
+    if (pane.getDaemonProcName()) |title| {
+        return event_loop.cleanWindowsTitle(title, buf) orelse title;
+    }
+    return null;
 }
 
 fn buildList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
@@ -324,7 +392,11 @@ fn buildList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     for (0..mgr.count) |i| {
         const layout = &(mgr.tabs[i] orelse continue);
         const is_active = (i == mgr.active);
-        const title = resolveTitle(layout.focusedPane());
+        var name_buf: [256]u8 = undefined;
+        const title = layout.getTitle() orelse
+            resolvePaneTitle(layout.focusedPane(), &name_buf) orelse
+            layout.getHintTitle() orelse
+            "shell";
         w.print("{d}\t{s}", .{ i + 1, title }) catch break;
         if (is_active) w.writeAll("\t*") catch break;
         w.print("\tpane:{d}", .{layout.focusedPane().ipc_id}) catch break;
@@ -335,7 +407,8 @@ fn buildList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = layout.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
-                const pt = resolveTitle(leaf.pane);
+                var pane_name_buf: [256]u8 = undefined;
+                const pt = resolvePaneTitle(leaf.pane, &pane_name_buf) orelse "shell";
                 w.print("  {d}\t{s}", .{ leaf.pane.ipc_id, pt }) catch break;
                 if (leaf.index == layout.focused) w.writeAll("\t*") catch break;
                 w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
@@ -353,7 +426,11 @@ fn buildTabList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     const mgr = ctx.tab_mgr;
     for (0..mgr.count) |i| {
         const layout = &(mgr.tabs[i] orelse continue);
-        const title = resolveTitle(layout.focusedPane());
+        var name_buf: [256]u8 = undefined;
+        const title = layout.getTitle() orelse
+            resolvePaneTitle(layout.focusedPane(), &name_buf) orelse
+            layout.getHintTitle() orelse
+            "shell";
         w.print("{d}\t{s}", .{ i + 1, title }) catch break;
         if (i == mgr.active) w.writeAll("\t*") catch break;
         if (layout.pane_count > 1) w.print("\t{d} panes", .{layout.pane_count}) catch break;
@@ -368,11 +445,15 @@ fn buildSplitList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     var stream = std.io.fixedBufferStream(&buf);
     const w = stream.writer();
     const mgr = ctx.tab_mgr;
-    const layout = &(mgr.tabs[mgr.active] orelse { sendOk(cmd, ""); return; });
+    const layout = &(mgr.tabs[mgr.active] orelse {
+        sendOk(cmd, "");
+        return;
+    });
     var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
     const lc = layout.collectLeaves(&leaves);
     for (leaves[0..lc]) |leaf| {
-        const title = resolveTitle(leaf.pane);
+        var name_buf: [256]u8 = undefined;
+        const title = resolvePaneTitle(leaf.pane, &name_buf) orelse "shell";
         w.print("{d}\t{s}", .{ leaf.pane.ipc_id, title }) catch break;
         if (leaf.index == layout.focused) w.writeAll("\t*") catch break;
         w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
@@ -564,7 +645,11 @@ fn handlePopup(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     const publish = @import("../app/ui/publish.zig");
 
     const border_style: popup_mod.BorderStyle = switch (border_raw) {
-        0 => .single, 1 => .double, 2 => .rounded, 3 => .heavy, 4 => .none,
+        0 => .single,
+        1 => .double,
+        2 => .rounded,
+        3 => .heavy,
+        4 => .none,
         else => .rounded,
     };
 
@@ -634,11 +719,14 @@ fn handleThemeSet(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
 // ── Targeted operations ──
 
 fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
-    if (cmd.payload_len < 2) {
-        sendError(cmd, "missing tab index or name");
+    const payload = tab_rename.parseTargetedPayload(cmd.payload[0..cmd.payload_len]) catch |err| {
+        switch (err) {
+            error.MissingTabIndex => sendError(cmd, "missing tab index"),
+            error.MissingTabTitle => sendError(cmd, "missing tab title"),
+        }
         return;
-    }
-    const ti = cmd.payload[0];
+    };
+    const ti = payload.tab_idx;
     if (ti >= ctx.tab_mgr.count) {
         sendError(cmd, "tab not found");
         return;
@@ -647,8 +735,8 @@ fn handleTabRenameTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         sendError(cmd, "tab not found");
         return;
     });
-    const name = cmd.payload[1..cmd.payload_len];
-    layout.focusedPane().setCustomTitle(name);
+    layout.setTitle(payload.name);
+    event_loop.saveLayoutToDaemon(ctx);
     sendOk(cmd, "");
 }
 

@@ -78,6 +78,7 @@ pub const CommandPaletteState = struct {
                 },
                 7 => return .close, // Escape
                 8 => { // Enter — apply rename
+                    if (self.filter_len == 0) return .none;
                     return .{ .rename_tab = self.filter_buf[0..self.filter_len] };
                 },
                 else => {},
@@ -279,4 +280,32 @@ test "substringMatch: case-insensitive" {
     try std.testing.expect(substringMatch("Toggle search bar", "search"));
     try std.testing.expect(substringMatch("Toggle search bar", "SEARCH"));
     try std.testing.expect(!substringMatch("copy", "xyz"));
+}
+
+test "rename mode ignores empty enter" {
+    var state = CommandPaletteState{};
+    state.enterRenameMode();
+
+    const action = state.handleCmd(8);
+    switch (action) {
+        .none => {},
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "rename mode returns rename action for non-empty title" {
+    var state = CommandPaletteState{};
+    state.enterRenameMode();
+    _ = state.handleChar('e');
+    _ = state.handleChar('d');
+    _ = state.handleChar('i');
+    _ = state.handleChar('t');
+    _ = state.handleChar('o');
+    _ = state.handleChar('r');
+
+    const action = state.handleCmd(8);
+    switch (action) {
+        .rename_tab => |name| try std.testing.expectEqualStrings("editor", name),
+        else => return error.TestUnexpectedResult,
+    }
 }

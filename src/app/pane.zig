@@ -46,9 +46,6 @@ pub const Pane = struct {
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,
-    /// User-set custom title (via IPC `tab rename`). Overrides all other title sources.
-    custom_title_buf: [128]u8 = undefined,
-    custom_title_len: u8 = 0,
     /// IPC --wait: fd to write exit code to when this pane's process exits.
     /// Set by IPC handler when a client requests --wait. The fd is owned by
     /// this pane: deinit writes the exit code response and closes it.
@@ -67,17 +64,6 @@ pub const Pane = struct {
     pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
         if (self.daemon_proc_name_len == 0) return null;
         return self.daemon_proc_name[0..self.daemon_proc_name_len];
-    }
-
-    pub fn getCustomTitle(self: *const Pane) ?[]const u8 {
-        if (self.custom_title_len == 0) return null;
-        return self.custom_title_buf[0..self.custom_title_len];
-    }
-
-    pub fn setCustomTitle(self: *Pane, name: []const u8) void {
-        const len: u8 = @intCast(@min(name.len, self.custom_title_buf.len));
-        @memcpy(self.custom_title_buf[0..len], name[0..len]);
-        self.custom_title_len = len;
     }
 
     pub fn spawn(

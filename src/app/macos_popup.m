@@ -202,6 +202,7 @@
         static float _popupTrailX, _popupTrailY;
         static double _popupTrailLastTime;
         static int   _popupPrevRow = -1, _popupPrevCol = -1;
+        static int   _popupPrevVis = 0;
 
         int curCol = desc.cursor_col;
         int curRow = desc.cursor_row;
@@ -257,7 +258,7 @@
 
         // Cursor trail (Neovide-style exponential-decay comet)
         CFAbsoluteTime now = CACurrentMediaTime();
-        if (g_cursor_trail && desc.cursor_visible && cursorChanged && _popupPrevRow >= 0) {
+        if (g_cursor_trail && desc.cursor_visible && _popupPrevVis && cursorChanged && _popupPrevRow >= 0) {
             int cellDist = abs(curRow - _popupPrevRow) + abs(curCol - _popupPrevCol);
             if (cellDist > 1) {
                 _popupTrailX = offX + (desc.col + _popupPrevCol) * gw;
@@ -331,6 +332,7 @@
 
         _popupPrevRow = curRow;
         _popupPrevCol = curCol;
+        _popupPrevVis = desc.cursor_visible;
     }
 }
 

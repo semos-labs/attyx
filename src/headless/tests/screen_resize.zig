@@ -93,8 +93,10 @@ test "resize: cursor mapped through reflow" {
 
     try t.resize(4, 3);
 
-    // Cursor was at offset 6 in logical line → row 2, col 0
-    try std.testing.expectEqual(@as(usize, 2), t.cursor.row);
+    // Reflow maps cursor to row 2, col 0 in the reflowed content, but
+    // state_resize clamps it back to the old screen row (0) so the
+    // shell's SIGWINCH redraw doesn't leave ghost prompt lines.
+    try std.testing.expectEqual(@as(usize, 0), t.cursor.row);
     try std.testing.expectEqual(@as(usize, 0), t.cursor.col);
 }
 

@@ -573,3 +573,17 @@ fn writeJsonEscaped(file: std.fs.File, s: []const u8) void {
         }
     }
 }
+
+test "targeted tab close request preserves zero-based index" {
+    var buf: [64]u8 = undefined;
+    const parsed = @import("../config/cli_ipc.zig").IpcRequest{
+        .command = .tab_close,
+        .tab_idx = 2,
+    };
+    const req = try buildRequest(&buf, parsed);
+    const header = try protocol.decodeHeader(req[0..protocol.header_size]);
+
+    try std.testing.expectEqual(protocol.MessageType.tab_close_targeted, header.msg_type);
+    try std.testing.expectEqual(@as(u32, 1), header.payload_len);
+    try std.testing.expectEqual(@as(u8, 2), req[protocol.header_size]);
+}

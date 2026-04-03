@@ -200,7 +200,10 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         }
         if (std.mem.eql(u8, sub, "theme")) {
             if (hasHelp(args, start)) showHelp(help.theme);
-            if (start + 1 >= args.len) { printHelp(help.theme); break :blk null; }
+            if (start + 1 >= args.len) {
+                printHelp(help.theme);
+                break :blk null;
+            }
             break :blk .{ .command = .theme_set, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
         }
         if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(args, start, target_pid, json_output);
@@ -209,7 +212,10 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         if (std.mem.eql(u8, sub, "session")) break :blk parseSession(args, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "run")) {
             if (hasHelp(args, start)) showHelp(help.run);
-            if (start + 1 >= args.len) { printHelp(help.run); break :blk null; }
+            if (start + 1 >= args.len) {
+                printHelp(help.run);
+                break :blk null;
+            }
             var run_cmd: []const u8 = "";
             var run_wait = false;
             var ri = start + 1;
@@ -221,7 +227,10 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
                 }
                 ri += 1;
             }
-            if (run_cmd.len == 0) { printHelp(help.run); break :blk null; }
+            if (run_cmd.len == 0) {
+                printHelp(help.run);
+                break :blk null;
+            }
             break :blk .{ .command = .tab_create, .text_arg = run_cmd, .target_pid = target_pid, .json_output = json_output, .wait = run_wait };
         }
 
@@ -282,7 +291,10 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
         return .{ .command = .tab_prev, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "select")) {
         if (hasHelp(args, start + 1)) showHelp(help.tab_select);
-        if (start + 2 >= args.len) { printHelp(help.tab_select); return null; }
+        if (start + 2 >= args.len) {
+            printHelp(help.tab_select);
+            return null;
+        }
         const idx = std.fmt.parseInt(u8, args[start + 2], 10) catch fatal("tab index must be 1-9");
         if (idx < 1 or idx > 9) fatal("tab index must be 1-9");
         return .{ .command = .tab_select, .index_arg = idx, .target_pid = target_pid, .json_output = json_output };
@@ -300,7 +312,10 @@ fn parseTab(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_out
         return null;
     } else if (std.mem.eql(u8, action, "rename")) {
         if (hasHelp(args, start + 1)) showHelp(help.tab_rename);
-        if (start + 2 >= args.len) { printHelp(help.tab_rename); return null; }
+        if (start + 2 >= args.len) {
+            printHelp(help.tab_rename);
+            return null;
+        }
         // Try: tab rename <N> <name>  or  tab rename <name>
         if (start + 3 < args.len) {
             if (std.fmt.parseInt(u8, args[start + 2], 10)) |n| {
@@ -621,17 +636,26 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
         return .{ .command = .session_create, .text_arg = name, .cwd_arg = cwd, .background = bg, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "kill")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_kill);
-        if (start + 2 >= args.len) { printHelp(help.session_kill); return null; }
+        if (start + 2 >= args.len) {
+            printHelp(help.session_kill);
+            return null;
+        }
         const id = std.fmt.parseInt(u32, args[start + 2], 10) catch fatal("invalid session id");
         return .{ .command = .session_kill, .session_id_arg = id, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "switch")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_switch);
-        if (start + 2 >= args.len) { printHelp(help.session_switch); return null; }
+        if (start + 2 >= args.len) {
+            printHelp(help.session_switch);
+            return null;
+        }
         const id = std.fmt.parseInt(u32, args[start + 2], 10) catch fatal("invalid session id");
         return .{ .command = .session_switch, .session_id_arg = id, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, action, "rename")) {
         if (hasHelp(args, start + 1)) showHelp(help.session_rename);
-        if (start + 2 >= args.len) { printHelp(help.session_rename); return null; }
+        if (start + 2 >= args.len) {
+            printHelp(help.session_rename);
+            return null;
+        }
         // Try `session rename <id> <name>` first, fall back to `session rename <name>` (current session)
         if (start + 3 < args.len) {
             if (std.fmt.parseInt(u32, args[start + 2], 10)) |id| {
@@ -644,4 +668,12 @@ fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json
     std.debug.print("error: unknown session command '{s}'\n\n", .{action});
     printHelp(help.session);
     return null;
+}
+
+test "tab close parses user numbering to zero-based tab index" {
+    const args = [_][:0]const u8{ "attyx", "tab", "close", "3" };
+    const parsed = parse(&args).?;
+
+    try std.testing.expectEqual(IpcCommand.tab_close, parsed.command);
+    try std.testing.expectEqual(@as(u8, 2), parsed.tab_idx);
 }

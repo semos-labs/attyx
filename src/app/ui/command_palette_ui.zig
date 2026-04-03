@@ -7,6 +7,7 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const input = @import("input.zig");
+const actions = @import("actions.zig");
 const session_picker_ui = @import("session_picker_ui.zig");
 const commands = @import("../../config/commands.zig");
 const keybinds = @import("../../config/keybinds.zig");
@@ -126,7 +127,8 @@ fn processAction(ctx: *PtyThreadCtx, action: palette_state_mod.PaletteAction) bo
             return true;
         },
         .rename_tab => |name| {
-            ctx.tab_mgr.activePane().setCustomTitle(name);
+            ctx.tab_mgr.activeLayout().setTitle(name);
+            actions.saveSessionLayout(ctx);
             closeCommandPalette(ctx);
             return true;
         },

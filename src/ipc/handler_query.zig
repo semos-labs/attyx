@@ -11,18 +11,15 @@ const terminal = @import("../app/terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
 const split_layout_mod = @import("../app/split_layout.zig");
 const platform = @import("../platform/platform.zig");
-const publish = @import("../app/ui/publish.zig");
 
 const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
 const sendError = handler.sendError;
 
-fn resolveTitle(pane: anytype, name_buf: *[256]u8) []const u8 {
-    return pane.getCustomTitle() orelse
-        pane.engine.state.title orelse
+fn resolvePaneTitle(pane: anytype, name_buf: *[256]u8) ?[]const u8 {
+    return pane.engine.state.title orelse
         platform.getForegroundProcessName(pane.pty.master, name_buf) orelse
-        pane.getDaemonProcName() orelse
-        "shell";
+        pane.getDaemonProcName();
 }
 
 pub fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
@@ -36,7 +33,10 @@ pub fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         const is_active = (i == mgr.active);
 
         var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(layout.focusedPane(), &name_buf);
+        const title = layout.getTitle() orelse
+            resolvePaneTitle(layout.focusedPane(), &name_buf) orelse
+            layout.getHintTitle() orelse
+            "shell";
 
         w.print("{d}\t{s}", .{ i + 1, title }) catch break;
         if (is_active) w.writeAll("\t*") catch break;
@@ -54,7 +54,7 @@ pub fn buildList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             const lc = layout.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
                 var pane_name_buf: [256]u8 = undefined;
-                const pane_title = resolveTitle(leaf.pane, &pane_name_buf);
+                const pane_title = resolvePaneTitle(leaf.pane, &pane_name_buf) orelse "shell";
                 const focused = (leaf.index == layout.focused);
                 w.print("  {d}\t{s}", .{ leaf.pane.ipc_id, pane_title }) catch break;
                 if (focused) w.writeAll("\t*") catch break;
@@ -78,7 +78,10 @@ pub fn buildTabList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         const is_active = (i == mgr.active);
 
         var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(layout.focusedPane(), &name_buf);
+        const title = layout.getTitle() orelse
+            resolvePaneTitle(layout.focusedPane(), &name_buf) orelse
+            layout.getHintTitle() orelse
+            "shell";
 
         w.print("{d}\t{s}", .{ i + 1, title }) catch break;
         if (is_active) w.writeAll("\t*") catch break;
@@ -107,7 +110,7 @@ pub fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     const lc = layout.collectLeaves(&leaves);
     for (leaves[0..lc]) |leaf| {
         var name_buf: [256]u8 = undefined;
-        const title = resolveTitle(leaf.pane, &name_buf);
+        const title = resolvePaneTitle(leaf.pane, &name_buf) orelse "shell";
         const focused = (leaf.index == layout.focused);
 
         w.print("{d}\t{s}", .{ leaf.pane.ipc_id, title }) catch break;

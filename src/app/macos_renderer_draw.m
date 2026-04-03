@@ -606,7 +606,7 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
         }
 
         // Cursor trail effect (Neovide-style: stretched comet tail)
-        if (g_cursor_trail && g_cursor_visible && cursorChanged && _prevCursorRow >= 0) {
+        if (g_cursor_trail && g_cursor_visible && _prevCursorVisible && cursorChanged && _prevCursorRow >= 0) {
             int cellDist = abs(curRow - _prevCursorRow) + abs(curCol - _prevCursorCol);
             if (cellDist > 1) {
                 _trailX = offX + _prevCursorCol * gw;

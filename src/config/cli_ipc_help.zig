@@ -147,7 +147,7 @@ pub const tab_rename =
     \\
     \\Arguments:
     \\  N      Tab number (1-indexed, optional — defaults to active tab)
-    \\  name   New tab title. Use quotes for names with spaces.
+    \\  name   New non-empty tab title. Use quotes for names with spaces.
     \\
     \\Examples:
     \\  attyx tab rename server

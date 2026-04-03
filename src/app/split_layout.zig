@@ -4,6 +4,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Pane = @import("pane.zig").Pane;
+const layout_codec = @import("layout_codec.zig");
 const platform = @import("../platform/platform.zig");
 const logging = @import("../logging/log.zig");
 
@@ -46,6 +47,10 @@ pub const SplitLayout = struct {
     root: u8 = null_index,
     focused: u8 = null_index,
     pane_count: u8 = 0,
+    title_buf: [layout_codec.max_title_len]u8 = undefined,
+    title_len: u8 = 0,
+    hint_title_buf: [layout_codec.max_title_len]u8 = undefined,
+    hint_title_len: u8 = 0,
     gap_h: u16 = 1, // gap columns for vertical splits (horizontal spacing)
     gap_v: u16 = 1, // gap rows for horizontal splits (vertical spacing)
     zoomed_leaf: u8 = null_index, // set when a pane is zoomed to fill the whole area
@@ -53,6 +58,37 @@ pub const SplitLayout = struct {
     pub fn setGaps(self: *SplitLayout, h: u16, v: u16) void {
         self.gap_h = h;
         self.gap_v = v;
+    }
+
+    pub fn getTitle(self: *const SplitLayout) ?[]const u8 {
+        if (self.title_len == 0) return null;
+        return self.title_buf[0..self.title_len];
+    }
+
+    pub fn setTitle(self: *SplitLayout, title: []const u8) void {
+        const len: u8 = @intCast(@min(title.len, self.title_buf.len));
+        if (len > 0) @memcpy(self.title_buf[0..len], title[0..len]);
+        self.title_len = len;
+        self.hint_title_len = 0;
+    }
+
+    pub fn clearTitle(self: *SplitLayout) void {
+        self.title_len = 0;
+    }
+
+    pub fn getHintTitle(self: *const SplitLayout) ?[]const u8 {
+        if (self.hint_title_len == 0) return null;
+        return self.hint_title_buf[0..self.hint_title_len];
+    }
+
+    pub fn setHintTitle(self: *SplitLayout, title: []const u8) void {
+        const len: u8 = @intCast(@min(title.len, self.hint_title_buf.len));
+        if (len > 0) @memcpy(self.hint_title_buf[0..len], title[0..len]);
+        self.hint_title_len = len;
+    }
+
+    pub fn clearHintTitle(self: *SplitLayout) void {
+        self.hint_title_len = 0;
     }
 
     pub fn init(initial_pane: *Pane) SplitLayout {

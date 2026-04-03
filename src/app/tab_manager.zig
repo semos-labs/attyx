@@ -14,6 +14,40 @@ const platform = @import("../platform/platform.zig");
 
 pub const max_tabs = 16;
 
+fn writeStoredTabTitle(tab: *layout_codec.TabLayout, explicit: ?[]const u8, fallback: ?[]const u8) void {
+    if (explicit) |title| {
+        const len = @min(title.len, layout_codec.max_title_len);
+        if (len > 0) @memcpy(tab.title[0..len], title[0..len]);
+        tab.title_len = @intCast(len);
+        tab.title_flags = layout_codec.title_flag_explicit;
+        return;
+    }
+    if (fallback) |title| {
+        const len = @min(title.len, layout_codec.max_title_len);
+        if (len > 0) @memcpy(tab.title[0..len], title[0..len]);
+        tab.title_len = @intCast(len);
+        tab.title_flags = 0;
+        return;
+    }
+    tab.title_len = 0;
+    tab.title_flags = 0;
+}
+
+fn restoreTabTitle(layout: *SplitLayout, tab: *const layout_codec.TabLayout) void {
+    const title = tab.getTitle() orelse {
+        layout.clearTitle();
+        layout.clearHintTitle();
+        return;
+    };
+    if (tab.isExplicitTitle()) {
+        layout.setTitle(title);
+        layout.clearHintTitle();
+        return;
+    }
+    layout.clearTitle();
+    layout.setHintTitle(title);
+}
+
 pub const TabManager = struct {
     tabs: [max_tabs]?SplitLayout = .{null} ** max_tabs,
     count: u8 = 0,
@@ -407,12 +441,7 @@ pub const TabManager = struct {
             sl.pane_count = pane_count;
             sl.layout(rows, cols);
 
-            if (tab.getTitle()) |title| {
-                const pane = sl.focusedPane();
-                const len: u8 = @intCast(@min(title.len, 64));
-                @memcpy(pane.daemon_proc_name[0..len], title[0..len]);
-                pane.daemon_proc_name_len = len;
-            }
+            restoreTabTitle(&sl, tab);
 
             self.tabs[self.count] = sl;
             self.count += 1;
@@ -452,25 +481,16 @@ pub const TabManager = struct {
                 tab.root_idx = if (lay.root < split_layout_mod.max_nodes) remap[lay.root] else 0;
                 tab.focused_idx = if (lay.focused < split_layout_mod.max_nodes) remap[lay.focused] else 0;
 
-                // Capture the displayed tab title using the same fallback chain
-                // as resolveTabTitles: custom → OSC title → local proc → daemon proc.
                 const focused_pane = lay.focusedPane();
-                const title_src: ?[]const u8 = focused_pane.getCustomTitle() orelse
-                    focused_pane.engine.state.title orelse blk: {
+                const fallback_title: ?[]const u8 = focused_pane.engine.state.title orelse blk: {
                     if (comptime @import("builtin").os.tag != .windows) {
                         var name_buf: [256]u8 = undefined;
                         if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
                             break :blk name;
                     }
-                    break :blk focused_pane.getDaemonProcName();
+                    break :blk focused_pane.getDaemonProcName() orelse lay.getHintTitle();
                 };
-                if (title_src) |t| {
-                    const len = @min(t.len, layout_codec.max_title_len);
-                    @memcpy(tab.title[0..len], t[0..len]);
-                    tab.title_len = @intCast(len);
-                } else {
-                    tab.title_len = 0;
-                }
+                writeStoredTabTitle(tab, lay.getTitle(), fallback_title);
 
                 var ci: u8 = 0;
                 for (lay.pool) |node| {
@@ -560,15 +580,7 @@ pub const TabManager = struct {
             sl.pane_count = pane_count;
             sl.layout(rows, cols);
 
-            // Restore tab title as daemon_proc_name (lowest-priority fallback).
-            // This shows initially but gets replaced when the daemon reports
-            // real process name updates — avoids blocking OSC title resolution.
-            if (tab.getTitle()) |title| {
-                const pane = sl.focusedPane();
-                const len: u8 = @intCast(@min(title.len, 64));
-                @memcpy(pane.daemon_proc_name[0..len], title[0..len]);
-                pane.daemon_proc_name_len = len;
-            }
+            restoreTabTitle(&sl, tab);
 
             self.tabs[self.count] = sl;
             self.count += 1;

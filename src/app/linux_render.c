@@ -359,7 +359,7 @@ int drawFrame(void) {
     }
 
     // Cursor trail effect (Neovide-style: stretched comet tail)
-    if (g_cursor_trail && g_cursor_visible && cursorChanged && g_prev_cursor_row >= 0) {
+    if (g_cursor_trail && g_cursor_visible && g_prev_cursor_vis == 1 && cursorChanged && g_prev_cursor_row >= 0) {
         int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);
         if (cellDist > 1) {
             g_trail_x = offX + g_prev_cursor_col * gw;

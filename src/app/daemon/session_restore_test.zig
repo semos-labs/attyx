@@ -90,7 +90,7 @@ test "new client inherits layout after previous client disconnects" {
     try testing.expectEqual(pane_id, restored.focused_pane_id);
 }
 
-test "layout blob preserved across detach/reattach (tabs + active tab)" {
+test "layout blob preserved across detach/reattach with explicit tab titles" {
     var env = try setup();
     defer teardown(&env);
 
@@ -120,12 +120,14 @@ test "layout blob preserved across detach/reattach (tabs + active tab)" {
     layout.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = pane_id };
     @memcpy(layout.tabs[0].title[0..4], "code");
     layout.tabs[0].title_len = 4;
+    layout.tabs[0].title_flags = layout_codec.title_flag_explicit;
     layout.tabs[1].node_count = 1;
     layout.tabs[1].root_idx = 0;
     layout.tabs[1].focused_idx = 0;
     layout.tabs[1].nodes[0] = .{ .tag = .leaf, .pane_id = pane_id };
     @memcpy(layout.tabs[1].title[0..4], "logs");
     layout.tabs[1].title_len = 4;
+    layout.tabs[1].title_flags = layout_codec.title_flag_explicit;
 
     var layout_buf: [4096]u8 = undefined;
     const layout_len = try layout_codec.serialize(&layout, &layout_buf);
@@ -145,6 +147,8 @@ test "layout blob preserved across detach/reattach (tabs + active tab)" {
     try testing.expectEqual(@as(u8, 2), restored.tab_count);
     try testing.expectEqual(@as(u8, 1), restored.active_tab);
     try testing.expectEqual(pane_id, restored.focused_pane_id);
+    try testing.expect(restored.tabs[0].isExplicitTitle());
+    try testing.expect(restored.tabs[1].isExplicitTitle());
     try testing.expectEqualStrings("code", restored.tabs[0].getTitle().?);
     try testing.expectEqualStrings("logs", restored.tabs[1].getTitle().?);
 }
@@ -182,8 +186,11 @@ test "split layout with focus preserved across detach/reattach" {
     layout.tabs[0].root_idx = 0;
     layout.tabs[0].focused_idx = 2;
     layout.tabs[0].nodes[0] = .{
-        .tag = .branch, .direction = .vertical,
-        .ratio_x100 = 50, .child_left = 1, .child_right = 2,
+        .tag = .branch,
+        .direction = .vertical,
+        .ratio_x100 = 50,
+        .child_left = 1,
+        .child_right = 2,
     };
     layout.tabs[0].nodes[1] = .{ .tag = .leaf, .pane_id = pane1 };
     layout.tabs[0].nodes[2] = .{ .tag = .leaf, .pane_id = pane2 };
