@@ -424,10 +424,13 @@ pub fn run(
     const initial_cwd: []const u8 = config.working_directory orelse
         (process_cwd orelse (std.posix.getenv("HOME") orelse "/"));
     // Detect xyron binary early so session creation can use it as the shell
-    const xyron_detect = @import("../xyron/detect.zig");
+    // Xyron is macOS/Linux only — skip on Windows.
     var xyron_heap_path: ?[:0]const u8 = null;
     defer if (xyron_heap_path) |p| allocator.free(p);
-    if (config.xyron_enabled) {
+    if (comptime @import("builtin").os.tag == .windows) {
+        // Xyron not supported on Windows
+    } else if (config.xyron_enabled) {
+        const xyron_detect = @import("../xyron/detect.zig");
         var xp_buf: [xyron_detect.max_path]u8 = undefined;
         if (xyron_detect.findXyron(config.xyron_path, &xp_buf)) |xp| {
             logging.info("xyron", "detected at {s}", .{xp});
