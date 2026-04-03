@@ -45,10 +45,12 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             var osc7_buf: [statusbar.max_output_len]u8 = undefined;
             const resolved = resolveFocusedCwd(ctx, &osc7_buf);
             defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
+
             if (ctx.sessions_enabled) {
                 // Session mode: daemon owns the PTY.
                 const sc = ctx.session_client orelse return;
-                if (ctx.default_program) |prog| {
+                const shell_prog = ctx.default_program;
+                if (shell_prog) |prog| {
                     sc.sendCreatePaneWithShell(rows, cols, resolved.cwd orelse "", prog) catch {
                         logging.err("tabs", "send create_pane failed", .{});
                         return;
@@ -73,7 +75,14 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                 // Non-session mode: spawn a local PTY with foreground CWD.
                 const cwd_z: ?[:0]u8 = if (resolved.cwd) |d| ctx.allocator.dupeZ(u8, d) catch null else null;
                 defer if (cwd_z) |z| ctx.allocator.free(z);
-                if (ctx.default_program) |prog| {
+                if (ctx.xyron_path) |xp| {
+                    // Xyron: spawn xyron --ipc as the shell
+                    const argv: [2][:0]const u8 = .{ xp, "--ipc" };
+                    ctx.tab_mgr.addTabWithArgv(rows, cols, &argv, if (cwd_z) |z| z.ptr else null, ctx.applied_scrollback_lines) catch |err| {
+                        logging.err("tabs", "addTab with xyron failed: {}", .{err});
+                        return;
+                    };
+                } else if (ctx.default_program) |prog| {
                     const prog_z = ctx.allocator.dupeZ(u8, prog) catch {
                         logging.err("tabs", "alloc program argv failed", .{});
                         return;

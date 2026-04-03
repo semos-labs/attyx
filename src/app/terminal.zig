@@ -88,6 +88,12 @@ pub const PtyThreadCtx = struct {
     split_resize_step: u16 = 4,
     // Default program for new tabs (from config [program] shell)
     default_program: ?[]const u8 = null,
+    // Xyron: path to xyron binary for new tab creation (null = use default shell)
+    xyron_path: ?[:0]const u8 = null,
+    // Xyron: persistent IPC client for receiving push events (completions, etc.)
+    xyron_ipc: ?*@import("../xyron/ipc.zig").IpcClient = null,
+    // Xyron: completion overlay state
+    xyron_completion: @import("attyx").overlay_completion.CompletionState = .{},
 };
 
 // ---------------------------------------------------------------------------
@@ -99,6 +105,12 @@ pub var g_popup_pty_master: posix.fd_t = -1;
 pub var g_popup_engine: ?*attyx.Engine = null;
 pub var g_session_client: ?*SessionClient = null;
 pub var g_active_daemon_pane_id: u32 = 0;
+// Xyron IPC: path to xyron binary (set when xyron.enabled, used for new tabs)
+pub var g_xyron_path: ?[:0]const u8 = null;
+// Xyron IPC: socket path discovered via OSC 7339 (used for sideband queries)
+pub var g_xyron_ipc_socket: ?[]const u8 = null;
+// Xyron IPC: whether handshake has been completed
+pub var g_xyron_handshake_done: bool = false;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
@@ -411,7 +423,28 @@ pub fn run(
     };
     const initial_cwd: []const u8 = config.working_directory orelse
         (process_cwd orelse (std.posix.getenv("HOME") orelse "/"));
-    const initial_shell: []const u8 = config.program orelse "";
+    // Detect xyron binary early so session creation can use it as the shell
+    // Xyron is macOS/Linux only — skip on Windows.
+    var xyron_heap_path: ?[:0]const u8 = null;
+    defer if (xyron_heap_path) |p| allocator.free(p);
+    if (comptime @import("builtin").os.tag == .windows) {
+        // Xyron not supported on Windows
+    } else if (config.xyron_enabled) {
+        const xyron_detect = @import("../xyron/detect.zig");
+        var xp_buf: [xyron_detect.max_path]u8 = undefined;
+        if (xyron_detect.findXyron(config.xyron_path, &xp_buf)) |xp| {
+            logging.info("xyron", "detected at {s}", .{xp});
+            xyron_heap_path = allocator.dupeZ(u8, xp) catch null;
+        } else {
+            logging.warn("xyron", "enabled but binary not found, falling back to shell", .{});
+        }
+    }
+
+    // Shell for daemon session creation: xyron path or config program
+    const initial_shell: []const u8 = if (xyron_heap_path) |xhp|
+        @as([]const u8, xhp)
+    else
+        (config.program orelse "");
 
     // In session mode: attach to last active session, or create a new one.
     var initial_pane_ids: [32]u32 = .{0} ** 32;
@@ -518,7 +551,14 @@ pub fn run(
     const cwd_z: ?[:0]u8 = if (config.working_directory) |d| allocator.dupeZ(u8, d) catch null else null;
     defer if (cwd_z) |z| allocator.free(z);
     const cwd_ptr: ?[*:0]const u8 = if (cwd_z) |z| z.ptr else null;
-    initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
+
+    // Spawn initial pane: xyron --ipc if detected, otherwise default shell
+    if (xyron_heap_path) |xhp| {
+        const xa: [2][:0]const u8 = .{ xhp, "--ipc" };
+        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, &xa, cwd_ptr, config.scrollback_lines);
+    } else {
+        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
+    }
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&initial_theme);
@@ -600,6 +640,7 @@ pub fn run(
     g_pty_master = tab_mgr.activePane().pty.master;
     g_engine = &tab_mgr.activePane().engine;
     g_session_client = heap_session_client;
+    g_xyron_path = xyron_heap_path;
 
     // Set split-active flag so input dispatch enables pane navigation keybinds.
     {
@@ -733,6 +774,7 @@ pub fn run(
         .last_focus_count = initial_focus_count,
         .split_resize_step = config.split_resize_step,
         .default_program = config.program,
+        .xyron_path = xyron_heap_path,
     };
 
     // Push theme colors to all pane engines (covers reconstructed daemon tabs too).

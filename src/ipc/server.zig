@@ -21,6 +21,12 @@ pub fn isStarted() bool {
     return listener_fd != -1;
 }
 
+/// Returns the IPC server socket path, or null if not started.
+pub fn getSocketPath() ?[]const u8 {
+    if (socket_path_len == 0) return null;
+    return socket_path_buf[0..socket_path_len];
+}
+
 /// Start the IPC server: bind, listen, and return the listener fd.
 /// Call `run()` on a dedicated thread after this.
 pub fn start() !void {

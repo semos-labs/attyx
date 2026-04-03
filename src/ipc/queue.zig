@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 
-pub const max_payload = 4096;
+pub const max_payload = 8192;
 pub const max_queued = 8;
 
 /// Platform-appropriate invalid fd sentinel.

@@ -199,6 +199,8 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         .tab_rename_targeted => handleTabRenameTargeted(cmd, ctx),
         .pane_rotate_targeted => handlePaneRotateTargeted(cmd, ctx),
         .pane_zoom_targeted => handlePaneZoomTargeted(cmd, ctx),
+        // Xyron overlay events — not supported on Windows
+        .xyron_overlay_show, .xyron_overlay_update, .xyron_overlay_dismiss => sendError(cmd, "xyron not supported on Windows"),
         .success, .err, .exit_code => sendError(cmd, "unexpected message type"),
     }
 }

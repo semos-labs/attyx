@@ -171,6 +171,42 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
+    // When xyron is enabled in session mode, the daemon may not have output
+    // yet (xyron just started). Wait briefly for initial prompt data.
+    if (ctx.session_client != null and ctx.xyron_path != null) {
+        const startup_pane = ctx.tab_mgr.activePane();
+        if (startup_pane.daemon_pane_id != null) {
+            for (0..40) |_| { // up to 2 seconds
+                if (ctx.session_client) |sc| {
+                    _ = sc.recvData();
+                    while (sc.readMessage()) |msg| {
+                        switch (msg) {
+                            .pane_output => |out| {
+                                startup_pane.engine.feed(out.data);
+                                _ = startup_pane.engine.state.drainResponse();
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                if (startup_pane.engine.state.cursor.row > 0 or startup_pane.engine.state.cursor.col > 0) break;
+                posix.nanosleep(0, 50_000_000); // 50ms
+            }
+            // Publish whatever we got
+            const eng = &startup_pane.engine;
+            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
+            c.attyx_begin_cell_update();
+            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+            c.attyx_set_cursor(
+                @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
+                @intCast(eng.state.cursor.col),
+            );
+            c.attyx_mark_all_dirty();
+            eng.state.dirty.clear();
+            c.attyx_end_cell_update();
+        }
+    }
+
     var got_data = false;
     var throttled_frames: u8 = 0; // count frames skipped by rate limiter
     outer: while (c.attyx_should_quit() == 0) {
@@ -243,6 +279,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
             statusbar_refreshed = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
         };
+
         // Debug overlay toggle check
         if (@atomicRmw(i32, &terminal.g_toggle_debug_overlay, .Xchg, 0, .seq_cst) != 0) {
             if (ctx.overlay_mgr) |mgr| {
@@ -591,6 +628,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Xyron IPC event fd (persistent connection for push events)
+        const xyron_event_fd_idx = nfds;
+        if (ctx.xyron_ipc) |xi| {
+            if (xi.eventPollFd() >= 0) {
+                fds[nfds] = .{ .fd = xi.eventPollFd(), .events = POLLIN, .revents = 0 };
+                nfds += 1;
+            }
+        }
+
         // Drain any buffered paste data before polling — this interleaves
         // writing paste input with reading shell output, preventing deadlock
         // when the kernel PTY buffer fills in both directions.
@@ -760,6 +806,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             const local_start = if (session_fd_idx != null) @as(usize, 1) else @as(usize, 0);
             for (local_start..nfds) |i| {
                 if (fd_tab_idx[i] == 0xFF) continue; // popup handled separately
+                if (i == xyron_event_fd_idx) continue; // xyron IPC handled separately
                 if (fds[i].revents & POLLIN == 0) continue;
                 const p = fd_panes[i];
                 while (true) {
@@ -806,6 +853,75 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Drain xyron IPC push events (completion overlay show/update/dismiss)
+        if (ctx.xyron_ipc) |xi| {
+            if (xyron_event_fd_idx < nfds and (fds[xyron_event_fd_idx].revents & (POLLIN | POLLHUP) != 0)) {
+                const xyron_proto = @import("../../xyron/protocol.zig");
+                const completion_mod = @import("attyx").overlay_completion;
+                const overlay_mod2 = @import("attyx").overlay_mod;
+                while (xi.readEvent()) |frame| {
+                    logging.info("xyron", "IPC event: 0x{x:0>2} ({d} bytes)", .{ @intFromEnum(frame.msg_type), frame.payload.len });
+                    switch (frame.msg_type) {
+                        .evt_overlay_show, .evt_overlay_update => {
+                            var r = xyron_proto.PayloadReader.init(frame.payload);
+                            const selected: i64 = r.readInt();
+                            const scroll_off: i64 = r.readInt();
+                            const total: i64 = r.readInt();
+                            const visible_count: i64 = r.readInt();
+
+                            // Parse candidates into completion state
+                            const count: u16 = @intCast(@min(@max(visible_count, 0), completion_mod.max_candidates));
+                            ctx.xyron_completion.count = count;
+                            for (0..count) |i| {
+                                const text = r.readStr();
+                                const desc = r.readStr();
+                                const kind = r.readU8();
+                                _ = r.readInt(); // score
+                                var cand = &ctx.xyron_completion.candidates[i];
+                                const tl: u16 = @intCast(@min(text.len, 256));
+                                @memcpy(cand.text[0..tl], text[0..tl]);
+                                cand.text_len = tl;
+                                const dl: u16 = @intCast(@min(desc.len, 80));
+                                @memcpy(cand.desc[0..dl], desc[0..dl]);
+                                cand.desc_len = dl;
+                                cand.kind = kind;
+                            }
+                            ctx.xyron_completion.show(
+                                @intCast(@max(selected, 0)),
+                                @intCast(@max(scroll_off, 0)),
+                                @intCast(@max(total, 0)),
+                            );
+
+                            // Render and set on overlay
+                            if (ctx.overlay_mgr) |mgr| {
+                                const theme = publish.overlayThemeFromTheme(&ctx.active_theme);
+                                if (completion_mod.render(ctx.allocator, &ctx.xyron_completion, theme)) |result| {
+                                    if (result.width > 0 and result.height > 0) {
+                                        mgr.setContent(.completion, 0, 0, result.width, result.height, result.cells) catch {};
+                                        mgr.layers[@intFromEnum(overlay_mod2.OverlayId.completion)].anchor = .{ .kind = .cursor_line };
+                                        mgr.layers[@intFromEnum(overlay_mod2.OverlayId.completion)].placement_constraints = .{
+                                            .max_width_frac = 0.80,
+                                            .max_height_frac = 0.50,
+                                            .margin = 0,
+                                        };
+                                        mgr.show(.completion);
+                                        ctx.allocator.free(result.cells);
+                                    }
+                                } else |_| {}
+                            }
+                            got_data = true;
+                        },
+                        .evt_overlay_dismiss => {
+                            ctx.xyron_completion.dismiss();
+                            if (ctx.overlay_mgr) |mgr| mgr.hide(.completion);
+                            got_data = true;
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
+
         // Check all panes for title changes (background tabs included).
         // This ensures tab bar / statusbar update even when the active tab
         // is idle but a background tab's process sends an OSC title.
@@ -823,6 +939,42 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
         if (title_changed) got_data = true;
+
+        // Detect xyron IPC socket path from OSC 7339 event + handshake
+        if (ctx.tab_mgr.activePane().engine.state.xyron_ipc_socket) |sock_path| {
+            if (terminal.g_xyron_ipc_socket == null) {
+                logging.info("xyron", "IPC socket discovered: {s}", .{sock_path});
+                terminal.g_xyron_ipc_socket = sock_path;
+
+                // Send handshake with our IPC socket path
+                // Send handshake with our IPC socket path
+                const xyron_ipc = @import("../../xyron/ipc.zig");
+                const ipc_server = @import("../../ipc/server.zig");
+                const ipc = xyron_ipc.IpcClient.init(sock_path);
+                const attyx_sock = ipc_server.getSocketPath() orelse "";
+                var pane_id_buf: [16]u8 = undefined;
+                const pane_id = std.fmt.bufPrint(&pane_id_buf, "{d}", .{ctx.tab_mgr.activePane().ipc_id}) catch "0";
+                logging.info("xyron", "sending handshake: attyx_sock={s} pane_id={s}", .{ attyx_sock, pane_id });
+                if (ipc.sendHandshake(attyx_sock, pane_id)) |hs| {
+                    logging.info("xyron", "handshake complete: {s} {s}", .{ hs.name, hs.version });
+                    terminal.g_xyron_handshake_done = true;
+
+                    // Open persistent connection for push events (completions, etc.)
+                    const heap_ipc = ctx.allocator.create(xyron_ipc.IpcClient) catch null;
+                    if (heap_ipc) |hi| {
+                        hi.* = xyron_ipc.IpcClient.init(sock_path);
+                        if (hi.connectEvents()) {
+                            ctx.xyron_ipc = hi;
+                            logging.info("xyron", "persistent event connection established", .{});
+                        } else {
+                            ctx.allocator.destroy(hi);
+                        }
+                    }
+                } else {
+                    logging.warn("xyron", "handshake failed", .{});
+                }
+            }
+        }
 
         // When viewport is pinned to bottom and new content pushes lines
         // into scrollback, adjust selection coordinates so the highlight
@@ -914,6 +1066,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 }
                 const total = eng.state.ring.screen_rows * eng.state.ring.cols;
                 publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, &eng.state.dirty);
+
                 const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
                     @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
@@ -933,6 +1086,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             publish.generateTabBar(ctx);
             publish.generateStatusbar(ctx);
             publish.publishNativeTabTitles(ctx);
+            // Reposition cursor-anchored overlays (completion dropdown)
+            if (ctx.overlay_mgr) |mgr| {
+                if (ctx.xyron_completion.active) {
+                    mgr.relayoutAnchored(publish.viewportInfoFromCtx(ctx));
+                }
+            }
             publish.publishOverlays(ctx);
             c.attyx_end_cell_update();
             publish.publishState(ctx);

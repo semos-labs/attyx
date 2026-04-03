@@ -91,6 +91,11 @@ pub const MessageType = enum(u8) {
     success = 0xA0,
     err = 0xA1,
     exit_code = 0xA2, // process exit code (1-byte payload: u8 code)
+
+    // ── Xyron shell events (xyron → attyx via sendToAttyx) ──
+    xyron_overlay_show = 0xB0,
+    xyron_overlay_update = 0xB1,
+    xyron_overlay_dismiss = 0xB2,
 };
 
 // ---------------------------------------------------------------------------
