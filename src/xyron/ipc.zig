@@ -1,8 +1,9 @@
-// ipc.zig — Xyron IPC client for sideband queries.
+// ipc.zig — Xyron IPC client for sideband queries and push events.
 //
-// Connects to xyron's Unix domain socket and sends binary protocol
-// requests for completions, ghost text, history, shell state, etc.
-// The socket path is discovered via OSC 7339 ipc_ready event.
+// Two modes of communication:
+// 1. Per-request: connect, send request, read response, close (for queries)
+// 2. Persistent: keep a fd open, poll for push events from xyron
+//    (overlay show/update/dismiss events)
 
 const std = @import("std");
 const posix = std.posix;
@@ -11,6 +12,12 @@ const proto = @import("protocol.zig");
 pub const IpcClient = struct {
     socket_path: [256]u8 = undefined,
     socket_path_len: usize = 0,
+
+    /// Persistent connection fd for receiving push events (-1 = not connected)
+    event_fd: posix.fd_t = -1,
+
+    /// Non-blocking frame reader for the persistent connection
+    reader: proto.FrameReader = .{},
 
     pub fn init(path: []const u8) IpcClient {
         var c = IpcClient{};
@@ -24,19 +31,57 @@ pub const IpcClient = struct {
         return self.socket_path[0..self.socket_path_len];
     }
 
-    /// Connect to the Unix socket, send a request, read the response.
-    /// Returns response payload or null on error.
-    fn request(self: *const IpcClient, msg_type: proto.MsgType, payload: []const u8, resp_buf: []u8) ?[]const u8 {
-        // Build null-terminated socket path
-        var path_z: [257]u8 = undefined;
-        @memcpy(path_z[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
-        path_z[self.socket_path_len] = 0;
+    // -----------------------------------------------------------------
+    // Persistent event connection
+    // -----------------------------------------------------------------
 
-        // Connect with short timeout to avoid blocking the event loop
+    /// Open a persistent connection to xyron for receiving push events.
+    pub fn connectEvents(self: *IpcClient) bool {
+        if (self.event_fd >= 0) return true; // already connected
+        const fd = self.connectSocket() orelse return false;
+        // Set non-blocking for poll-driven reading
+        const c_fcntl = struct {
+            extern "c" fn fcntl(fd: c_int, cmd: c_int, ...) c_int;
+        };
+        const flags = c_fcntl.fcntl(fd, 3); // F_GETFL
+        _ = c_fcntl.fcntl(fd, 4, flags | @as(c_int, 0x0004)); // F_SETFL | O_NONBLOCK
+        self.event_fd = fd;
+        return true;
+    }
+
+    /// Fd to add to poll set for receiving push events.
+    pub fn eventPollFd(self: *const IpcClient) posix.fd_t {
+        return self.event_fd;
+    }
+
+    /// Try to read the next push event frame. Non-blocking.
+    /// Returns null if no complete frame available.
+    pub fn readEvent(self: *IpcClient) ?proto.Frame {
+        if (self.event_fd < 0) return null;
+        return self.reader.tryRead(self.event_fd) catch |err| {
+            // Connection broken — close and reset
+            if (err == error.BrokenPipe) {
+                posix.close(self.event_fd);
+                self.event_fd = -1;
+            }
+            return null;
+        };
+    }
+
+    pub fn disconnectEvents(self: *IpcClient) void {
+        if (self.event_fd >= 0) {
+            posix.close(self.event_fd);
+            self.event_fd = -1;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Per-request queries (connect, send, recv, close)
+    // -----------------------------------------------------------------
+
+    fn connectSocket(self: *const IpcClient) ?posix.fd_t {
         const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
-        defer posix.close(fd);
 
-        // Set socket receive timeout (100ms)
         const tv = posix.timeval{ .sec = 0, .usec = 100_000 };
         posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
         posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
@@ -46,12 +91,19 @@ pub const IpcClient = struct {
         const path_bytes = self.socket_path[0..self.socket_path_len];
         @memcpy(addr.path[0..path_bytes.len], path_bytes);
 
-        posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch return null;
+        posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch {
+            posix.close(fd);
+            return null;
+        };
+        return fd;
+    }
 
-        // Send request frame
+    fn request(self: *const IpcClient, msg_type: proto.MsgType, payload: []const u8, resp_buf: []u8) ?[]const u8 {
+        const fd = self.connectSocket() orelse return null;
+        defer posix.close(fd);
+
         proto.writeFrame(fd, msg_type, payload);
 
-        // Read response frame (blocking)
         var hdr: [proto.header_size]u8 = undefined;
         var hdr_read: usize = 0;
         while (hdr_read < proto.header_size) {
@@ -71,8 +123,41 @@ pub const IpcClient = struct {
         return resp_buf[0..resp_len];
     }
 
+    /// Send a frame on the persistent event connection (for responses to xyron).
+    pub fn sendEvent(self: *const IpcClient, msg_type: proto.MsgType, payload: []const u8) void {
+        if (self.event_fd < 0) return;
+        proto.writeFrame(self.event_fd, msg_type, payload);
+    }
+
     // -----------------------------------------------------------------
-    // Query methods
+    // Handshake
+    // -----------------------------------------------------------------
+
+    pub const HandshakeResult = struct {
+        xyron_socket: []const u8,
+        name: []const u8,
+        version: []const u8,
+    };
+
+    pub fn sendHandshake(self: *const IpcClient, attyx_socket: []const u8, pane_id: []const u8) ?HandshakeResult {
+        var buf: [512]u8 = undefined;
+        var w = proto.PayloadWriter.init(&buf);
+        w.writeStr(attyx_socket);
+        w.writeStr(pane_id);
+
+        var resp_buf: [1024]u8 = undefined;
+        const resp = self.request(.handshake, w.written(), &resp_buf) orelse return null;
+
+        var r = proto.PayloadReader.init(resp);
+        return .{
+            .xyron_socket = r.readStr(),
+            .name = r.readStr(),
+            .version = r.readStr(),
+        };
+    }
+
+    // -----------------------------------------------------------------
+    // Queries
     // -----------------------------------------------------------------
 
     pub const ShellState = struct {
@@ -90,7 +175,7 @@ pub const IpcClient = struct {
         const resp = self.request(.get_shell_state, w.written(), &resp_buf) orelse return null;
 
         var r = proto.PayloadReader.init(resp);
-        _ = r.readInt(); // req_id echo
+        _ = r.readInt();
         return .{
             .cwd = r.readStr(),
             .last_exit_code = r.readU8(),
@@ -124,7 +209,7 @@ pub const IpcClient = struct {
         const resp = self.request(.get_completions, w.written(), &resp_buf) orelse return null;
 
         var r = proto.PayloadReader.init(resp);
-        _ = r.readInt(); // req_id
+        _ = r.readInt();
         var result = CompletionResult{
             .context_kind = r.readU8(),
             .word_start = r.readInt(),
@@ -155,7 +240,7 @@ pub const IpcClient = struct {
         const resp = self.request(.get_ghost, w.written(), &resp_buf) orelse return null;
 
         var r = proto.PayloadReader.init(resp);
-        _ = r.readInt(); // req_id
+        _ = r.readInt();
         const has = r.readU8();
         if (has != 1) return null;
         return r.readStr();
@@ -179,7 +264,7 @@ pub const IpcClient = struct {
         const resp = self.request(.get_history, w.written(), &resp_buf) orelse return null;
 
         var r = proto.PayloadReader.init(resp);
-        _ = r.readInt(); // req_id
+        _ = r.readInt();
         const count: usize = @intCast(@min(@max(r.readInt(), 0), 50));
         var result: struct { entries: [50]HistoryEntry, count: usize } = .{ .entries = undefined, .count = count };
         for (0..count) |i| {

@@ -70,6 +70,7 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
         old_ring.deinit();
         self.cursor.row = result.cursor_row;
         self.cursor.col = result.cursor_col;
+
     } else {
         // No reflow (alt screen or disabled)
         const new_ring = try ring_reflow.resizeNoReflow(

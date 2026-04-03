@@ -58,19 +58,39 @@ pub fn setShellPath(self: *TerminalState, path: []const u8) void {
 }
 
 /// Handle OSC 7339;xyron:{json} event.
-/// Parses minimal JSON to extract socket path from ipc_ready events.
+/// Dispatches by event type: ipc_ready, cwd_changed, etc.
 pub fn handleXyronEvent(self: *TerminalState, json: []const u8) void {
-    // Extract "socket":"<path>" from the JSON payload.
-    // Minimal parsing — no full JSON parser needed.
-    const socket_key = "\"socket\":\"";
-    const idx = std.mem.indexOf(u8, json, socket_key) orelse return;
-    const path_start = idx + socket_key.len;
-    if (path_start >= json.len) return;
-    const path_end = std.mem.indexOfScalar(u8, json[path_start..], '"') orelse return;
-    const path = json[path_start..][0..path_end];
-    if (path.len == 0) return;
+    // ipc_ready: extract socket path
+    if (std.mem.indexOf(u8, json, "\"ipc_ready\"") != null) {
+        if (extractJsonStr(json, "socket")) |path| {
+            const alloc = self.ring.allocator;
+            if (self.xyron_ipc_socket) |old| alloc.free(old);
+            self.xyron_ipc_socket = alloc.dupe(u8, path) catch null;
+        }
+        return;
+    }
+    // cwd_changed: update working directory
+    if (std.mem.indexOf(u8, json, "\"cwd_changed\"") != null) {
+        if (extractJsonStr(json, "new_cwd")) |cwd| {
+            // Convert to file:// URI for statusbar compatibility
+            var uri_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
+            const uri = std.fmt.bufPrint(&uri_buf, "file://localhost{s}", .{cwd}) catch return;
+            self.setCwd(uri);
+        }
+        return;
+    }
+}
 
-    const alloc = self.ring.allocator;
-    if (self.xyron_ipc_socket) |old| alloc.free(old);
-    self.xyron_ipc_socket = alloc.dupe(u8, path) catch null;
+/// Extract a string value from JSON by key. Minimal parser — no escapes.
+fn extractJsonStr(json: []const u8, key: []const u8) ?[]const u8 {
+    // Look for "key":"value"
+    var buf: [256]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"{s}\":\"", .{key}) catch return null;
+    const idx = std.mem.indexOf(u8, json, needle) orelse return null;
+    const start = idx + needle.len;
+    if (start >= json.len) return null;
+    const end = std.mem.indexOfScalar(u8, json[start..], '"') orelse return null;
+    const val = json[start..][0..end];
+    if (val.len == 0) return null;
+    return val;
 }

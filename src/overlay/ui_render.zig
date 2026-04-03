@@ -435,8 +435,8 @@ fn renderMenu(
             if (vis_hint + vis_label + 2 <= avail_w) {
                 const hint_byte_end = utf8ByteOffset(item.hint_text, vis_hint);
                 const hint_x = x + avail_w - vis_hint;
-                const dim_flags = (TextFlags{ .dim = true }).toU8();
-                writeStr(cells, stride, buf_h, hint_x, y + row, item.hint_text[0..hint_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, dim_flags);
+                const hint_flags = if (is_selected) item_rs.text_flags.toU8() else (TextFlags{ .dim = true }).toU8();
+                writeStr(cells, stride, buf_h, hint_x, y + row, item.hint_text[0..hint_byte_end], item_rs.fg, item_rs.bg, item_rs.bg_alpha, hint_flags);
                 item_w = avail_w;
             }
         }

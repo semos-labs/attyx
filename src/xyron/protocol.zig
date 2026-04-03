@@ -30,6 +30,9 @@ pub const MsgType = enum(u8) {
     query_history = 0x0D,
     get_completions = 0x10,
     get_ghost = 0x11,
+    handshake = 0x12,
+    overlay_select = 0x13,
+    overlay_dismiss = 0x14,
 
     // Responses: Xyron → Attyx
     resp_success = 0x80,
@@ -50,6 +53,9 @@ pub const MsgType = enum(u8) {
     evt_prompt = 0xAB,
     evt_block_started = 0xAC,
     evt_block_finished = 0xAD,
+    evt_overlay_show = 0xB0,
+    evt_overlay_update = 0xB1,
+    evt_overlay_dismiss = 0xB2,
 };
 
 pub const Frame = struct {

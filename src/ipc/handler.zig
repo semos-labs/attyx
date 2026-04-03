@@ -227,6 +227,15 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // ── Session envelope (already unwrapped by server — should never reach here) ──
         .session_envelope => sendError(cmd, "unexpected session envelope"),
 
+        // ── Xyron overlay events (xyron → attyx via sendToAttyx) ──
+        .xyron_overlay_show, .xyron_overlay_update => {
+            handleXyronOverlay(cmd, ctx);
+        },
+        .xyron_overlay_dismiss => {
+            handleXyronDismiss(ctx);
+            sendOk(cmd, "");
+        },
+
         // ── Responses (should not be received by server) ──
         .success, .err, .exit_code => {
             sendError(cmd, "unexpected message type");
@@ -282,6 +291,107 @@ fn sendInputToPane(pane: *Pane, text: []const u8, ctx: *PtyThreadCtx) void {
         };
         offset += n;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Xyron overlay handlers
+// ---------------------------------------------------------------------------
+
+fn handleXyronOverlay(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    const completion_mod = @import("attyx").overlay_completion;
+    const logging = @import("../logging/log.zig");
+
+    const payload = cmd.payload[0..cmd.payload_len];
+    // Xyron's TLV payload: selected:i64, scroll:i64, total:i64, visible_count:i64, then candidates
+    if (payload.len < 32) { sendOk(cmd, ""); return; }
+
+    var pos: usize = 0;
+    const selected = readI64(payload, &pos);
+    const scroll_off = readI64(payload, &pos);
+    const total = readI64(payload, &pos);
+    const visible_count = readI64(payload, &pos);
+
+    const count: u16 = @intCast(@min(@max(visible_count, 0), completion_mod.max_candidates));
+    ctx.xyron_completion.count = count;
+    for (0..count) |i| {
+        const text = readStr(payload, &pos);
+        const desc = readStr(payload, &pos);
+        const kind = if (pos < payload.len) blk: { const k = payload[pos]; pos += 1; break :blk k; } else 0;
+
+        var cand = &ctx.xyron_completion.candidates[i];
+        const tl: u16 = @intCast(@min(text.len, 256));
+        @memcpy(cand.text[0..tl], text[0..tl]);
+        cand.text_len = tl;
+        const dl: u16 = @intCast(@min(desc.len, 80));
+        @memcpy(cand.desc[0..dl], desc[0..dl]);
+        cand.desc_len = dl;
+        cand.kind = kind;
+    }
+    ctx.xyron_completion.show(
+        @intCast(@max(selected, 0)),
+        @intCast(@max(scroll_off, 0)),
+        @intCast(@max(total, 0)),
+    );
+
+    // Render and position at cursor
+    if (ctx.overlay_mgr) |mgr| {
+        const theme = publish.overlayThemeFromTheme(&ctx.active_theme);
+        if (completion_mod.render(ctx.allocator, &ctx.xyron_completion, theme)) |result| {
+            if (result.width > 0 and result.height > 0) {
+                // Position: below cursor row, at cursor col
+                const vp = publish.viewportInfoFromCtx(ctx);
+                const cursor_row = vp.cursor_row + @as(u16, @intCast(terminal.g_grid_top_offset));
+                const cursor_col = vp.cursor_col;
+
+                // Prefer below cursor; if not enough space, place above
+                const row = if (cursor_row + 1 + result.height <= vp.grid_rows)
+                    cursor_row + 1
+                else if (cursor_row >= result.height)
+                    cursor_row - result.height
+                else
+                    cursor_row + 1; // below anyway, will clip
+
+                // Clamp col so overlay doesn't go off-screen right
+                const col = if (cursor_col + result.width > vp.grid_cols)
+                    vp.grid_cols -| result.width
+                else
+                    cursor_col;
+
+                mgr.setContent(.completion, col, row, result.width, result.height, result.cells) catch {};
+                mgr.show(.completion);
+                ctx.allocator.free(result.cells);
+            }
+        } else |_| {}
+    }
+    logging.info("xyron", "overlay show: {d} candidates, selected={d}", .{ count, selected });
+    // Force redraw so overlay is published this frame
+    @import("../app/ui/actions.zig").g_force_full_redraw = true;
+    sendOk(cmd, "");
+}
+
+fn handleXyronDismiss(ctx: *PtyThreadCtx) void {
+    const logging = @import("../logging/log.zig");
+    ctx.xyron_completion.dismiss();
+    if (ctx.overlay_mgr) |mgr| mgr.hide(.completion);
+    @import("../app/ui/actions.zig").g_force_full_redraw = true;
+    logging.info("xyron", "overlay dismissed", .{});
+}
+
+fn readI64(data: []const u8, pos: *usize) i64 {
+    if (pos.* + 8 > data.len) return 0;
+    const v = std.mem.readInt(i64, data[pos.*..][0..8], .little);
+    pos.* += 8;
+    return v;
+}
+
+fn readStr(data: []const u8, pos: *usize) []const u8 {
+    if (pos.* + 2 > data.len) return "";
+    const len = std.mem.readInt(u16, data[pos.*..][0..2], .little);
+    pos.* += 2;
+    if (pos.* + len > data.len) return "";
+    const s = data[pos.*..][0..len];
+    pos.* += len;
+    return s;
 }
 
 // ---------------------------------------------------------------------------
