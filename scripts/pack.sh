@@ -3,9 +3,9 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-# Build release binary
+# Build release binary (env defaults to development so it uses its own daemon)
 echo "Building release..."
-zig build
+zig build -Doptimize=ReleaseFast
 
 APP="Attyx.app"
 rm -rf "$APP"

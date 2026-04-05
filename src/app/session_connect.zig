@@ -5,6 +5,7 @@
 /// On Windows: uses named pipes.
 const std = @import("std");
 const builtin = @import("builtin");
+const attyx = @import("attyx");
 const is_windows = builtin.os.tag == .windows;
 const is_posix = !is_windows;
 const protocol = @import("daemon/protocol.zig");
@@ -260,8 +261,9 @@ pub fn isUpgradeInProgress() bool {
 /// POSIX: XDG_STATE_HOME or ~/.local/state/attyx.
 /// Windows: %LOCALAPPDATA%\attyx (Phase 1+).
 /// `name` must contain one `{s}` placeholder for the dev-mode suffix.
+/// Non-production builds get a "-dev" suffix so they use a separate daemon.
 pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    const suffix = if (comptime std.mem.eql(u8, attyx.env, "production")) "" else "-dev";
     if (comptime is_windows) {
         const appdata = getEnv("LOCALAPPDATA") orelse return null;
         return std.fmt.bufPrint(buf, "{s}\\attyx\\" ++ name, .{ appdata, suffix }) catch null;
@@ -277,7 +279,7 @@ pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     if (comptime is_windows) {
         // Windows named pipe path (Phase 1+)
-        const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+        const suffix = if (comptime std.mem.eql(u8, attyx.env, "production")) "" else "-dev";
         return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
     }
     return statePath(buf, "sessions{s}.sock");

@@ -106,10 +106,27 @@ pub const DaemonPane = struct {
             return spawnViaHost(allocator, id, rows, cols, replay_capacity, cwd, shell, cmd);
         }
         // POSIX path: spawn PTY directly.
-        var shell_argv: [1][:0]const u8 = undefined;
+        // Shell may contain space-separated args (e.g. "xyron --ipc").
+        // Split on spaces to construct multi-element argv.
+        var shell_argv: [4][:0]const u8 = undefined;
+        var shell_argc: usize = 0;
+        var shell_split_buf: [257]u8 = undefined;
         const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
-            shell_argv[0] = std.mem.sliceTo(s, 0);
-            break :blk &shell_argv;
+            const shell_str = std.mem.sliceTo(s, 0);
+            if (shell_str.len == 0) break :blk null;
+            @memcpy(shell_split_buf[0..shell_str.len], shell_str);
+            var pos: usize = 0;
+            while (pos < shell_str.len and shell_argc < shell_argv.len) {
+                while (pos < shell_str.len and shell_split_buf[pos] == ' ') pos += 1;
+                if (pos >= shell_str.len) break;
+                const start = pos;
+                while (pos < shell_str.len and shell_split_buf[pos] != ' ') pos += 1;
+                shell_split_buf[pos] = 0;
+                shell_argv[shell_argc] = shell_split_buf[start..pos :0];
+                shell_argc += 1;
+                if (pos < shell_str.len) pos += 1;
+            }
+            if (shell_argc > 0) break :blk shell_argv[0..shell_argc] else break :blk null;
         } else null;
 
         const startup_cmd: ?[*:0]const u8 = if (cmd) |c| c else null;

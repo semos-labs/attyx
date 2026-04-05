@@ -427,24 +427,32 @@ pub fn run(
     // Xyron is macOS/Linux only — skip on Windows.
     var xyron_heap_path: ?[:0]const u8 = null;
     defer if (xyron_heap_path) |p| allocator.free(p);
+    var xyron_err_buf: [256]u8 = undefined;
+    var xyron_err_msg: ?[]const u8 = null;
     if (comptime @import("builtin").os.tag == .windows) {
         // Xyron not supported on Windows
     } else if (config.xyron_enabled) {
         const xyron_detect = @import("../xyron/detect.zig");
         var xp_buf: [xyron_detect.max_path]u8 = undefined;
-        if (xyron_detect.findXyron(config.xyron_path, &xp_buf)) |xp| {
+        const result = xyron_detect.findXyron(config.xyron_path, &xp_buf);
+        if (result.path) |xp| {
             logging.info("xyron", "detected at {s}", .{xp});
             xyron_heap_path = allocator.dupeZ(u8, xp) catch null;
         } else {
-            logging.warn("xyron", "enabled but binary not found, falling back to shell", .{});
+            const reason = result.err orelse "unknown error";
+            logging.warn("xyron", "enabled but failed: {s}", .{reason});
+            // Save for visible terminal message after pane spawn.
+            const n = @min(reason.len, xyron_err_buf.len);
+            @memcpy(xyron_err_buf[0..n], reason[0..n]);
+            xyron_err_msg = xyron_err_buf[0..n];
         }
     }
 
-    // Shell for daemon session creation: xyron path or config program
-    const initial_shell: []const u8 = if (xyron_heap_path) |xhp|
-        @as([]const u8, xhp)
-    else
-        (config.program orelse "");
+    // Shell for daemon session creation: xyron with --ipc, or config program
+    var xyron_shell_buf: [4200]u8 = undefined;
+    const initial_shell: []const u8 = if (xyron_heap_path) |xhp| blk: {
+        break :blk std.fmt.bufPrint(&xyron_shell_buf, "{s} --ipc", .{xhp}) catch @as([]const u8, xhp);
+    } else (config.program orelse "");
 
     // In session mode: attach to last active session, or create a new one.
     var initial_pane_ids: [32]u32 = .{0} ** 32;
@@ -559,6 +567,15 @@ pub fn run(
     } else {
         initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
     }
+
+    // Show visible error in terminal when xyron was enabled but detection failed.
+    if (xyron_err_msg) |reason| {
+        var msg_buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "\x1b[1;31mattyx: xyron failed\x1b[0m — {s}\r\n", .{reason}) catch
+            "\x1b[1;31mattyx: xyron failed to load\x1b[0m\r\n";
+        initial_pane.engine.feed(msg);
+    }
+
     initial_pane.engine.state.cursor_shape = publish.cursorShapeFromConfig(config.cursor_shape, config.cursor_blink);
     initial_pane.engine.state.reflow_on_resize = config.reflow_enabled;
     initial_pane.engine.state.theme_colors = publish.themeToEngineColors(&initial_theme);

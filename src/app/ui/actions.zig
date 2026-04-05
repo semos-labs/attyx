@@ -49,8 +49,13 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             if (ctx.sessions_enabled) {
                 // Session mode: daemon owns the PTY.
                 const sc = ctx.session_client orelse return;
-                const shell_prog = ctx.default_program;
-                if (shell_prog) |prog| {
+                // Prefer xyron (with --ipc) over default shell.
+                var xyron_buf: [4200]u8 = undefined;
+                const session_shell: ?[]const u8 = if (ctx.xyron_path) |xp|
+                    std.fmt.bufPrint(&xyron_buf, "{s} --ipc", .{xp}) catch @as([]const u8, xp)
+                else
+                    ctx.default_program;
+                if (session_shell) |prog| {
                     sc.sendCreatePaneWithShell(rows, cols, resolved.cwd orelse "", prog) catch {
                         logging.err("tabs", "send create_pane failed", .{});
                         return;

@@ -179,7 +179,13 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     else
         cwd;
     const session_name = if (name.len > 0) name else "shell";
-    const new_id = sc.createSession(session_name, pty_rows, ctx.grid_cols, cwd, "") catch |err| {
+    // Use xyron with --ipc if detected, otherwise default shell.
+    var xyron_buf: [4200]u8 = undefined;
+    const shell: []const u8 = if (ctx.xyron_path) |xp|
+        std.fmt.bufPrint(&xyron_buf, "{s} --ipc", .{xp}) catch @as([]const u8, xp)
+    else
+        "";
+    const new_id = sc.createSession(session_name, pty_rows, ctx.grid_cols, cwd, shell) catch |err| {
         logging.err("session-picker", "create failed: {}", .{err});
         return;
     };
