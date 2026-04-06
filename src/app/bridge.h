@@ -104,6 +104,11 @@ void attyx_scroll_viewport(int delta);
 // Mark all rows dirty (used after viewport changes).
 void attyx_mark_all_dirty(void);
 
+// Force the renderer to rebuild all vertex buffers on the next frame,
+// ignoring incremental dirty tracking.  Set by PTY thread on tab switch;
+// cleared by the renderer after one full redraw.
+extern volatile int g_renderer_full_redraw;
+
 // Clear URL hover state (link underline). Called on tab/pane switch.
 void attyx_clear_hover(void);
 

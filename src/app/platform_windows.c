@@ -106,6 +106,7 @@ volatile uint64_t g_cell_gen = 0;
 volatile int g_cursor_row = 0;
 volatile int g_cursor_col = 0;
 volatile int g_should_quit = 0;
+volatile int g_renderer_full_redraw = 0;
 
 volatile int g_bracketed_paste = 0;
 volatile int g_cursor_keys_app = 0;

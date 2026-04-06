@@ -429,6 +429,12 @@ int windows_renderer_draw_frame(void) {
         g_title_changed = 0;
     }
 
+    // Tab switch: force full vertex buffer rebuild.
+    if (g_renderer_full_redraw) {
+        g_renderer_full_redraw = 0;
+        g_full_redraw = 1;
+    }
+
     static uint32_t lastOvGen = 0, lastPopGen = 0;
     int ovChanged  = (g_overlay_gen != lastOvGen);
     int popChanged = (g_popup_gen != lastPopGen);
@@ -479,8 +485,10 @@ int windows_renderer_draw_frame(void) {
                                           offX, baseOffY, offY, gw, gh,
                                           visibleRows, visibleTotal);
 
-    // Activate cursor trail before updating prev-cursor (needs old position)
-    if (g_cursor_trail && curVis && g_win_prev_cursor_vis == 1 && cursorChanged && g_win_prev_cursor_row >= 0) {
+    // Activate cursor trail before updating prev-cursor (needs old position).
+    // Suppress on full redraws (tab switch / resize) — the cursor
+    // teleported to a different context, not moved within one.
+    if (g_cursor_trail && curVis && g_win_prev_cursor_vis == 1 && cursorChanged && g_win_prev_cursor_row >= 0 && !g_full_redraw) {
         int cellDist = abs(curRow - g_win_prev_cursor_row)
                      + abs(curCol - g_win_prev_cursor_col);
         if (cellDist > 1) {

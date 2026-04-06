@@ -168,6 +168,12 @@ int drawFrame(void) {
         g_full_redraw = 1;
     }
 
+    // Tab switch: force full vertex buffer rebuild.
+    if (g_renderer_full_redraw) {
+        g_renderer_full_redraw = 0;
+        g_full_redraw = 1;
+    }
+
     static uint32_t lastOverlayGen = 0;
     static uint32_t lastPopupGen = 0;
     int overlayChanged = (g_overlay_gen != lastOverlayGen);
@@ -358,8 +364,10 @@ int drawFrame(void) {
         }
     }
 
-    // Cursor trail effect (Neovide-style: stretched comet tail)
-    if (g_cursor_trail && g_cursor_visible && g_prev_cursor_vis == 1 && cursorChanged && g_prev_cursor_row >= 0) {
+    // Cursor trail effect (Neovide-style: stretched comet tail).
+    // Suppress on full redraws (tab switch / resize) — the cursor
+    // teleported to a different context, not moved within one.
+    if (g_cursor_trail && g_cursor_visible && g_prev_cursor_vis == 1 && cursorChanged && g_prev_cursor_row >= 0 && !g_full_redraw) {
         int cellDist = abs(curRow - g_prev_cursor_row) + abs(curCol - g_prev_cursor_col);
         if (cellDist > 1) {
             g_trail_x = offX + g_prev_cursor_col * gw;

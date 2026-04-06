@@ -443,6 +443,13 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.generateStatusbar(ctx);
     publish.publishNativeTabTitles(ctx);
     publish.publishOverlays(ctx);
+    // Tell the renderer to rebuild all vertex buffers from scratch on the
+    // next frame.  Dirty-bit-based incremental updates can miss content when
+    // switching tabs because the entire cell buffer has changed identity
+    // (different pane), not just a few rows.  Must be set BEFORE
+    // end_cell_update so the renderer sees it on the same frame that
+    // observes the new cursor position (suppresses cursor trail).
+    c.g_renderer_full_redraw = 1;
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();
     g_force_full_redraw = true;

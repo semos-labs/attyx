@@ -114,6 +114,13 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                                                      options:MTLResourceStorageModeShared];
         }
 
+        // Tab switch: force full vertex buffer rebuild so no stale BG/text
+        // vertices survive from the previous tab's content.
+        if (g_renderer_full_redraw) {
+            g_renderer_full_redraw = 0;
+            _fullRedrawNeeded = YES;
+        }
+
         BOOL imagesChanged = (g_image_gen != _lastImageGen) || (g_image_placement_count > 0);
         BOOL overlayChanged = (g_overlay_gen != _lastOverlayGen);
         BOOL popupChanged = (g_popup_gen != _lastPopupGen);
@@ -605,8 +612,10 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             ci = _totalColorVerts;
         }
 
-        // Cursor trail effect (Neovide-style: stretched comet tail)
-        if (g_cursor_trail && g_cursor_visible && _prevCursorVisible && cursorChanged && _prevCursorRow >= 0) {
+        // Cursor trail effect (Neovide-style: stretched comet tail).
+        // Suppress on full redraws (tab switch / resize) — the cursor
+        // teleported to a different context, not moved within one.
+        if (g_cursor_trail && g_cursor_visible && _prevCursorVisible && cursorChanged && _prevCursorRow >= 0 && !_fullRedrawNeeded) {
             int cellDist = abs(curRow - _prevCursorRow) + abs(curCol - _prevCursorCol);
             if (cellDist > 1) {
                 _trailX = offX + _prevCursorCol * gw;
