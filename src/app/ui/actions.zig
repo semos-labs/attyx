@@ -459,10 +459,14 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
 /// `owned` is set to true when the caller must free the result.
 pub fn resolveFocusedCwd(ctx: *PtyThreadCtx, osc7_buf: *[statusbar.max_output_len]u8) struct { cwd: ?[]const u8, owned: bool } {
     const pane = ctx.tab_mgr.activePane();
+    // When xyron is the shell, the PTY foreground process is xyron itself —
+    // its cwd is the launch directory, not the user's shell cwd. Xyron reports
+    // the real cwd via OSC 7339 cwd_changed, so skip the platform lookup.
+    const is_xyron = pane.engine.state.xyron_ipc_socket != null;
     // Local PTY: use platform lookup (handles tmux, fg process, etc.)
     // Skip when altscreen is active — the foreground process (vim, less, etc.)
     // may have a different CWD; prefer the shell's last OSC 7 report instead.
-    if (!pane.engine.state.alt_active and pane.daemon_pane_id == null and pane.pty.master >= 0) {
+    if (!is_xyron and !pane.engine.state.alt_active and pane.daemon_pane_id == null and pane.pty.master >= 0) {
         if (platform.getForegroundCwd(ctx.allocator, pane.pty.master)) |cwd| {
             logging.info("cwd", "resolved via platform: {s}", .{cwd});
             return .{ .cwd = cwd, .owned = true };
