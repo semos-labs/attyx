@@ -469,6 +469,26 @@ void attyx_spawn_new_window(void) {
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
+    // Signal initial grid dimensions so the PTY thread resizes before
+    // the shell draws its first prompt.  The window is sized to 60%×80%
+    // of the screen but the PTY was spawned at the config default (24×80).
+    // drawableSizeWillChange fires asynchronously with the first Metal
+    // render, which may be too late.
+    {
+        CGFloat viewW = termView.bounds.size.width;
+        CGFloat viewH = termView.bounds.size.height;
+        int new_cols = (int)((viewW - g_padding_left - g_padding_right) / g_cell_pt_w + 0.01f);
+        int new_rows = (int)((viewH - g_padding_top - g_padding_bottom) / g_cell_pt_h + 0.01f);
+        if (new_cols < 1) new_cols = 1;
+        if (new_rows < 1) new_rows = 1;
+        if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
+        if (new_rows > ATTYX_MAX_ROWS) new_rows = ATTYX_MAX_ROWS;
+        if (new_cols != g_cols || new_rows != g_rows) {
+            g_pending_resize_rows = new_rows;
+            g_pending_resize_cols = new_cols;
+        }
+    }
+
     // Add native overlay scrollbar to the content parent view
     attyx_scrollbar_init([_window contentView]);
 
