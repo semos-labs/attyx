@@ -13,8 +13,8 @@ pub const IpcClient = struct {
     socket_path: [256]u8 = undefined,
     socket_path_len: usize = 0,
 
-    /// Persistent connection fd for receiving push events (-1 = not connected)
-    event_fd: posix.fd_t = -1,
+    /// Persistent connection fd for receiving push events (null = not connected)
+    event_fd: ?posix.fd_t = null,
 
     /// Non-blocking frame reader for the persistent connection
     reader: proto.FrameReader = .{},
@@ -37,7 +37,7 @@ pub const IpcClient = struct {
 
     /// Open a persistent connection to xyron for receiving push events.
     pub fn connectEvents(self: *IpcClient) bool {
-        if (self.event_fd >= 0) return true; // already connected
+        if (self.event_fd != null) return true; // already connected
         const fd = self.connectSocket() orelse return false;
         // Set non-blocking for poll-driven reading
         const c_fcntl = struct {
@@ -50,28 +50,28 @@ pub const IpcClient = struct {
     }
 
     /// Fd to add to poll set for receiving push events.
-    pub fn eventPollFd(self: *const IpcClient) posix.fd_t {
+    pub fn eventPollFd(self: *const IpcClient) ?posix.fd_t {
         return self.event_fd;
     }
 
     /// Try to read the next push event frame. Non-blocking.
     /// Returns null if no complete frame available.
     pub fn readEvent(self: *IpcClient) ?proto.Frame {
-        if (self.event_fd < 0) return null;
-        return self.reader.tryRead(self.event_fd) catch |err| {
+        const fd = self.event_fd orelse return null;
+        return self.reader.tryRead(fd) catch |err| {
             // Connection broken — close and reset
             if (err == error.BrokenPipe) {
-                posix.close(self.event_fd);
-                self.event_fd = -1;
+                posix.close(fd);
+                self.event_fd = null;
             }
             return null;
         };
     }
 
     pub fn disconnectEvents(self: *IpcClient) void {
-        if (self.event_fd >= 0) {
-            posix.close(self.event_fd);
-            self.event_fd = -1;
+        if (self.event_fd) |fd| {
+            posix.close(fd);
+            self.event_fd = null;
         }
     }
 
@@ -125,8 +125,8 @@ pub const IpcClient = struct {
 
     /// Send a frame on the persistent event connection (for responses to xyron).
     pub fn sendEvent(self: *const IpcClient, msg_type: proto.MsgType, payload: []const u8) void {
-        if (self.event_fd < 0) return;
-        proto.writeFrame(self.event_fd, msg_type, payload);
+        const fd = self.event_fd orelse return;
+        proto.writeFrame(fd, msg_type, payload);
     }
 
     // -----------------------------------------------------------------

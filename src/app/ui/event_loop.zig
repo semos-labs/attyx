@@ -631,8 +631,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Xyron IPC event fd — poll the active pane's persistent connection
         const xyron_event_fd_idx = nfds;
         if (ctx.tab_mgr.activePane().xyron_ipc) |xi| {
-            if (xi.eventPollFd() >= 0) {
-                fds[nfds] = .{ .fd = xi.eventPollFd(), .events = POLLIN, .revents = 0 };
+            if (xi.eventPollFd()) |efd| {
+                fds[nfds] = .{ .fd = efd, .events = POLLIN, .revents = 0 };
                 nfds += 1;
             }
         }
