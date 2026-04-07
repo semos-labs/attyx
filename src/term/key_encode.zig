@@ -370,9 +370,9 @@ fn encodeCodepoint(cp: u21, mods: Modifiers, out: *[128]u8) []const u8 {
 fn encodeKitty(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const u8 {
     const flags = enc_state.kitty_flags;
 
-    // Without event_types flag, only encode press
-    if (flags & KITTY_EVENT_TYPES == 0 and event.event_type != .press) {
-        return out[0..0];
+    // Without event_types flag, drop release but treat repeat as press
+    if (flags & KITTY_EVENT_TYPES == 0) {
+        if (event.event_type == .release) return out[0..0];
     }
 
     // all_keys flag: everything uses CSI u format
