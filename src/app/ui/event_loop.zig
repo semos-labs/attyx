@@ -628,9 +628,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
-        // Xyron IPC event fd (persistent connection for push events)
+        // Xyron IPC event fd — poll the active pane's persistent connection
         const xyron_event_fd_idx = nfds;
-        if (ctx.xyron_ipc) |xi| {
+        if (ctx.tab_mgr.activePane().xyron_ipc) |xi| {
             if (xi.eventPollFd() >= 0) {
                 fds[nfds] = .{ .fd = xi.eventPollFd(), .events = POLLIN, .revents = 0 };
                 nfds += 1;
@@ -854,7 +854,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         // Drain xyron IPC push events (completion overlay show/update/dismiss)
-        if (ctx.xyron_ipc) |xi| {
+        if (ctx.tab_mgr.activePane().xyron_ipc) |xi| {
             if (xyron_event_fd_idx < nfds and (fds[xyron_event_fd_idx].revents & (POLLIN | POLLHUP) != 0)) {
                 const xyron_proto = @import("../../xyron/protocol.zig");
                 const completion_mod = @import("attyx").overlay_completion;
@@ -940,38 +940,42 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
         if (title_changed) got_data = true;
 
-        // Detect xyron IPC socket path from OSC 7339 event + handshake
-        if (ctx.tab_mgr.activePane().engine.state.xyron_ipc_socket) |sock_path| {
-            if (terminal.g_xyron_ipc_socket == null) {
-                logging.info("xyron", "IPC socket discovered: {s}", .{sock_path});
-                terminal.g_xyron_ipc_socket = sock_path;
+        // Per-pane xyron handshake: iterate all panes, handshake any that
+        // discovered a socket (OSC 7339) but haven't handshaked yet.
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+            if (maybe_layout.*) |*lay| {
+                var hs_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                const hs_lc = lay.collectLeaves(&hs_leaves);
+                for (hs_leaves[0..hs_lc]) |leaf| {
+                    const pane = leaf.pane;
+                    if (pane.xyron_handshake_done) continue;
+                    const sock_path = pane.engine.state.xyron_ipc_socket orelse continue;
 
-                // Send handshake with our IPC socket path
-                // Send handshake with our IPC socket path
-                const xyron_ipc = @import("../../xyron/ipc.zig");
-                const ipc_server = @import("../../ipc/server.zig");
-                const ipc = xyron_ipc.IpcClient.init(sock_path);
-                const attyx_sock = ipc_server.getSocketPath() orelse "";
-                var pane_id_buf: [16]u8 = undefined;
-                const pane_id = std.fmt.bufPrint(&pane_id_buf, "{d}", .{ctx.tab_mgr.activePane().ipc_id}) catch "0";
-                logging.info("xyron", "sending handshake: attyx_sock={s} pane_id={s}", .{ attyx_sock, pane_id });
-                if (ipc.sendHandshake(attyx_sock, pane_id)) |hs| {
-                    logging.info("xyron", "handshake complete: {s} {s}", .{ hs.name, hs.version });
-                    terminal.g_xyron_handshake_done = true;
+                    const xyron_ipc = @import("../../xyron/ipc.zig");
+                    const ipc_server = @import("../../ipc/server.zig");
+                    const ipc = xyron_ipc.IpcClient.init(sock_path);
+                    const attyx_sock = ipc_server.getSocketPath() orelse "";
+                    var pane_id_buf: [16]u8 = undefined;
+                    const pane_id = std.fmt.bufPrint(&pane_id_buf, "{d}", .{pane.ipc_id}) catch "0";
+                    logging.info("xyron", "pane {s}: sending handshake to {s}", .{ pane_id, sock_path });
+                    if (ipc.sendHandshake(attyx_sock, pane_id)) |hs| {
+                        logging.info("xyron", "pane {s}: handshake complete: {s} {s}", .{ pane_id, hs.name, hs.version });
+                        pane.xyron_handshake_done = true;
 
-                    // Open persistent connection for push events (completions, etc.)
-                    const heap_ipc = ctx.allocator.create(xyron_ipc.IpcClient) catch null;
-                    if (heap_ipc) |hi| {
-                        hi.* = xyron_ipc.IpcClient.init(sock_path);
-                        if (hi.connectEvents()) {
-                            ctx.xyron_ipc = hi;
-                            logging.info("xyron", "persistent event connection established", .{});
-                        } else {
-                            ctx.allocator.destroy(hi);
+                        // Open persistent connection for push events
+                        const heap_ipc = ctx.allocator.create(xyron_ipc.IpcClient) catch null;
+                        if (heap_ipc) |hi| {
+                            hi.* = xyron_ipc.IpcClient.init(sock_path);
+                            if (hi.connectEvents()) {
+                                pane.xyron_ipc = hi;
+                                logging.info("xyron", "pane {s}: persistent event connection established", .{pane_id});
+                            } else {
+                                ctx.allocator.destroy(hi);
+                            }
                         }
+                    } else {
+                        logging.warn("xyron", "pane {s}: handshake failed", .{pane_id});
                     }
-                } else {
-                    logging.warn("xyron", "handshake failed", .{});
                 }
             }
         }

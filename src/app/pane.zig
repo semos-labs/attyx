@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
+const IpcClient = @import("../xyron/ipc.zig").IpcClient;
 const logging = @import("../logging/log.zig");
 const c = @cImport({
     @cInclude("bridge.h");
@@ -60,6 +61,10 @@ pub const Pane = struct {
     pending_pty_cols: u16 = 0,
     pending_pty_resize: bool = false,
     last_pty_resize_ns: i128 = 0,
+    /// Xyron IPC: persistent event connection for this pane (completions, etc.)
+    xyron_ipc: ?*IpcClient = null,
+    /// Xyron IPC: whether handshake has been completed for this pane.
+    xyron_handshake_done: bool = false,
 
     pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
         if (self.daemon_proc_name_len == 0) return null;
@@ -162,6 +167,12 @@ pub const Pane = struct {
             cs.deinit(self.allocator);
             self.allocator.destroy(cs);
             self.captured_stdout = null;
+        }
+        // Clean up xyron IPC connection for this pane.
+        if (self.xyron_ipc) |xi| {
+            xi.disconnectEvents();
+            self.allocator.destroy(xi);
+            self.xyron_ipc = null;
         }
         if (self.daemon_pane_id == null) {
             if (!is_windows) {

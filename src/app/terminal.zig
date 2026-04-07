@@ -90,8 +90,6 @@ pub const PtyThreadCtx = struct {
     default_program: ?[]const u8 = null,
     // Xyron: path to xyron binary for new tab creation (null = use default shell)
     xyron_path: ?[:0]const u8 = null,
-    // Xyron: persistent IPC client for receiving push events (completions, etc.)
-    xyron_ipc: ?*@import("../xyron/ipc.zig").IpcClient = null,
     // Xyron: completion overlay state
     xyron_completion: @import("attyx").overlay_completion.CompletionState = .{},
 };
@@ -107,10 +105,6 @@ pub var g_session_client: ?*SessionClient = null;
 pub var g_active_daemon_pane_id: u32 = 0;
 // Xyron IPC: path to xyron binary (set when xyron.enabled, used for new tabs)
 pub var g_xyron_path: ?[:0]const u8 = null;
-// Xyron IPC: socket path discovered via OSC 7339 (used for sideband queries)
-pub var g_xyron_ipc_socket: ?[]const u8 = null;
-// Xyron IPC: whether handshake has been completed
-pub var g_xyron_handshake_done: bool = false;
 
 // ---------------------------------------------------------------------------
 // Export vars — C-facing contract (must stay here for linker visibility)
