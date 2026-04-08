@@ -114,3 +114,12 @@ pub fn getForegroundCwd(allocator: std.mem.Allocator, master_fd: std.posix.fd_t)
     // Direct lookup — works when the fg process is a plain shell.
     return impl.getCwdForPid(allocator, fg_pid);
 }
+
+/// Non-allocating foreground CWD lookup — writes into a caller-provided buffer.
+/// Skips tmux detection (too expensive for periodic polling).
+/// POSIX-only — on Windows, always returns null.
+pub fn getForegroundCwdBuf(master_fd: std.posix.fd_t, buf: []u8) ?[]const u8 {
+    if (!is_posix) return null;
+    const fg_pid = impl.getPtyForegroundPid(master_fd) orelse return null;
+    return impl.getCwdForPidBuf(fg_pid, buf);
+}

@@ -50,6 +50,7 @@ pub const DaemonMessage = union(enum) {
     pane_created: u32,
     pane_died: struct { pane_id: u32, exit_code: u8, stdout: []const u8 = "" },
     pane_proc_name: struct { pane_id: u32, name: []const u8 },
+    pane_fg_cwd: struct { pane_id: u32, cwd: []const u8 },
     replay_end: u32,
     session_attached: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
     layout_sync: struct { session_id: u32, layout: []const u8, pane_ids: [32]u32, pane_count: u8 },
@@ -63,8 +64,10 @@ pub const SessionClient = struct {
     /// Max buffered events captured during blocking waits.
     const max_buffered_deaths = 16;
     const max_buffered_proc_names = 16;
+    const max_buffered_fg_cwds = 16;
     pub const BufferedDeath = struct { pane_id: u32, exit_code: u8 };
     pub const BufferedProcName = struct { pane_id: u32, name: [64]u8 = undefined, name_len: u8 = 0 };
+    pub const BufferedFgCwd = struct { pane_id: u32, cwd: [512]u8 = undefined, cwd_len: u16 = 0 };
 
     socket_fd: SocketFd = invalid_fd,
     read_buf: [65536]u8 = undefined,
@@ -87,6 +90,9 @@ pub const SessionClient = struct {
     /// Buffered pane_proc_name events captured during blocking waits.
     buffered_proc_names: [max_buffered_proc_names]BufferedProcName = undefined,
     buffered_proc_name_count: u8 = 0,
+    /// Buffered pane_fg_cwd events captured during blocking waits.
+    buffered_fg_cwds: [max_buffered_fg_cwds]BufferedFgCwd = undefined,
+    buffered_fg_cwd_count: u8 = 0,
 
     /// True if daemon did not respond to hello (pre-upgrade legacy daemon).
     legacy_daemon: bool = false,
@@ -398,6 +404,20 @@ pub const SessionClient = struct {
         return entry;
     }
 
+    /// Pop the next buffered fg cwd captured during a blocking wait.
+    pub fn popBufferedFgCwd(self: *SessionClient) ?BufferedFgCwd {
+        if (self.buffered_fg_cwd_count == 0) return null;
+        const entry = self.buffered_fg_cwds[0];
+        self.buffered_fg_cwd_count -= 1;
+        if (self.buffered_fg_cwd_count > 0) {
+            var i: u8 = 0;
+            while (i < self.buffered_fg_cwd_count) : (i += 1) {
+                self.buffered_fg_cwds[i] = self.buffered_fg_cwds[i + 1];
+            }
+        }
+        return entry;
+    }
+
     pub fn killSession(self: *SessionClient, session_id: u32) !void {
         var payload_buf: [4]u8 = undefined;
         const payload = try protocol.encodeKill(&payload_buf, session_id);
@@ -580,6 +600,17 @@ pub const SessionClient = struct {
                     self.buffered_proc_name_count += 1;
                 }
             } else |_| {}
+        } else if (msg_type == .pane_fg_cwd) {
+            if (protocol.decodePaneFgCwd(payload)) |fc| {
+                if (self.buffered_fg_cwd_count < max_buffered_fg_cwds) {
+                    var entry = BufferedFgCwd{ .pane_id = fc.pane_id };
+                    const len: u16 = @intCast(@min(fc.cwd.len, 512));
+                    @memcpy(entry.cwd[0..len], fc.cwd[0..len]);
+                    entry.cwd_len = len;
+                    self.buffered_fg_cwds[self.buffered_fg_cwd_count] = entry;
+                    self.buffered_fg_cwd_count += 1;
+                }
+            } else |_| {}
         }
         self.consumeBytes(total);
     }
@@ -719,6 +750,12 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..msg.name.len], msg.name);
                 self.consumeBytes(total);
                 return .{ .pane_proc_name = .{ .pane_id = msg.pane_id, .name = self.output_buf[0..msg.name.len] } };
+            },
+            .pane_fg_cwd => {
+                const msg = protocol.decodePaneFgCwd(payload) catch { self.consumeBytes(total); continue; };
+                @memcpy(self.output_buf[0..msg.cwd.len], msg.cwd);
+                self.consumeBytes(total);
+                return .{ .pane_fg_cwd = .{ .pane_id = msg.pane_id, .cwd = self.output_buf[0..msg.cwd.len] } };
             },
             .replay_end => {
                 if (payload.len < 4) { self.consumeBytes(total); continue; }

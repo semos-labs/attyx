@@ -480,6 +480,12 @@ pub fn resolveFocusedCwd(ctx: *PtyThreadCtx, osc7_buf: *[statusbar.max_output_le
         }
         logging.info("cwd", "platform lookup failed, trying OSC 7 fallback", .{});
     }
+    // Daemon-backed pane: use foreground CWD reported by the daemon.
+    if (pane.daemon_pane_id != null and pane.daemon_fg_cwd_len > 0) {
+        const cwd = pane.daemon_fg_cwd[0..pane.daemon_fg_cwd_len];
+        logging.info("cwd", "resolved via daemon fg_cwd: {s}", .{cwd});
+        return .{ .cwd = cwd, .owned = false };
+    }
     // Fallback: OSC 7 working directory from engine state
     if (pane.engine.state.working_directory) |uri| {
         if (statusbar.parseFileUri(uri, osc7_buf)) |path| {

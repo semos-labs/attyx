@@ -86,6 +86,26 @@ pub fn getCwdForPid(allocator: std.mem.Allocator, pid: std.posix.pid_t) ?[]const
     return allocator.dupe(u8, path_bytes[0..len]) catch null;
 }
 
+/// Non-allocating CWD lookup — copies into a caller-provided buffer.
+pub fn getCwdForPidBuf(pid: std.posix.pid_t, buf: []u8) ?[]const u8 {
+    var info: ProcVnodePathInfo = undefined;
+    const ret = proc_pidinfo(
+        @intCast(pid),
+        PROC_PIDVNODEPATHINFO,
+        0,
+        @ptrCast(&info),
+        @intCast(@sizeOf(ProcVnodePathInfo)),
+    );
+    if (ret <= 0) return null;
+
+    const path_bytes = &info.cdir.path;
+    const len = std.mem.indexOfScalar(u8, path_bytes, 0) orelse MAXPATHLEN;
+    if (len == 0 or len > buf.len) return null;
+
+    @memcpy(buf[0..len], path_bytes[0..len]);
+    return buf[0..len];
+}
+
 /// Return the foreground process group PID on the given PTY master fd.
 pub fn getPtyForegroundPid(master_fd: std.posix.fd_t) ?std.posix.pid_t {
     const pid = tcgetpgrp(master_fd);
