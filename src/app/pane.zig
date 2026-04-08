@@ -47,6 +47,9 @@ pub const Pane = struct {
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,
+    /// Foreground process CWD reported by the daemon (for popup CWD).
+    daemon_fg_cwd: [512]u8 = undefined,
+    daemon_fg_cwd_len: u16 = 0,
     /// IPC --wait: fd to write exit code to when this pane's process exits.
     /// Set by IPC handler when a client requests --wait. The fd is owned by
     /// this pane: deinit writes the exit code response and closes it.

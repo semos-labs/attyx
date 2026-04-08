@@ -78,6 +78,11 @@ pub fn getCwdForPid(_: std.mem.Allocator, _: i32) ?[]const u8 {
     return null;
 }
 
+/// Stub — non-allocating CWD lookup.
+pub fn getCwdForPidBuf(_: i32, _: []u8) ?[]const u8 {
+    return null;
+}
+
 // ── ToolHelp32 process tree walking ──
 
 const windows = std.os.windows;

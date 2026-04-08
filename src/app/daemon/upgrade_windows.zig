@@ -61,7 +61,7 @@ const DETACHED_PROCESS: DWORD = 0x00000008;
 const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 
 const magic = "ATUW";
-const format_version: u8 = 2; // v2: host process model (no HANDLE inheritance)
+const format_version: u8 = 3; // v3: fg_cwd field
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -169,6 +169,10 @@ fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     try writeU16(w, p.osc7337_path_len);
     try writeBytes(w, p.osc7337_path[0..p.osc7337_path_len]);
 
+    // Foreground process CWD
+    try writeU16(w, p.fg_cwd_len);
+    try writeBytes(w, p.fg_cwd[0..p.fg_cwd_len]);
+
     const slices = p.replay.readSlices();
     const ring_len: u32 = @intCast(slices.totalLen());
     try writeU32(w, ring_len);
@@ -190,7 +194,7 @@ pub fn deserialize(
     try r.readInto(&magic_buf);
     if (!std.mem.eql(u8, &magic_buf, magic)) return error.InvalidMagic;
     const ver = try r.readByte();
-    if (ver != format_version) return error.UnsupportedVersion;
+    if (ver != 2 and ver != format_version) return error.UnsupportedVersion;
 
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
@@ -201,7 +205,7 @@ pub fn deserialize(
         const slot = for (sessions) |*slot| {
             if (slot.* == null) break slot;
         } else continue;
-        deserializeSessionInto(&r, allocator, slot) catch |err| {
+        deserializeSessionInto(&r, allocator, slot, ver) catch |err| {
             daemonLog2("deserialize: session {d} failed: {s} at pos {d}/{d}", .{ si, @errorName(err), r.pos, r.data.len });
             continue;
         };
@@ -210,7 +214,7 @@ pub fn deserialize(
     return restored;
 }
 
-fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonSession) !void {
+fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonSession, ver: u8) !void {
     slot.* = DaemonSession{ .id = try r.readU32(), .rows = 24, .cols = 80 };
     var s = &(slot.*.?);
     errdefer {
@@ -236,13 +240,13 @@ fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *
         const pane_slot = for (&s.panes) |*pslot| {
             if (pslot.* == null) break pslot;
         } else continue;
-        try deserializePaneInto(r, allocator, pane_slot);
+        try deserializePaneInto(r, allocator, pane_slot, ver);
         s.pane_count += 1;
     }
 }
 
 /// Deserialize a pane and reconnect to its host process pipe.
-fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonPane) !void {
+fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?DaemonPane, ver: u8) !void {
     const id = try r.readU32();
     const rows = try r.readU16();
     const cols = try r.readU16();
@@ -257,6 +261,11 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
     const osc7_cwd_slice = try r.readSlice(osc7_cwd_len);
     const osc7337_path_len = try r.readU16();
     const osc7337_path_slice = try r.readSlice(osc7337_path_len);
+    var fg_cwd_slice: []const u8 = &.{};
+    if (ver >= 3) {
+        const fg_cwd_len = try r.readU16();
+        fg_cwd_slice = try r.readSlice(fg_cwd_len);
+    }
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
 
@@ -293,6 +302,9 @@ fn deserializePaneInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *?Da
     const plen: u16 = @intCast(@min(osc7337_path_slice.len, pane.osc7337_path.len));
     @memcpy(pane.osc7337_path[0..plen], osc7337_path_slice[0..plen]);
     pane.osc7337_path_len = plen;
+    const flen: u16 = @intCast(@min(fg_cwd_slice.len, pane.fg_cwd.len));
+    @memcpy(pane.fg_cwd[0..flen], fg_cwd_slice[0..flen]);
+    pane.fg_cwd_len = flen;
 }
 
 // ── Upgrade path helpers ──

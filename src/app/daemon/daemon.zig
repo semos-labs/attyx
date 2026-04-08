@@ -345,7 +345,7 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             }
         }
 
-        // Periodically check foreground process name for active panes (~1s).
+        // Periodically check foreground process name + CWD for active panes (~1s).
         proc_name_tick += 1;
         if (proc_name_tick >= 20) {
             proc_name_tick = 0;
@@ -359,6 +359,15 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                         if (cslot.*) |*cl| {
                                             if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
                                                 cl.sendPaneProcName(pane.id, name);
+                                            }
+                                        }
+                                    }
+                                }
+                                if (pane.checkFgCwdChanged()) |cwd| {
+                                    for (&clients) |*cslot| {
+                                        if (cslot.*) |*cl| {
+                                            if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
+                                                cl.sendPaneFgCwd(pane.id, cwd);
                                             }
                                         }
                                     }

@@ -778,6 +778,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                         }
                     },
+                    .pane_fg_cwd => |fc| {
+                        if (findPaneByDaemonId(ctx, fc.pane_id)) |result| {
+                            const len: u16 = @intCast(@min(fc.cwd.len, 512));
+                            @memcpy(result.pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
+                            result.pane.daemon_fg_cwd_len = len;
+                        }
+                    },
                     .replay_end => |pane_id| {
                         // The daemon already nudged the PTY size (cols+1)
                         // before sending replay_end. Restore the correct
@@ -1453,6 +1460,13 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
         if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
             @memcpy(result.pane.daemon_proc_name[0..pn.name_len], pn.name[0..pn.name_len]);
             result.pane.daemon_proc_name_len = pn.name_len;
+        }
+    }
+    // Drain buffered fg cwd updates
+    while (sc.popBufferedFgCwd()) |fc| {
+        if (findPaneByDaemonId(ctx, fc.pane_id)) |result| {
+            @memcpy(result.pane.daemon_fg_cwd[0..fc.cwd_len], fc.cwd[0..fc.cwd_len]);
+            result.pane.daemon_fg_cwd_len = fc.cwd_len;
         }
     }
     return .ok;

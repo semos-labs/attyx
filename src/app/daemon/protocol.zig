@@ -34,6 +34,7 @@ pub const MessageType = enum(u8) {
     replay_end = 0x8B,
     layout_sync = 0x8C,
     hello_ack = 0x8D,
+    pane_fg_cwd = 0x8E,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -572,6 +573,29 @@ pub fn decodePaneProcName(payload: []const u8) !PaneProcNameMsg {
     const name_len = payload[4];
     if (payload.len < 5 + @as(usize, name_len)) return error.PayloadTooShort;
     return .{ .pane_id = pane_id, .name = payload[5 .. 5 + name_len] };
+}
+
+// ── PaneFgCwd ──
+
+/// Encode PaneFgCwd payload: pane_id:u32, cwd_len:u16, cwd:[N]u8
+pub fn encodePaneFgCwd(buf: []u8, pane_id: u32, cwd: []const u8) ![]u8 {
+    const cwd_len: u16 = @intCast(@min(cwd.len, 512));
+    const total: usize = 4 + 2 + cwd_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    std.mem.writeInt(u16, buf[4..6], cwd_len, .little);
+    @memcpy(buf[6 .. 6 + cwd_len], cwd[0..cwd_len]);
+    return buf[0..total];
+}
+
+pub const PaneFgCwdMsg = struct { pane_id: u32, cwd: []const u8 };
+
+pub fn decodePaneFgCwd(payload: []const u8) !PaneFgCwdMsg {
+    if (payload.len < 6) return error.PayloadTooShort;
+    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+    const cwd_len = std.mem.readInt(u16, payload[4..6], .little);
+    if (payload.len < 6 + @as(usize, cwd_len)) return error.PayloadTooShort;
+    return .{ .pane_id = pane_id, .cwd = payload[6 .. 6 + cwd_len] };
 }
 
 // ── Hello / HelloAck (version handshake) ──

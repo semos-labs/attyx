@@ -9,7 +9,7 @@ const spawn = @import("../spawn.zig");
 const protocol = @import("protocol.zig");
 
 const magic = "ATUP";
-const format_version: u8 = 2;
+const format_version: u8 = 3;
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -156,6 +156,10 @@ fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     try writeU16(w, p.osc7337_path_len);
     try writeBytes(w, p.osc7337_path[0..p.osc7337_path_len]);
 
+    // Foreground process CWD
+    try writeU16(w, p.fg_cwd_len);
+    try writeBytes(w, p.fg_cwd[0..p.fg_cwd_len]);
+
     const slices = p.replay.readSlices();
     const ring_len: u32 = @intCast(slices.totalLen());
     try writeU32(w, ring_len);
@@ -178,7 +182,7 @@ pub fn deserialize(
     if (!std.mem.eql(u8, &magic_buf, magic)) return error.InvalidMagic;
 
     const ver = try r.readByte();
-    if (ver != 1 and ver != format_version) return error.UnsupportedVersion;
+    if (ver != 1 and ver != 2 and ver != format_version) return error.UnsupportedVersion;
 
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
@@ -266,6 +270,12 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
         osc7337_path_slice = try r.readSlice(osc7337_path_len);
     }
 
+    var fg_cwd_slice: []const u8 = &.{};
+    if (ver >= 3) {
+        const fg_cwd_len = try r.readU16();
+        fg_cwd_slice = try r.readSlice(fg_cwd_len);
+    }
+
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
 
@@ -292,6 +302,10 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
     const path_len: u16 = @intCast(@min(osc7337_path_slice.len, pane.osc7337_path.len));
     @memcpy(pane.osc7337_path[0..path_len], osc7337_path_slice[0..path_len]);
     pane.osc7337_path_len = path_len;
+
+    const fg_len: u16 = @intCast(@min(fg_cwd_slice.len, pane.fg_cwd.len));
+    @memcpy(pane.fg_cwd[0..fg_len], fg_cwd_slice[0..fg_len]);
+    pane.fg_cwd_len = fg_len;
 
     return pane;
 }
