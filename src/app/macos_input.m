@@ -61,6 +61,10 @@ static int mouseModifiers(NSEventModifierFlags flags) {
 }
 
 static void sendSgrMouse(int button, int col, int row, BOOL press) {
+    // Adjust row from screen-space to content-space: subtract the grid top
+    // offset (statusbar / tab bar rows) so TUI apps receive correct coords.
+    row -= g_grid_top_offset;
+    if (row < 1) row = 1;
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
                        button, col, row, press ? 'M' : 'm');
