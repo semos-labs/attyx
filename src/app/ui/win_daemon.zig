@@ -45,6 +45,13 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
                     if (result.tab_idx == ctx.tab_mgr.active) got_output = true;
                 }
             },
+            .pane_fg_cwd => |fc| {
+                if (findPaneByDaemonId(ctx, fc.pane_id)) |result| {
+                    const len: u16 = @intCast(@min(fc.cwd.len, 512));
+                    @memcpy(result.pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
+                    result.pane.daemon_fg_cwd_len = len;
+                }
+            },
             .replay_end => |pane_id| {
                 if (findPaneByDaemonId(ctx, pane_id)) |result| {
                     const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);

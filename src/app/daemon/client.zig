@@ -481,6 +481,15 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
+    /// Send a PaneFgCwd notification.
+    pub fn sendPaneFgCwd(self: *DaemonClient, pane_id: u32, cwd: []const u8) void {
+        var buf: [protocol.header_size + 4 + 2 + 512]u8 = undefined;
+        var payload: [4 + 2 + 512]u8 = undefined;
+        const p = protocol.encodePaneFgCwd(&payload, pane_id, cwd) catch return;
+        const m = protocol.encodeMessage(&buf, .pane_fg_cwd, p) catch return;
+        self.sendRaw(m);
+    }
+
     /// Send a HelloAck response with daemon's version string.
     pub fn sendHelloAck(self: *DaemonClient, version: []const u8) void {
         var payload: [256]u8 = undefined;

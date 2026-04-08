@@ -529,6 +529,14 @@ fn pollProcNames(st: *DaemonState) void {
                                 }
                             }
                         }
+                        if (pane.checkFgCwdChanged()) |cwd| {
+                            for (st.clients) |*cslot| {
+                                if (cslot.*) |*cl| {
+                                    if (cl.attached_session == s.id and cl.isPaneActive(pane.id))
+                                        cl.sendPaneFgCwd(pane.id, cwd);
+                                }
+                            }
+                        }
                     }
                 }
             }

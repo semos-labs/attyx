@@ -33,6 +33,9 @@ pub const DaemonPane = struct {
     /// Cached foreground process name for change detection.
     proc_name: [64]u8 = .{0} ** 64,
     proc_name_len: u8 = 0,
+    /// Cached foreground process CWD for change detection.
+    fg_cwd: [512]u8 = .{0} ** 512,
+    fg_cwd_len: u16 = 0,
     /// Tracked OSC 7 working directory (file:// URI) for replay restoration.
     osc7_cwd: [512]u8 = .{0} ** 512,
     osc7_cwd_len: u16 = 0,
@@ -464,6 +467,24 @@ pub const DaemonPane = struct {
         @memcpy(self.proc_name[0..len], resolved[0..len]);
         self.proc_name_len = len;
         return self.proc_name[0..len];
+    }
+
+    /// Check if the foreground process CWD changed. Returns the new CWD if changed, null otherwise.
+    pub fn checkFgCwdChanged(self: *DaemonPane) ?[]const u8 {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = if (comptime is_windows)
+            @as(?[]const u8, null)
+        else
+            platform.getForegroundCwdBuf(self.pty.master, &buf);
+
+        const resolved = cwd orelse return null;
+        const len: u16 = @intCast(@min(resolved.len, 512));
+        if (len == self.fg_cwd_len and std.mem.eql(u8, self.fg_cwd[0..len], resolved[0..len])) {
+            return null; // unchanged
+        }
+        @memcpy(self.fg_cwd[0..len], resolved[0..len]);
+        self.fg_cwd_len = len;
+        return self.fg_cwd[0..len];
     }
 
     const pane_queries = @import("pane_queries.zig");
