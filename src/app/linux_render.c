@@ -516,9 +516,11 @@ int drawFrame(void) {
         int srchRow = g_search_cur_vis_row;
         int srchCs = g_search_cur_vis_cs;
         int srchCe = g_search_cur_vis_ce;
+        int spr = g_pane_rect_row, spc = g_pane_rect_col;
         for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
             AttyxSearchVis m = g_search_vis[vi];
-            if (m.row < 0 || m.row >= visibleRows) continue;
+            int drawRow = m.row + spr;
+            if (m.row < 0 || drawRow >= visibleRows) continue;
             int isCurrent = (m.row == srchRow && m.col_start == srchCs && m.col_end == srchCe);
             float hr, hg, hb, ha;
             if (isCurrent) {
@@ -528,8 +530,8 @@ int drawFrame(void) {
             }
             for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                 if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = offX + cc * gw, lx1 = lx0 + gw;
-                float ly0 = offY + m.row * gh, ly1 = ly0 + gh;
+                float lx0 = offX + (spc + cc) * gw, lx1 = lx0 + gw;
+                float ly0 = offY + drawRow * gh, ly1 = ly0 + gh;
                 g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                 g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };

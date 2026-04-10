@@ -316,6 +316,14 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
     const sel_active_raw: i32 = @bitCast(c.g_sel_active);
     const sel_end_row_raw: i32 = @bitCast(c.g_sel_end_row);
     const sel_end_col_raw: i32 = @bitCast(c.g_sel_end_col);
+
+    // Pane offset converts pane-relative placement to window-absolute coords.
+    const layout = ctx.tab_mgr.activeLayout();
+    const in_split = layout.pane_count > 1 and !layout.isZoomed();
+    const pane_row: u16 = if (in_split) @intCast(layout.pool[layout.focused].rect.row) else 0;
+    const pane_col: u16 = if (in_split) @intCast(layout.pool[layout.focused].rect.col) else 0;
+    const top_offset: u16 = @intCast(terminal.g_grid_top_offset);
+
     return .{
         .grid_cols = @intCast(eng.state.ring.cols),
         .grid_rows = @intCast(eng.state.ring.screen_rows),
@@ -325,6 +333,8 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
         .sel_end_row = if (sel_end_row_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_row_raw))) else 0,
         .sel_end_col = if (sel_end_col_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_col_raw))) else 0,
         .alt_active = eng.state.alt_active,
+        .offset_row = pane_row + top_offset,
+        .offset_col = pane_col,
     };
 }
 

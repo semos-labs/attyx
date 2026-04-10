@@ -146,8 +146,8 @@ pub const OverlayManager = struct {
                     vp,
                     layer.placement_constraints,
                 );
-                layer.col = rect.col;
-                layer.row = rect.row;
+                layer.col = rect.col + vp.offset_col;
+                layer.row = rect.row + vp.offset_row;
             } else {
                 // Fallback: simple clamp
                 if (layer.width > vp.grid_cols) {

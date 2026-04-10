@@ -48,6 +48,9 @@ pub const ViewportInfo = struct {
     sel_end_row: u16,
     sel_end_col: u16,
     alt_active: bool,
+    /// Offset to convert pane-relative placement to window-absolute coords.
+    offset_row: u16 = 0,
+    offset_col: u16 = 0,
 };
 
 pub const PlacementConstraints = struct {

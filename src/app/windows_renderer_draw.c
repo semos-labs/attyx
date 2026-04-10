@@ -152,16 +152,18 @@ static int build_search_highlights(WinVertex* verts, int bgVertCount, int vertCa
     int srchRow = g_search_cur_vis_row;
     int srchCs  = g_search_cur_vis_cs;
     int srchCe  = g_search_cur_vis_ce;
+    int spr = g_pane_rect_row, spc = g_pane_rect_col;
     for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
         AttyxSearchVis m = g_search_vis[vi];
-        if (m.row < 0 || m.row >= visibleRows) continue;
+        int drawRow = m.row + spr;
+        if (m.row < 0 || drawRow >= visibleRows) continue;
         int isCur = (m.row == srchRow && m.col_start == srchCs && m.col_end == srchCe);
         float hr = 1.0f, hg = 0.6f, hb = 0.0f;
         float ha = isCur ? 0.75f : 0.28f;
         for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
             if (bgVertCount + 6 > vertCap) break;
             bgVertCount = winEmitRect(verts, bgVertCount,
-                                       offX + cc * gw, offY + m.row * gh,
+                                       offX + (spc + cc) * gw, offY + drawRow * gh,
                                        gw, gh, hr, hg, hb, ha);
         }
     }

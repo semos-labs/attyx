@@ -393,10 +393,12 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
             int sCurRow = g_search_cur_vis_row;
             int curCs = g_search_cur_vis_cs;
             int curCe = g_search_cur_vis_ce;
+            int spr = g_pane_rect_row, spc = g_pane_rect_col;
             float ulH = gh;
             for (int vi = 0; vi < visCount && vi < ATTYX_SEARCH_VIS_MAX; vi++) {
                 AttyxSearchVis m = g_search_vis[vi];
-                if (m.row < 0 || m.row >= visibleRows) continue;
+                int drawRow = m.row + spr;
+                if (m.row < 0 || drawRow >= visibleRows) continue;
                 BOOL isCurrent = (m.row == sCurRow && m.col_start == curCs && m.col_end == curCe);
                 float hr, hg, hb, ha;
                 if (isCurrent) {
@@ -406,8 +408,8 @@ static int emitRectV(Vertex* v, int i, float x, float y, float w, float h,
                 }
                 for (int cc = m.col_start; cc < m.col_end && cc < cols; cc++) {
                     if (bgVertCount + 6 > _metalBufCapBg) break;
-                    float lx0 = offX + cc * gw, lx1 = lx0 + gw;
-                    float ly0 = offY + m.row * gh, ly1 = ly0 + ulH;
+                    float lx0 = offX + (spc + cc) * gw, lx1 = lx0 + gw;
+                    float ly0 = offY + drawRow * gh, ly1 = ly0 + ulH;
                     _bgVerts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, hr,hg,hb,ha };
                     _bgVerts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, hr,hg,hb,ha };
