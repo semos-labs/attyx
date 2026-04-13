@@ -7,6 +7,7 @@ const overlay_layout = attyx.overlay_layout;
 const overlay_anchor = attyx.overlay_anchor;
 const OverlayManager = overlay_mod.OverlayManager;
 const tab_bar_mod = @import("../tab_bar.zig");
+const agent_status_mod = @import("../agent_status.zig");
 const statusbar_mod = @import("../statusbar.zig");
 const split_render = @import("../split_render.zig");
 const logging = @import("../../logging/log.zig");
@@ -669,23 +670,29 @@ pub const updateGridTopOffset = updateGridOffsets;
 pub fn resolveTabTitles(
     ctx: *PtyThreadCtx,
     titles: *tab_bar_mod.TabTitles,
+    statuses: *tab_bar_mod.AgentStatuses,
     name_bufs: *[tab_bar_mod.max_tabs][256]u8,
 ) void {
     titles.* = .{null} ** tab_bar_mod.max_tabs;
+    statuses.* = .{.none} ** tab_bar_mod.max_tabs;
     for (0..ctx.tab_mgr.count) |i| {
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
         const pane = layout.focusedPane();
+        var proc_name: ?[]const u8 = null;
         if (layout.getTitle()) |title| {
             titles[i] = title;
         } else if (pane.engine.state.title) |t| {
             titles[i] = t;
         } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
             titles[i] = name;
+            proc_name = name;
         } else if (pane.getDaemonProcName()) |name| {
             titles[i] = name;
         } else {
             titles[i] = layout.getHintTitle();
         }
+        if (proc_name == null) proc_name = platform.getForegroundProcessName(pane.pty.master, &name_bufs[i]);
+        statuses[i] = agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
     }
 }
 
@@ -730,8 +737,9 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     }
 
     var titles: tab_bar_mod.TabTitles = undefined;
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
+    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
 
     var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const zoomed_tabs = computeZoomedTabs(ctx);
@@ -764,6 +772,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         tab_style,
         &titles,
         zoomed_tabs,
+        &statuses,
     ) orelse return;
 
     mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;
@@ -778,8 +787,9 @@ pub fn publishNativeTabTitles(ctx: *PtyThreadCtx) void {
     if (terminal.g_native_tabs_enabled == 0) return;
 
     var titles: tab_bar_mod.TabTitles = undefined;
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
+    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
 
     const max_native = 16;
     const count = @min(ctx.tab_mgr.count, max_native);
@@ -809,8 +819,9 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         return;
     }
     var titles: tab_bar_mod.TabTitles = undefined;
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
+    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
 
     var sb_cells: [512]overlay_mod.StyledCell = undefined;
     const theme_bg = ctx.active_theme.background;
@@ -842,7 +853,7 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     // When native tabs are active, hide the tab section in the statusbar.
     const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 0 else ctx.tab_mgr.count;
     const zoomed_tabs = computeZoomedTabs(ctx);
-    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs) orelse return;
+    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs, &statuses) orelse return;
 
     // Skip overlay update if statusbar content hasn't changed.
     const cell_count = @as(usize, result.width) * @as(usize, result.height);

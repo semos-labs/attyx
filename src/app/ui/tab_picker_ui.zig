@@ -37,8 +37,9 @@ pub fn openTabPicker(ctx: *PtyThreadCtx) void {
 
     // Populate entries from current tabs
     var titles: tab_bar_mod.TabTitles = undefined;
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
-    publish.resolveTabTitles(ctx, &titles, &name_bufs);
+    publish.resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
 
     const zoomed = computeZoomedTabs(ctx);
 

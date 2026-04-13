@@ -11,7 +11,9 @@ const StatusbarConfig = statusbar_config.StatusbarConfig;
 const StatusbarWidgetConfig = statusbar_config.StatusbarWidgetConfig;
 const git_widget = @import("git_widget.zig");
 const tab_bar_mod = @import("tab_bar.zig");
-const bridge = @cImport({ @cInclude("bridge.h"); });
+const bridge = @cImport({
+    @cInclude("bridge.h");
+});
 
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
@@ -381,6 +383,7 @@ pub fn generate(
     style: Style,
     titles: *const tab_bar_mod.TabTitles,
     zoomed_tabs: u16,
+    statuses: *const tab_bar_mod.AgentStatuses,
 ) ?RenderResult {
     if (!bar.config.enabled or grid_cols == 0) return null;
     if (buf.len < grid_cols) return null;
@@ -396,8 +399,14 @@ pub fn generate(
     if (bridge.g_copy_search_active != 0) {
         const dir_char: u21 = if (bridge.g_copy_search_dir < 0) '?' else '/';
         const prompt_fg = Rgb{ .r = 255, .g = 200, .b = 50 };
-        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
-        if (col < grid_cols) { buf[col] = .{ .char = dir_char, .fg = prompt_fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
+        if (col < grid_cols) {
+            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+            col += 1;
+        }
+        if (col < grid_cols) {
+            buf[col] = .{ .char = dir_char, .fg = prompt_fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+            col += 1;
+        }
         const slen: usize = @intCast(@max(bridge.g_copy_search_len, 0));
         for (0..slen) |si| {
             if (col >= grid_cols) break;
@@ -406,8 +415,14 @@ pub fn generate(
             col += 1;
         }
         // Block cursor at insertion point (inverted colors)
-        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.bg, .bg = prompt_fg, .bg_alpha = 255 }; col += 1; }
-        if (col < grid_cols) { buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha }; col += 1; }
+        if (col < grid_cols) {
+            buf[col] = .{ .char = ' ', .fg = style.bg, .bg = prompt_fg, .bg_alpha = 255 };
+            col += 1;
+        }
+        if (col < grid_cols) {
+            buf[col] = .{ .char = ' ', .fg = style.fg, .bg = style.bg, .bg_alpha = style.bg_alpha };
+            col += 1;
+        }
     } else {
         var first_left = true;
         for (bar.config.widgets[0..bar.config.widget_count], 0..) |wc, i| {
@@ -463,7 +478,7 @@ pub fn generate(
             .num_highlight_fg = style.active_tab_fg,
             .bg_alpha = 255, // Always opaque within statusbar; row opacity is controlled by statusbar bg_alpha
         };
-        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, tab_style, titles, zoomed_tabs)) |tb_result| {
+        if (tab_bar_mod.generate(&tab_buf, tab_count, active_tab, remaining, tab_style, titles, zoomed_tabs, statuses)) |tb_result| {
             for (tb_result.cells[0..tb_result.width]) |tc| {
                 if (col >= grid_cols) break;
                 if (tc.bg_alpha > 0) {
@@ -619,6 +634,7 @@ fn decodeOne(text: []const u8, i: *usize) ?u21 {
 // -------------------------------------------------------------------------
 
 const no_titles: tab_bar_mod.TabTitles = .{null} ** tab_bar_mod.max_tabs;
+const no_statuses: tab_bar_mod.AgentStatuses = .{.none} ** tab_bar_mod.max_tabs;
 
 test "generate: returns null when disabled" {
     var config = StatusbarConfig{};
@@ -627,7 +643,7 @@ test "generate: returns null when disabled" {
     defer bar.deinit();
 
     var buf: [100]StyledCell = undefined;
-    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0) == null);
+    try std.testing.expect(generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0, &no_statuses) == null);
 }
 
 test "generate: returns cells when enabled" {
@@ -637,7 +653,7 @@ test "generate: returns cells when enabled" {
     defer bar.deinit();
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0) orelse
+    const result = generate(&buf, &bar, 1, 0, 80, .{}, &no_titles, 0, &no_statuses) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u16, 80), result.width);
     try std.testing.expectEqual(@as(u16, 1), result.height);
@@ -657,7 +673,7 @@ test "generate: left widget text appears at start" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0, &no_statuses) orelse
         return error.TestUnexpectedResult;
     // First left widget has no leading space — text starts at col 0.
     try std.testing.expectEqual(@as(u21, '~'), result.cells[0].char);
@@ -677,7 +693,7 @@ test "generate: right widget is right-aligned" {
     bar.widgets[0].output_len = text.len;
 
     var buf: [100]StyledCell = undefined;
-    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0) orelse
+    const result = generate(&buf, &bar, 1, 0, 40, .{}, &no_titles, 0, &no_statuses) orelse
         return error.TestUnexpectedResult;
     // Right widget: " 12:34" = 6 chars (no trailing space), starts at col 34
     try std.testing.expectEqual(@as(u21, ' '), result.cells[34].char);
@@ -700,7 +716,7 @@ test "generate: tabs with titles appear when count > 1" {
     titles[2] = "htop";
 
     var buf: [512]StyledCell = undefined;
-    const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles, 0) orelse
+    const result = generate(&buf, &bar, 3, 1, 80, .{}, &titles, 0, &no_statuses) orelse
         return error.TestUnexpectedResult;
     // Tab bar starts at col 0 (no left widgets), cells should include tab content
     // First tab: " zsh " + " 1 " = 5+3 = 8 cells
@@ -722,7 +738,7 @@ test "generate: active tab uses tab_bar highlight colors" {
 
     const sb_style = Style{};
     var buf: [512]StyledCell = undefined;
-    const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles, 0) orelse
+    const result = generate(&buf, &bar, 2, 1, 80, sb_style, &titles, 0, &no_statuses) orelse
         return error.TestUnexpectedResult;
     // Tab 0 (" a " + " 1 " = 3+3 = 6), gap at 6, Tab 1 starts at 7
     // Tab 1 is active — its number area should use active_tab_bg from statusbar style
