@@ -333,16 +333,6 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         }
     }
 
-    if (g_mouse_tracking && g_mouse_sgr) {
-        int col, row;
-        mouseCell(event, self, &col, &row);
-        int btn = 0 | mouseModifiers(event.modifierFlags);
-        sendSgrMouse(btn, col, row, YES);
-        _leftDown = YES;
-        _lastMouseCol = col;
-        _lastMouseRow = row;
-        return;
-    }
     int col, row;
     mouseCell0(event, self, &col, &row);
 
@@ -363,6 +353,30 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
+
+    // Let pane switching win over app mouse tracking so OpenCode and other
+    // mouse-aware apps do not trap clicks meant to focus another split.
+    if (g_split_active && g_pane_rect_rows > 0) {
+        int content_row = row - g_grid_top_offset;
+        int pr = g_pane_rect_row, pc = g_pane_rect_col;
+        int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+        if (content_row >= 0 &&
+            (content_row < pr || content_row >= pe || col < pc || col >= pce)) {
+            attyx_split_click(col, row);
+            return;
+        }
+    }
+
+    if (g_mouse_tracking && g_mouse_sgr) {
+        int track_col, track_row;
+        mouseCell(event, self, &track_col, &track_row);
+        int btn = 0 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, track_col, track_row, YES);
+        _leftDown = YES;
+        _lastMouseCol = track_col;
+        _lastMouseRow = track_row;
+        return;
+    }
 
     // Split pane click: focus the clicked pane + start drag resize
     if (g_split_active) {
