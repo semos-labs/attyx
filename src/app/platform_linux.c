@@ -404,8 +404,8 @@ void attyx_apply_window_update(void) {
     if (g_cell_px_w > 0 && g_cell_px_h > 0) {
         float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
         float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
-        int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.01f);
-        int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.01f);
+        int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.001f);
+        int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.001f);
         if (new_cols < 1) new_cols = 1;
         if (new_rows < 1) new_rows = 1;
         if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
@@ -594,8 +594,8 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         if (g_cell_px_w > 0 && g_cell_px_h > 0) {
             float padPxW = (float)(g_padding_left + g_padding_right) * g_content_scale;
             float padPxH = (float)(g_padding_top  + g_padding_bottom) * g_content_scale;
-            int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.01f);
-            int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.01f);
+            int new_cols = (int)((fb_w - padPxW) / g_cell_px_w + 0.001f);
+            int new_rows = (int)((fb_h - padPxH) / g_cell_px_h + 0.001f);
             if (new_cols < 1) new_cols = 1;
             if (new_rows < 1) new_rows = 1;
             if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;

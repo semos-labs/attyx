@@ -15,4 +15,5 @@ test {
     _ = @import("tests/graphics_store.zig");
     _ = @import("tests/erase.zig");
     _ = @import("tests/state_resize_extra.zig");
+    _ = @import("tests/resize_rounding.zig");
 }

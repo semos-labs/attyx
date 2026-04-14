@@ -477,8 +477,8 @@ void attyx_spawn_new_window(void) {
     {
         CGFloat viewW = termView.bounds.size.width;
         CGFloat viewH = termView.bounds.size.height;
-        int new_cols = (int)((viewW - g_padding_left - g_padding_right) / g_cell_pt_w + 0.01f);
-        int new_rows = (int)((viewH - g_padding_top - g_padding_bottom) / g_cell_pt_h + 0.01f);
+        int new_cols = (int)((viewW - g_padding_left - g_padding_right) / g_cell_pt_w + 0.001f);
+        int new_rows = (int)((viewH - g_padding_top - g_padding_bottom) / g_cell_pt_h + 0.001f);
         if (new_cols < 1) new_cols = 1;
         if (new_rows < 1) new_rows = 1;
         if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;

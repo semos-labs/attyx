@@ -225,8 +225,8 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
     float padRpx = g_padding_right * _glyphCache.scale;
     float padTpx = g_padding_top   * _glyphCache.scale;
     float padBpx = g_padding_bottom * _glyphCache.scale;
-    int new_cols = (int)((size.width  - padLpx - padRpx) / _glyphCache.glyph_w + 0.01f);
-    int new_rows = (int)((size.height - padTpx - padBpx) / _glyphCache.glyph_h + 0.01f);
+    int new_cols = (int)((size.width  - padLpx - padRpx) / _glyphCache.glyph_w + 0.001f);
+    int new_rows = (int)((size.height - padTpx - padBpx) / _glyphCache.glyph_h + 0.001f);
     if (new_cols < 1) new_cols = 1;
     if (new_rows < 1) new_rows = 1;
     if (new_cols > ATTYX_MAX_COLS) new_cols = ATTYX_MAX_COLS;
