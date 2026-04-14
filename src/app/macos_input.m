@@ -333,6 +333,49 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         }
     }
 
+    // Cmd-click on a link bypasses mouse reporting so TUIs (Claude Code,
+    // vim, etc.) don't swallow the click before we can open the URL.
+    // Falls through to the normal mouse-reporting / selection path when
+    // there's no link at the clicked cell.
+    if (event.modifierFlags & NSEventModifierFlagCommand) {
+        int cc, cr;
+        mouseCell0(event, self, &cc, &cr);
+        cr -= g_grid_top_offset;
+        if (cr >= 0) {
+            int cols = g_cols, rows_n = g_rows;
+            if (g_cells && cc >= 0 && cc < cols && cr < rows_n) {
+                uint32_t lid = g_cells[cr * cols + cc].link_id;
+                if (lid != 0) {
+                    char uri_buf[2048];
+                    int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
+                    if (uri_len > 0) {
+                        NSString* urlStr = [[NSString alloc] initWithBytes:uri_buf
+                                                                   length:uri_len
+                                                                 encoding:NSUTF8StringEncoding];
+                        if (urlStr) {
+                            NSURL* url = [NSURL URLWithString:urlStr];
+                            if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+                        }
+                    }
+                    return;
+                }
+                int dStart, dEnd;
+                char dUrl[DETECTED_URL_MAX];
+                int dLen = 0;
+                if (detectUrlAtCell(cr, cc, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                    NSString* urlStr = [[NSString alloc] initWithBytes:dUrl
+                                                               length:dLen
+                                                             encoding:NSUTF8StringEncoding];
+                    if (urlStr) {
+                        NSURL* url = [NSURL URLWithString:urlStr];
+                        if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     int col, row;
     mouseCell0(event, self, &col, &row);
 
@@ -400,40 +443,9 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         if (col >= pce) col = pce - 1;
     }
 
-    if (event.modifierFlags & NSEventModifierFlagCommand) {
-        int cols = g_cols, rows_n = g_rows;
-        if (g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
-            uint32_t lid = g_cells[row * cols + col].link_id;
-            if (lid != 0) {
-                char uri_buf[2048];
-                int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
-                if (uri_len > 0) {
-                    NSString* urlStr = [[NSString alloc] initWithBytes:uri_buf
-                                                               length:uri_len
-                                                             encoding:NSUTF8StringEncoding];
-                    if (urlStr) {
-                        NSURL* url = [NSURL URLWithString:urlStr];
-                        if (url) [[NSWorkspace sharedWorkspace] openURL:url];
-                    }
-                }
-                return;
-            }
+    // Cmd-click link handling runs earlier (before mouse-reporting) so it
+    // works inside TUIs. By this point we know no link was at the click.
 
-            int dStart, dEnd;
-            char dUrl[DETECTED_URL_MAX];
-            int dLen = 0;
-            if (detectUrlAtCell(row, col, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
-                NSString* urlStr = [[NSString alloc] initWithBytes:dUrl
-                                                           length:dLen
-                                                         encoding:NSUTF8StringEncoding];
-                if (urlStr) {
-                    NSURL* url = [NSURL URLWithString:urlStr];
-                    if (url) [[NSWorkspace sharedWorkspace] openURL:url];
-                }
-                return;
-            }
-        }
-    }
     // Shift-click extends existing selection
     if ((event.modifierFlags & NSEventModifierFlagShift) && g_sel_active) {
         g_sel_end_row = row;
@@ -829,18 +841,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     }
 
     int tracking = g_mouse_tracking;
-    if (tracking == 3 && g_mouse_sgr) {
-        int col, row;
-        mouseCell(event, self, &col, &row);
-        if (col == _lastMouseCol && row == _lastMouseRow) return;
-        int btn = 35 | mouseModifiers(event.modifierFlags);
-        sendSgrMouse(btn, col, row, YES);
-        _lastMouseCol = col;
-        _lastMouseRow = row;
-        return;
-    }
 
-    if (!tracking) {
+    // Run hover-link detection unconditionally so OSC 8 hyperlinks still
+    // show the hand cursor and hover underline even when a TUI has mouse
+    // motion reporting enabled.
+    {
         int col, row;
         mouseCell0(event, self, &col, &row);
 
@@ -906,6 +911,17 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             if (row >= 0 && row < 256 && isLink)
                 __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
         }
+    }
+
+    // Forward SGR motion reports to the app when any-motion tracking is on.
+    if (tracking == 3 && g_mouse_sgr) {
+        int col, row;
+        mouseCell(event, self, &col, &row);
+        if (col == _lastMouseCol && row == _lastMouseRow) return;
+        int btn = 35 | mouseModifiers(event.modifierFlags);
+        sendSgrMouse(btn, col, row, YES);
+        _lastMouseCol = col;
+        _lastMouseRow = row;
     }
 }
 
