@@ -69,6 +69,8 @@ pub const Pane = struct {
     /// Xyron IPC: whether handshake has been completed for this pane.
     xyron_handshake_done: bool = false,
 
+    pub const daemon_backed_placeholder_id: u32 = 0xFFFF_FFFF;
+
     pub fn getDaemonProcName(self: *const Pane) ?[]const u8 {
         if (self.daemon_proc_name_len == 0) return null;
         return self.daemon_proc_name[0..self.daemon_proc_name_len];
@@ -140,6 +142,7 @@ pub const Pane = struct {
             .engine = engine,
             .pty = Pty.initInactive(),
             .allocator = allocator,
+            .daemon_pane_id = daemon_backed_placeholder_id,
         };
     }
 

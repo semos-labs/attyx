@@ -345,3 +345,9 @@ test "shouldQueryProcessName only falls back with no cheap hints" {
     try std.testing.expect(!shouldQueryProcessName(null, "claude", null));
     try std.testing.expect(!shouldQueryProcessName(null, null, "claude"));
 }
+
+test "daemon-backed test panes skip local PTY cleanup" {
+    var pane = try Pane.initDaemonBacked(std.testing.allocator, 4, 20, 10);
+    try std.testing.expectEqual(Pane.daemon_backed_placeholder_id, pane.daemon_pane_id.?);
+    pane.deinit();
+}
