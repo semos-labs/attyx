@@ -75,7 +75,14 @@ pub fn doSplit(ctx: *PtyThreadCtx, layout: *SplitLayout, dir: split_layout_mod.D
         var osc7_buf_local: [statusbar.max_output_len]u8 = undefined;
         const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf_local);
         defer if (resolved.owned) if (resolved.cwd) |cwd_alloc| ctx.allocator.free(cwd_alloc);
-        layout.splitPaneResolved(dir, ctx.allocator, resolved.cwd, ctx.applied_scrollback_lines) catch return;
+        if (ctx.default_program) |prog| {
+            const prog_z = ctx.allocator.dupeZ(u8, prog) catch return;
+            defer ctx.allocator.free(prog_z);
+            const argv: [1][:0]const u8 = .{prog_z};
+            layout.splitPaneResolvedWithArgv(dir, ctx.allocator, &argv, resolved.cwd, ctx.applied_scrollback_lines) catch return;
+        } else {
+            layout.splitPaneResolved(dir, ctx.allocator, resolved.cwd, ctx.applied_scrollback_lines) catch return;
+        }
     }
 
     // Set theme colors and assign IPC ID on the newly created pane.

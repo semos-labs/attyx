@@ -736,13 +736,6 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                 }
             }
 
-            if (g_mouse_tracking && g_mouse_sgr) {
-                int col, row;
-                mouseToCell1(mx, my, &col, &row);
-                sendSgrMouse(0 | mouseModifiers(mods), col, row, 1);
-                g_left_down = 1;
-                return;
-            }
             int col, row;
             mouseToCell(mx, my, &col, &row);
 
@@ -763,6 +756,27 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
 
             // Overlay click: consume if hit
             if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
+
+            // Let pane switching win over app mouse tracking so OpenCode and other
+            // mouse-aware apps do not trap clicks meant to focus another split.
+            if (g_split_active && g_pane_rect_rows > 0) {
+                int content_row = row - g_grid_top_offset;
+                int pr = g_pane_rect_row, pc = g_pane_rect_col;
+                int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
+                if (content_row >= 0 &&
+                    (content_row < pr || content_row >= pe || col < pc || col >= pce)) {
+                    attyx_split_click(col, row);
+                    return;
+                }
+            }
+
+            if (g_mouse_tracking && g_mouse_sgr) {
+                int track_col, track_row;
+                mouseToCell1(mx, my, &track_col, &track_row);
+                sendSgrMouse(0 | mouseModifiers(mods), track_col, track_row, 1);
+                g_left_down = 1;
+                return;
+            }
 
             // Split pane click: focus the clicked pane + start drag resize
             if (g_split_active) {

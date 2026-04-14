@@ -11,6 +11,7 @@ const StyledCell = attyx.overlay_mod.StyledCell;
 const Rgb = attyx.overlay_mod.Rgb;
 const unicode = attyx.unicode;
 const tab_manager = @import("tab_manager.zig");
+const agent_status_mod = @import("agent_status.zig");
 pub const max_tabs = tab_manager.max_tabs;
 
 pub const Style = struct {
@@ -20,6 +21,10 @@ pub const Style = struct {
     active_fg: ?Rgb = null, // null = same as fg
     num_highlight_bg: Rgb = .{ .r = 90, .g = 90, .b = 100 },
     num_highlight_fg: Rgb = .{ .r = 230, .g = 230, .b = 240 },
+    agent_fg: Rgb = .{ .r = 96, .g = 160, .b = 255 },
+    agent_idle_fg: Rgb = .{ .r = 96, .g = 208, .b = 120 },
+    agent_running_fg: Rgb = .{ .r = 255, .g = 170, .b = 64 },
+    agent_waiting_fg: Rgb = .{ .r = 176, .g = 112, .b = 255 },
     bg_alpha: u8 = 230,
 };
 
@@ -31,6 +36,8 @@ pub const Result = struct {
 
 /// Per-tab title, resolved by the caller (OSC title or process name).
 pub const TabTitles = [max_tabs]?[]const u8;
+pub const AgentStatus = agent_status_mod.AgentStatus;
+pub const AgentStatuses = agent_status_mod.AgentStatuses;
 
 /// Cached per-tab widths written by generate(), read by tabIndexAtCol().
 var cached_widths: [max_tabs]u16 = .{0} ** max_tabs;
@@ -80,11 +87,39 @@ fn numLen(n: u8) u16 {
     return if (n >= 10) 2 else 1;
 }
 
+const ParsedTitle = struct {
+    title: []const u8,
+    agent_status: AgentStatus = .none,
+};
+
+fn parseAgentTitle(title: []const u8) ParsedTitle {
+    var i: usize = 0;
+    const marker = nextCodepoint(title, &i) orelse return .{ .title = title };
+    const status: AgentStatus = switch (marker) {
+        0x25CB => .idle, // white circle
+        0x273B => .running, // teardrop-spoked asterisk
+        0x25CF => .waiting, // black circle
+        else => {
+            if (agent_status_mod.looksLikeAgentText(title)) {
+                return .{ .title = title, .agent_status = .generic };
+            }
+            return .{ .title = title };
+        },
+    };
+
+    if (i < title.len and title[i] == ' ') {
+        i += 1;
+        return .{ .title = title[i..], .agent_status = status };
+    }
+    return .{ .title = title, .agent_status = .none };
+}
+
 /// Compute the natural width for a tab: " title " + " N " = (1+title+1) + (1+numlen+1).
 /// When zoomed, prepend "⊞ " (2 extra columns).
-fn tabWidth(title_len: u16, tab_number: u8, zoomed: bool) u16 {
+fn tabWidth(title_len: u16, tab_number: u8, zoomed: bool, agent_status: AgentStatus) u16 {
     const zoom_extra: u16 = if (zoomed) 2 else 0;
-    return 1 + zoom_extra + title_len + 1 + 1 + numLen(tab_number) + 1;
+    const agent_extra: u16 = if (agent_status != .none) 2 else 0;
+    return 1 + zoom_extra + agent_extra + title_len + 1 + 1 + numLen(tab_number) + 1;
 }
 
 /// Resolve the title for tab `i`, writing fallback into `fallback_buf`.
@@ -177,6 +212,7 @@ pub fn generate(
     style: Style,
     titles: *const TabTitles,
     zoomed_tabs: u16,
+    statuses: *const AgentStatuses,
 ) ?Result {
     if (grid_cols == 0 or tab_count == 0) return null;
     const width: u16 = grid_cols;
@@ -194,12 +230,13 @@ pub fn generate(
 
     // Compute content-based widths and cache them for tabIndexAtCol().
     var fallback_bufs: [max_tabs][20]u8 = undefined;
-    var resolved: [max_tabs][]const u8 = undefined;
+    var resolved: [max_tabs]ParsedTitle = undefined;
     var widths: [max_tabs]u16 = undefined;
     for (0..tab_count) |i| {
-        resolved[i] = resolveTitle(titles, i, &fallback_bufs[i]);
+        resolved[i] = parseAgentTitle(resolveTitle(titles, i, &fallback_bufs[i]));
         const is_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
-        widths[i] = tabWidth(displayWidth(resolved[i]), @intCast(i + 1), is_zoomed);
+        const merged_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
+        widths[i] = tabWidth(displayWidth(resolved[i].title), @intCast(i + 1), is_zoomed, merged_status);
     }
 
     // Reset scroll on tab count change
@@ -266,7 +303,8 @@ pub fn generate(
 
         const is_active = (i == active);
         const natural_width = widths[i];
-        const title = resolved[i];
+        const title = resolved[i].title;
+        const agent_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
         const num = num_slices[i];
 
         // Resolve per-tab colors: active tab can have distinct bg/fg
@@ -296,6 +334,23 @@ pub fn generate(
                     emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
                     pos += 1;
                 }
+            }
+        }
+        if (agent_status != .none) {
+            const dot_fg = switch (agent_status) {
+                .generic => style.agent_fg,
+                .idle => style.agent_idle_fg,
+                .running => style.agent_running_fg,
+                .waiting => style.agent_waiting_fg,
+                .none => t_fg,
+            };
+            if (pos < natural_width) {
+                emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = 0x25CF, .fg = dot_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
+                pos += 1;
+            }
+            if (pos < natural_width) {
+                emitVCell(buf, vcol + pos, vis_start, vis_end, left_ind, .{ .char = ' ', .fg = t_fg, .bg = t_bg, .bg_alpha = style.bg_alpha });
+                pos += 1;
             }
         }
         {
@@ -399,20 +454,21 @@ pub fn tabIndexAtCol(col: u16, tab_count: u8, grid_cols: u16) ?u8 {
 // ===========================================================================
 
 const no_titles: TabTitles = .{null} ** max_tabs;
+const no_statuses: AgentStatuses = .{.none} ** max_tabs;
 
 test "generate: null on 0 cols" {
     var buf: [100]StyledCell = undefined;
-    try std.testing.expect(generate(&buf, 2, 0, 0, .{}, &no_titles, 0) == null);
+    try std.testing.expect(generate(&buf, 2, 0, 0, .{}, &no_titles, 0, &no_statuses) == null);
 }
 
 test "generate: null on 0 tabs" {
     var buf: [100]StyledCell = undefined;
-    try std.testing.expect(generate(&buf, 0, 0, 40, .{}, &no_titles, 0) == null);
+    try std.testing.expect(generate(&buf, 0, 0, 40, .{}, &no_titles, 0, &no_statuses) == null);
 }
 
 test "generate: null on small buffer" {
     var buf: [5]StyledCell = undefined;
-    try std.testing.expect(generate(&buf, 1, 0, 10, .{}, &no_titles, 0) == null);
+    try std.testing.expect(generate(&buf, 1, 0, 10, .{}, &no_titles, 0, &no_statuses) == null);
 }
 
 test "generate: tab layout is ' title ' + ' N '" {
@@ -421,7 +477,7 @@ test "generate: tab layout is ' title ' + ' N '" {
     var titles: TabTitles = .{null} ** max_tabs;
     titles[0] = "vim";
     // " vim " + " 1 " = (1+3+1) + (1+1+1) = 5 + 3 = 8
-    const result = generate(&buf, 1, 0, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 1, 0, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
     // Title area: " vim " — tab_bg
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
     try std.testing.expectEqual(style.tab_bg, result.cells[0].bg);
@@ -446,7 +502,7 @@ test "generate: inactive number area uses tab_bg, active uses num_highlight_bg" 
     titles[0] = "zsh";
     titles[1] = "vim";
     // Each tab: " xxx " + " N " = 5+3 = 8, gap at 8, tab 1 starts at 9
-    const result = generate(&buf, 2, 1, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 2, 1, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     // Tab 0 (inactive) — title area tab_bg
     try std.testing.expectEqual(style.tab_bg, result.cells[0].bg);
@@ -470,9 +526,49 @@ test "generate: inactive number area uses tab_bg, active uses num_highlight_bg" 
 test "generate: two-digit tab numbers" {
     // tabWidth: 1 + title + 1 + 1 + numlen + 1
     // tab 10 (2 digits), title=1: 1+1+1+1+2+1 = 7
-    try std.testing.expectEqual(@as(u16, 7), tabWidth(1, 10, false));
+    try std.testing.expectEqual(@as(u16, 7), tabWidth(1, 10, false, .none));
     // tab 1 (1 digit), title=1: 1+1+1+1+1+1 = 6
-    try std.testing.expectEqual(@as(u16, 6), tabWidth(1, 1, false));
+    try std.testing.expectEqual(@as(u16, 6), tabWidth(1, 1, false, .none));
+}
+
+test "parseAgentTitle extracts prefixed status marker" {
+    const idle = parseAgentTitle("○ OpenCode");
+    try std.testing.expectEqual(AgentStatus.idle, idle.agent_status);
+    try std.testing.expectEqualStrings("OpenCode", idle.title);
+
+    const running = parseAgentTitle("✻ Claude Code");
+    try std.testing.expectEqual(AgentStatus.running, running.agent_status);
+    try std.testing.expectEqualStrings("Claude Code", running.title);
+
+    const waiting = parseAgentTitle("● OpenCode");
+    try std.testing.expectEqual(AgentStatus.waiting, waiting.agent_status);
+    try std.testing.expectEqualStrings("OpenCode", waiting.title);
+}
+
+test "parseAgentTitle detects generic agent titles" {
+    const open_code = parseAgentTitle("OC | project review");
+    try std.testing.expectEqual(AgentStatus.generic, open_code.agent_status);
+    try std.testing.expectEqualStrings("OC | project review", open_code.title);
+
+    const claude = parseAgentTitle("claude");
+    try std.testing.expectEqual(AgentStatus.generic, claude.agent_status);
+    try std.testing.expectEqualStrings("claude", claude.title);
+}
+
+test "generate: agent status renders colored dot and strips raw prefix" {
+    var buf: [80]StyledCell = undefined;
+    const style = Style{};
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "✻ OpenCode";
+
+    const result = generate(&buf, 1, 0, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
+    try std.testing.expectEqual(@as(u21, 0x25CF), result.cells[1].char);
+    try std.testing.expectEqual(style.agent_running_fg, result.cells[1].fg);
+    try std.testing.expectEqual(@as(u21, 'O'), result.cells[3].char);
+    try std.testing.expectEqual(@as(u21, 'p'), result.cells[4].char);
+    try std.testing.expectEqual(@as(u21, 'e'), result.cells[5].char);
+    try std.testing.expectEqual(@as(u21, 'n'), result.cells[6].char);
 }
 
 test "generate: gap between tabs is transparent" {
@@ -482,7 +578,7 @@ test "generate: gap between tabs is transparent" {
     titles[0] = "a";
     titles[1] = "b";
     // Tab 0: " a " + " 1 " = 3+3 = 6, gap at 6, Tab 1 starts at 7
-    _ = generate(&buf, 2, 0, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    _ = generate(&buf, 2, 0, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     try std.testing.expectEqual(@as(u8, 0), buf[6].bg_alpha);
     try std.testing.expectEqual(style.tab_bg, buf[7].bg);
@@ -494,7 +590,7 @@ test "tabIndexAtCol: variable width tabs with gaps" {
     titles[0] = "vim"; // " vim " + " 1 " = 5+3 = 8
     titles[1] = "long-process"; // " long-process " + " 2 " = 14+3 = 17
     titles[2] = "zsh"; // " zsh " + " 3 " = 5+3 = 8
-    _ = generate(&buf, 3, 0, 80, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+    _ = generate(&buf, 3, 0, 80, .{}, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     // Tab 0: cols 0..7
     try std.testing.expectEqual(@as(?u8, 0), tabIndexAtCol(0, 3, 80));
@@ -519,7 +615,7 @@ test "generate: utf-8 title renders codepoints not bytes" {
     // "café" = 4 codepoints (5 bytes: c a f 0xC3 0xA9)
     titles[0] = "caf\xc3\xa9";
     // displayWidth = 4, tab = " café " + " 1 " = 6 + 3 = 9
-    const result = generate(&buf, 1, 0, 80, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 1, 0, 80, .{}, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u21, 'c'), result.cells[1].char);
     try std.testing.expectEqual(@as(u21, 'a'), result.cells[2].char);
     try std.testing.expectEqual(@as(u21, 'f'), result.cells[3].char);
@@ -533,7 +629,7 @@ test "generate: CJK wide chars take 2 columns" {
     // "你好" = 2 codepoints, 4 display columns
     titles[0] = "\xe4\xbd\xa0\xe5\xa5\xbd";
     // displayWidth = 4, tab = " 你好 " + " 1 " = (1+4+1) + (1+1+1) = 6 + 3 = 9
-    const result = generate(&buf, 1, 0, 80, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 1, 0, 80, .{}, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char); // leading space
     try std.testing.expectEqual(@as(u21, 0x4F60), result.cells[1].char); // 你
     try std.testing.expectEqual(@as(u21, ' '), result.cells[2].char); // wide spacer
@@ -561,7 +657,7 @@ test "generate: scroll shows active tab and indicators" {
 
     // Viewport of 20 cols — tabs overflow (34 > 20)
     // Active tab = 4 (last), should scroll to show it
-    const result = generate(&buf, 5, 4, 20, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 5, 4, 20, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u16, 20), result.width);
 
     // Left indicator '<' should appear at col 0 (scrolled past start)
@@ -582,7 +678,7 @@ test "generate: no scroll when tabs fit" {
     titles[0] = "a";
     titles[1] = "b";
     // Total virtual: 2*6 + 1 gap = 13, fits in 80 cols
-    const result = generate(&buf, 2, 0, 80, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 2, 0, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     // No indicators — first cell should be tab content, not '<'
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
@@ -602,7 +698,7 @@ test "generate: scroll right indicator when active is first tab" {
     titles[4] = "e";
 
     // Active tab 0, viewport 20 — scroll_offset should be 0
-    const result = generate(&buf, 5, 0, 20, style, &titles, 0) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 5, 0, 20, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     // No left indicator (at start, no overflow left) — col 0 is tab content
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
@@ -626,7 +722,7 @@ test "tabIndexAtCol: works with scroll offset" {
     // Total: 34, viewport 20, active=4 → scrolled to end
     // left_ind=1, right_ind=0, effective=19, scroll_offset=34-19=15
 
-    _ = generate(&buf, 5, 4, 20, .{}, &titles, 0) orelse return error.TestUnexpectedResult;
+    _ = generate(&buf, 5, 4, 20, .{}, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
 
     // Col 0 is left indicator '<' — should return null
     try std.testing.expectEqual(@as(?u8, null), tabIndexAtCol(0, 5, 20));

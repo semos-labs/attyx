@@ -13,6 +13,7 @@ const split_layout_mod = @import("../split_layout.zig");
 const split_render = @import("../split_render.zig");
 const TabManager = @import("../tab_manager.zig").TabManager;
 const Pane = @import("../pane.zig").Pane;
+const agent_status_mod = @import("../agent_status.zig");
 const keybinds_mod = @import("../../config/keybinds.zig");
 const Action = keybinds_mod.Action;
 const theme_registry_mod = @import("../../theme/registry.zig");
@@ -446,33 +447,49 @@ fn publishState(eng: *Engine) void {
 
 /// Resolve tab titles for Windows — strips MSYS2 prefix (e.g. "CLANGARM64:/path")
 /// and shows just the directory basename.
+fn resolveTabTitlesInternal(
+    ctx: *WinCtx,
+    titles: *tab_bar_mod.TabTitles,
+    statuses: ?*tab_bar_mod.AgentStatuses,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    titles.* = .{null} ** tab_bar_mod.max_tabs;
+    if (statuses) |status_buf| status_buf.* = .{.none} ** tab_bar_mod.max_tabs;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        const pane = layout.focusedPane();
+        if (layout.getTitle()) |title| {
+            titles[i] = title;
+        } else if (pane.engine.state.title) |raw_title| {
+            titles[i] = cleanWindowsTitle(raw_title, &name_bufs[i]) orelse raw_title;
+        } else if (pane.getDaemonProcName()) |name| {
+            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
+        } else if (layout.getHintTitle()) |name| {
+            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
+        } else {
+            titles[i] = "cmd";
+        }
+        if (statuses) |status_buf| {
+            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], pane.getDaemonProcName());
+        }
+    }
+}
+
 fn resolveTabTitles(
+    ctx: *WinCtx,
+    titles: *tab_bar_mod.TabTitles,
+    statuses: *tab_bar_mod.AgentStatuses,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    resolveTabTitlesInternal(ctx, titles, statuses, name_bufs);
+}
+
+fn resolveTabTitlesOnly(
     ctx: *WinCtx,
     titles: *tab_bar_mod.TabTitles,
     name_bufs: *[tab_bar_mod.max_tabs][256]u8,
 ) void {
-    titles.* = .{null} ** tab_bar_mod.max_tabs;
-    for (0..ctx.tab_mgr.count) |i| {
-        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        if (layout.getTitle()) |title| {
-            titles[i] = title;
-            continue;
-        }
-        const pane = layout.focusedPane();
-        if (pane.engine.state.title) |raw_title| {
-            titles[i] = cleanWindowsTitle(raw_title, &name_bufs[i]) orelse raw_title;
-            continue;
-        }
-        if (pane.getDaemonProcName()) |name| {
-            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
-            continue;
-        }
-        if (layout.getHintTitle()) |name| {
-            titles[i] = cleanWindowsTitle(name, &name_bufs[i]) orelse name;
-            continue;
-        }
-        titles[i] = "cmd";
-    }
+    resolveTabTitlesInternal(ctx, titles, null, name_bufs);
 }
 
 /// Strip MSYS2 environment prefix (e.g. "MINGW64:/c/Users/foo" → "foo")
@@ -510,7 +527,7 @@ pub fn publishNativeTabTitles(ctx: *WinCtx) void {
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
+    resolveTabTitlesOnly(ctx, &titles, &name_bufs);
 
     const max_native = 16;
     const count = @min(ctx.tab_mgr.count, max_native);
@@ -539,8 +556,8 @@ pub fn generateTabBar(ctx: *WinCtx) void {
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
-
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
+    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
     const tbg = themeRgb(ctx.theme.background);
     const tfg = themeRgb(ctx.theme.foreground);
     const mix20 = struct {
@@ -569,6 +586,7 @@ pub fn generateTabBar(ctx: *WinCtx) void {
         },
         &titles,
         computeZoomedTabs(ctx),
+        &statuses,
     ) orelse return;
     mgr.setContent(.tab_bar, 0, 0, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.tab_bar)) mgr.show(.tab_bar);
@@ -607,7 +625,8 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
-    resolveTabTitles(ctx, &titles, &name_bufs);
+    var statuses: tab_bar_mod.AgentStatuses = undefined;
+    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
     var styled: [c.ATTYX_MAX_COLS]StyledCell = undefined;
     const sb_alpha: u8 = sb.config.background_opacity;
     // When native tabs are active, don't duplicate tabs in the statusbar
@@ -628,6 +647,7 @@ pub fn generateStatusbar(ctx: *WinCtx) void {
         },
         &titles,
         computeZoomedTabs(ctx),
+        &statuses,
     ) orelse return;
 
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
