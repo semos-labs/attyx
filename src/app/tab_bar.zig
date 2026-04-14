@@ -100,7 +100,7 @@ fn parseAgentTitle(title: []const u8) ParsedTitle {
         0x273B => .running, // teardrop-spoked asterisk
         0x25CF => .waiting, // black circle
         else => {
-            if (looksLikeAgentTitle(title)) {
+            if (agent_status_mod.looksLikeAgentText(title)) {
                 return .{ .title = title, .agent_status = .generic };
             }
             return .{ .title = title };
@@ -112,33 +112,6 @@ fn parseAgentTitle(title: []const u8) ParsedTitle {
         return .{ .title = title[i..], .agent_status = status };
     }
     return .{ .title = title, .agent_status = .none };
-}
-
-fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
-    if (haystack.len < prefix.len) return false;
-    return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
-
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
-
-fn looksLikeAgentTitle(title: []const u8) bool {
-    return startsWithIgnoreCase(title, "OC |") or
-        startsWithIgnoreCase(title, "OpenCode") or
-        containsIgnoreCase(title, "OpenCode") or
-        containsIgnoreCase(title, "Claude Code") or
-        std.ascii.eqlIgnoreCase(title, "claude") or
-        startsWithIgnoreCase(title, "claude ") or
-        std.ascii.eqlIgnoreCase(title, "opencode") or
-        startsWithIgnoreCase(title, "opencode ");
 }
 
 /// Compute the natural width for a tab: " title " + " N " = (1+title+1) + (1+numlen+1).

@@ -14,6 +14,15 @@ pub const AgentStatus = enum(u3) {
 
 pub const AgentStatuses = [tab_manager.max_tabs]AgentStatus;
 
+pub fn shouldQueryProcessName(display_title: ?[]const u8, osc_title: ?[]const u8, daemon_name: ?[]const u8) bool {
+    return display_title == null and osc_title == null and daemon_name == null;
+}
+
+pub fn looksLikeAgentText(maybe_text: ?[]const u8) bool {
+    const text = maybe_text orelse return false;
+    return looksLikeGenericAgent(text);
+}
+
 const DetectionContext = struct {
     pane: *const Pane,
     display_title: ?[]const u8,
@@ -75,8 +84,7 @@ fn matchesClaude(ctx: DetectionContext) bool {
     return looksLikeClaude(ctx.display_title) or
         looksLikeClaude(ctx.osc_title) or
         looksLikeClaude(ctx.process_name) or
-        looksLikeClaude(ctx.daemon_name) or
-        hasClaudeIdentityIndicator(ctx.pane);
+        looksLikeClaude(ctx.daemon_name);
 }
 
 fn detectClaude(ctx: DetectionContext) AgentStatus {
@@ -195,13 +203,6 @@ fn hasClaudeWaitingIndicator(pane: *const Pane) bool {
     return lastPromptLineEndsWithAny(pane, &[_]u21{ '>', 0x203A, 0x276F });
 }
 
-fn hasClaudeIdentityIndicator(pane: *const Pane) bool {
-    return hasClaudeBusyIndicator(pane) or
-        hasClaudeWaitingIndicator(pane) or
-        screenContainsAsciiIgnoreCase(pane, "claude code") or
-        screenContainsAsciiIgnoreCase(pane, "no, and tell claude what to do differently");
-}
-
 fn screenContainsAsciiIgnoreCase(pane: *const Pane, pattern: []const u8) bool {
     const ring = &pane.engine.state.ring;
     for (0..ring.screen_rows) |row_idx| {
@@ -227,19 +228,6 @@ fn rowContainsAsciiIgnoreCase(row: []const Cell, pattern: []const u8) bool {
         if (matched) return true;
     }
 
-    return false;
-}
-
-fn screenContainsAnyRune(pane: *const Pane, runes: []const u21) bool {
-    const ring = &pane.engine.state.ring;
-    for (0..ring.screen_rows) |row_idx| {
-        const row = ring.getScreenRow(row_idx);
-        for (row) |cell| {
-            for (runes) |rune| {
-                if (cell.char == rune) return true;
-            }
-        }
-    }
     return false;
 }
 
@@ -349,4 +337,11 @@ test "detectPaneStatus finds Claude waiting prompt on screen" {
     pane.feed("Enter to select");
 
     try std.testing.expectEqual(AgentStatus.waiting, detectPaneStatus(&pane, "claude", null));
+}
+
+test "shouldQueryProcessName only falls back with no cheap hints" {
+    try std.testing.expect(shouldQueryProcessName(null, null, null));
+    try std.testing.expect(!shouldQueryProcessName("OC | review", null, null));
+    try std.testing.expect(!shouldQueryProcessName(null, "claude", null));
+    try std.testing.expect(!shouldQueryProcessName(null, null, "claude"));
 }

@@ -667,33 +667,56 @@ pub const updateGridTopOffset = updateGridOffsets;
 
 /// Resolve a display title for each tab: prefer an explicit tab title, then
 /// fall back to the focused pane's OSC title / process name chain.
+fn resolveTabTitlesInternal(
+    ctx: *PtyThreadCtx,
+    titles: *tab_bar_mod.TabTitles,
+    statuses: ?*tab_bar_mod.AgentStatuses,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    titles.* = .{null} ** tab_bar_mod.max_tabs;
+    if (statuses) |status_buf| status_buf.* = .{.none} ** tab_bar_mod.max_tabs;
+    for (0..ctx.tab_mgr.count) |i| {
+        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
+        const pane = layout.focusedPane();
+        const daemon_name = pane.getDaemonProcName();
+        var proc_name: ?[]const u8 = null;
+        if (layout.getTitle()) |title| {
+            titles[i] = title;
+        } else if (pane.engine.state.title) |t| {
+            titles[i] = t;
+        } else if (daemon_name) |name| {
+            titles[i] = name;
+        } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
+            titles[i] = name;
+            proc_name = name;
+        } else {
+            titles[i] = layout.getHintTitle();
+        }
+
+        if (statuses != null and proc_name == null and agent_status_mod.shouldQueryProcessName(titles[i], pane.engine.state.title, daemon_name)) {
+            proc_name = platform.getForegroundProcessName(pane.pty.master, &name_bufs[i]);
+        }
+        if (statuses) |status_buf| {
+            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
+        }
+    }
+}
+
 pub fn resolveTabTitles(
     ctx: *PtyThreadCtx,
     titles: *tab_bar_mod.TabTitles,
     statuses: *tab_bar_mod.AgentStatuses,
     name_bufs: *[tab_bar_mod.max_tabs][256]u8,
 ) void {
-    titles.* = .{null} ** tab_bar_mod.max_tabs;
-    statuses.* = .{.none} ** tab_bar_mod.max_tabs;
-    for (0..ctx.tab_mgr.count) |i| {
-        const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
-        const pane = layout.focusedPane();
-        var proc_name: ?[]const u8 = null;
-        if (layout.getTitle()) |title| {
-            titles[i] = title;
-        } else if (pane.engine.state.title) |t| {
-            titles[i] = t;
-        } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
-            titles[i] = name;
-            proc_name = name;
-        } else if (pane.getDaemonProcName()) |name| {
-            titles[i] = name;
-        } else {
-            titles[i] = layout.getHintTitle();
-        }
-        if (proc_name == null) proc_name = platform.getForegroundProcessName(pane.pty.master, &name_bufs[i]);
-        statuses[i] = agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
-    }
+    resolveTabTitlesInternal(ctx, titles, statuses, name_bufs);
+}
+
+pub fn resolveTabTitlesOnly(
+    ctx: *PtyThreadCtx,
+    titles: *tab_bar_mod.TabTitles,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    resolveTabTitlesInternal(ctx, titles, null, name_bufs);
 }
 
 /// Compute a bitmask of which tabs are currently zoomed.

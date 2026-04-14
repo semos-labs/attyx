@@ -447,14 +447,14 @@ fn publishState(eng: *Engine) void {
 
 /// Resolve tab titles for Windows — strips MSYS2 prefix (e.g. "CLANGARM64:/path")
 /// and shows just the directory basename.
-fn resolveTabTitles(
+fn resolveTabTitlesInternal(
     ctx: *WinCtx,
     titles: *tab_bar_mod.TabTitles,
-    statuses: *tab_bar_mod.AgentStatuses,
+    statuses: ?*tab_bar_mod.AgentStatuses,
     name_bufs: *[tab_bar_mod.max_tabs][256]u8,
 ) void {
     titles.* = .{null} ** tab_bar_mod.max_tabs;
-    statuses.* = .{.none} ** tab_bar_mod.max_tabs;
+    if (statuses) |status_buf| status_buf.* = .{.none} ** tab_bar_mod.max_tabs;
     for (0..ctx.tab_mgr.count) |i| {
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
         const pane = layout.focusedPane();
@@ -469,8 +469,27 @@ fn resolveTabTitles(
         } else {
             titles[i] = "cmd";
         }
-        statuses[i] = agent_status_mod.detectPaneStatus(pane, titles[i], pane.getDaemonProcName());
+        if (statuses) |status_buf| {
+            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], pane.getDaemonProcName());
+        }
     }
+}
+
+fn resolveTabTitles(
+    ctx: *WinCtx,
+    titles: *tab_bar_mod.TabTitles,
+    statuses: *tab_bar_mod.AgentStatuses,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    resolveTabTitlesInternal(ctx, titles, statuses, name_bufs);
+}
+
+fn resolveTabTitlesOnly(
+    ctx: *WinCtx,
+    titles: *tab_bar_mod.TabTitles,
+    name_bufs: *[tab_bar_mod.max_tabs][256]u8,
+) void {
+    resolveTabTitlesInternal(ctx, titles, null, name_bufs);
 }
 
 /// Strip MSYS2 environment prefix (e.g. "MINGW64:/c/Users/foo" → "foo")
@@ -508,8 +527,7 @@ pub fn publishNativeTabTitles(ctx: *WinCtx) void {
 
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     var titles: tab_bar_mod.TabTitles = undefined;
-    var statuses: tab_bar_mod.AgentStatuses = undefined;
-    resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
+    resolveTabTitlesOnly(ctx, &titles, &name_bufs);
 
     const max_native = 16;
     const count = @min(ctx.tab_mgr.count, max_native);
@@ -540,7 +558,6 @@ pub fn generateTabBar(ctx: *WinCtx) void {
     var titles: tab_bar_mod.TabTitles = undefined;
     var statuses: tab_bar_mod.AgentStatuses = undefined;
     resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
-
     const tbg = themeRgb(ctx.theme.background);
     const tfg = themeRgb(ctx.theme.foreground);
     const mix20 = struct {
