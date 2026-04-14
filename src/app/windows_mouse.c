@@ -225,6 +225,41 @@ LRESULT win_handleLButtonDown(HWND hwnd, LPARAM lParam) {
         }
     }
 
+    // Ctrl-click on a link bypasses mouse reporting so TUIs don't swallow
+    // the click before we can open the URL. Falls through when there's no
+    // link at the clicked cell.
+    if (GetKeyState(VK_CONTROL) & 0x8000) {
+        int cc, cr;
+        mouseToCell(px, py, &cc, &cr);
+        cr -= g_grid_top_offset;
+        if (cr >= 0) {
+            int cols = g_cols, nrows = g_rows;
+            if (g_cells && cc >= 0 && cc < cols && cr < nrows) {
+                uint32_t lid = g_cells[cr * cols + cc].link_id;
+                if (lid != 0) {
+                    char uri_buf[2048];
+                    int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
+                    if (uri_len > 0) {
+                        uri_buf[uri_len] = '\0';
+                        ShellExecuteA(NULL, "open", uri_buf, NULL, NULL, SW_SHOW);
+                    }
+                    g_left_down = 1;
+                    return 0;
+                }
+                int dStart, dEnd;
+                char dUrl[DETECTED_URL_MAX];
+                int dLen = 0;
+                if (detectUrlAtCell(cr, cc, cols, &dStart, &dEnd,
+                                    dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                    dUrl[dLen] = '\0';
+                    ShellExecuteA(NULL, "open", dUrl, NULL, NULL, SW_SHOW);
+                    g_left_down = 1;
+                    return 0;
+                }
+            }
+        }
+    }
+
     if (g_mouse_tracking && g_mouse_sgr) {
         int col, row;
         mouseToCell1(px, py, &col, &row);
@@ -267,33 +302,8 @@ LRESULT win_handleLButtonDown(HWND hwnd, LPARAM lParam) {
         if (col >= pce) col = pce - 1;
     }
 
-    // Ctrl+click opens hyperlink
-    if (GetKeyState(VK_CONTROL) & 0x8000) {
-        int cols = g_cols, nrows = g_rows;
-        if (g_cells && col >= 0 && col < cols && row >= 0 && row < nrows) {
-            uint32_t lid = g_cells[row * cols + col].link_id;
-            if (lid != 0) {
-                char uri_buf[2048];
-                int uri_len = attyx_get_link_uri(lid, uri_buf, sizeof(uri_buf));
-                if (uri_len > 0) {
-                    uri_buf[uri_len] = '\0';
-                    ShellExecuteA(NULL, "open", uri_buf, NULL, NULL, SW_SHOW);
-                }
-                g_left_down = 1;
-                return 0;
-            }
-            int dStart, dEnd;
-            char dUrl[DETECTED_URL_MAX];
-            int dLen = 0;
-            if (detectUrlAtCell(row, col, cols, &dStart, &dEnd,
-                                dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
-                dUrl[dLen] = '\0';
-                ShellExecuteA(NULL, "open", dUrl, NULL, NULL, SW_SHOW);
-                g_left_down = 1;
-                return 0;
-            }
-        }
-    }
+    // Ctrl-click link handling runs earlier (before mouse-reporting)
+    // so it works inside TUIs.
 
     // Shift-click extends selection
     if ((GetKeyState(VK_SHIFT) & 0x8000) && g_sel_active) {
