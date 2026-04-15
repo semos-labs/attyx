@@ -1099,11 +1099,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             publish.generateStatusbar(ctx);
             publish.publishNativeTabTitles(ctx);
             // Reposition cursor-anchored overlays (completion dropdown).
-            // Anchor to the xyron source pane, not the focused pane, so the
-            // overlay stays aligned when focus moves to a neighboring split.
+            // Dismiss if focus has moved away from the xyron source pane
+            // (pane/tab/session switch) — completions are per-pane state.
             if (ctx.overlay_mgr) |mgr| {
                 if (ctx.xyron_completion.active) {
-                    if (publish.viewportInfoForPane(ctx, ctx.xyron_completion.source_pane_id)) |vp| {
+                    const active_id = ctx.tab_mgr.activePane().ipc_id;
+                    if (ctx.xyron_completion.source_pane_id != active_id) {
+                        ctx.xyron_completion.dismiss();
+                        mgr.hide(.completion);
+                    } else if (publish.viewportInfoForPane(ctx, ctx.xyron_completion.source_pane_id)) |vp| {
                         mgr.relayoutAnchored(vp);
                     } else {
                         ctx.xyron_completion.dismiss();
