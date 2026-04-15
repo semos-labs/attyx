@@ -344,6 +344,11 @@ fn handleFocusPanes(
                     // No byte replay, no SIGWINCH nudge — the engine
                     // already holds the TUI's current screen.
                     cl.sendGridSnapshot(pane, true);
+                    // Hydrate scrollback on first focus so scrolling up
+                    // actually shows history. Capped to keep the initial
+                    // burst bounded; Phase 3 adds an on-demand RPC for
+                    // deeper scrollback.
+                    cl.sendScrollbackChunks(pane, 1024);
                     // Also ship the current title so the client's tab bar
                     // picks it up on first focus (engine is passive, won't
                     // see the OSC 0/2 bytes).

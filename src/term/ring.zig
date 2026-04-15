@@ -188,6 +188,28 @@ pub const RingBuffer = struct {
 
     // -- Screen mutation: scroll operations --
 
+    /// Prepend a single row to the beginning of scrollback (abs=0, oldest).
+    /// Used by grid-sync clients to hydrate scrollback from the daemon
+    /// without disturbing the current screen contents. No-op if the ring
+    /// is already at capacity. Returns true on success.
+    pub fn prependRow(self: *RingBuffer, cells: []const Cell, wrapped: bool) bool {
+        if (self.count >= self.capacity) return false;
+        // Move head one slot back (wrap), growing scrollback by 1 without
+        // touching the slots currently used by the screen — screen row r
+        // stays at slot (new_head + scrollbackCount + r) = (old_head + r).
+        self.head = (self.head + self.capacity - 1) % self.capacity;
+        self.count += 1;
+        const slot = self.ringSlot(0);
+        const offset = slot * self.cols;
+        const copy_n = @min(cells.len, self.cols);
+        @memcpy(self.cells[offset .. offset + copy_n], cells[0..copy_n]);
+        if (copy_n < self.cols) {
+            for (self.cells[offset + copy_n .. offset + self.cols]) |*c| c.* = .{};
+        }
+        self.wrapped[slot] = wrapped;
+        return true;
+    }
+
     /// Advance screen: push top screen row into scrollback, clear new bottom row.
     /// Zero-copy when scroll_top=0 (the common case for full-screen scroll).
     /// Returns true if a row was actually pushed into scrollback (for viewport bumping).

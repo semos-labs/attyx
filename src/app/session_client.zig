@@ -64,6 +64,9 @@ pub const DaemonMessage = union(enum) {
     grid_snapshot: []const u8,
     /// Grid-sync: daemon-pushed OSC 0/2 title for a pane.
     pane_title: struct { pane_id: u32, title: []const u8 },
+    /// Grid-sync: scrollback chunk. Payload is the full message payload
+    /// (ScrollbackHeader + cells), decoded by the consumer.
+    scrollback_chunk: []const u8,
 };
 
 pub const SessionClient = struct {
@@ -875,6 +878,16 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..tlen], msg.title[0..tlen]);
                 self.consumeBytes(total);
                 return .{ .pane_title = .{ .pane_id = msg.pane_id, .title = self.output_buf[0..tlen] } };
+            },
+            .scrollback_chunk => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "scrollback too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .scrollback_chunk = self.output_buf[0..payload.len] };
             },
             else => { self.consumeBytes(total); continue; },
         }

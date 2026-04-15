@@ -61,6 +61,10 @@ pub const MessageType = enum(u8) {
     /// Client's engine is passive in grid-sync, so titles have to be
     /// propagated explicitly — otherwise tab titles never refresh.
     pane_title = 0x95,
+    /// Grid-sync: daemon ships a chunk of scrollback rows (newest-first)
+    /// so the client's engine ring can be hydrated and normal scrollback
+    /// rendering works. Sent on focus; one or more messages per pane.
+    scrollback_chunk = 0x96,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type

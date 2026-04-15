@@ -251,6 +251,69 @@ pub fn writePackedCell(cell_bytes: []u8, idx: usize, cell: PackedCell) void {
     @memcpy(cell_bytes[off..][0..@sizeOf(PackedCell)], std.mem.asBytes(&cell));
 }
 
+// ── scrollback_chunk ──
+//
+// Wire: ScrollbackHeader (fixed) + row_count × cols × PackedCell.
+// Rows in the chunk are ordered NEWEST-FIRST so the client can prepend
+// each row into its ring in sequence (first-received becomes the newest
+// scrollback line, last-received becomes the oldest).
+
+pub const ScrollbackHeader = extern struct {
+    pane_id: u32,
+    cols: u16,
+    row_count: u16, // rows in this chunk
+    total_remaining: u32, // scrollback rows still pending after this chunk (for progress)
+};
+
+comptime {
+    if (@sizeOf(ScrollbackHeader) != 12) @compileError("ScrollbackHeader size changed");
+}
+
+pub const scrollback_header_size = @sizeOf(ScrollbackHeader);
+
+pub const ScrollbackInfo = struct {
+    pane_id: u32,
+    cols: u16,
+    row_count: u16,
+    total_remaining: u32,
+};
+
+pub fn encodedScrollbackSize(cols: u16, row_count: u16) usize {
+    return scrollback_header_size + @as(usize, row_count) * @as(usize, cols) * @sizeOf(PackedCell);
+}
+
+pub fn encodeScrollbackHeader(buf: []u8, info: ScrollbackInfo) !usize {
+    if (buf.len < scrollback_header_size) return error.BufferTooSmall;
+    const hdr: ScrollbackHeader = .{
+        .pane_id = info.pane_id,
+        .cols = info.cols,
+        .row_count = info.row_count,
+        .total_remaining = info.total_remaining,
+    };
+    @memcpy(buf[0..scrollback_header_size], std.mem.asBytes(&hdr));
+    return scrollback_header_size;
+}
+
+pub fn decodeScrollbackHeader(payload: []const u8) !ScrollbackInfo {
+    if (payload.len < scrollback_header_size) return error.PayloadTooShort;
+    var hdr: ScrollbackHeader = undefined;
+    @memcpy(std.mem.asBytes(&hdr), payload[0..scrollback_header_size]);
+    return .{
+        .pane_id = hdr.pane_id,
+        .cols = hdr.cols,
+        .row_count = hdr.row_count,
+        .total_remaining = hdr.total_remaining,
+    };
+}
+
+pub fn scrollbackCellBytes(payload: []const u8, info: ScrollbackInfo) ![]const u8 {
+    const need = @as(usize, info.row_count) * @as(usize, info.cols);
+    const bytes = payload[scrollback_header_size..];
+    const want = need * @sizeOf(PackedCell);
+    if (bytes.len < want) return error.PayloadTooShort;
+    return bytes[0..want];
+}
+
 // ── grid_delta ──
 //
 // Wire: DeltaHeader (fixed), then per-dirty-row {row_index:u16, PackedCell*cols}.

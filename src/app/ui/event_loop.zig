@@ -198,6 +198,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 // shell's prompt.
                                 _ = applyGridSnapshot(ctx, payload);
                             },
+                            .scrollback_chunk => |payload| {
+                                _ = applyScrollbackChunk(ctx, payload);
+                            },
                             else => {},
                         }
                     }
@@ -872,6 +875,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             result.pane.engine.state.setTitle(pt.title);
                             if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                         }
+                    },
+                    .scrollback_chunk => |payload| {
+                        const n = applyScrollbackChunk(ctx, payload);
+                        logging.info("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
+                        got_data = true;
+                        actions.g_force_full_redraw = true;
                     },
                     else => {},
                 }
@@ -1623,6 +1632,35 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
     result.pane.engine.state.alt_active = info.alt_active;
     return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
+}
+
+/// Apply a scrollback_chunk payload to the matching pane, prepending rows
+/// (newest-first wire order) into the engine's ring. Returns the number of
+/// rows actually prepended.
+fn applyScrollbackChunk(ctx: *PtyThreadCtx, payload: []const u8) u16 {
+    const info = grid_sync.decodeScrollbackHeader(payload) catch return 0;
+    const result = findPaneByDaemonId(ctx, info.pane_id) orelse return 0;
+    const ring = &result.pane.engine.state.ring;
+    if (info.cols != ring.cols) return 0;
+    const cell_bytes = grid_sync.scrollbackCellBytes(payload, info) catch return 0;
+    const cols = info.cols;
+    var row_cells: [512]attyx.Cell = undefined;
+    var idx: usize = 0;
+    var r: u16 = 0;
+    var applied: u16 = 0;
+    while (r < info.row_count) : (r += 1) {
+        const limit: usize = @min(cols, row_cells.len);
+        for (0..limit) |c_idx| {
+            row_cells[c_idx] = grid_sync.unpackCell(grid_sync.readPackedCell(cell_bytes, idx));
+            idx += 1;
+        }
+        while (idx % cols != 0) : (idx += 1) {}
+        if (ring.prependRow(row_cells[0..limit], false)) applied += 1;
+    }
+    if (result.tab_idx == ctx.tab_mgr.active) {
+        result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
+    }
+    return applied;
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {
