@@ -224,14 +224,31 @@ pub fn decodeSnapshotHeader(payload: []const u8) !SnapshotInfo {
     };
 }
 
-/// Returns the PackedCell slice embedded in a snapshot chunk payload
-/// (row_count × cols cells starting at start_row).
-pub fn snapshotCells(payload: []const u8, info: SnapshotInfo) ![]const PackedCell {
+/// Returns the raw cell bytes embedded in a snapshot chunk payload
+/// (row_count × cols × @sizeOf(PackedCell) bytes). Callers read
+/// individual cells with `readPackedCell(bytes, idx)` — the bytes are
+/// not generally 4-byte aligned (msg frame header pushes the payload
+/// offset off alignment), so a direct pointer cast is unsafe.
+pub fn snapshotCellBytes(payload: []const u8, info: SnapshotInfo) ![]const u8 {
     const need = @as(usize, info.row_count) * @as(usize, info.cols);
     const bytes = payload[snapshot_header_size..];
-    if (bytes.len < need * @sizeOf(PackedCell)) return error.PayloadTooShort;
-    const ptr: [*]const PackedCell = @ptrCast(@alignCast(bytes.ptr));
-    return ptr[0..need];
+    const want = need * @sizeOf(PackedCell);
+    if (bytes.len < want) return error.PayloadTooShort;
+    return bytes[0..want];
+}
+
+/// Read PackedCell at logical index `idx` from a flat cell byte slice.
+pub fn readPackedCell(cell_bytes: []const u8, idx: usize) PackedCell {
+    var out: PackedCell = .{};
+    const off = idx * @sizeOf(PackedCell);
+    @memcpy(std.mem.asBytes(&out), cell_bytes[off..][0..@sizeOf(PackedCell)]);
+    return out;
+}
+
+/// Write a PackedCell at logical index `idx` into a flat cell byte slice.
+pub fn writePackedCell(cell_bytes: []u8, idx: usize, cell: PackedCell) void {
+    const off = idx * @sizeOf(PackedCell);
+    @memcpy(cell_bytes[off..][0..@sizeOf(PackedCell)], std.mem.asBytes(&cell));
 }
 
 // ── grid_delta ──
@@ -322,7 +339,7 @@ pub const DeltaRowIter = struct {
     offset: usize,
     seen: u16,
 
-    pub const Entry = struct { row_index: u16, cells: []const PackedCell };
+    pub const Entry = struct { row_index: u16, cell_bytes: []const u8 };
 
     pub fn next(self: *DeltaRowIter) !?Entry {
         if (self.seen >= self.info.dirty_row_count) return null;
@@ -331,11 +348,10 @@ pub const DeltaRowIter = struct {
         self.offset += delta_row_prefix;
         const cells_bytes = @as(usize, self.info.cols) * @sizeOf(PackedCell);
         if (self.offset + cells_bytes > self.payload.len) return error.PayloadTooShort;
-        const ptr: [*]const PackedCell = @ptrCast(@alignCast(self.payload[self.offset..].ptr));
-        const cells = ptr[0..self.info.cols];
+        const slice = self.payload[self.offset .. self.offset + cells_bytes];
         self.offset += cells_bytes;
         self.seen += 1;
-        return .{ .row_index = row_index, .cells = cells };
+        return .{ .row_index = row_index, .cell_bytes = slice };
     }
 };
 
@@ -478,22 +494,20 @@ test "delta header + row iter round-trip" {
     std.mem.writeInt(u16, buf[off..][0..2], 0, .little);
     std.mem.writeInt(u16, buf[off + 2 ..][0..2], 0, .little); // padding
     off += delta_row_prefix;
-    const row0_cells: [*]PackedCell = @ptrCast(@alignCast(buf[off..].ptr));
-    row0_cells[0] = packCell(.{ .char = 'A' });
-    row0_cells[1] = packCell(.{ .char = 'B' });
-    row0_cells[2] = packCell(.{ .char = 'C' });
-    row0_cells[3] = packCell(.{ .char = 'D' });
+    writePackedCell(buf[off..], 0, packCell(.{ .char = 'A' }));
+    writePackedCell(buf[off..], 1, packCell(.{ .char = 'B' }));
+    writePackedCell(buf[off..], 2, packCell(.{ .char = 'C' }));
+    writePackedCell(buf[off..], 3, packCell(.{ .char = 'D' }));
     off += @as(usize, cols) * @sizeOf(PackedCell);
 
     // Row 5: 'W' 'X' 'Y' 'Z'
     std.mem.writeInt(u16, buf[off..][0..2], 5, .little);
     std.mem.writeInt(u16, buf[off + 2 ..][0..2], 0, .little); // padding
     off += delta_row_prefix;
-    const row5_cells: [*]PackedCell = @ptrCast(@alignCast(buf[off..].ptr));
-    row5_cells[0] = packCell(.{ .char = 'W' });
-    row5_cells[1] = packCell(.{ .char = 'X' });
-    row5_cells[2] = packCell(.{ .char = 'Y' });
-    row5_cells[3] = packCell(.{ .char = 'Z' });
+    writePackedCell(buf[off..], 0, packCell(.{ .char = 'W' }));
+    writePackedCell(buf[off..], 1, packCell(.{ .char = 'X' }));
+    writePackedCell(buf[off..], 2, packCell(.{ .char = 'Y' }));
+    writePackedCell(buf[off..], 3, packCell(.{ .char = 'Z' }));
 
     const hdr_back = try decodeDeltaHeader(buf);
     try std.testing.expectEqual(info.pane_id, hdr_back.pane_id);
@@ -503,13 +517,13 @@ test "delta header + row iter round-trip" {
     var it = deltaRowIter(buf, hdr_back);
     const e0 = (try it.next()).?;
     try std.testing.expectEqual(@as(u16, 0), e0.row_index);
-    try std.testing.expectEqual(@as(u32, 'A'), e0.cells[0].char);
-    try std.testing.expectEqual(@as(u32, 'D'), e0.cells[3].char);
+    try std.testing.expectEqual(@as(u32, 'A'), readPackedCell(e0.cell_bytes, 0).char);
+    try std.testing.expectEqual(@as(u32, 'D'), readPackedCell(e0.cell_bytes, 3).char);
 
     const e1 = (try it.next()).?;
     try std.testing.expectEqual(@as(u16, 5), e1.row_index);
-    try std.testing.expectEqual(@as(u32, 'W'), e1.cells[0].char);
-    try std.testing.expectEqual(@as(u32, 'Z'), e1.cells[3].char);
+    try std.testing.expectEqual(@as(u32, 'W'), readPackedCell(e1.cell_bytes, 0).char);
+    try std.testing.expectEqual(@as(u32, 'Z'), readPackedCell(e1.cell_bytes, 3).char);
 
     try std.testing.expect((try it.next()) == null);
 }

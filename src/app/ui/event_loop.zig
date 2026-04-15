@@ -860,17 +860,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         {
                             result.pane.engine.state.resize(info.rows, info.cols) catch continue;
                         }
-                        const cells = grid_sync.snapshotCells(payload, info) catch continue;
+                        const cell_bytes = grid_sync.snapshotCellBytes(payload, info) catch continue;
                         var idx: usize = 0;
                         const end_row: usize = @as(usize, info.start_row) + info.row_count;
                         var row: usize = info.start_row;
                         while (row < end_row) : (row += 1) {
                             var col: usize = 0;
                             while (col < info.cols) : (col += 1) {
+                                const packed_cell = grid_sync.readPackedCell(cell_bytes, idx);
                                 result.pane.engine.state.ring.setScreenCell(
                                     row,
                                     col,
-                                    grid_sync.unpackCell(cells[idx]),
+                                    grid_sync.unpackCell(packed_cell),
                                 );
                                 idx += 1;
                             }

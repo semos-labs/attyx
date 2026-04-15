@@ -534,14 +534,18 @@ pub const DaemonClient = struct {
                 .final_chunk = final,
             }) catch return;
 
-            // Pack cells directly into the scratch buffer.
+            // Pack cells into the scratch buffer via memcpy — the wire
+            // framing (5-byte msg header + 28-byte snapshot header = 33)
+            // puts the cell region at an unaligned offset, so pointer
+            // casts are unsafe on arm64.
             const cells_off = payload_off + grid_sync.snapshot_header_size;
-            const cells_ptr: [*]grid_sync.PackedCell = @ptrCast(@alignCast(scratch_buf[cells_off..].ptr));
+            const cell_bytes_len = @as(usize, this_rows) * row_bytes;
+            const cell_buf = scratch_buf[cells_off .. cells_off + cell_bytes_len];
             var out_idx: usize = 0;
             for (start..start + this_rows) |row| {
                 for (0..cols) |col| {
                     const cell = eng.state.ring.getScreenCell(row, col);
-                    cells_ptr[out_idx] = grid_sync.packCell(cell);
+                    grid_sync.writePackedCell(cell_buf, out_idx, grid_sync.packCell(cell));
                     out_idx += 1;
                 }
             }

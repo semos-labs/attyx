@@ -114,6 +114,11 @@ pub const SessionClient = struct {
         client.socket_fd = try conn.connectToSocket();
         conn.setNonBlocking(client.socket_fd);
         client.checkDaemonVersion();
+        // Always exchange hello after the socket is settled (post-upgrade
+        // or same-version): this is how we negotiate capability bits
+        // (grid-sync, etc.). Skipping it leaves the daemon thinking we're
+        // a legacy client and falls back to byte-stream.
+        client.exchangeHello();
         return client;
     }
 
@@ -181,6 +186,40 @@ pub const SessionClient = struct {
                 self.consumeBytes(total);
             }
         }
+    }
+
+    /// Send hello (carrying our capability bits) and parse the hello_ack
+    /// into `self.daemon_caps`. Called after every successful connect so
+    /// both sides agree on grid-sync vs byte-stream. Never blocks longer
+    /// than a short poll — if the daemon is slow, we just leave
+    /// `daemon_caps = 0` and get byte-stream, which is a safe fallback.
+    fn exchangeHello(self: *SessionClient) void {
+        if (self.socket_fd == invalid_fd) return;
+        var payload_buf: [256]u8 = undefined;
+        const payload = protocol.encodeHello(&payload_buf, attyx.version, protocol.CAPABILITIES) catch return;
+        var msg_buf: [protocol.header_size + 256]u8 = undefined;
+        const msg = protocol.encodeMessage(&msg_buf, .hello, payload) catch return;
+        socketWrite(self.socket_fd, msg) catch return;
+
+        if (!pollForData(self.socket_fd, 500)) return;
+
+        const space = self.read_buf[self.read_len..];
+        const n = socketRead(self.socket_fd, space) catch return;
+        if (n <= 0) return;
+        self.read_len += @intCast(n);
+
+        if (self.availableBytes() < protocol.header_size) return;
+        const buf = self.read_buf[self.read_off..self.read_len];
+        const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch return;
+        const total = protocol.header_size + header.payload_len;
+        if (self.availableBytes() < total) return;
+        if (header.msg_type != .hello_ack) return;
+        const ack_payload = buf[protocol.header_size..total];
+        if (protocol.decodeHello(ack_payload)) |hmsg| {
+            self.daemon_caps = hmsg.caps;
+            logging.info("session", "hello negotiated: daemon_caps=0x{x}", .{hmsg.caps});
+        } else |_| {}
+        self.consumeBytes(total);
     }
 
     fn getDaemonVersionPath(buf: *[256]u8) ?[]const u8 {
