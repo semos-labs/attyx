@@ -325,6 +325,36 @@ pub fn scrollbackCellBytes(payload: []const u8, info: ScrollbackInfo) ![]const u
     return bytes[0..want];
 }
 
+// ── get_scrollback_range (C→D RPC) ──
+//
+// Client reports how many scrollback rows it currently holds and asks
+// for up to N older rows. Daemon responds with up to N rows drawn from
+// the portion of its ring that precedes the client's oldest row —
+// newest-first, so the client can `prependRow` each into place.
+
+pub const GetScrollbackRangeMsg = struct {
+    pane_id: u32,
+    client_has: u32,
+    request_count: u32,
+};
+
+pub fn encodeGetScrollbackRange(buf: []u8, msg: GetScrollbackRangeMsg) ![]u8 {
+    if (buf.len < 12) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], msg.pane_id, .little);
+    std.mem.writeInt(u32, buf[4..8], msg.client_has, .little);
+    std.mem.writeInt(u32, buf[8..12], msg.request_count, .little);
+    return buf[0..12];
+}
+
+pub fn decodeGetScrollbackRange(payload: []const u8) !GetScrollbackRangeMsg {
+    if (payload.len < 12) return error.PayloadTooShort;
+    return .{
+        .pane_id = std.mem.readInt(u32, payload[0..4], .little),
+        .client_has = std.mem.readInt(u32, payload[4..8], .little),
+        .request_count = std.mem.readInt(u32, payload[8..12], .little),
+    };
+}
+
 // ── grid_delta ──
 //
 // Wire: DeltaHeader (fixed), then per-dirty-row {row_index:u16, PackedCell*cols}.

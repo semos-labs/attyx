@@ -67,6 +67,11 @@ pub const DaemonMessage = union(enum) {
     /// Grid-sync: scrollback chunk. Payload is the full message payload
     /// (ScrollbackHeader + cells), decoded by the consumer.
     scrollback_chunk: []const u8,
+    /// Grid-sync: scrollback range (response to get_scrollback_range RPC).
+    /// Same wire format as scrollback_chunk; semantic difference is that
+    /// the client PREPENDS rows (they're OLDER than what we already have),
+    /// whereas scrollback_chunk APPENDS (newer than existing scrollback).
+    scrollback_range: []const u8,
 };
 
 pub const SessionClient = struct {
@@ -326,6 +331,24 @@ pub const SessionClient = struct {
 
     pub fn sendSaveLayout(self: *SessionClient, layout_data: []const u8) !void {
         try self.sendMessage(.save_layout, layout_data);
+    }
+
+    /// True if the negotiated daemon_caps advertises grid-sync.
+    pub fn hasGridSync(self: *const SessionClient) bool {
+        return self.daemon_caps & protocol.Capabilities.GRID_SYNC != 0;
+    }
+
+    /// Grid-sync: request up to `request_count` scrollback rows OLDER
+    /// than the `client_has` rows currently in our ring. Daemon replies
+    /// with a `scrollback_range` burst.
+    pub fn sendGetScrollbackRange(self: *SessionClient, pane_id: u32, client_has: u32, request_count: u32) !void {
+        var payload_buf: [12]u8 = undefined;
+        const payload = try protocol.grid_sync.encodeGetScrollbackRange(&payload_buf, .{
+            .pane_id = pane_id,
+            .client_has = client_has,
+            .request_count = request_count,
+        });
+        try self.sendMessage(.get_scrollback_range, payload);
     }
 
     // ── Session list ──
@@ -888,6 +911,16 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..payload.len], payload);
                 self.consumeBytes(total);
                 return .{ .scrollback_chunk = self.output_buf[0..payload.len] };
+            },
+            .scrollback_range => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "scrollback_range too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .scrollback_range = self.output_buf[0..payload.len] };
             },
             else => { self.consumeBytes(total); continue; },
         }

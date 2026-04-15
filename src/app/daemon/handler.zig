@@ -45,6 +45,7 @@ pub fn handleMessage(
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
         .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
         .set_theme_colors => handleSetThemeColors(cl, msg.payload, sessions),
+        .get_scrollback_range => handleGetScrollbackRange(cl, msg.payload, sessions),
 
         // Ignore server→client messages
         else => {},
@@ -408,6 +409,23 @@ fn handleSetThemeColors(
             pane.theme_cursor_set = msg.cursor_set;
         }
     }
+}
+
+/// Grid-sync: client requests older scrollback rows than it currently
+/// holds. Daemon replies with a `scrollback_range` burst (newest-first,
+/// intended for prepend on the client). Silently ignored if the client
+/// isn't grid-sync, the pane doesn't exist, or the daemon has no older
+/// rows to offer.
+fn handleGetScrollbackRange(
+    cl: *DaemonClient,
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+) void {
+    if (!cl.hasGridSync()) return;
+    const msg = protocol.grid_sync.decodeGetScrollbackRange(payload) catch return;
+    const session = getAttachedSession(cl, sessions) orelse return;
+    const pane = session.findPane(msg.pane_id) orelse return;
+    cl.sendScrollbackRangeResponse(pane, msg.client_has, msg.request_count);
 }
 
 fn handlePaneInput(

@@ -691,6 +691,71 @@ pub const DaemonClient = struct {
         self.sendScrollbackRange(pane, start, take);
     }
 
+    /// Reply to a `get_scrollback_range` RPC: ship up to `request_count`
+    /// rows OLDER than the client's current oldest (`client_has` rows
+    /// behind the daemon's newest). Wire type is `scrollback_range` —
+    /// wire format matches `scrollback_chunk` but client semantics are
+    /// PREPEND (rows are older than anything currently in the client's
+    /// ring). Rows are sent NEWEST-first so the client can prependRow
+    /// each in sequence and end up with the batch in chronological order.
+    pub fn sendScrollbackRangeResponse(self: *DaemonClient, pane: *DaemonPane, client_has: u32, request_count: u32) void {
+        const eng = pane.engine orelse return;
+        const sb_count = eng.state.ring.scrollbackCount();
+        if (sb_count == 0 or request_count == 0) return;
+        // Client's oldest-known abs on daemon = sb_count - client_has.
+        // Clamp if client reports more than daemon has (stale view).
+        const client_oldest_abs: usize = if (client_has >= sb_count) 0 else sb_count - @as(usize, client_has);
+        if (client_oldest_abs == 0) return; // nothing older available
+        const want: usize = @min(@as(usize, request_count), client_oldest_abs);
+        const start_abs: usize = client_oldest_abs - want;
+
+        const cols: u16 = @intCast(eng.state.ring.cols);
+        if (cols == 0) return;
+
+        const max_chunk_payload: usize = 32 * 1024;
+        const row_bytes: usize = @as(usize, cols) * @sizeOf(grid_sync.PackedCell);
+        const rows_per_chunk_usize: usize = @max(1, (max_chunk_payload - grid_sync.scrollback_header_size) / row_bytes);
+        const rows_per_chunk: u16 = @intCast(@min(rows_per_chunk_usize, want));
+
+        var scratch_buf: [max_chunk_payload + protocol.header_size]u8 align(4) = undefined;
+
+        // Walk NEWEST-first: first chunk contains the newest of the range
+        // (closest to the client's existing oldest row).
+        var sent: usize = 0;
+        while (sent < want) {
+            const this_rows_usize = @min(@as(usize, rows_per_chunk), want - sent);
+            const this_rows: u16 = @intCast(this_rows_usize);
+            const remaining: u32 = @intCast(want - sent - this_rows);
+            const payload_len: u32 = @intCast(grid_sync.scrollback_header_size + this_rows_usize * row_bytes);
+            protocol.encodeHeader(scratch_buf[0..protocol.header_size], .scrollback_range, payload_len);
+            const payload_off = protocol.header_size;
+            _ = grid_sync.encodeScrollbackHeader(scratch_buf[payload_off..], .{
+                .pane_id = pane.id,
+                .cols = cols,
+                .row_count = this_rows,
+                .total_remaining = remaining,
+            }) catch return;
+            const cells_off = payload_off + grid_sync.scrollback_header_size;
+            const cell_buf = scratch_buf[cells_off .. cells_off + this_rows_usize * row_bytes];
+            var out_idx: usize = 0;
+            // Newest-first: abs = (client_oldest_abs - 1) - sent - i.
+            var i: usize = 0;
+            while (i < this_rows_usize) : (i += 1) {
+                const abs = client_oldest_abs - 1 - sent - i;
+                if (abs < start_abs) break;
+                const row = eng.state.ring.getRow(abs);
+                for (0..cols) |c_idx| {
+                    grid_sync.writePackedCell(cell_buf, out_idx, grid_sync.packCell(row[c_idx]));
+                    out_idx += 1;
+                }
+            }
+            const total_len = protocol.header_size + @as(usize, payload_len);
+            self.sendRaw(scratch_buf[0..total_len]);
+            if (self.dead) return;
+            sent += this_rows_usize;
+        }
+    }
+
     /// Send a PaneTitle notification (grid-sync mode).
     /// Propagates engine.state.title (OSC 0/2) to the client so tab titles
     /// refresh — the client's engine is passive in grid-sync and never
