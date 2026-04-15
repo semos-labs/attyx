@@ -549,7 +549,27 @@ pub const DaemonPane = struct {
     }
 
     /// Check if the foreground process CWD changed. Returns the new CWD if changed, null otherwise.
+    /// Prefers the engine's OSC 7 working_directory (also set by xyron's
+    /// OSC 7339 cwd_changed event) — for xyron-wrapped shells, the
+    /// platform's getForegroundCwd returns xyron's own launch dir rather
+    /// than the user's shell cwd. Falls back to platform lookup for plain
+    /// shells (zsh/bash) that don't emit OSC 7.
     pub fn checkFgCwdChanged(self: *DaemonPane) ?[]const u8 {
+        // Prefer engine's OSC-reported cwd.
+        if (self.engine) |eng| {
+            if (eng.state.working_directory) |uri| {
+                if (parseCwdUri(uri)) |path| {
+                    const len: u16 = @intCast(@min(path.len, 512));
+                    if (len == self.fg_cwd_len and std.mem.eql(u8, self.fg_cwd[0..len], path[0..len])) {
+                        return null; // unchanged
+                    }
+                    @memcpy(self.fg_cwd[0..len], path[0..len]);
+                    self.fg_cwd_len = len;
+                    return self.fg_cwd[0..len];
+                }
+            }
+        }
+
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd = if (comptime is_windows)
             @as(?[]const u8, null)
@@ -564,6 +584,23 @@ pub const DaemonPane = struct {
         @memcpy(self.fg_cwd[0..len], resolved[0..len]);
         self.fg_cwd_len = len;
         return self.fg_cwd[0..len];
+    }
+
+    /// Strip a `file://[host]` prefix to get the path component.
+    /// Returns a slice of `uri` (caller doesn't free).
+    fn parseCwdUri(uri: []const u8) ?[]const u8 {
+        return parseCwdUriPublic(uri);
+    }
+
+    /// Public variant so other daemon modules can reuse this parser.
+    pub fn parseCwdUriPublic(uri: []const u8) ?[]const u8 {
+        const prefix = "file://";
+        if (!std.mem.startsWith(u8, uri, prefix)) return null;
+        const after_scheme = uri[prefix.len..];
+        const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
+        const path = after_scheme[slash_idx..];
+        if (path.len == 0) return null;
+        return path;
     }
 
     const pane_queries = @import("pane_queries.zig");

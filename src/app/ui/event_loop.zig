@@ -201,6 +201,34 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             .scrollback_chunk => |payload| {
                                 _ = applyScrollbackChunk(ctx, payload);
                             },
+                            .pane_fg_cwd => |fc| {
+                                // Grid-sync's focus_panes handshake ships
+                                // the pane's cwd via pane_fg_cwd — must be
+                                // handled here too, otherwise it hits the
+                                // `else` branch below and is silently eaten,
+                                // leaving the client with no cwd until a
+                                // later tick re-sends (which only happens
+                                // on an actual cwd change, so effectively
+                                // never for a stable pane).
+                                if (findPaneByDaemonId(ctx, fc.pane_id)) |result| {
+                                    const len: u16 = @intCast(@min(fc.cwd.len, 512));
+                                    @memcpy(result.pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
+                                    result.pane.daemon_fg_cwd_len = len;
+                                }
+                            },
+                            .pane_title => |pt| {
+                                // Same deal — don't drop title updates.
+                                if (findPaneByDaemonId(ctx, pt.pane_id)) |result| {
+                                    result.pane.engine.state.setTitle(pt.title);
+                                }
+                            },
+                            .pane_proc_name => |pn| {
+                                if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
+                                    const len: u8 = @intCast(@min(pn.name.len, 64));
+                                    @memcpy(result.pane.daemon_proc_name[0..len], pn.name[0..len]);
+                                    result.pane.daemon_proc_name_len = len;
+                                }
+                            },
                             else => {},
                         }
                     }
@@ -220,6 +248,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
+            // Nudge the daemon to re-fire TIOCSWINSZ / SIGWINCH so the
+            // shell redraws its prompt at the current-known dimensions.
+            // Without this, starship/zsh's first-paint prompt can land at
+            // stale dims (size race with window init / xyron child proc)
+            // and wrap awkwardly until user input triggers zle redraw.
+            if (ctx.session_client) |sc2| {
+                if (startup_pane.daemon_pane_id) |dpid| {
+                    const pty_rows: u16 = @intCast(eng.state.ring.screen_rows);
+                    const pty_cols: u16 = @intCast(eng.state.ring.cols);
+                    sc2.sendPaneResize(dpid, pty_rows, pty_cols) catch {};
+                }
+            }
         }
     }
 

@@ -5,6 +5,7 @@ const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
+const DaemonPane = @import("pane.zig").DaemonPane;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
@@ -363,6 +364,19 @@ fn handleFocusPanes(
                     // see the OSC 0/2 bytes).
                     if (pane.engine.?.state.title) |t| {
                         cl.sendPaneTitle(pane.id, t);
+                    }
+                    // And the current OSC 7 cwd so actions like "new tab
+                    // from this pane's cwd" work immediately. Prefer the
+                    // cached fg_cwd (populated by the periodic tick — which
+                    // may have fired before the client's focus_panes was
+                    // processed and thus missed this client) over the live
+                    // engine URI, falling back to parsing the engine URI.
+                    if (pane.fg_cwd_len > 0) {
+                        cl.sendPaneFgCwd(pane.id, pane.fg_cwd[0..pane.fg_cwd_len]);
+                    } else if (pane.engine.?.state.working_directory) |uri| {
+                        if (DaemonPane.parseCwdUriPublic(uri)) |path| {
+                            cl.sendPaneFgCwd(pane.id, path);
+                        }
                     }
                 } else {
                     cl.sendPaneReplay(pane);
