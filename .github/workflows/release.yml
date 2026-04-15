@@ -17,8 +17,63 @@ permissions:
   contents: write
 
 jobs:
+  # ── Skip builds when a branch push only touches docs/release notes ──
+  # Tag pushes and manual dispatch always build.
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether to build
+        id: check
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch → build"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Tag push → build"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+
+          # First push of a new branch has a zero SHA for BEFORE — always build.
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "New branch push → build"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Paths considered non-source; pushes that only touch these are skipped.
+          NON_SOURCE='^(releases/|docs/|README(\.[a-zA-Z-]+)?\.md$|LICENSE$|CLAUDE\.md$|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|\.gitignore$)'
+
+          CODE_CHANGED=$(echo "$CHANGED" | grep -vE "$NON_SOURCE" || true)
+          if [[ -n "$CODE_CHANGED" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Source changes detected → build"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change → skip build"
+          fi
+
   # ── Resolve which GitHub Release to attach artifacts to ──
   resolve-release:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
