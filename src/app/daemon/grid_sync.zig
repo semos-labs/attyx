@@ -151,10 +151,18 @@ pub const SnapshotHeader = extern struct {
     cursor_shape: u8,
     start_row: u16,
     row_count: u16, // rows in this message's cell block
+    /// Scrollback rows that have been produced on the daemon since the
+    /// last snapshot shipped to this client. On the first chunk of a new
+    /// snapshot (start_row == 0) the client applies `shiftScreenUp(delta)`
+    /// before writing cells — that promotes the client's previous top
+    /// screen rows into scrollback, mirroring what happened on the daemon.
+    /// Subsequent chunks in the same snapshot carry delta=0.
+    scrollback_delta: u16,
+    _pad: u16 = 0,
 };
 
 comptime {
-    if (@sizeOf(SnapshotHeader) != 28) @compileError("SnapshotHeader size changed");
+    if (@sizeOf(SnapshotHeader) != 32) @compileError("SnapshotHeader size changed");
 }
 
 pub const snapshot_header_size = @sizeOf(SnapshotHeader);
@@ -172,6 +180,7 @@ pub const SnapshotInfo = struct {
     start_row: u16,
     row_count: u16,
     final_chunk: bool,
+    scrollback_delta: u16,
 };
 
 pub fn encodedSnapshotChunkSize(cols: u16, row_count: u16) usize {
@@ -197,6 +206,7 @@ pub fn encodeSnapshotHeader(buf: []u8, info: SnapshotInfo) !usize {
         .cursor_shape = info.cursor_shape,
         .start_row = info.start_row,
         .row_count = info.row_count,
+        .scrollback_delta = info.scrollback_delta,
     };
     @memcpy(buf[0..snapshot_header_size], std.mem.asBytes(&hdr));
     return snapshot_header_size;
@@ -221,6 +231,7 @@ pub fn decodeSnapshotHeader(payload: []const u8) !SnapshotInfo {
         .start_row = hdr.start_row,
         .row_count = hdr.row_count,
         .final_chunk = hdr.flags & final_chunk_flag != 0,
+        .scrollback_delta = hdr.scrollback_delta,
     };
 }
 
@@ -493,6 +504,7 @@ test "snapshot header round-trip" {
         .start_row = 0,
         .row_count = 30,
         .final_chunk = true,
+        .scrollback_delta = 0,
     };
     _ = try encodeSnapshotHeader(&buf, info);
     const back = try decodeSnapshotHeader(&buf);
@@ -525,6 +537,7 @@ test "snapshot header chunking: non-final" {
         .start_row = 20,
         .row_count = 15,
         .final_chunk = false,
+        .scrollback_delta = 3,
     };
     _ = try encodeSnapshotHeader(&buf, info);
     const back = try decodeSnapshotHeader(&buf);

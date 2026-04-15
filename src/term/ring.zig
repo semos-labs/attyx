@@ -188,6 +188,31 @@ pub const RingBuffer = struct {
 
     // -- Screen mutation: scroll operations --
 
+    /// Append a row as the NEWEST scrollback (abs = scrollbackCount-1
+    /// after the call). The ring grows by 1 (or rotates head if full,
+    /// evicting the oldest scrollback row). Used by grid-sync clients
+    /// to mirror rows that scrolled off on the daemon — the daemon ships
+    /// the actual cell contents, so the client doesn't rely on its own
+    /// stale top-of-screen rows matching what got scrolled.
+    pub fn appendScrollbackRow(self: *RingBuffer, cells: []const Cell, wrapped: bool) bool {
+        if (self.count < self.capacity) {
+            self.count += 1;
+        } else {
+            self.head = (self.head + 1) % self.capacity;
+        }
+        const sb = self.scrollbackCount();
+        if (sb == 0) return false;
+        const slot = self.ringSlot(sb - 1);
+        const offset = slot * self.cols;
+        const copy_n = @min(cells.len, self.cols);
+        @memcpy(self.cells[offset .. offset + copy_n], cells[0..copy_n]);
+        if (copy_n < self.cols) {
+            for (self.cells[offset + copy_n .. offset + self.cols]) |*c| c.* = .{};
+        }
+        self.wrapped[slot] = wrapped;
+        return true;
+    }
+
     /// Prepend a single row to the beginning of scrollback (abs=0, oldest).
     /// Used by grid-sync clients to hydrate scrollback from the daemon
     /// without disturbing the current screen contents. No-op if the ring

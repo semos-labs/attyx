@@ -299,10 +299,14 @@ fn handleFocusPanes(
     for (0..msg.count) |i| {
         const prev_id = if (i < old_count) old_panes[i] else 0;
         cl.active_panes[i] = msg.pane_ids[i];
-        if (cl.active_panes[i] != prev_id) cl.active_pane_last_gen[i] = 0;
+        if (cl.active_panes[i] != prev_id) {
+            cl.active_pane_last_gen[i] = 0;
+            cl.active_pane_last_sb[i] = 0;
+        }
     }
     for (msg.count..cl.active_pane_last_gen.len) |i| {
         cl.active_pane_last_gen[i] = 0;
+        cl.active_pane_last_sb[i] = 0;
     }
 
     // Drain pending PTY data for newly-active panes before replaying.
@@ -343,11 +347,16 @@ fn handleFocusPanes(
                     // Grid-sync path: ship one authoritative snapshot.
                     // No byte replay, no SIGWINCH nudge — the engine
                     // already holds the TUI's current screen.
+                    //
+                    // Prime the scrollback baseline BEFORE the snapshot so
+                    // the snapshot's scrollback_delta is 0. The explicit
+                    // scrollback_chunks burst below populates the history
+                    // cells; if we let delta fire too we'd double-count.
+                    cl.primeScrollbackBaseline(pane);
                     cl.sendGridSnapshot(pane, true);
                     // Hydrate scrollback on first focus so scrolling up
                     // actually shows history. Capped to keep the initial
-                    // burst bounded; Phase 3 adds an on-demand RPC for
-                    // deeper scrollback.
+                    // burst bounded.
                     cl.sendScrollbackChunks(pane, 1024);
                     // Also ship the current title so the client's tab bar
                     // picks it up on first focus (engine is passive, won't

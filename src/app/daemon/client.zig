@@ -36,6 +36,11 @@ pub const DaemonClient = struct {
     /// next emission will be a full snapshot. Reset when the slot is
     /// reassigned to a different pane_id in handleFocusPanes.
     active_pane_last_gen: [32]u64 = .{0} ** 32,
+    /// Scrollback row count we last observed when sending a snapshot to
+    /// this client per active pane slot. Used to compute an incremental
+    /// `scrollback_delta` so the client can grow its own ring as the
+    /// daemon's engine scrolls rows off-screen.
+    active_pane_last_sb: [32]u32 = .{0} ** 32,
     /// Capability bits advertised by this client in its hello payload.
     /// 0 for legacy clients that didn't send caps. Daemon uses this to
     /// decide whether it can ship grid_snapshot/grid_delta or must fall
@@ -493,11 +498,11 @@ pub const DaemonClient = struct {
     /// a newly-active slot).
     pub fn sendGridSnapshot(self: *DaemonClient, pane: *DaemonPane, force: bool) void {
         const eng = pane.engine orelse {
-            std.log.scoped(.grid).info("sendGridSnapshot: pane {d} has no engine", .{pane.id});
+            std.log.scoped(.grid).debug("sendGridSnapshot: pane {d} has no engine", .{pane.id});
             return;
         };
         const slot = self.findActivePaneSlot(pane.id) orelse {
-            std.log.scoped(.grid).info("sendGridSnapshot: pane {d} not in active set", .{pane.id});
+            std.log.scoped(.grid).debug("sendGridSnapshot: pane {d} not in active set", .{pane.id});
             return;
         };
         const gen = pane.engine_generation;
@@ -505,18 +510,27 @@ pub const DaemonClient = struct {
 
         const rows = pane.rows;
         const cols = pane.cols;
-        if (rows == 0 or cols == 0) {
-            std.log.scoped(.grid).warn("sendGridSnapshot: pane {d} has zero dims ({d}x{d})", .{ pane.id, rows, cols });
-            return;
+        if (rows == 0 or cols == 0) return;
+        std.log.scoped(.grid).debug("sendGridSnapshot: pane {d} gen={d} force={} {d}x{d}", .{ pane.id, gen, force, rows, cols });
+
+        // Scrollback delta = rows that have been pushed into scrollback on
+        // the daemon since our last snapshot to this client. We ship those
+        // rows EXPLICITLY as scrollback_chunk messages before the snapshot
+        // so the client can append them to its own scrollback — relying on
+        // the client's own top-of-screen rows matching what scrolled off
+        // is unreliable when many scrolls happen in one fan-out tick.
+        const current_sb: u32 = @intCast(eng.state.ring.scrollbackCount());
+        const last_sb = self.active_pane_last_sb[slot];
+        const delta_usize: usize = if (current_sb > last_sb) current_sb - last_sb else 0;
+        if (delta_usize > 0) {
+            // The newly-scrolled rows live at abs [last_sb, current_sb) —
+            // they are the OLDEST scrollback_count - last_sb portion of
+            // the window that didn't exist the last time we synced.
+            self.sendScrollbackRange(pane, last_sb, delta_usize);
         }
-        std.log.scoped(.grid).info("sendGridSnapshot: pane {d} gen={d} force={} {d}x{d}", .{ pane.id, gen, force, rows, cols });
-        // Dump first row non-space cells to verify engine state.
-        var non_space: u16 = 0;
-        for (0..cols) |c2| {
-            const cell = eng.state.ring.getScreenCell(0, c2);
-            if (cell.char != ' ' and cell.char != 0) non_space += 1;
-        }
-        std.log.scoped(.grid).info("  row0 non-space cells: {d}, cursor=({d},{d})", .{ non_space, eng.state.cursor.row, eng.state.cursor.col });
+        // Snapshot header still carries a (now legacy) scrollback_delta
+        // field for wire-compat; client ignores it.
+        const scrollback_delta: u16 = @intCast(@min(delta_usize, std.math.maxInt(u16)));
 
         // Chunk size limit: keep message payload under ~32KB so it fits
         // the 64KB client read buffer with headroom.
@@ -549,6 +563,10 @@ pub const DaemonClient = struct {
                 .start_row = start,
                 .row_count = this_rows,
                 .final_chunk = final,
+                // Only the first chunk carries the scrollback_delta; later
+                // chunks in the same snapshot ship 0 so the client doesn't
+                // double-shift.
+                .scrollback_delta = if (start == 0) scrollback_delta else 0,
             }) catch return;
 
             // Pack cells into the scratch buffer via memcpy — the wire
@@ -574,6 +592,7 @@ pub const DaemonClient = struct {
         }
 
         self.active_pane_last_gen[slot] = gen;
+        self.active_pane_last_sb[slot] = current_sb;
     }
 
     /// Send a ReplayEnd notification for a pane, signaling that scrollback
@@ -595,17 +614,28 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
-    /// Ship the pane's current scrollback to this grid-sync client as one
-    /// or more scrollback_chunk messages. Rows are sent NEWEST-first so
-    /// the client can prepend each row into its ring in sequence. Capped
-    /// at `max_rows` total to bound initial-focus bandwidth. No-op if the
-    /// pane has no engine or no scrollback.
-    pub fn sendScrollbackChunks(self: *DaemonClient, pane: *DaemonPane, max_rows: usize) void {
+    /// Pre-seed the per-slot `last_sb` to the pane's current scrollback count,
+    /// so the next sendGridSnapshot sees delta=0 and doesn't ask the client
+    /// to shiftScreenUp — the one-shot scrollback_chunk hydration will fill
+    /// those rows explicitly. Called exactly once per focus event before
+    /// the initial snapshot + scrollback burst.
+    pub fn primeScrollbackBaseline(self: *DaemonClient, pane: *DaemonPane) void {
+        const eng = pane.engine orelse return;
+        const slot = self.findActivePaneSlot(pane.id) orelse return;
+        const current_sb: u32 = @intCast(eng.state.ring.scrollbackCount());
+        self.active_pane_last_sb[slot] = current_sb;
+    }
+
+    /// Ship rows `[start_abs, start_abs+count)` from the daemon pane's
+    /// scrollback to this client as scrollback_chunk messages, oldest-first.
+    /// Client APPENDS each row to its scrollback in order, so batch order
+    /// equals chronological order.
+    pub fn sendScrollbackRange(self: *DaemonClient, pane: *DaemonPane, start_abs: usize, count: usize) void {
         const eng = pane.engine orelse return;
         const sb_count = eng.state.ring.scrollbackCount();
-        std.log.scoped(.grid).info("sendScrollbackChunks: pane {d} scrollbackCount={d} max={d}", .{ pane.id, sb_count, max_rows });
-        if (sb_count == 0) return;
-        const rows_to_send = @min(sb_count, max_rows);
+        if (count == 0 or start_abs >= sb_count) return;
+        const end_abs = @min(start_abs + count, sb_count);
+        const rows_to_send = end_abs - start_abs;
         const cols: u16 = @intCast(eng.state.ring.cols);
         if (cols == 0) return;
 
@@ -616,7 +646,6 @@ pub const DaemonClient = struct {
 
         var scratch_buf: [max_chunk_payload + protocol.header_size]u8 align(4) = undefined;
 
-        // Walk newest-first: abs starts at (sb_count - 1), decrements by chunk.
         var sent: usize = 0;
         while (sent < rows_to_send) {
             const this_rows_usize = @min(@as(usize, rows_per_chunk), rows_to_send - sent);
@@ -634,10 +663,10 @@ pub const DaemonClient = struct {
             const cells_off = payload_off + grid_sync.scrollback_header_size;
             const cell_buf = scratch_buf[cells_off .. cells_off + this_rows_usize * row_bytes];
             var out_idx: usize = 0;
-            // Newest-first: abs = (sb_count - 1) - sent - i
+            // Oldest-first within the chunk: abs = start_abs + sent + i.
             var i: usize = 0;
             while (i < this_rows_usize) : (i += 1) {
-                const abs = sb_count - 1 - sent - i;
+                const abs = start_abs + sent + i;
                 const row = eng.state.ring.getRow(abs);
                 for (0..cols) |c_idx| {
                     grid_sync.writePackedCell(cell_buf, out_idx, grid_sync.packCell(row[c_idx]));
@@ -649,6 +678,17 @@ pub const DaemonClient = struct {
             if (self.dead) return;
             sent += this_rows_usize;
         }
+    }
+
+    /// Convenience wrapper: on initial focus, ship the newest `max_rows`
+    /// of the pane's scrollback so the client's scrollback starts hydrated.
+    pub fn sendScrollbackChunks(self: *DaemonClient, pane: *DaemonPane, max_rows: usize) void {
+        const eng = pane.engine orelse return;
+        const sb_count = eng.state.ring.scrollbackCount();
+        if (sb_count == 0) return;
+        const take = @min(sb_count, max_rows);
+        const start = sb_count - take;
+        self.sendScrollbackRange(pane, start, take);
     }
 
     /// Send a PaneTitle notification (grid-sync mode).

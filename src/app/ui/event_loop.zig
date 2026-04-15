@@ -878,7 +878,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     },
                     .scrollback_chunk => |payload| {
                         const n = applyScrollbackChunk(ctx, payload);
-                        logging.info("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
+                        logging.debug("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
                         got_data = true;
                         actions.g_force_full_redraw = true;
                     },
@@ -1603,12 +1603,30 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
         logging.warn("grid", "snapshot for unknown pane {d}", .{info.pane_id});
         return null;
     };
-    // Resize engine if daemon's grid differs from ours.
-    if (result.pane.engine.state.ring.screen_rows != info.rows or
-        result.pane.engine.state.ring.cols != info.cols)
-    {
+    // Resize engine if daemon's grid differs from ours. If cols changed,
+    // any cached scrollback rows have the old width and are no longer
+    // compatible with the new snapshot stream. The reflow pass inside
+    // state.resize will attempt to preserve scrollback, but its output
+    // may mismatch what the daemon has (the daemon did its own resize +
+    // reflow independently). Safest: wipe client scrollback on cols
+    // change so a fresh focus cycle re-hydrates from the daemon.
+    const ring_cols_before: usize = result.pane.engine.state.ring.cols;
+    const cols_changed = ring_cols_before != info.cols;
+    if (result.pane.engine.state.ring.screen_rows != info.rows or cols_changed) {
         result.pane.engine.state.resize(info.rows, info.cols) catch return null;
+        if (cols_changed) {
+            // Drop any scrollback accumulated with the old cols: reset
+            // count to screen_rows (so scrollbackCount() == 0).
+            const ring = &result.pane.engine.state.ring;
+            ring.count = ring.screen_rows;
+        }
     }
+    // Scrollback growth is handled EXPLICITLY via scrollback_chunk
+    // messages the daemon ships right before the snapshot (oldest-first
+    // order, appended to our ring). We no longer rely on shifting the
+    // client's own top-of-screen rows into scrollback — that was unsound
+    // when multiple daemon-side scrolls batched into one snapshot tick.
+    _ = info.scrollback_delta;
     const cell_bytes = grid_sync.snapshotCellBytes(payload, info) catch return null;
     var idx: usize = 0;
     const end_row: usize = @as(usize, info.start_row) + info.row_count;
@@ -1634,9 +1652,9 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
 }
 
-/// Apply a scrollback_chunk payload to the matching pane, prepending rows
-/// (newest-first wire order) into the engine's ring. Returns the number of
-/// rows actually prepended.
+/// Apply a scrollback_chunk payload to the matching pane, APPENDING rows
+/// (oldest-first wire order) at the newest end of scrollback. Returns the
+/// number of rows actually appended.
 fn applyScrollbackChunk(ctx: *PtyThreadCtx, payload: []const u8) u16 {
     const info = grid_sync.decodeScrollbackHeader(payload) catch return 0;
     const result = findPaneByDaemonId(ctx, info.pane_id) orelse return 0;
@@ -1655,7 +1673,7 @@ fn applyScrollbackChunk(ctx: *PtyThreadCtx, payload: []const u8) u16 {
             idx += 1;
         }
         while (idx % cols != 0) : (idx += 1) {}
-        if (ring.prependRow(row_cells[0..limit], false)) applied += 1;
+        if (ring.appendScrollbackRow(row_cells[0..limit], false)) applied += 1;
     }
     if (result.tab_idx == ctx.tab_mgr.active) {
         result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
