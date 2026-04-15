@@ -249,11 +249,22 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                 coalesced += n;
                             }
                             if (coalesced == 0) break;
+                            // Grid-sync title change propagation (OSC 0/2):
+                            // the client's engine is passive in grid-sync mode,
+                            // so title updates have to be shipped explicitly.
+                            const title_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.title_changed else false;
+                            if (title_dirty) {
+                                if (pane.engine) |eng_ptr| eng_ptr.state.title_changed = false;
+                            }
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
                                         if (cl.hasGridSync() and pane.engine != null) {
                                             cl.sendGridSnapshot(pane, false);
+                                            if (title_dirty) {
+                                                const t = pane.engine.?.state.title orelse "";
+                                                cl.sendPaneTitle(pane.id, t);
+                                            }
                                         } else {
                                             cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
                                         }

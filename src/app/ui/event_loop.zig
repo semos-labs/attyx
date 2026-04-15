@@ -867,6 +867,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             }
                         }
                     },
+                    .pane_title => |pt| {
+                        if (findPaneByDaemonId(ctx, pt.pane_id)) |result| {
+                            result.pane.engine.state.setTitle(pt.title);
+                            if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                        }
+                    },
                     else => {},
                 }
             }

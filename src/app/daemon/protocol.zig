@@ -57,6 +57,10 @@ pub const MessageType = enum(u8) {
     grid_delta = 0x92,
     scrollback_range = 0x93,
     search_result = 0x94,
+    /// Grid-sync: daemon pushes engine.state.title updates (OSC 0/2).
+    /// Client's engine is passive in grid-sync, so titles have to be
+    /// propagated explicitly — otherwise tab titles never refresh.
+    pane_title = 0x95,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -595,6 +599,29 @@ pub fn decodePaneProcName(payload: []const u8) !PaneProcNameMsg {
     const name_len = payload[4];
     if (payload.len < 5 + @as(usize, name_len)) return error.PayloadTooShort;
     return .{ .pane_id = pane_id, .name = payload[5 .. 5 + name_len] };
+}
+
+// ── PaneTitle (grid-sync OSC 0/2 propagation) ──
+
+/// Encode PaneTitle payload: pane_id:u32, title_len:u16, title:[N]u8
+pub fn encodePaneTitle(buf: []u8, pane_id: u32, title: []const u8) ![]u8 {
+    const title_len: u16 = @intCast(@min(title.len, 1024));
+    const total: usize = 4 + 2 + title_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    std.mem.writeInt(u16, buf[4..6], title_len, .little);
+    @memcpy(buf[6 .. 6 + title_len], title[0..title_len]);
+    return buf[0..total];
+}
+
+pub const PaneTitleMsg = struct { pane_id: u32, title: []const u8 };
+
+pub fn decodePaneTitle(payload: []const u8) !PaneTitleMsg {
+    if (payload.len < 6) return error.PayloadTooShort;
+    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+    const title_len = std.mem.readInt(u16, payload[4..6], .little);
+    if (payload.len < 6 + @as(usize, title_len)) return error.PayloadTooShort;
+    return .{ .pane_id = pane_id, .title = payload[6 .. 6 + title_len] };
 }
 
 // ── PaneFgCwd ──

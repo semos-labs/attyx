@@ -595,6 +595,18 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
+    /// Send a PaneTitle notification (grid-sync mode).
+    /// Propagates engine.state.title (OSC 0/2) to the client so tab titles
+    /// refresh — the client's engine is passive in grid-sync and never
+    /// sees the OSC bytes directly.
+    pub fn sendPaneTitle(self: *DaemonClient, pane_id: u32, title: []const u8) void {
+        var buf: [protocol.header_size + 4 + 2 + 1024]u8 = undefined;
+        var payload: [4 + 2 + 1024]u8 = undefined;
+        const p = protocol.encodePaneTitle(&payload, pane_id, title) catch return;
+        const m = protocol.encodeMessage(&buf, .pane_title, p) catch return;
+        self.sendRaw(m);
+    }
+
     /// Send a PaneFgCwd notification.
     pub fn sendPaneFgCwd(self: *DaemonClient, pane_id: u32, cwd: []const u8) void {
         var buf: [protocol.header_size + 4 + 2 + 512]u8 = undefined;

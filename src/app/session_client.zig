@@ -62,6 +62,8 @@ pub const DaemonMessage = union(enum) {
     /// exposed so the handler can decode via grid_sync.decodeSnapshotHeader
     /// + grid_sync.snapshotCells.
     grid_snapshot: []const u8,
+    /// Grid-sync: daemon-pushed OSC 0/2 title for a pane.
+    pane_title: struct { pane_id: u32, title: []const u8 },
 };
 
 pub const SessionClient = struct {
@@ -863,6 +865,16 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..payload.len], payload);
                 self.consumeBytes(total);
                 return .{ .grid_snapshot = self.output_buf[0..payload.len] };
+            },
+            .pane_title => {
+                const msg = protocol.decodePaneTitle(payload) catch {
+                    self.consumeBytes(total);
+                    continue;
+                };
+                const tlen = @min(msg.title.len, self.output_buf.len);
+                @memcpy(self.output_buf[0..tlen], msg.title[0..tlen]);
+                self.consumeBytes(total);
+                return .{ .pane_title = .{ .pane_id = msg.pane_id, .title = self.output_buf[0..tlen] } };
             },
             else => { self.consumeBytes(total); continue; },
         }
