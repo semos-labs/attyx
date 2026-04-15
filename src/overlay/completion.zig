@@ -42,12 +42,16 @@ pub const CompletionState = struct {
     selected: u16 = 0,
     scroll: u16 = 0,
     total: u16 = 0,
+    /// IPC ID of the pane that sourced these completions. Used to anchor the
+    /// overlay to xyron's pane even when another pane holds focus.
+    source_pane_id: u32 = 0,
 
-    pub fn show(self: *CompletionState, selected_idx: u16, scroll_off: u16, total_count: u16) void {
+    pub fn show(self: *CompletionState, selected_idx: u16, scroll_off: u16, total_count: u16, pane_id: u32) void {
         self.active = true;
         self.selected = selected_idx;
         self.scroll = scroll_off;
         self.total = total_count;
+        self.source_pane_id = pane_id;
     }
 
     pub fn update(self: *CompletionState, selected_idx: u16, scroll_off: u16) void {
@@ -60,6 +64,7 @@ pub const CompletionState = struct {
         self.count = 0;
         self.selected = 0;
         self.scroll = 0;
+        self.source_pane_id = 0;
     }
 
     pub fn visibleCount(self: *const CompletionState) u16 {

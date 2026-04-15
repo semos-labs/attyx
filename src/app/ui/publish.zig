@@ -339,6 +339,47 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
     };
 }
 
+/// Build a ViewportInfo anchored to a specific pane within the active tab.
+/// Returns null if the pane is not present in the active tab's layout — the
+/// caller should hide any overlay keyed to that pane.
+pub fn viewportInfoForPane(ctx: *PtyThreadCtx, pane_id: u32) ?overlay_anchor.ViewportInfo {
+    if (pane_id == 0) return null;
+    const layout = ctx.tab_mgr.activeLayout();
+    const split_layout_mod = @import("../split_layout.zig");
+    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const n = layout.collectLeaves(&leaves);
+    var pool_idx: ?u8 = null;
+    var pane_ptr: ?*@import("../pane.zig").Pane = null;
+    for (leaves[0..n]) |leaf| {
+        if (leaf.pane.ipc_id == pane_id) {
+            pool_idx = leaf.index;
+            pane_ptr = leaf.pane;
+            break;
+        }
+    }
+    const idx = pool_idx orelse return null;
+    const pane = pane_ptr orelse return null;
+
+    const in_split = layout.pane_count > 1 and !layout.isZoomed();
+    const pane_row: u16 = if (in_split) @intCast(layout.pool[idx].rect.row) else 0;
+    const pane_col: u16 = if (in_split) @intCast(layout.pool[idx].rect.col) else 0;
+    const top_offset: u16 = @intCast(terminal.g_grid_top_offset);
+
+    const st = &pane.engine.state;
+    return .{
+        .grid_cols = @intCast(st.ring.cols),
+        .grid_rows = @intCast(st.ring.screen_rows),
+        .cursor_row = @intCast(st.cursor.row),
+        .cursor_col = @intCast(st.cursor.col),
+        .sel_active = false,
+        .sel_end_row = 0,
+        .sel_end_col = 0,
+        .alt_active = st.alt_active,
+        .offset_row = pane_row + top_offset,
+        .offset_col = pane_col,
+    };
+}
+
 pub fn generateAnchorDemo(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
     if (!mgr.isVisible(.anchor_demo)) return;

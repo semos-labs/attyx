@@ -335,6 +335,7 @@ fn handleXyronOverlay(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         @intCast(@max(selected, 0)),
         @intCast(@max(scroll_off, 0)),
         @intCast(@max(total, 0)),
+        ctx.tab_mgr.activePane().ipc_id,
     );
 
     // Render and position at cursor
@@ -342,26 +343,18 @@ fn handleXyronOverlay(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         const theme = publish.overlayThemeFromTheme(&ctx.active_theme);
         if (completion_mod.render(ctx.allocator, &ctx.xyron_completion, theme)) |result| {
             if (result.width > 0 and result.height > 0) {
-                // Position: below cursor row, at cursor col
-                const vp = publish.viewportInfoFromCtx(ctx);
-                const cursor_row = vp.cursor_row + @as(u16, @intCast(terminal.g_grid_top_offset));
-                const cursor_col = vp.cursor_col;
-
-                // Prefer below cursor; if not enough space, place above
-                const row = if (cursor_row + 1 + result.height <= vp.grid_rows)
-                    cursor_row + 1
-                else if (cursor_row >= result.height)
-                    cursor_row - result.height
-                else
-                    cursor_row + 1; // below anyway, will clip
-
-                // Clamp col so overlay doesn't go off-screen right
-                const col = if (cursor_col + result.width > vp.grid_cols)
-                    vp.grid_cols -| result.width
-                else
-                    cursor_col;
-
-                mgr.setContent(.completion, col, row, result.width, result.height, result.cells) catch {};
+                // Set a cursor-line anchor; relayoutAnchored (main loop)
+                // will place the overlay using the xyron source pane's
+                // viewport info, so split-pane offsets are applied.
+                const overlay_mod = @import("attyx").overlay_mod;
+                const overlay_anchor = @import("attyx").overlay_anchor;
+                mgr.setContent(.completion, 0, 0, result.width, result.height, result.cells) catch {};
+                mgr.layers[@intFromEnum(overlay_mod.OverlayId.completion)].anchor = .{ .kind = .cursor_line };
+                mgr.layers[@intFromEnum(overlay_mod.OverlayId.completion)].placement_constraints = overlay_anchor.PlacementConstraints{
+                    .max_width_frac = 0.80,
+                    .max_height_frac = 0.50,
+                    .margin = 0,
+                };
                 mgr.show(.completion);
                 ctx.allocator.free(result.cells);
             }
