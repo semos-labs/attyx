@@ -12,6 +12,7 @@ const attyx = @import("attyx");
 const Engine = attyx.Engine;
 const Pty = @import("pty.zig").Pty;
 const IpcClient = @import("../xyron/ipc.zig").IpcClient;
+pub const ViewerState = @import("viewer_state.zig").ViewerState;
 const logging = @import("../logging/log.zig");
 const c = @cImport({
     @cInclude("bridge.h");
@@ -74,6 +75,15 @@ pub const Pane = struct {
     xyron_ipc: ?*IpcClient = null,
     /// Xyron IPC: whether handshake has been completed for this pane.
     xyron_handshake_done: bool = false,
+    /// Per-viewer UI state (scrollback offset, future: per-client overlays).
+    /// Phase 1: scaffolding. Not yet read by consumers — viewport still lives
+    /// in engine.state.viewport_offset until Phase 2 wires grid-sync.
+    viewer: ViewerState = .{},
+    /// Grid-sync: scrollback count at which we last fired a
+    /// `get_scrollback_range` RPC. Gate to avoid spamming requests each
+    /// poll tick while the user holds PgUp. Reset whenever a
+    /// `scrollback_range` reply lands (growing scrollbackCount).
+    last_scrollback_rpc_sb: u32 = 0,
 
     pub const daemon_backed_placeholder_id: u32 = 0xFFFF_FFFF;
 

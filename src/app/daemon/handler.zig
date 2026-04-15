@@ -5,6 +5,7 @@ const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
+const DaemonPane = @import("pane.zig").DaemonPane;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
@@ -44,6 +45,7 @@ pub fn handleMessage(
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
         .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
         .set_theme_colors => handleSetThemeColors(cl, msg.payload, sessions),
+        .get_scrollback_range => handleGetScrollbackRange(cl, msg.payload, sessions),
 
         // Ignore server→client messages
         else => {},
@@ -198,12 +200,13 @@ fn handleRename(
 
 fn handleHello(cl: *DaemonClient, payload: []const u8, upgrade_requested: *bool) void {
     const daemon_version = attyx.version;
-    const client_version = protocol.decodeHello(payload) catch {
-        cl.sendHelloAck(daemon_version);
+    const hello = protocol.decodeHello(payload) catch {
+        cl.sendHelloAck(daemon_version, protocol.CAPABILITIES);
         return;
     };
-    cl.sendHelloAck(daemon_version);
-    if (!std.mem.eql(u8, client_version, daemon_version)) {
+    cl.peer_caps = hello.caps;
+    cl.sendHelloAck(daemon_version, protocol.CAPABILITIES);
+    if (!std.mem.eql(u8, hello.version, daemon_version)) {
         upgrade_requested.* = true;
     }
 }
@@ -291,10 +294,21 @@ fn handleFocusPanes(
     const old_count = cl.active_pane_count;
     const old_panes = cl.active_panes;
 
-    // Update active panes set
+    // Update active panes set. Reset last-sent generations for any
+    // slot that changed pane_id so the next emission ships a full
+    // snapshot (generation 0 = "nothing sent yet").
     cl.active_pane_count = msg.count;
     for (0..msg.count) |i| {
+        const prev_id = if (i < old_count) old_panes[i] else 0;
         cl.active_panes[i] = msg.pane_ids[i];
+        if (cl.active_panes[i] != prev_id) {
+            cl.active_pane_last_gen[i] = 0;
+            cl.active_pane_last_sb[i] = 0;
+        }
+    }
+    for (msg.count..cl.active_pane_last_gen.len) |i| {
+        cl.active_pane_last_gen[i] = 0;
+        cl.active_pane_last_sb[i] = 0;
     }
 
     // Drain pending PTY data for newly-active panes before replaying.
@@ -331,13 +345,49 @@ fn handleFocusPanes(
                         if (n == 0) break;
                     }
                 }
-                cl.sendPaneReplay(pane);
-                // Nudge the PTY size so TUI apps get a SIGWINCH and
-                // fully repaint. The client restores the correct size
-                // on replay_end, and the round-trip delay ensures the
-                // app processes this first SIGWINCH before the second.
-                pane.notifyRedraw();
-                cl.sendReplayEnd(new_id);
+                if (cl.hasGridSync() and pane.engine != null) {
+                    // Grid-sync path: ship one authoritative snapshot.
+                    // No byte replay, no SIGWINCH nudge — the engine
+                    // already holds the TUI's current screen.
+                    //
+                    // Prime the scrollback baseline BEFORE the snapshot so
+                    // the snapshot's scrollback_delta is 0. The explicit
+                    // scrollback_chunks burst below populates the history
+                    // cells; if we let delta fire too we'd double-count.
+                    cl.primeScrollbackBaseline(pane);
+                    cl.sendGridSnapshot(pane, true);
+                    // Hydrate scrollback on first focus so scrolling up
+                    // actually shows history. Capped to keep the initial
+                    // burst bounded.
+                    cl.sendScrollbackChunks(pane, 1024);
+                    // Also ship the current title so the client's tab bar
+                    // picks it up on first focus (engine is passive, won't
+                    // see the OSC 0/2 bytes).
+                    if (pane.engine.?.state.title) |t| {
+                        cl.sendPaneTitle(pane.id, t);
+                    }
+                    // And the current OSC 7 cwd so actions like "new tab
+                    // from this pane's cwd" work immediately. Prefer the
+                    // cached fg_cwd (populated by the periodic tick — which
+                    // may have fired before the client's focus_panes was
+                    // processed and thus missed this client) over the live
+                    // engine URI, falling back to parsing the engine URI.
+                    if (pane.fg_cwd_len > 0) {
+                        cl.sendPaneFgCwd(pane.id, pane.fg_cwd[0..pane.fg_cwd_len]);
+                    } else if (pane.engine.?.state.working_directory) |uri| {
+                        if (DaemonPane.parseCwdUriPublic(uri)) |path| {
+                            cl.sendPaneFgCwd(pane.id, path);
+                        }
+                    }
+                } else {
+                    cl.sendPaneReplay(pane);
+                    // Nudge the PTY size so TUI apps get a SIGWINCH and
+                    // fully repaint. The client restores the correct size
+                    // on replay_end, and the round-trip delay ensures the
+                    // app processes this first SIGWINCH before the second.
+                    pane.notifyRedraw();
+                    cl.sendReplayEnd(new_id);
+                }
             }
         }
     }
@@ -359,6 +409,23 @@ fn handleSetThemeColors(
             pane.theme_cursor_set = msg.cursor_set;
         }
     }
+}
+
+/// Grid-sync: client requests older scrollback rows than it currently
+/// holds. Daemon replies with a `scrollback_range` burst (newest-first,
+/// intended for prepend on the client). Silently ignored if the client
+/// isn't grid-sync, the pane doesn't exist, or the daemon has no older
+/// rows to offer.
+fn handleGetScrollbackRange(
+    cl: *DaemonClient,
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+) void {
+    if (!cl.hasGridSync()) return;
+    const msg = protocol.grid_sync.decodeGetScrollbackRange(payload) catch return;
+    const session = getAttachedSession(cl, sessions) orelse return;
+    const pane = session.findPane(msg.pane_id) orelse return;
+    cl.sendScrollbackRangeResponse(pane, msg.client_has, msg.request_count);
 }
 
 fn handlePaneInput(

@@ -8,6 +8,15 @@ const platform = @import("../../platform/platform.zig");
 const HostConnection = if (is_windows) @import("host_pipe.zig").HostConnection else void;
 const host_pipe = if (is_windows) @import("host_pipe.zig") else struct {};
 const attyx = if (is_windows) @import("attyx") else struct {};
+const attyx_lib = @import("attyx");
+const Engine = attyx_lib.Engine;
+
+/// Scrollback lines the daemon-side engine retains. Per-pane cost is
+/// roughly `daemon_engine_scrollback_lines * cols * @sizeOf(Cell)`.
+/// 2048 × 80 × 32B ≈ 5 MB per pane — enough for the visible screen
+/// plus a buffer; scrollback beyond this is served via the ring buffer
+/// + RPC.
+pub const daemon_engine_scrollback_lines: usize = 2048;
 
 const win32_sleep = if (is_windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: std.os.windows.DWORD) callconv(.winapi) void;
@@ -55,6 +64,17 @@ pub const DaemonPane = struct {
     theme_cursor: [3]u8 = .{ 220, 220, 220 },
     theme_cursor_set: bool = false,
 
+    /// Authoritative VT engine (heap-allocated so DaemonPane stays slim
+    /// — `var sessions: [32]?DaemonSession` lives on the stack, and an
+    /// inline Engine here blows the stack). PTY bytes get fed here on
+    /// every read; grid-sync clients pull cells/cursor from engine.state.
+    /// Runs in parallel with the ring buffer (which the byte-stream path
+    /// and hot-upgrade handoff still depend on). Null until initialised.
+    engine: ?*Engine = null,
+    /// Monotonic counter bumped when engine.feed dirties any row.
+    engine_generation: u64 = 0,
+
+
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
     /// POSIX only — Windows hot-upgrade builds panes directly in upgrade_windows.zig.
     pub const fromRestored = if (!is_windows) fromRestoredImpl else @compileError("fromRestored not available on Windows");
@@ -91,7 +111,39 @@ pub const DaemonPane = struct {
         pane.proc_name_len = nlen;
         // Restore ring buffer contents
         if (ring_data.len > 0) pane.replay.write(ring_data);
+        // Hot-upgrade handoff: rebuild engine from the inherited ring.
+        // Ring holds raw VT bytes, so feeding them reconstructs the
+        // pre-upgrade screen state (minus any bytes older than the ring).
+        if (allocEngine(allocator, rows, cols)) |eng| {
+            pane.engine = eng;
+            const slices = pane.replay.readSlices();
+            if (slices.first.len > 0) eng.feed(slices.first);
+            if (slices.second.len > 0) eng.feed(slices.second);
+            pane.engine_generation = 1;
+        }
         return pane;
+    }
+
+    /// Heap-allocate and init an Engine. Returns null on degenerate
+    /// dimensions or OOM — callers silently fall back to the byte-stream
+    /// path. Engine requires at least a 1×1 grid.
+    fn allocEngine(allocator: std.mem.Allocator, rows: u16, cols: u16) ?*Engine {
+        if (rows == 0 or cols == 0) return null;
+        const eng = allocator.create(Engine) catch return null;
+        eng.* = Engine.init(allocator, rows, cols, daemon_engine_scrollback_lines) catch {
+            allocator.destroy(eng);
+            return null;
+        };
+        return eng;
+    }
+
+    fn freeEngine(self: *DaemonPane) void {
+        if (self.engine) |eng| {
+            const alloc = eng.state.ring.allocator;
+            eng.deinit();
+            alloc.destroy(eng);
+            self.engine = null;
+        }
     }
 
     pub fn spawn(
@@ -157,6 +209,7 @@ pub const DaemonPane = struct {
             pane.stdout_allocator = allocator;
         }
 
+        pane.engine = allocEngine(allocator, rows, cols);
         return pane;
     }
 
@@ -192,7 +245,7 @@ pub const DaemonPane = struct {
         }
         conn.host_pid = host_pid;
 
-        return DaemonPane{
+        var pane = DaemonPane{
             .id = id,
             .pty = Pty.initInactive(),
             .host_conn = conn,
@@ -200,6 +253,8 @@ pub const DaemonPane = struct {
             .rows = rows,
             .cols = cols,
         };
+        pane.engine = allocEngine(allocator, rows, cols);
+        return pane;
     }
 
     fn deriveShellType(shell_str: []const u8) []const u8 {
@@ -210,6 +265,16 @@ pub const DaemonPane = struct {
         if (std.mem.indexOf(u8, shell_str, "powershell") != null) return "pwsh";
         if (std.mem.indexOf(u8, shell_str, "cmd") != null) return "cmd";
         return "auto";
+    }
+
+    /// Feed bytes into the daemon-side engine and bump generation if any
+    /// row gets dirtied. Safe to call with no engine (no-op).
+    fn feedEngine(self: *DaemonPane, data: []const u8) void {
+        const eng = self.engine orelse return;
+        eng.feed(data);
+        if (eng.state.dirty.any()) {
+            self.engine_generation +%= 1;
+        }
     }
 
     /// Process data already in the output buffer (from host pipe frames).
@@ -225,6 +290,7 @@ pub const DaemonPane = struct {
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
+            self.feedEngine(data);
         }
     }
 
@@ -245,6 +311,7 @@ pub const DaemonPane = struct {
             self.trackModes(slice);
             self.trackOsc(slice);
             self.interceptQueries(slice);
+            self.feedEngine(slice);
         }
         return n;
     }
@@ -266,6 +333,7 @@ pub const DaemonPane = struct {
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
+            self.feedEngine(data);
         }
         return n;
     }
@@ -411,12 +479,16 @@ pub const DaemonPane = struct {
                 if (!hc.sendResize(rows, cols)) return error.ResizeFailed;
                 self.rows = rows;
                 self.cols = cols;
+                if (rows > 0 and cols > 0) if (self.engine) |eng| eng.state.resize(rows, cols) catch {};
+                self.engine_generation +%= 1;
                 return;
             }
         }
         try self.pty.resize(rows, cols);
         self.rows = rows;
         self.cols = cols;
+        if (self.engine) |eng| eng.state.resize(rows, cols) catch {};
+        self.engine_generation +%= 1;
     }
 
     /// Force a full repaint after focus change so TUI apps re-render their
@@ -477,7 +549,27 @@ pub const DaemonPane = struct {
     }
 
     /// Check if the foreground process CWD changed. Returns the new CWD if changed, null otherwise.
+    /// Prefers the engine's OSC 7 working_directory (also set by xyron's
+    /// OSC 7339 cwd_changed event) — for xyron-wrapped shells, the
+    /// platform's getForegroundCwd returns xyron's own launch dir rather
+    /// than the user's shell cwd. Falls back to platform lookup for plain
+    /// shells (zsh/bash) that don't emit OSC 7.
     pub fn checkFgCwdChanged(self: *DaemonPane) ?[]const u8 {
+        // Prefer engine's OSC-reported cwd.
+        if (self.engine) |eng| {
+            if (eng.state.working_directory) |uri| {
+                if (parseCwdUri(uri)) |path| {
+                    const len: u16 = @intCast(@min(path.len, 512));
+                    if (len == self.fg_cwd_len and std.mem.eql(u8, self.fg_cwd[0..len], path[0..len])) {
+                        return null; // unchanged
+                    }
+                    @memcpy(self.fg_cwd[0..len], path[0..len]);
+                    self.fg_cwd_len = len;
+                    return self.fg_cwd[0..len];
+                }
+            }
+        }
+
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd = if (comptime is_windows)
             @as(?[]const u8, null)
@@ -492,6 +584,23 @@ pub const DaemonPane = struct {
         @memcpy(self.fg_cwd[0..len], resolved[0..len]);
         self.fg_cwd_len = len;
         return self.fg_cwd[0..len];
+    }
+
+    /// Strip a `file://[host]` prefix to get the path component.
+    /// Returns a slice of `uri` (caller doesn't free).
+    fn parseCwdUri(uri: []const u8) ?[]const u8 {
+        return parseCwdUriPublic(uri);
+    }
+
+    /// Public variant so other daemon modules can reuse this parser.
+    pub fn parseCwdUriPublic(uri: []const u8) ?[]const u8 {
+        const prefix = "file://";
+        if (!std.mem.startsWith(u8, uri, prefix)) return null;
+        const after_scheme = uri[prefix.len..];
+        const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
+        const path = after_scheme[slash_idx..];
+        if (path.len == 0) return null;
+        return path;
     }
 
     const pane_queries = @import("pane_queries.zig");
@@ -521,6 +630,15 @@ pub const DaemonPane = struct {
         return &[_]u8{};
     }
 
+    /// Release everything except the PTY/host connection. Used during
+    /// hot-upgrade handoff (old process) where the PTY fd is inherited
+    /// by the new daemon, but the ring and engine allocations belong to
+    /// this process and must be freed before handoff.
+    pub fn freeTransferableState(self: *DaemonPane) void {
+        self.replay.deinit();
+        self.freeEngine();
+    }
+
     pub fn deinit(self: *DaemonPane) void {
         self.deinitHost();
         if (self.captured_stdout) |cs| {
@@ -529,6 +647,7 @@ pub const DaemonPane = struct {
                 alloc.destroy(cs);
             }
         }
+        self.freeEngine();
         self.pty.deinit();
         self.replay.deinit();
         self.* = undefined;

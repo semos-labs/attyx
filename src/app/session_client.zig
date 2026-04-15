@@ -58,6 +58,20 @@ pub const DaemonMessage = union(enum) {
     session_created: u32,
     err: void,
     hello_ack: []const u8,
+    /// A grid_snapshot chunk — full payload (header + packed cells) is
+    /// exposed so the handler can decode via grid_sync.decodeSnapshotHeader
+    /// + grid_sync.snapshotCells.
+    grid_snapshot: []const u8,
+    /// Grid-sync: daemon-pushed OSC 0/2 title for a pane.
+    pane_title: struct { pane_id: u32, title: []const u8 },
+    /// Grid-sync: scrollback chunk. Payload is the full message payload
+    /// (ScrollbackHeader + cells), decoded by the consumer.
+    scrollback_chunk: []const u8,
+    /// Grid-sync: scrollback range (response to get_scrollback_range RPC).
+    /// Same wire format as scrollback_chunk; semantic difference is that
+    /// the client PREPENDS rows (they're OLDER than what we already have),
+    /// whereas scrollback_chunk APPENDS (newer than existing scrollback).
+    scrollback_range: []const u8,
 };
 
 pub const SessionClient = struct {
@@ -98,6 +112,10 @@ pub const SessionClient = struct {
     legacy_daemon: bool = false,
     daemon_version: [64]u8 = undefined,
     daemon_version_len: u8 = 0,
+    /// Capability bits advertised by the daemon in hello_ack. 0 for legacy
+    /// daemons that don't speak the extended hello. Used to decide which
+    /// protocol features (e.g. grid-sync) are safe to use on this connection.
+    daemon_caps: u32 = 0,
 
     // ── Connect ──
 
@@ -106,6 +124,11 @@ pub const SessionClient = struct {
         client.socket_fd = try conn.connectToSocket();
         conn.setNonBlocking(client.socket_fd);
         client.checkDaemonVersion();
+        // Always exchange hello after the socket is settled (post-upgrade
+        // or same-version): this is how we negotiate capability bits
+        // (grid-sync, etc.). Skipping it leaves the daemon thinking we're
+        // a legacy client and falls back to byte-stream.
+        client.exchangeHello();
         return client;
     }
 
@@ -152,7 +175,7 @@ pub const SessionClient = struct {
 
     fn sendHello(self: *SessionClient) void {
         var payload_buf: [256]u8 = undefined;
-        const payload = protocol.encodeHello(&payload_buf, attyx.version) catch return;
+        const payload = protocol.encodeHello(&payload_buf, attyx.version, protocol.CAPABILITIES) catch return;
         var msg_buf: [protocol.header_size + 256]u8 = undefined;
         const msg = protocol.encodeMessage(&msg_buf, .hello, payload) catch return;
         socketWrite(self.socket_fd, msg) catch return;
@@ -173,6 +196,40 @@ pub const SessionClient = struct {
                 self.consumeBytes(total);
             }
         }
+    }
+
+    /// Send hello (carrying our capability bits) and parse the hello_ack
+    /// into `self.daemon_caps`. Called after every successful connect so
+    /// both sides agree on grid-sync vs byte-stream. Never blocks longer
+    /// than a short poll — if the daemon is slow, we just leave
+    /// `daemon_caps = 0` and get byte-stream, which is a safe fallback.
+    fn exchangeHello(self: *SessionClient) void {
+        if (self.socket_fd == invalid_fd) return;
+        var payload_buf: [256]u8 = undefined;
+        const payload = protocol.encodeHello(&payload_buf, attyx.version, protocol.CAPABILITIES) catch return;
+        var msg_buf: [protocol.header_size + 256]u8 = undefined;
+        const msg = protocol.encodeMessage(&msg_buf, .hello, payload) catch return;
+        socketWrite(self.socket_fd, msg) catch return;
+
+        if (!pollForData(self.socket_fd, 500)) return;
+
+        const space = self.read_buf[self.read_len..];
+        const n = socketRead(self.socket_fd, space) catch return;
+        if (n <= 0) return;
+        self.read_len += @intCast(n);
+
+        if (self.availableBytes() < protocol.header_size) return;
+        const buf = self.read_buf[self.read_off..self.read_len];
+        const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch return;
+        const total = protocol.header_size + header.payload_len;
+        if (self.availableBytes() < total) return;
+        if (header.msg_type != .hello_ack) return;
+        const ack_payload = buf[protocol.header_size..total];
+        if (protocol.decodeHello(ack_payload)) |hmsg| {
+            self.daemon_caps = hmsg.caps;
+            logging.info("session", "hello negotiated: daemon_caps=0x{x}", .{hmsg.caps});
+        } else |_| {}
+        self.consumeBytes(total);
     }
 
     fn getDaemonVersionPath(buf: *[256]u8) ?[]const u8 {
@@ -274,6 +331,24 @@ pub const SessionClient = struct {
 
     pub fn sendSaveLayout(self: *SessionClient, layout_data: []const u8) !void {
         try self.sendMessage(.save_layout, layout_data);
+    }
+
+    /// True if the negotiated daemon_caps advertises grid-sync.
+    pub fn hasGridSync(self: *const SessionClient) bool {
+        return self.daemon_caps & protocol.Capabilities.GRID_SYNC != 0;
+    }
+
+    /// Grid-sync: request up to `request_count` scrollback rows OLDER
+    /// than the `client_has` rows currently in our ring. Daemon replies
+    /// with a `scrollback_range` burst.
+    pub fn sendGetScrollbackRange(self: *SessionClient, pane_id: u32, client_has: u32, request_count: u32) !void {
+        var payload_buf: [12]u8 = undefined;
+        const payload = try protocol.grid_sync.encodeGetScrollbackRange(&payload_buf, .{
+            .pane_id = pane_id,
+            .client_has = client_has,
+            .request_count = request_count,
+        });
+        try self.sendMessage(.get_scrollback_range, payload);
     }
 
     // ── Session list ──
@@ -797,14 +872,55 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 continue;
             },
             .hello_ack => {
-                if (protocol.decodeHello(payload)) |ver| {
-                    const vlen = @min(ver.len, self.output_buf.len);
-                    @memcpy(self.output_buf[0..vlen], ver[0..vlen]);
+                if (protocol.decodeHello(payload)) |hmsg| {
+                    self.daemon_caps = hmsg.caps;
+                    const vlen = @min(hmsg.version.len, self.output_buf.len);
+                    @memcpy(self.output_buf[0..vlen], hmsg.version[0..vlen]);
                     self.consumeBytes(total);
                     return .{ .hello_ack = self.output_buf[0..vlen] };
                 } else |_| {}
                 self.consumeBytes(total);
                 continue;
+            },
+            .grid_snapshot => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "snapshot too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .grid_snapshot = self.output_buf[0..payload.len] };
+            },
+            .pane_title => {
+                const msg = protocol.decodePaneTitle(payload) catch {
+                    self.consumeBytes(total);
+                    continue;
+                };
+                const tlen = @min(msg.title.len, self.output_buf.len);
+                @memcpy(self.output_buf[0..tlen], msg.title[0..tlen]);
+                self.consumeBytes(total);
+                return .{ .pane_title = .{ .pane_id = msg.pane_id, .title = self.output_buf[0..tlen] } };
+            },
+            .scrollback_chunk => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "scrollback too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .scrollback_chunk = self.output_buf[0..payload.len] };
+            },
+            .scrollback_range => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "scrollback_range too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .scrollback_range = self.output_buf[0..payload.len] };
             },
             else => { self.consumeBytes(total); continue; },
         }
