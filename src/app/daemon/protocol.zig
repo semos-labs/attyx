@@ -666,7 +666,15 @@ pub const Capabilities = struct {
 /// Capabilities advertised by this build. Both client and daemon speak
 /// grid-sync; mixed-version handshakes fall back to byte-stream
 /// automatically (legacy peer sends caps=0, intersection is 0).
-pub const CAPABILITIES: u32 = Capabilities.GRID_SYNC;
+/// Capabilities advertised by this build. Grid-sync receivers live in
+/// the POSIX event loop (`event_loop.zig`); the Windows event loop
+/// (`event_loop_windows.zig`, `win_daemon.zig`) hasn't been ported yet,
+/// so Windows builds advertise caps=0 and stay on byte-stream. Daemon
+/// still speaks grid-sync to non-Windows clients.
+pub const CAPABILITIES: u32 = if (@import("builtin").os.tag == .windows)
+    0
+else
+    Capabilities.GRID_SYNC;
 
 pub const HelloMsg = struct {
     version: []const u8,
