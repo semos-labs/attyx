@@ -24,6 +24,7 @@ pub const Shell = enum {
     bash,
     fish,
     nushell,
+    xyron,
     posix_sh,
     powershell,
     cmd,
@@ -47,6 +48,7 @@ pub fn detectShell(shell_path: []const u8) Shell {
         std.mem.eql(u8, shell_path, "bash")) return .bash;
     if (std.mem.endsWith(u8, shell_path, "/fish") or std.mem.eql(u8, shell_path, "fish")) return .fish;
     if (std.mem.endsWith(u8, shell_path, "/nu") or std.mem.eql(u8, shell_path, "nu")) return .nushell;
+    if (std.mem.endsWith(u8, shell_path, "/xyron") or std.mem.eql(u8, shell_path, "xyron")) return .xyron;
     // Windows shells
     if (std.mem.endsWith(u8, shell_path, "\\pwsh.exe") or
         std.mem.endsWith(u8, shell_path, "\\powershell.exe") or
@@ -84,6 +86,7 @@ pub fn setup() ArgvOverride {
         .bash => setupBash(home),
         .fish => setupFish(home),
         .nushell => setupNushell(home),
+        .xyron => setupXyron(exe_dir),
         .posix_sh => setupPosixSh(home, exe_dir),
         .powershell, .cmd => .{},
     };
@@ -274,6 +277,15 @@ fn setupNushell(home: []const u8) ArgvOverride {
 
 fn setupPosixSh(_: []const u8, exe_dir: []const u8) ArgvOverride {
     // POSIX sh: best-effort direct PATH append + ENV for one-shot reporting
+    appendExeDirToPath(exe_dir);
+    return .{};
+}
+
+/// Xyron is not POSIX and uses Lua for scripting, so it can't source one of
+/// our shell init scripts. Instead, xyron itself reads __ATTYX_STARTUP_CMD,
+/// emits OSC events natively (when ATTYX=1), and inherits PATH directly.
+/// We just need to make `attyx` reachable on PATH.
+fn setupXyron(exe_dir: []const u8) ArgvOverride {
     appendExeDirToPath(exe_dir);
     return .{};
 }

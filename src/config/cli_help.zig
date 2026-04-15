@@ -96,7 +96,7 @@ const ipc_io =
     "  " ++ d ++ "Input / Output" ++ r ++ "\n" ++
     cmd("send-keys [-p <id>] [--wait-stable] <keys>   ", "Send keystrokes to a pane") ++
     cont("                                " ++ d ++ "Named: {Enter} {Up} {Down} {Tab} {Ctrl-c} ... or \\n \\xHH" ++ r) ++
-    cmd("get-text [-p <id>] [--json]     ", "Read visible screen text from a pane") ++
+    cmd("get-text [-p <id>] [-n <N>] [--json]     ", "Read screen text (or last N rows) from a pane") ++
     "\n";
 
 const ipc_misc =

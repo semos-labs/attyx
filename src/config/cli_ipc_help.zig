@@ -387,22 +387,24 @@ pub const send_keys =
 // send_text removed — send-text is now an alias for send-keys (same help)
 
 pub const get_text =
-    \\Read visible text from a pane.
+    \\Read visible text (or scrollback history) from a pane.
     \\
-    \\Usage: attyx get-text [--pane <target>] [--json]
+    \\Usage: attyx get-text [--pane <target>] [--lines <N>] [--json]
     \\
-    \\Returns the current screen content of the specified pane (or the
-    \\focused pane if --pane is not given). This is what an agent uses
-    \\to "see" what's on screen.
+    \\By default, returns the current screen content of the specified pane
+    \\(or the focused pane if --pane is not given). With --lines N, returns
+    \\the last N rows from scrollback + screen — like `tail -N`.
     \\
     \\Options:
     \\  --pane, -p <id>       Target a specific pane by its stable ID instead of
     \\                        the focused one. Pane IDs are shown in 'attyx list'
     \\                        output and returned by creation commands.
+    \\  --lines, -n <N>       Return the last N rows from scrollback + visible
+    \\                        screen, instead of just the visible screen. Capped
+    \\                        at the pane's scrollback depth.
     \\
     \\Output format (plain text):
-    \\  One line per screen row. Trailing whitespace is trimmed per row.
-    \\  Empty trailing rows are omitted.
+    \\  One line per row. Trailing whitespace is trimmed per row.
     \\
     \\Output format (--json):
     \\  { "lines": ["row1", "row2", ...] }
@@ -410,7 +412,8 @@ pub const get_text =
     \\Examples:
     \\  attyx get-text                         Print screen content
     \\  attyx get-text --pane 3                Read from pane 3
-    \\  attyx get-text --pane 5 --json         Pane 5 as JSON
+    \\  attyx get-text -n 100                  Last 100 rows (scrollback + screen)
+    \\  attyx get-text -p 5 -n 500             Last 500 rows from pane 5
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.

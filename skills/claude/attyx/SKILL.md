@@ -215,6 +215,17 @@ attyx send-keys -p "$id" "{Enter}"
 attyx send-keys -p "$id" "ihello world{Escape}:wq{Enter}"
 ```
 
+### Reading Scrollback History — `--lines` / `-n`
+By default `get-text` returns only the visible screen. To capture more (like `tail -N` over the pane's scrollback + screen), pass `--lines N` / `-n N`:
+
+```bash
+attyx get-text -n 100              # last 100 rows from focused pane
+attyx get-text -p 3 -n 500         # last 500 rows from pane 3
+attyx -s 1 get-text -p 5 -n 1000   # last 1000 rows from pane 5 in session 1
+```
+
+The count is clamped to the pane's available scrollback depth. Use this when a long-running command's output has scrolled off-screen, or when you need to inspect history beyond the current viewport.
+
 ### Reading Output — Use `--wait-stable`
 Instead of blind `sleep N && attyx get-text`, use `--wait-stable` to send keys and automatically wait for output to settle:
 
@@ -238,7 +249,8 @@ Almost all commands support `--pane` (`-p`) to target any pane by its stable ID:
 ```bash
 # IO
 attyx send-keys -p 3 "ls -la{Enter}"  # send to pane 3
-attyx get-text -p 3                   # read from pane 3
+attyx get-text -p 3                   # read visible screen from pane 3
+attyx get-text -p 3 -n 200            # last 200 rows (scrollback + screen)
 
 # Split management
 attyx split close -p 5               # close pane 5

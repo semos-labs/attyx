@@ -124,7 +124,11 @@ pub fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
 pub fn buildGetText(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     const pane = ctx.tab_mgr.activePane();
-    writeScreenText(cmd, pane);
+    const lines: u32 = if (cmd.payload_len >= 4)
+        std.mem.readInt(u32, cmd.payload[0..4], .little)
+    else
+        0;
+    writeScreenText(cmd, pane, lines);
 }
 
 pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
@@ -133,25 +137,40 @@ pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         return;
     }
     const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    const lines: u32 = if (cmd.payload_len >= 8)
+        std.mem.readInt(u32, cmd.payload[4..8], .little)
+    else
+        0;
     const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
         sendError(cmd, "pane not found");
         return;
     };
-    writeScreenText(cmd, pane);
+    writeScreenText(cmd, pane, lines);
 }
 
-fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype) void {
+fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype, lines: u32) void {
     const ring = &pane.engine.state.ring;
-    const rows = ring.screen_rows;
     const cols = ring.cols;
 
-    // Worst case: 4 bytes per char (UTF-8) + newline per row
-    var buf: [32768]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
+    // Determine row range. lines == 0 → visible screen only.
+    // lines > 0 → last N rows from the ring (scrollback + screen).
+    const total_rows: usize = if (lines == 0) ring.screen_rows else @min(@as(usize, lines), ring.count);
+    const start_abs: usize = if (lines == 0) ring.scrollbackCount() else ring.count - total_rows;
+
+    // Allocate output buffer sized for worst-case UTF-8 output.
+    const max_row_bytes = cols * 4 + 1;
+    const buf_size = total_rows * max_row_bytes + 64;
+    const buf = pane.allocator.alloc(u8, buf_size) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer pane.allocator.free(buf);
+    var stream = std.io.fixedBufferStream(buf);
     const w = stream.writer();
 
-    for (0..rows) |r| {
-        const row_cells = ring.getScreenRow(r);
+    var i: usize = 0;
+    while (i < total_rows) : (i += 1) {
+        const row_cells = ring.getRow(start_abs + i);
         // Find last non-space cell to trim trailing whitespace
         var last: usize = cols;
         while (last > 0 and row_cells[last - 1].char == ' ') last -= 1;

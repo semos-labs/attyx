@@ -179,9 +179,20 @@ pub fn run(args: []const [:0]const u8) void {
         };
     }
 
-    // Send and receive
-    var resp_buf: [max_response]u8 = undefined;
-    const resp = sendCommand(socket_path, request, &resp_buf) catch |err| {
+    // Send and receive. For get-text with --lines, the response can be much
+    // larger than max_response (potentially MBs of scrollback) — heap-allocate.
+    var heap_resp_buf: ?[]u8 = null;
+    defer if (heap_resp_buf) |b| std.heap.page_allocator.free(b);
+    var stack_resp_buf: [max_response]u8 = undefined;
+    const resp_buf: []u8 = if (parsed.command == .get_text and parsed.lines > 0) blk: {
+        const buf = std.heap.page_allocator.alloc(u8, 8 * 1024 * 1024) catch {
+            writeStderr("error: out of memory for response buffer\n");
+            std.process.exit(1);
+        };
+        heap_resp_buf = buf;
+        break :blk buf;
+    } else stack_resp_buf[0..];
+    const resp = sendCommand(socket_path, request, resp_buf) catch |err| {
         switch (err) {
             error.ConnectionRefused => writeStderr("error: no running Attyx instance found\n"),
             else => writeStderr("error: failed to communicate with Attyx instance\n"),
@@ -383,9 +394,18 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         },
         .get_text => blk: {
             if (parsed.pane_id != 0) {
+                var payload: [8]u8 = undefined;
+                std.mem.writeInt(u32, payload[0..4], parsed.pane_id, .little);
+                if (parsed.lines > 0) {
+                    std.mem.writeInt(u32, payload[4..8], parsed.lines, .little);
+                    break :blk protocol.encodeMessage(buf, .get_text_pane, payload[0..8]);
+                }
+                break :blk protocol.encodeMessage(buf, .get_text_pane, payload[0..4]);
+            }
+            if (parsed.lines > 0) {
                 var payload: [4]u8 = undefined;
-                std.mem.writeInt(u32, &payload, parsed.pane_id, .little);
-                break :blk protocol.encodeMessage(buf, .get_text_pane, &payload);
+                std.mem.writeInt(u32, &payload, parsed.lines, .little);
+                break :blk protocol.encodeMessage(buf, .get_text, &payload);
             }
             break :blk protocol.encodeMessage(buf, .get_text, "");
         },

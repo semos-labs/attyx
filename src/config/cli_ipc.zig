@@ -71,6 +71,9 @@ pub const IpcRequest = struct {
     pane_id: u32 = 0,
     /// Tab targeting by 0-based index. 0xFF = active (default).
     tab_idx: u8 = 0xFF,
+    /// get-text: number of trailing rows from scrollback+screen to capture.
+    /// 0 = visible screen (default behavior).
+    lines: u32 = 0,
 };
 
 /// Returns true if the string looks like a filesystem path rather than a plain name.
@@ -189,6 +192,12 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
                     if (gi + 1 >= args.len) fatal("--pane requires a pane ID");
                     gi += 1;
                     parsePaneArg(args[gi], &gt_result);
+                } else if (std.mem.eql(u8, args[gi], "--lines") or std.mem.eql(u8, args[gi], "-n")) {
+                    if (gi + 1 >= args.len) fatal("--lines requires a count");
+                    gi += 1;
+                    const n = std.fmt.parseInt(u32, args[gi], 10) catch fatal("--lines: invalid count");
+                    if (n == 0) fatal("--lines: count must be >= 1");
+                    gt_result.lines = n;
                 }
                 gi += 1;
             }

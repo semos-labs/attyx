@@ -149,7 +149,11 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
             sendOk(cmd, "");
         },
         .get_text => {
-            writeScreenText(cmd, ctx.tab_mgr.activePane());
+            const lines: u32 = if (cmd.payload_len >= 4)
+                std.mem.readInt(u32, cmd.payload[0..4], .little)
+            else
+                0;
+            writeScreenText(cmd, ctx.tab_mgr.activePane(), lines);
         },
         .get_text_pane => {
             if (cmd.payload_len < 4) {
@@ -157,11 +161,15 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
                 return;
             }
             const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+            const lines: u32 = if (cmd.payload_len >= 8)
+                std.mem.readInt(u32, cmd.payload[4..8], .little)
+            else
+                0;
             const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
                 sendError(cmd, "pane not found");
                 return;
             };
-            writeScreenText(cmd, pane);
+            writeScreenText(cmd, pane, lines);
         },
 
         // ── Query ──
@@ -464,15 +472,26 @@ fn buildSplitList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     sendOk(cmd, stream.getWritten());
 }
 
-fn writeScreenText(cmd: *queue.IpcCommand, pane: *Pane) void {
+fn writeScreenText(cmd: *queue.IpcCommand, pane: *Pane, lines: u32) void {
     const ring = &pane.engine.state.ring;
-    const rows = ring.screen_rows;
     const cols = ring.cols;
-    var buf: [32768]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
+
+    const total_rows: usize = if (lines == 0) ring.screen_rows else @min(@as(usize, lines), ring.count);
+    const start_abs: usize = if (lines == 0) ring.scrollbackCount() else ring.count - total_rows;
+
+    const max_row_bytes = cols * 4 + 1;
+    const buf_size = total_rows * max_row_bytes + 64;
+    const buf = pane.allocator.alloc(u8, buf_size) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer pane.allocator.free(buf);
+    var stream = std.io.fixedBufferStream(buf);
     const w = stream.writer();
-    for (0..rows) |r| {
-        const row_cells = ring.getScreenRow(r);
+
+    var i: usize = 0;
+    while (i < total_rows) : (i += 1) {
+        const row_cells = ring.getRow(start_abs + i);
         var last: usize = cols;
         while (last > 0 and row_cells[last - 1].char == ' ') last -= 1;
         for (row_cells[0..last]) |cell| {
