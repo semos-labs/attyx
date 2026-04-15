@@ -190,6 +190,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 startup_pane.engine.feed(out.data);
                                 _ = startup_pane.engine.state.drainResponse();
                             },
+                            .grid_snapshot => |payload| {
+                                // Grid-sync path: apply the snapshot to the
+                                // startup pane so the cursor check below sees
+                                // the daemon's current state and the initial
+                                // publish (just after this loop) draws the
+                                // shell's prompt.
+                                _ = applyGridSnapshot(ctx, payload);
+                            },
                             else => {},
                         }
                     }
@@ -852,38 +860,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         got_data = true;
                     },
                     .grid_snapshot => |payload| {
-                        const info = grid_sync.decodeSnapshotHeader(payload) catch continue;
-                        const result = findPaneByDaemonId(ctx, info.pane_id) orelse continue;
-                        // Resize engine if daemon's grid differs from ours.
-                        if (result.pane.engine.state.ring.screen_rows != info.rows or
-                            result.pane.engine.state.ring.cols != info.cols)
-                        {
-                            result.pane.engine.state.resize(info.rows, info.cols) catch continue;
-                        }
-                        const cell_bytes = grid_sync.snapshotCellBytes(payload, info) catch continue;
-                        var idx: usize = 0;
-                        const end_row: usize = @as(usize, info.start_row) + info.row_count;
-                        var row: usize = info.start_row;
-                        while (row < end_row) : (row += 1) {
-                            var col: usize = 0;
-                            while (col < info.cols) : (col += 1) {
-                                const packed_cell = grid_sync.readPackedCell(cell_bytes, idx);
-                                result.pane.engine.state.ring.setScreenCell(
-                                    row,
-                                    col,
-                                    grid_sync.unpackCell(packed_cell),
-                                );
-                                idx += 1;
+                        if (applyGridSnapshot(ctx, payload)) |res| {
+                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active) {
+                                got_data = true;
+                                actions.g_force_full_redraw = true;
                             }
-                            result.pane.engine.state.dirty.mark(row);
-                        }
-                        result.pane.engine.state.cursor.row = info.cursor_row;
-                        result.pane.engine.state.cursor.col = info.cursor_col;
-                        result.pane.engine.state.cursor_visible = info.cursor_visible;
-                        result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
-                        result.pane.engine.state.alt_active = info.alt_active;
-                        if (info.final_chunk and result.tab_idx == ctx.tab_mgr.active) {
-                            got_data = true;
                         }
                     },
                     else => {},
@@ -1591,6 +1572,51 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
         }
     }
     return .ok;
+}
+
+/// Apply a grid_snapshot payload to the matching client-side pane. Returns
+/// info on success so the caller can decide whether to force a redraw.
+/// Shared by the startup drain (xyron path) and the main event loop so
+/// snapshots aren't silently dropped during startup.
+const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32 };
+fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
+    const info = grid_sync.decodeSnapshotHeader(payload) catch {
+        logging.warn("grid", "snapshot decode failed", .{});
+        return null;
+    };
+    const result = findPaneByDaemonId(ctx, info.pane_id) orelse {
+        logging.warn("grid", "snapshot for unknown pane {d}", .{info.pane_id});
+        return null;
+    };
+    // Resize engine if daemon's grid differs from ours.
+    if (result.pane.engine.state.ring.screen_rows != info.rows or
+        result.pane.engine.state.ring.cols != info.cols)
+    {
+        result.pane.engine.state.resize(info.rows, info.cols) catch return null;
+    }
+    const cell_bytes = grid_sync.snapshotCellBytes(payload, info) catch return null;
+    var idx: usize = 0;
+    const end_row: usize = @as(usize, info.start_row) + info.row_count;
+    var row: usize = info.start_row;
+    while (row < end_row) : (row += 1) {
+        var col: usize = 0;
+        while (col < info.cols) : (col += 1) {
+            const packed_cell = grid_sync.readPackedCell(cell_bytes, idx);
+            result.pane.engine.state.ring.setScreenCell(
+                row,
+                col,
+                grid_sync.unpackCell(packed_cell),
+            );
+            idx += 1;
+        }
+        result.pane.engine.state.dirty.mark(row);
+    }
+    result.pane.engine.state.cursor.row = info.cursor_row;
+    result.pane.engine.state.cursor.col = info.cursor_col;
+    result.pane.engine.state.cursor_visible = info.cursor_visible;
+    result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
+    result.pane.engine.state.alt_active = info.alt_active;
+    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {

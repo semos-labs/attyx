@@ -492,14 +492,31 @@ pub const DaemonClient = struct {
     /// the generation hasn't advanced (used by handleFocusPanes to prime
     /// a newly-active slot).
     pub fn sendGridSnapshot(self: *DaemonClient, pane: *DaemonPane, force: bool) void {
-        const eng = pane.engine orelse return;
-        const slot = self.findActivePaneSlot(pane.id) orelse return;
+        const eng = pane.engine orelse {
+            std.log.scoped(.grid).info("sendGridSnapshot: pane {d} has no engine", .{pane.id});
+            return;
+        };
+        const slot = self.findActivePaneSlot(pane.id) orelse {
+            std.log.scoped(.grid).info("sendGridSnapshot: pane {d} not in active set", .{pane.id});
+            return;
+        };
         const gen = pane.engine_generation;
         if (!force and self.active_pane_last_gen[slot] == gen) return;
 
         const rows = pane.rows;
         const cols = pane.cols;
-        if (rows == 0 or cols == 0) return;
+        if (rows == 0 or cols == 0) {
+            std.log.scoped(.grid).warn("sendGridSnapshot: pane {d} has zero dims ({d}x{d})", .{ pane.id, rows, cols });
+            return;
+        }
+        std.log.scoped(.grid).info("sendGridSnapshot: pane {d} gen={d} force={} {d}x{d}", .{ pane.id, gen, force, rows, cols });
+        // Dump first row non-space cells to verify engine state.
+        var non_space: u16 = 0;
+        for (0..cols) |c2| {
+            const cell = eng.state.ring.getScreenCell(0, c2);
+            if (cell.char != ' ' and cell.char != 0) non_space += 1;
+        }
+        std.log.scoped(.grid).info("  row0 non-space cells: {d}, cursor=({d},{d})", .{ non_space, eng.state.cursor.row, eng.state.cursor.col });
 
         // Chunk size limit: keep message payload under ~32KB so it fits
         // the 64KB client read buffer with headroom.
