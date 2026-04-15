@@ -419,16 +419,23 @@ pub const DaemonPane = struct {
         self.cols = cols;
     }
 
-    /// Force a full repaint by nudging the PTY size by one column.
+    /// Force a full repaint after focus change so TUI apps re-render their
+    /// current frame into the PTY (and thus into the replay stream the client
+    /// is processing).  On POSIX we send SIGWINCH directly to the foreground
+    /// process group at the *current* dimensions — this triggers the redraw
+    /// without changing geometry, so width-responsive TUIs (Claude Code
+    /// banner, tmux status line, etc.) don't flicker between layouts during
+    /// the tab switch.  Windows has no SIGWINCH, so we keep the old col-nudge
+    /// there (host_conn.sendResize doesn't accept same-dim no-op).
     pub fn notifyRedraw(self: *DaemonPane) void {
-        const nudged = if (self.cols < std.math.maxInt(u16)) self.cols + 1 else self.cols - 1;
         if (comptime is_windows) {
             if (self.host_conn) |hc| {
+                const nudged = if (self.cols < std.math.maxInt(u16)) self.cols + 1 else self.cols - 1;
                 _ = hc.sendResize(self.rows, nudged);
                 return;
             }
         }
-        self.pty.resize(self.rows, nudged) catch {};
+        self.pty.sendSigwinch();
     }
 
     /// Non-blocking check if child process has exited.

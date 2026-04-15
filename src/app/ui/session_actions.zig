@@ -34,40 +34,71 @@ pub fn saveSessionLayout(ctx: *PtyThreadCtx) void {
 /// Send focus_panes for all daemon-backed panes in the active tab.
 /// Reinitializes engines for panes that weren't in the previous focus set,
 /// since the daemon will replay their scrollback into the engine.
+/// Tell the daemon which panes we want pane_output messages for.  We claim
+/// ALL daemon-backed panes across ALL tabs as "active" so the daemon keeps
+/// streaming output to us continuously, including for panes the user can't
+/// currently see.  The cost is a little extra socket bandwidth for inactive
+/// panes; the win is huge: tab switches don't need a focus_panes round-trip
+/// or a scrollback replay because every pane's engine is already up-to-date.
+///
+/// The pane set only changes when the user creates or closes panes/tabs, so
+/// most calls are no-ops (we de-dup against the previous set).  Replay still
+/// fires for genuinely new panes (first time the daemon sees them in our
+/// active set) — which is correct, since those engines really are blank.
 pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
     const sc = ctx.session_client orelse return;
-    const layout = ctx.tab_mgr.activeLayout();
-    var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
+    var pane_ids: [split_layout_mod.max_panes * @import("../tab_manager.zig").max_tabs]u32 = undefined;
     var count: usize = 0;
-    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-    const lc = layout.collectLeaves(&leaves);
-    for (leaves[0..lc]) |leaf| {
-        if (leaf.pane.daemon_pane_id) |dpid| {
-            pane_ids[count] = dpid;
-            count += 1;
 
-            // If this pane wasn't in the previous focus set, the daemon will
-            // replay its scrollback. Reinit the engine so replay doesn't
-            // stack on top of stale content from a prior focus cycle.
-            var was_focused = false;
-            for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
-                if (old_id == dpid) {
-                    was_focused = true;
-                    break;
+    // Collect daemon-backed panes from every tab (not just the active one).
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+        if (maybe_layout.*) |*lay| {
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = lay.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id) |dpid| {
+                    if (count >= pane_ids.len) break;
+                    pane_ids[count] = dpid;
+                    count += 1;
+
+                    // Arm shadow-replay routing only if this pane is brand
+                    // new to us (not in the prior focus set).  Existing
+                    // panes stay warm — their engines already have the
+                    // current state, and the daemon won't trigger replay
+                    // because they're not "newly active".
+                    var was_focused = false;
+                    for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
+                        if (old_id == dpid) {
+                            was_focused = true;
+                            break;
+                        }
+                    }
+                    if (!was_focused) {
+                        if (leaf.pane.shadow_engine) |*s| {
+                            s.deinit();
+                            leaf.pane.shadow_engine = null;
+                        }
+                        leaf.pane.needs_engine_reinit = true;
+                    }
                 }
-            }
-            if (!was_focused) {
-                // Defer the engine reinit until the first replay byte
-                // arrives (handled in event_loop.zig). This keeps the
-                // old engine content visible during the tab switch,
-                // avoiding a blank flash before the daemon replay
-                // populates the altscreen/content.
-                leaf.pane.needs_engine_reinit = true;
             }
         }
     }
 
-    // Update tracking
+    // Skip the IPC round-trip entirely if the pane set hasn't changed.
+    var same_set = (count == ctx.last_focus_count);
+    if (same_set) {
+        outer: for (pane_ids[0..count]) |new_id| {
+            for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
+                if (new_id == old_id) continue :outer;
+            }
+            same_set = false;
+            break;
+        }
+    }
+    if (same_set) return;
+
+    // Pane set changed — update tracking and tell the daemon.
     for (0..count) |i| {
         ctx.last_focus_panes[i] = pane_ids[i];
     }

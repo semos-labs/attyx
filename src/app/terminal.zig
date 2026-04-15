@@ -45,6 +45,12 @@ const MAX_CELLS = c.ATTYX_MAX_ROWS * c.ATTYX_MAX_COLS;
 pub const PtyThreadCtx = struct {
     tab_mgr: *TabManager,
     cells: [*]c.AttyxCell,
+    // Scratch buffer used to compose the next frame off-screen during tab
+    // switches.  Composing into a side buffer and memcpy'ing into `cells`
+    // under the begin/end_cell_update guard avoids the renderer ever
+    // observing a half-cleared frame (blank flash) or a stride mismatch
+    // between engine.cols and grid_cols (text-wrap flicker).
+    scratch_cells: [*]c.AttyxCell,
     session: *SessionLog,
     allocator: std.mem.Allocator,
     no_config: bool,
@@ -71,7 +77,11 @@ pub const PtyThreadCtx = struct {
     session_client: ?*SessionClient = null,
     sessions_enabled: bool = false,
     // Track last-sent focus_panes IDs to avoid stale replay on refocus.
-    last_focus_panes: [split_layout_mod.max_panes]u32 = .{0} ** split_layout_mod.max_panes,
+    // Sized for ALL panes across ALL tabs because we keep every daemon-backed
+    // pane "warm" (claimed as focused) so the daemon streams output for them
+    // continuously and tab switches require no replay round-trip.
+    last_focus_panes: [split_layout_mod.max_panes * @import("tab_manager.zig").max_tabs]u32 =
+        .{0} ** (split_layout_mod.max_panes * @import("tab_manager.zig").max_tabs),
     last_focus_count: u8 = 0,
     // Configurable session picker icons
     session_icon_filter: []const u8 = ">",
@@ -592,7 +602,8 @@ pub fn run(
     }
 
     // Track initial focus pane IDs so PtyThreadCtx starts with correct replay tracking.
-    var initial_focus_panes: [split_layout_mod.max_panes]u32 = .{0} ** split_layout_mod.max_panes;
+    var initial_focus_panes: [split_layout_mod.max_panes * @import("tab_manager.zig").max_tabs]u32 =
+        .{0} ** (split_layout_mod.max_panes * @import("tab_manager.zig").max_tabs);
     var initial_focus_count: u8 = 0;
 
     // Session mode: try to reconstruct tabs from saved layout, else single pane fallback.
@@ -671,6 +682,10 @@ pub fn run(
     const render_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
     @memset(render_cells, std.mem.zeroes(c.AttyxCell));
     defer allocator.free(render_cells);
+
+    const scratch_cells = try allocator.alloc(c.AttyxCell, MAX_CELLS);
+    @memset(scratch_cells, std.mem.zeroes(c.AttyxCell));
+    defer allocator.free(scratch_cells);
 
     const active_eng = &tab_mgr.activePane().engine;
     const total: usize = @as(usize, initial_pty_rows) * @as(usize, config.cols);
@@ -751,6 +766,7 @@ pub fn run(
     var ctx = PtyThreadCtx{
         .tab_mgr = &tab_mgr,
         .cells = render_cells.ptr,
+        .scratch_cells = scratch_cells.ptr,
         .session = &session,
         .allocator = allocator,
         .no_config = no_config,

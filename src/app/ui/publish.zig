@@ -592,10 +592,27 @@ pub fn cellToAttyxCell(cell: attyx.Cell, theme: *const Theme) c.AttyxCell {
 const DirtyRows = attyx.DirtyRows;
 
 pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const Theme, dirty: ?*const DirtyRows) void {
+    fillCellsStride(cells, eng, theme, @intCast(eng.state.ring.cols), dirty);
+}
+
+/// Write the engine's visible viewport into `cells` using `stride` as the
+/// row stride.  Callers that compose into the live render buffer must pass
+/// `g_cols` (== ctx.grid_cols) so the renderer's row indexing matches.
+/// Cells past `eng.cols` in each row are left untouched — the caller is
+/// responsible for pre-clearing them to the desired background.
+pub fn fillCellsStride(
+    cells: []c.AttyxCell,
+    eng: *Engine,
+    theme: *const Theme,
+    stride: u16,
+    dirty: ?*const DirtyRows,
+) void {
     const vp = eng.state.viewport_offset;
     const cols = eng.state.ring.cols;
     const rows = eng.state.ring.screen_rows;
     const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
+    const stride_usize: usize = stride;
+    const cols_to_copy = @min(@as(usize, cols), stride_usize);
 
     for (0..rows) |row| {
         const row_cells = eng.state.ring.viewportRow(vp, row);
@@ -603,10 +620,27 @@ pub fn fillCells(cells: []c.AttyxCell, eng: *Engine, _: usize, theme: *const The
         if (dirty) |d| {
             if (!d.isDirty(row)) continue;
         }
-        for (0..cols) |col| {
-            cells[row * cols + col] = cellToAttyxCell(row_cells[col], theme);
+        const base = row * stride_usize;
+        for (0..cols_to_copy) |col| {
+            cells[base + col] = cellToAttyxCell(row_cells[col], theme);
         }
     }
+}
+
+pub fn bgCell(theme: *const Theme) c.AttyxCell {
+    const bg = theme.background;
+    return .{
+        .character = ' ',
+        .combining = .{ 0, 0 },
+        .fg_r = bg.r,
+        .fg_g = bg.g,
+        .fg_b = bg.b,
+        .bg_r = bg.r,
+        .bg_g = bg.g,
+        .bg_b = bg.b,
+        .flags = 4,
+        .link_id = 0,
+    };
 }
 
 /// Check if statusbar is active and enabled.

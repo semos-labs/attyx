@@ -41,9 +41,15 @@ pub const Pane = struct {
     daemon_pane_id: ?u32 = null,
     /// Session client for sending resize to daemon (set for daemon-backed panes).
     session_client: ?*@import("session_client.zig").SessionClient = null,
-    /// When true, the engine will be reinitialized before the next data feed
-    /// (deferred reinit to prevent blank-screen gap between focus and replay).
+    /// When true, the next incoming pane_output for this pane belongs to a
+    /// daemon replay burst.  Bytes are routed into `shadow_engine` (allocated
+    /// lazily on the first replay byte) instead of the live `engine`, so the
+    /// last known visible state stays on screen during catch-up.  On the
+    /// matching `replay_end` message, `shadow_engine` is swapped into
+    /// `engine` atomically — single visual transition, no blank-gap,
+    /// no "Tab N" fallback, no stacked duplicate content.
     needs_engine_reinit: bool = false,
+    shadow_engine: ?Engine = null,
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,
@@ -187,6 +193,7 @@ pub const Pane = struct {
             self.pty.deinit();
         }
         self.engine.deinit();
+        if (self.shadow_engine) |*s| s.deinit();
     }
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.
@@ -225,6 +232,11 @@ pub const Pane = struct {
         self.engine.state.resize(rows, cols) catch |err| {
             logging.err("resize", "state.resize({d}x{d}) failed: {}", .{ cols, rows, err });
         };
+        // Keep shadow engine dimensions in sync so the pending swap at
+        // replay_end lands at the right size.
+        if (self.shadow_engine) |*s| {
+            s.state.resize(rows, cols) catch {};
+        }
         // Leading-edge throttle: record pending dimensions but don't reset
         // the timer. flushPtyResize() fires immediately on the first event,
         // then at most once per throttle interval during continuous resizing.

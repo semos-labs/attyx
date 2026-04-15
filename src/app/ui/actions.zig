@@ -384,71 +384,75 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
 
     updateSplitActive(ctx);
 
-    c.attyx_begin_cell_update();
+    // Compose the new frame into a scratch buffer first, then swap it into
+    // the live render buffer with a single memcpy under the begin/end_cell
+    // guard.  Composing off-buffer eliminates two flicker sources: (1) the
+    // brief blank frame when we cleared the live buffer to background before
+    // re-filling it, and (2) the stride mismatch when fillCells wrote at
+    // engine.cols while the renderer reads at g_cols.
     const layout = ctx.tab_mgr.activeLayout();
+    const grid_cols: u16 = ctx.grid_cols;
+    const grid_rows: u16 = ctx.grid_rows;
+    const scratch_total: usize = @as(usize, grid_rows) * @as(usize, grid_cols);
+    const scratch = ctx.scratch_cells[0..scratch_total];
+
+    var cursor_row: usize = 0;
+    var cursor_col: usize = 0;
+
     if (layout.pane_count > 1 and !layout.isZoomed()) {
-        const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+        const pty_rows: u16 = @intCast(@max(1, @as(i32, grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
         split_render.fillCellsSplit(
-            @ptrCast(ctx.cells),
+            @ptrCast(ctx.scratch_cells),
             layout,
             pty_rows,
-            ctx.grid_cols,
+            grid_cols,
             &ctx.active_theme,
         );
         const rect = layout.pool[layout.focused].rect;
         const eng = &pane.engine;
         const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
-        c.attyx_set_cursor(
-            @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-            @intCast(eng.state.cursor.col + rect.col),
-        );
-        c.attyx_mark_all_dirty();
+        cursor_row = eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset));
+        cursor_col = eng.state.cursor.col + rect.col;
     } else {
-        const buf_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
-        const bg = ctx.active_theme.background;
-        for (0..buf_total) |i| {
-            ctx.cells[i] = .{
-                .character = ' ',
-                .combining = .{ 0, 0 },
-                .fg_r = bg.r,
-                .fg_g = bg.g,
-                .fg_b = bg.b,
-                .bg_r = bg.r,
-                .bg_g = bg.g,
-                .bg_b = bg.b,
-                .flags = 4,
-                .link_id = 0,
-            };
-        }
+        const bg_cell = publish.bgCell(&ctx.active_theme);
+        @memset(scratch, bg_cell);
         const eng = &pane.engine;
-        const total = eng.state.ring.screen_rows * eng.state.ring.cols;
-        publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+        publish.fillCellsStride(scratch, eng, &ctx.active_theme, grid_cols, null);
         const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
-        c.attyx_set_cursor(
-            @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
-            @intCast(eng.state.cursor.col),
-        );
-        c.attyx_mark_all_dirty();
+        cursor_row = eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset));
+        cursor_col = eng.state.cursor.col;
         eng.state.dirty.clear();
     }
+
+    // Generate overlays/tab bar/statusbar BEFORE the cell-update window so
+    // the renderer doesn't observe partially-published overlay buffers
+    // alongside the new cells.
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
     c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
     publish.generateTabBar(ctx);
-    // Tick statusbar widgets immediately so cwd/git refresh for the new
-    // pane before we generate the overlay — avoids a flash of stale data.
-    if (ctx.statusbar) |sb| if (sb.config.enabled) {
-        _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
-    };
+    // NOTE: the statusbar tick used to run here to refresh cwd/git widgets
+    // for the new pane before painting the overlay.  Profiling showed it
+    // forking subprocesses (git status, etc.) and adding 50–70ms of input
+    // latency to every tab switch.  The periodic event-loop tick refreshes
+    // the same widgets on the very next iteration (~16ms), so the worst
+    // case is one frame of stale data — invisible in practice and
+    // dramatically better than the prior synchronous block.
     publish.generateStatusbar(ctx);
     publish.publishNativeTabTitles(ctx);
     publish.publishOverlays(ctx);
+
+    // Atomic swap: between begin/end_cell_update the renderer either sees
+    // the prior tab's frame or the next tab's frame in full, never the
+    // intermediate cleared-to-bg state.
+    c.attyx_begin_cell_update();
+    @memcpy(ctx.cells[0..scratch_total], scratch);
+    c.attyx_set_cursor(@intCast(cursor_row), @intCast(cursor_col));
+    c.attyx_mark_all_dirty();
     // Tell the renderer to rebuild all vertex buffers from scratch on the
-    // next frame.  Dirty-bit-based incremental updates can miss content when
-    // switching tabs because the entire cell buffer has changed identity
-    // (different pane), not just a few rows.  Must be set BEFORE
-    // end_cell_update so the renderer sees it on the same frame that
-    // observes the new cursor position (suppresses cursor trail).
+    // next frame.  Must be set BEFORE end_cell_update so the renderer sees
+    // it on the same frame that observes the new cursor position
+    // (suppresses cursor trail).
     c.g_renderer_full_redraw = 1;
     c.attyx_end_cell_update();
     c.attyx_mark_all_dirty();
