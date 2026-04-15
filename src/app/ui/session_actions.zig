@@ -186,13 +186,13 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     // Force full redraw so the new session's content appears immediately.
     actions.g_force_full_redraw = true;
     c.attyx_mark_all_dirty();
-    // Reset cached cwd pointers so tick detects the new pane's cwd and
-    // refreshes immediately — avoids a flash of stale/empty widgets.
+    // Reset cached cwd/git state so the next periodic tick picks up the new
+    // session's values.  Skip the synchronous tick that used to run here —
+    // profiling showed it forking subprocesses (git status, etc.) and
+    // adding 50–70ms of input latency, same as on tab switch.  The worst
+    // case is one frame of stale widgets (~16ms) — invisible.
     if (ctx.statusbar) |sb| {
         sb.resetWidgets();
-        if (sb.config.enabled) {
-            _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
-        }
     }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
@@ -287,11 +287,10 @@ pub fn handleLayoutSync(ctx: *PtyThreadCtx, layout_data: []const u8) void {
 
     actions.g_force_full_redraw = true;
     c.attyx_mark_all_dirty();
+    // Reset cached widget state; next periodic tick refreshes (avoids the
+    // 50–70ms synchronous git/cwd fork/exec on this code path too).
     if (ctx.statusbar) |sb| {
         sb.resetWidgets();
-        if (sb.config.enabled) {
-            _ = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
-        }
     }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
