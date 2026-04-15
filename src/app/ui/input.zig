@@ -8,6 +8,46 @@ const terminal = @import("../terminal.zig");
 const c = terminal.c;
 
 // ---------------------------------------------------------------------------
+// Event-loop wake-up pipe
+// ---------------------------------------------------------------------------
+// The PTY thread sleeps in posix.poll for up to 16ms per iteration.  UI
+// actions posted from the main thread (tab switches, IPC commands, overlay
+// toggles) are plain atomics that don't wake the poll — so they wait for the
+// next timer tick to be serviced.  Writing a byte to this pipe makes the
+// poll return immediately, giving ~0ms actuation latency for keypresses.
+pub var g_wake_read_fd: std.posix.fd_t = -1;
+pub var g_wake_write_fd: std.posix.fd_t = -1;
+
+/// Initialize the wake pipe.  Called once at startup by the PTY thread.
+pub fn initWakePipe() void {
+    const fds = std.posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true }) catch {
+        logging.err("wake-pipe", "pipe2 failed; UI actions will wait for poll timeout", .{});
+        return;
+    };
+    g_wake_read_fd = fds[0];
+    g_wake_write_fd = fds[1];
+}
+
+/// Wake the PTY thread from posix.poll.  Safe to call from any thread.
+/// A single byte is written; the poll on the other end returns immediately.
+pub fn wake() void {
+    if (g_wake_write_fd < 0) return;
+    const byte: [1]u8 = .{1};
+    _ = std.posix.write(g_wake_write_fd, &byte) catch {};
+}
+
+/// Drain any accumulated wake bytes.  Called after poll returns so the pipe
+/// doesn't stay readable and burn CPU on subsequent polls.
+pub fn drainWake() void {
+    if (g_wake_read_fd < 0) return;
+    var scratch: [64]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(g_wake_read_fd, &scratch) catch return;
+        if (n == 0 or n < scratch.len) return;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Overlay interaction atomics
 // ---------------------------------------------------------------------------
 
@@ -162,6 +202,7 @@ pub var g_tab_click_index: i32 = -1;
 
 pub fn tabAction(action: c_int) void {
     @atomicStore(i32, &g_tab_action_request, action, .seq_cst);
+    wake();
 }
 
 pub fn tabBarClick(col: c_int, grid_cols: c_int) void {
@@ -172,6 +213,7 @@ pub fn tabBarClick(col: c_int, grid_cols: c_int) void {
         @intCast(@max(1, grid_cols)),
     ) orelse return;
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+    wake();
 }
 
 const statusbar_mod = @import("../statusbar.zig");
@@ -188,6 +230,7 @@ pub fn statusbarTabClick(col: c_int, grid_cols: c_int) void {
         remaining,
     ) orelse return;
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+    wake();
 }
 
 // ---------------------------------------------------------------------------

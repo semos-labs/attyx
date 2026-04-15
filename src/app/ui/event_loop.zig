@@ -76,6 +76,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         ctx.session_finder_show_hidden,
     );
 
+    // Self-pipe for waking the poll loop on UI events.  Must be initialized
+    // before any code path that calls input.wake().
+    input.initWakePipe();
+
     // Apply initial grid offsets (statusbar/tab bar) and resize PTY
     publish.updateGridOffsets(ctx);
     publish.generateStatusbar(ctx);
@@ -637,6 +641,17 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Wake pipe — lets UI actions (tab switch, IPC, etc.) interrupt the
+        // poll immediately rather than waiting for the 16ms timer tick.
+        // Tracked separately so the PTY-drain loops below can skip it
+        // (fd_panes[wake_fd_idx] is intentionally not populated).
+        const wake_fd_idx: ?usize = if (input.g_wake_read_fd >= 0) blk: {
+            const idx = nfds;
+            fds[nfds] = .{ .fd = input.g_wake_read_fd, .events = POLLIN, .revents = 0 };
+            nfds += 1;
+            break :blk idx;
+        } else null;
+
         // Drain any buffered paste data before polling — this interleaves
         // writing paste input with reading shell output, preventing deadlock
         // when the kernel PTY buffer fills in both directions.
@@ -646,6 +661,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // drain it promptly instead of waiting the full 16ms.
         const poll_timeout: i32 = if (input.hasPendingPaste()) 1 else 16;
         _ = posix.poll(fds[0..nfds], poll_timeout) catch break;
+        // Drain the wake pipe so it doesn't stay readable and burn CPU.
+        input.drainWake();
 
         if (ctx.tab_mgr.count == 0) continue :outer;
         const active_focused_pane = ctx.tab_mgr.activePane();
@@ -678,35 +695,47 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 switch (msg) {
                     .pane_output => |out| {
                         if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
-                            // Deferred engine reinit: if the daemon is replaying
-                            // scrollback for a newly-focused pane, reinit the
-                            // engine NOW (right before feeding data) to prevent
-                            // blank-screen gap and duplicate content.
+                            // Replay routing: when the daemon is replaying
+                            // scrollback for a newly-focused pane, feed the
+                            // bytes into a shadow engine instead of the live
+                            // one.  The live engine keeps rendering the last
+                            // known frame (no blank-pane gap, no "Tab N"
+                            // fallback title) while the shadow catches up
+                            // invisibly.  On `replay_end` we swap shadow →
+                            // live in one atomic transition.
                             if (result.pane.needs_engine_reinit) {
-                                const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
-                                const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
-                                const new_engine = @import("attyx").Engine.init(
-                                    result.pane.allocator,
-                                    rows,
-                                    cols,
-                                    ctx.applied_scrollback_lines,
-                                ) catch continue;
-                                result.pane.engine.deinit();
-                                result.pane.engine = new_engine;
-                                result.pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
-                                result.pane.needs_engine_reinit = false;
+                                if (result.pane.shadow_engine == null) {
+                                    const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                                    const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+                                    const shadow = @import("attyx").Engine.init(
+                                        result.pane.allocator,
+                                        rows,
+                                        cols,
+                                        ctx.applied_scrollback_lines,
+                                    ) catch continue;
+                                    result.pane.shadow_engine = shadow;
+                                    result.pane.shadow_engine.?.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                                }
+                                result.pane.shadow_engine.?.feed(out.data);
+                                _ = result.pane.shadow_engine.?.state.drainResponse();
+                                // Do NOT set got_data — live engine is
+                                // unchanged, the periodic publish should
+                                // keep showing the old frame.  Do NOT
+                                // appendOutput — replay bytes are historical,
+                                // not new output.
+                            } else {
+                                if (result.pane == active_focused_pane) {
+                                    ctx.session.appendOutput(out.data);
+                                    ctx.throughput.add(out.data.len);
+                                }
+                                if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                                result.pane.engine.feed(out.data);
+                                // Discard engine responses — the daemon intercepts
+                                // all queries (DA1, DECRPM, kitty keyboard, OSC
+                                // color queries, etc.) and responds directly to
+                                // avoid round-trip latency and duplicate responses.
+                                _ = result.pane.engine.state.drainResponse();
                             }
-                            if (result.pane == active_focused_pane) {
-                                ctx.session.appendOutput(out.data);
-                                ctx.throughput.add(out.data.len);
-                            }
-                            if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
-                            result.pane.engine.feed(out.data);
-                            // Discard engine responses — the daemon intercepts
-                            // all queries (DA1, DECRPM, kitty keyboard, OSC
-                            // color queries, etc.) and responds directly to
-                            // avoid round-trip latency and duplicate responses.
-                            _ = result.pane.engine.state.drainResponse();
                         }
                     },
                     .pane_died => |died| {
@@ -786,16 +815,34 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         }
                     },
                     .replay_end => |pane_id| {
-                        // The daemon already nudged the PTY size (cols+1)
-                        // before sending replay_end. Restore the correct
-                        // size so the app gets a second SIGWINCH at the
-                        // right dimensions — the round-trip delay ensures
-                        // the first SIGWINCH was processed.
                         if (findPaneByDaemonId(ctx, pane_id)) |result| {
-                            const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
-                            const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
-                            if (ctx.session_client) |scc| {
-                                scc.sendPaneResize(pane_id, rows, cols) catch {};
+                            // Atomic swap: shadow engine (with fully
+                            // replayed state) replaces the live engine in
+                            // one step.  Mark all rows dirty and force a
+                            // full redraw so the renderer lands on the new
+                            // frame on its very next tick — single clean
+                            // transition, no intermediate states visible.
+                            if (result.pane.shadow_engine) |shadow| {
+                                var old_engine = result.pane.engine;
+                                result.pane.engine = shadow;
+                                result.pane.shadow_engine = null;
+                                old_engine.deinit();
+                                result.pane.needs_engine_reinit = false;
+                                result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
+                                if (result.tab_idx == ctx.tab_mgr.active) {
+                                    got_data = true;
+                                    actions.g_force_full_redraw = true;
+                                }
+                            }
+                            // Windows still col-nudges to force repaint;
+                            // restore dims here.  POSIX uses SIGWINCH at
+                            // current dims so no restore needed.
+                            if (@import("builtin").os.tag == .windows) {
+                                const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                                const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+                                if (ctx.session_client) |scc| {
+                                    scc.sendPaneResize(pane_id, rows, cols) catch {};
+                                }
                             }
                         }
                     },
@@ -814,6 +861,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             for (local_start..nfds) |i| {
                 if (fd_tab_idx[i] == 0xFF) continue; // popup handled separately
                 if (i == xyron_event_fd_idx) continue; // xyron IPC handled separately
+                if (wake_fd_idx) |w| if (i == w) continue; // wake pipe — drained above
                 if (fds[i].revents & POLLIN == 0) continue;
                 const p = fd_panes[i];
                 while (true) {
@@ -1038,17 +1086,27 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
 
         if (need_update_final) {
-            c.attyx_begin_cell_update();
             const layout = ctx.tab_mgr.activeLayout();
             if (layout.pane_count > 1 and !layout.isZoomed()) {
                 const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                // Compose the split layout into the scratch buffer first, then
+                // memcpy into the live buffer under the cell-update guard.
+                // fillCellsSplit clears the entire grid to bg before re-filling
+                // each pane region — doing that on the live buffer leaves a
+                // window where the renderer can observe a blank/partial frame
+                // even with the gen guard, because mark_all_dirty + the
+                // multiple non-atomic global writes (g_pane_rect_*) span the
+                // begin/end window.
+                const scratch_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
                 split_render.fillCellsSplit(
-                    @ptrCast(ctx.cells),
+                    @ptrCast(ctx.scratch_cells),
                     layout,
                     pty_rows,
                     ctx.grid_cols,
                     &ctx.active_theme,
                 );
+                c.attyx_begin_cell_update();
+                @memcpy(ctx.cells[0..scratch_total], ctx.scratch_cells[0..scratch_total]);
                 const rect = layout.pool[layout.focused].rect;
                 terminal.g_pane_rect_row = @intCast(rect.row);
                 terminal.g_pane_rect_col = @intCast(rect.col);
@@ -1074,10 +1132,25 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 // the engine processes many screenfuls between publishes.
                 const full_redraw = viewport_changed or search_vp_changed or actions.g_force_full_redraw or (throttled_frames > 0);
                 if (full_redraw) {
+                    // Compose into scratch with grid_cols stride and atomically
+                    // swap into the live buffer.  This avoids two flicker
+                    // sources on full redraws: (1) eng.cols != grid_cols stride
+                    // mismatch in fillCells (text-wrap appearance), and (2) any
+                    // window where the renderer can land on a partially-written
+                    // frame.  For sparse dirty-row updates the direct write is
+                    // fine — only changed rows are touched and stride matches.
                     eng.state.dirty.markAll(eng.state.ring.screen_rows);
+                    const scratch_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
+                    const bg_cell = publish.bgCell(&ctx.active_theme);
+                    @memset(ctx.scratch_cells[0..scratch_total], bg_cell);
+                    publish.fillCellsStride(ctx.scratch_cells[0..scratch_total], eng, &ctx.active_theme, ctx.grid_cols, null);
+                    c.attyx_begin_cell_update();
+                    @memcpy(ctx.cells[0..scratch_total], ctx.scratch_cells[0..scratch_total]);
+                } else {
+                    c.attyx_begin_cell_update();
+                    const total = eng.state.ring.screen_rows * eng.state.ring.cols;
+                    publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, &eng.state.dirty);
                 }
-                const total = eng.state.ring.screen_rows * eng.state.ring.cols;
-                publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, &eng.state.dirty);
 
                 const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
