@@ -472,12 +472,12 @@ test "truncated data after first session recovers partial" {
     // Clean up allocated ring buffers
     for (&sessions) |*slot| {
         if (slot.*) |*s| for (&s.panes) |*pslot| {
-            if (pslot.*) |*p| p.replay.deinit();
+            if (pslot.*) |*p| p.freeTransferableState();
         };
     }
     for (&out_sessions) |*slot| {
         if (slot.*) |*s| for (&s.panes) |*pslot| {
-            if (pslot.*) |*p| p.replay.deinit();
+            if (pslot.*) |*p| p.freeTransferableState();
         };
     }
 }
@@ -543,7 +543,7 @@ test "stale recovery preserves session metadata" {
         if (slot.*) |*rs| {
             for (&rs.panes) |*pslot| {
                 if (pslot.*) |*p| {
-                    p.replay.deinit();
+                    p.freeTransferableState();
                     pslot.* = null;
                 }
             }
@@ -563,7 +563,7 @@ test "stale recovery preserves session metadata" {
     try testing.expectEqual(@as(u32, 100), next_pid);
 
     // Clean up original
-    sessions[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[0].?.freeTransferableState();
 }
 
 test "stale recovery with many sessions preserves all metadata" {
@@ -608,7 +608,7 @@ test "stale recovery with many sessions preserves all metadata" {
         if (slot.*) |*rs| {
             for (&rs.panes) |*pslot| {
                 if (pslot.*) |*p| {
-                    p.replay.deinit();
+                    p.freeTransferableState();
                     pslot.* = null;
                 }
             }
@@ -631,7 +631,7 @@ test "stale recovery with many sessions preserves all metadata" {
     // Clean up original ring buffers
     for (&sessions) |*slot| {
         if (slot.*) |*s| for (&s.panes) |*pslot| {
-            if (pslot.*) |*p| p.replay.deinit();
+            if (pslot.*) |*p| p.freeTransferableState();
         };
     }
 }
@@ -692,8 +692,8 @@ test "large ring buffer data survives migration" {
     }
 
     // Cleanup
-    sessions[0].?.panes[0].?.replay.deinit();
-    out[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[0].?.freeTransferableState();
+    out[0].?.panes[0].?.freeTransferableState();
 }
 
 // ── OSC state preservation ──
@@ -742,8 +742,8 @@ test "OSC 7 CWD and OSC 7337 PATH survive migration" {
     try testing.expectEqualStrings(path, rp.osc7337_path[0..rp.osc7337_path_len]);
 
     // Cleanup
-    sessions[0].?.panes[0].?.replay.deinit();
-    out[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[0].?.freeTransferableState();
+    out[0].?.panes[0].?.freeTransferableState();
 }
 
 // ── Concurrent client operations during migration ──
@@ -898,10 +898,10 @@ test "pane cursor_visible and alt_screen survive migration" {
 
     // Cleanup
     for (&sessions) |*slot| if (slot.*) |*ss| for (&ss.panes) |*pslot| {
-        if (pslot.*) |*p| p.replay.deinit();
+        if (pslot.*) |*p| p.freeTransferableState();
     };
     for (&out) |*slot| if (slot.*) |*ss| for (&ss.panes) |*pslot| {
-        if (pslot.*) |*p| p.replay.deinit();
+        if (pslot.*) |*p| p.freeTransferableState();
     };
 }
 
@@ -946,8 +946,8 @@ test "session CWD and shell survive migration" {
     try testing.expectEqualStrings("/bin/zsh", rs.shell[0..rs.shell_len]);
 
     // Cleanup
-    sessions[0].?.panes[0].?.replay.deinit();
-    out[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[0].?.freeTransferableState();
+    out[0].?.panes[0].?.freeTransferableState();
 }
 
 // ── Running process survives migration ──
@@ -1147,6 +1147,6 @@ test "layout data survives migration" {
     try testing.expectEqualStrings(layout, rs.layout_data[0..rs.layout_len]);
 
     // Cleanup
-    sessions[0].?.panes[0].?.replay.deinit();
-    out[0].?.panes[0].?.replay.deinit();
+    sessions[0].?.panes[0].?.freeTransferableState();
+    out[0].?.panes[0].?.freeTransferableState();
 }

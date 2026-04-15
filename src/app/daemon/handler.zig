@@ -198,12 +198,13 @@ fn handleRename(
 
 fn handleHello(cl: *DaemonClient, payload: []const u8, upgrade_requested: *bool) void {
     const daemon_version = attyx.version;
-    const client_version = protocol.decodeHello(payload) catch {
-        cl.sendHelloAck(daemon_version);
+    const hello = protocol.decodeHello(payload) catch {
+        cl.sendHelloAck(daemon_version, protocol.CAPABILITIES);
         return;
     };
-    cl.sendHelloAck(daemon_version);
-    if (!std.mem.eql(u8, client_version, daemon_version)) {
+    cl.peer_caps = hello.caps;
+    cl.sendHelloAck(daemon_version, protocol.CAPABILITIES);
+    if (!std.mem.eql(u8, hello.version, daemon_version)) {
         upgrade_requested.* = true;
     }
 }
@@ -291,10 +292,17 @@ fn handleFocusPanes(
     const old_count = cl.active_pane_count;
     const old_panes = cl.active_panes;
 
-    // Update active panes set
+    // Update active panes set. Reset last-sent generations for any
+    // slot that changed pane_id so the next emission ships a full
+    // snapshot (generation 0 = "nothing sent yet").
     cl.active_pane_count = msg.count;
     for (0..msg.count) |i| {
+        const prev_id = if (i < old_count) old_panes[i] else 0;
         cl.active_panes[i] = msg.pane_ids[i];
+        if (cl.active_panes[i] != prev_id) cl.active_pane_last_gen[i] = 0;
+    }
+    for (msg.count..cl.active_pane_last_gen.len) |i| {
+        cl.active_pane_last_gen[i] = 0;
     }
 
     // Drain pending PTY data for newly-active panes before replaying.
@@ -331,13 +339,20 @@ fn handleFocusPanes(
                         if (n == 0) break;
                     }
                 }
-                cl.sendPaneReplay(pane);
-                // Nudge the PTY size so TUI apps get a SIGWINCH and
-                // fully repaint. The client restores the correct size
-                // on replay_end, and the round-trip delay ensures the
-                // app processes this first SIGWINCH before the second.
-                pane.notifyRedraw();
-                cl.sendReplayEnd(new_id);
+                if (cl.hasGridSync() and pane.engine != null) {
+                    // Grid-sync path: ship one authoritative snapshot.
+                    // No byte replay, no SIGWINCH nudge — the engine
+                    // already holds the TUI's current screen.
+                    cl.sendGridSnapshot(pane, true);
+                } else {
+                    cl.sendPaneReplay(pane);
+                    // Nudge the PTY size so TUI apps get a SIGWINCH and
+                    // fully repaint. The client restores the correct size
+                    // on replay_end, and the round-trip delay ensures the
+                    // app processes this first SIGWINCH before the second.
+                    pane.notifyRedraw();
+                    cl.sendReplayEnd(new_id);
+                }
             }
         }
     }

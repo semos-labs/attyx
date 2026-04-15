@@ -58,6 +58,10 @@ pub const DaemonMessage = union(enum) {
     session_created: u32,
     err: void,
     hello_ack: []const u8,
+    /// A grid_snapshot chunk — full payload (header + packed cells) is
+    /// exposed so the handler can decode via grid_sync.decodeSnapshotHeader
+    /// + grid_sync.snapshotCells.
+    grid_snapshot: []const u8,
 };
 
 pub const SessionClient = struct {
@@ -98,6 +102,10 @@ pub const SessionClient = struct {
     legacy_daemon: bool = false,
     daemon_version: [64]u8 = undefined,
     daemon_version_len: u8 = 0,
+    /// Capability bits advertised by the daemon in hello_ack. 0 for legacy
+    /// daemons that don't speak the extended hello. Used to decide which
+    /// protocol features (e.g. grid-sync) are safe to use on this connection.
+    daemon_caps: u32 = 0,
 
     // ── Connect ──
 
@@ -152,7 +160,7 @@ pub const SessionClient = struct {
 
     fn sendHello(self: *SessionClient) void {
         var payload_buf: [256]u8 = undefined;
-        const payload = protocol.encodeHello(&payload_buf, attyx.version) catch return;
+        const payload = protocol.encodeHello(&payload_buf, attyx.version, protocol.CAPABILITIES) catch return;
         var msg_buf: [protocol.header_size + 256]u8 = undefined;
         const msg = protocol.encodeMessage(&msg_buf, .hello, payload) catch return;
         socketWrite(self.socket_fd, msg) catch return;
@@ -797,14 +805,25 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 continue;
             },
             .hello_ack => {
-                if (protocol.decodeHello(payload)) |ver| {
-                    const vlen = @min(ver.len, self.output_buf.len);
-                    @memcpy(self.output_buf[0..vlen], ver[0..vlen]);
+                if (protocol.decodeHello(payload)) |hmsg| {
+                    self.daemon_caps = hmsg.caps;
+                    const vlen = @min(hmsg.version.len, self.output_buf.len);
+                    @memcpy(self.output_buf[0..vlen], hmsg.version[0..vlen]);
                     self.consumeBytes(total);
                     return .{ .hello_ack = self.output_buf[0..vlen] };
                 } else |_| {}
                 self.consumeBytes(total);
                 continue;
+            },
+            .grid_snapshot => {
+                if (payload.len > self.output_buf.len) {
+                    logging.warn("grid", "snapshot too large: {d}", .{payload.len});
+                    self.consumeBytes(total);
+                    continue;
+                }
+                @memcpy(self.output_buf[0..payload.len], payload);
+                self.consumeBytes(total);
+                return .{ .grid_snapshot = self.output_buf[0..payload.len] };
             },
             else => { self.consumeBytes(total); continue; },
         }

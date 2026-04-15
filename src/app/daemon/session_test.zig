@@ -381,14 +381,14 @@ test "hello returns hello_ack with daemon version" {
 
     var buf: [256]u8 = undefined;
     // Send hello with a fake client version
-    const hp = try protocol.encodeHello(&buf, "99.0.0");
+    const hp = try protocol.encodeHello(&buf, "99.0.0", 0);
     try client.send(.hello, hp);
 
     // Daemon should respond with hello_ack containing its own version
     const ack_payload = try client.expect(.hello_ack, 5000);
-    const daemon_version = try protocol.decodeHello(ack_payload);
+    const daemon_hello = try protocol.decodeHello(ack_payload);
     // Version must be non-empty and match the compiled-in version
-    try testing.expect(daemon_version.len > 0);
+    try testing.expect(daemon_hello.version.len > 0);
 }
 
 test "hello with matching version does not trigger upgrade flag" {
@@ -400,17 +400,18 @@ test "hello with matching version does not trigger upgrade flag" {
 
     var buf: [256]u8 = undefined;
     // First, discover the daemon's version via hello
-    const hp = try protocol.encodeHello(&buf, "probe");
+    const hp = try protocol.encodeHello(&buf, "probe", 0);
     try client.send(.hello, hp);
     const ack = try client.expect(.hello_ack, 5000);
-    const version = try protocol.decodeHello(ack);
+    const probe_hello = try protocol.decodeHello(ack);
+    const version = probe_hello.version;
 
     // Now send hello with the matching version
-    const hp2 = try protocol.encodeHello(&buf, version);
+    const hp2 = try protocol.encodeHello(&buf, version, 0);
     try client.send(.hello, hp2);
     const ack2 = try client.expect(.hello_ack, 5000);
-    const v2 = try protocol.decodeHello(ack2);
-    try testing.expectEqualStrings(version, v2);
+    const h2 = try protocol.decodeHello(ack2);
+    try testing.expectEqualStrings(version, h2.version);
 
     // Daemon should still be running (not trying to upgrade/restart)
     // Verify by creating a session successfully

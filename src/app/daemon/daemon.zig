@@ -252,7 +252,11 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
-                                        cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
+                                        if (cl.hasGridSync() and pane.engine != null) {
+                                            cl.sendGridSnapshot(pane, false);
+                                        } else {
+                                            cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
+                                        }
                                     }
                                 }
                             }

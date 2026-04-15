@@ -346,7 +346,7 @@ pub const TestEnv = struct {
             if (slot.*) |*s| {
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*p| {
-                        p.replay.deinit();
+                        p.freeTransferableState();
                         pslot.* = null;
                     }
                 }

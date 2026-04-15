@@ -31,6 +31,7 @@ const selection = @import("selection.zig");
 const toast = attyx.overlay_toast;
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
+const grid_sync = @import("../daemon/grid_sync.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -849,6 +850,40 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     .layout_sync => |sync| {
                         session_actions.handleLayoutSync(ctx, sync.layout);
                         got_data = true;
+                    },
+                    .grid_snapshot => |payload| {
+                        const info = grid_sync.decodeSnapshotHeader(payload) catch continue;
+                        const result = findPaneByDaemonId(ctx, info.pane_id) orelse continue;
+                        // Resize engine if daemon's grid differs from ours.
+                        if (result.pane.engine.state.ring.screen_rows != info.rows or
+                            result.pane.engine.state.ring.cols != info.cols)
+                        {
+                            result.pane.engine.state.resize(info.rows, info.cols) catch continue;
+                        }
+                        const cells = grid_sync.snapshotCells(payload, info) catch continue;
+                        var idx: usize = 0;
+                        const end_row: usize = @as(usize, info.start_row) + info.row_count;
+                        var row: usize = info.start_row;
+                        while (row < end_row) : (row += 1) {
+                            var col: usize = 0;
+                            while (col < info.cols) : (col += 1) {
+                                result.pane.engine.state.ring.setScreenCell(
+                                    row,
+                                    col,
+                                    grid_sync.unpackCell(cells[idx]),
+                                );
+                                idx += 1;
+                            }
+                            result.pane.engine.state.dirty.mark(row);
+                        }
+                        result.pane.engine.state.cursor.row = info.cursor_row;
+                        result.pane.engine.state.cursor.col = info.cursor_col;
+                        result.pane.engine.state.cursor_visible = info.cursor_visible;
+                        result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
+                        result.pane.engine.state.alt_active = info.alt_active;
+                        if (info.final_chunk and result.tab_idx == ctx.tab_mgr.active) {
+                            got_data = true;
+                        }
                     },
                     else => {},
                 }

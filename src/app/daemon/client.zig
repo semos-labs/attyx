@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 const protocol = @import("protocol.zig");
+const grid_sync = @import("grid_sync.zig");
 const DaemonSession = @import("session.zig").DaemonSession;
 const DaemonPane = @import("pane.zig").DaemonPane;
 
@@ -30,6 +31,16 @@ pub const DaemonClient = struct {
     /// V2: active panes set (panes the client is currently displaying)
     active_panes: [32]u32 = .{0} ** 32,
     active_pane_count: u8 = 0,
+    /// Last engine_generation shipped to this client per active pane,
+    /// parallel-indexed with `active_panes`. 0 means "nothing sent yet" →
+    /// next emission will be a full snapshot. Reset when the slot is
+    /// reassigned to a different pane_id in handleFocusPanes.
+    active_pane_last_gen: [32]u64 = .{0} ** 32,
+    /// Capability bits advertised by this client in its hello payload.
+    /// 0 for legacy clients that didn't send caps. Daemon uses this to
+    /// decide whether it can ship grid_snapshot/grid_delta or must fall
+    /// back to the legacy byte-stream (pane_output) path.
+    peer_caps: u32 = 0,
 
     pub fn init(fd: std.posix.fd_t) DaemonClient {
         return .{ .socket_fd = fd };
@@ -462,6 +473,88 @@ pub const DaemonClient = struct {
         }
     }
 
+    /// True if this client negotiated grid-sync mode in its hello caps.
+    pub fn hasGridSync(self: *const DaemonClient) bool {
+        return self.peer_caps & protocol.Capabilities.GRID_SYNC != 0;
+    }
+
+    /// Find the index of pane_id in active_panes, or null.
+    pub fn findActivePaneSlot(self: *const DaemonClient, pane_id: u32) ?usize {
+        for (self.active_panes[0..self.active_pane_count], 0..) |id, i| {
+            if (id == pane_id) return i;
+        }
+        return null;
+    }
+
+    /// Ship the pane's current engine cell grid to this client as one or
+    /// more grid_snapshot chunks. No-op if the pane has no engine.
+    /// Updates active_pane_last_gen on success. `force` sends even if
+    /// the generation hasn't advanced (used by handleFocusPanes to prime
+    /// a newly-active slot).
+    pub fn sendGridSnapshot(self: *DaemonClient, pane: *DaemonPane, force: bool) void {
+        const eng = pane.engine orelse return;
+        const slot = self.findActivePaneSlot(pane.id) orelse return;
+        const gen = pane.engine_generation;
+        if (!force and self.active_pane_last_gen[slot] == gen) return;
+
+        const rows = pane.rows;
+        const cols = pane.cols;
+        if (rows == 0 or cols == 0) return;
+
+        // Chunk size limit: keep message payload under ~32KB so it fits
+        // the 64KB client read buffer with headroom.
+        const max_chunk_payload: usize = 32 * 1024;
+        const row_bytes: usize = @as(usize, cols) * @sizeOf(grid_sync.PackedCell);
+        if (row_bytes == 0) return;
+        const rows_per_chunk_usize: usize = @max(1, (max_chunk_payload - grid_sync.snapshot_header_size) / row_bytes);
+        const rows_per_chunk: u16 = @intCast(@min(rows_per_chunk_usize, rows));
+
+        var scratch_buf: [max_chunk_payload + protocol.header_size]u8 align(4) = undefined;
+
+        var start: u16 = 0;
+        while (start < rows) {
+            const this_rows = @min(rows_per_chunk, rows - start);
+            const final = (start + this_rows) >= rows;
+            const payload_len: u32 = @intCast(grid_sync.snapshot_header_size + @as(usize, this_rows) * row_bytes);
+            protocol.encodeHeader(scratch_buf[0..protocol.header_size], .grid_snapshot, payload_len);
+
+            const payload_off = protocol.header_size;
+            _ = grid_sync.encodeSnapshotHeader(scratch_buf[payload_off..], .{
+                .pane_id = pane.id,
+                .generation = gen,
+                .rows = rows,
+                .cols = cols,
+                .cursor_row = @intCast(@min(eng.state.cursor.row, std.math.maxInt(u16))),
+                .cursor_col = @intCast(@min(eng.state.cursor.col, std.math.maxInt(u16))),
+                .cursor_visible = eng.state.cursor_visible,
+                .cursor_shape = @intFromEnum(eng.state.cursor_shape),
+                .alt_active = eng.state.alt_active,
+                .start_row = start,
+                .row_count = this_rows,
+                .final_chunk = final,
+            }) catch return;
+
+            // Pack cells directly into the scratch buffer.
+            const cells_off = payload_off + grid_sync.snapshot_header_size;
+            const cells_ptr: [*]grid_sync.PackedCell = @ptrCast(@alignCast(scratch_buf[cells_off..].ptr));
+            var out_idx: usize = 0;
+            for (start..start + this_rows) |row| {
+                for (0..cols) |col| {
+                    const cell = eng.state.ring.getScreenCell(row, col);
+                    cells_ptr[out_idx] = grid_sync.packCell(cell);
+                    out_idx += 1;
+                }
+            }
+
+            const total_len = protocol.header_size + @as(usize, payload_len);
+            self.sendRaw(scratch_buf[0..total_len]);
+            if (self.dead) return;
+            start += this_rows;
+        }
+
+        self.active_pane_last_gen[slot] = gen;
+    }
+
     /// Send a ReplayEnd notification for a pane, signaling that scrollback
     /// replay is complete and real-time data follows.
     pub fn sendReplayEnd(self: *DaemonClient, pane_id: u32) void {
@@ -490,10 +583,10 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
-    /// Send a HelloAck response with daemon's version string.
-    pub fn sendHelloAck(self: *DaemonClient, version: []const u8) void {
+    /// Send a HelloAck response with daemon's version string and capability bits.
+    pub fn sendHelloAck(self: *DaemonClient, version: []const u8, caps: u32) void {
         var payload: [256]u8 = undefined;
-        const p = protocol.encodeHello(&payload, version) catch return;
+        const p = protocol.encodeHello(&payload, version, caps) catch return;
         var buf: [protocol.header_size + 256]u8 = undefined;
         const m = protocol.encodeMessage(&buf, .hello_ack, p) catch return;
         self.sendRaw(m);

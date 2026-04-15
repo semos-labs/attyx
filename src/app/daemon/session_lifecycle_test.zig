@@ -198,11 +198,11 @@ test "hello handshake works across daemon restart" {
 
     // Get version from original daemon
     var c1 = try TestClient.connect(env.path());
-    const hp = try protocol.encodeHello(&buf, "0.0.1");
+    const hp = try protocol.encodeHello(&buf, "0.0.1", 0);
     try c1.send(.hello, hp);
     const ack1 = try c1.expect(.hello_ack, 5000);
-    const v1 = try protocol.decodeHello(ack1);
-    try testing.expect(v1.len > 0);
+    const h1 = try protocol.decodeHello(ack1);
+    try testing.expect(h1.version.len > 0);
     c1.deinit();
 
     // Restart daemon
@@ -211,12 +211,12 @@ test "hello handshake works across daemon restart" {
     // New connection, hello still works
     var c2 = try TestClient.connect(env.path());
     defer c2.deinit();
-    const hp2 = try protocol.encodeHello(&buf, "0.0.1");
+    const hp2 = try protocol.encodeHello(&buf, "0.0.1", 0);
     try c2.send(.hello, hp2);
     const ack2 = try c2.expect(.hello_ack, 5000);
-    const v2 = try protocol.decodeHello(ack2);
+    const h2 = try protocol.decodeHello(ack2);
     // Same compiled binary, so version should match
-    try testing.expectEqualStrings(v1, v2);
+    try testing.expectEqualStrings(h1.version, h2.version);
 }
 
 // ── Edge cases ──

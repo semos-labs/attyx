@@ -1,8 +1,18 @@
 const std = @import("std");
 
+/// Grid-sync wire format (PackedCell + snapshot/delta headers).
+/// Phase 1: reserved message types only. Phase 2 wires callers.
+pub const grid_sync = @import("grid_sync.zig");
+
+// Force grid_sync tests into the test binary even though no code path
+// references its decls yet (Phase 1 reserves the types only).
+comptime {
+    _ = grid_sync;
+}
+
 /// Session protocol message types.
-/// Client → Daemon: 0x01–0x0D
-/// Daemon → Client: 0x81–0x89
+/// Client → Daemon: 0x01–0x1F
+/// Daemon → Client: 0x81–0x9F
 pub const MessageType = enum(u8) {
     // Client → Daemon (session management)
     create = 0x01,
@@ -22,6 +32,11 @@ pub const MessageType = enum(u8) {
     hello = 0x0F,
     set_theme_colors = 0x10,
 
+    // Client → Daemon (grid-sync, server-side engine). Reserved in Phase 1;
+    // encoders/decoders land with the daemon-side engine in Phase 2.
+    get_scrollback_range = 0x13,
+    search_pane = 0x14,
+
     // Daemon → Client
     created = 0x81,
     session_list = 0x82,
@@ -35,6 +50,13 @@ pub const MessageType = enum(u8) {
     layout_sync = 0x8C,
     hello_ack = 0x8D,
     pane_fg_cwd = 0x8E,
+
+    // Daemon → Client (grid-sync). Reserved in Phase 1; payload format
+    // (PackedCell layout, dirty-row bitmap, etc.) defined in Phase 2.
+    grid_snapshot = 0x91,
+    grid_delta = 0x92,
+    scrollback_range = 0x93,
+    search_result = 0x94,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -598,23 +620,56 @@ pub fn decodePaneFgCwd(payload: []const u8) !PaneFgCwdMsg {
     return .{ .pane_id = pane_id, .cwd = payload[6 .. 6 + cwd_len] };
 }
 
-// ── Hello / HelloAck (version handshake) ──
+// ── Hello / HelloAck (version handshake + capability negotiation) ──
 
-/// Encode Hello or HelloAck payload: version_len:u8, version:[N]u8
-pub fn encodeHello(buf: []u8, version: []const u8) ![]u8 {
+/// Capability bits advertised in Hello / HelloAck. Missing bits = 0.
+/// Both sides AND their bitfields to determine the negotiated mode.
+pub const Capabilities = struct {
+    /// Daemon owns the VT engine and ships cell grids (grid_snapshot /
+    /// grid_delta) instead of raw PTY bytes. When both peers advertise
+    /// this, the connection runs in grid-sync mode. Otherwise we fall
+    /// back to the legacy byte-stream path (pane_output / replay_end).
+    pub const GRID_SYNC: u32 = 1 << 0;
+};
+
+/// Capabilities advertised by this build. Both client and daemon speak
+/// grid-sync; mixed-version handshakes fall back to byte-stream
+/// automatically (legacy peer sends caps=0, intersection is 0).
+pub const CAPABILITIES: u32 = Capabilities.GRID_SYNC;
+
+pub const HelloMsg = struct {
+    version: []const u8,
+    caps: u32,
+};
+
+/// Encode Hello or HelloAck payload: version_len:u8, version:[N]u8, caps:u32
+///
+/// Older peers sent just `version_len + version`. Decoders that receive
+/// a trailing caps field from a newer peer simply ignored it (the old
+/// decoder only validated a minimum length). New decoders returning
+/// a HelloMsg default caps=0 when the trailing u32 is absent, so both
+/// directions stay wire-compatible.
+pub fn encodeHello(buf: []u8, version: []const u8, caps: u32) ![]u8 {
     const vlen: u8 = @intCast(@min(version.len, 255));
-    const total: usize = 1 + vlen;
+    const total: usize = 1 + vlen + 4;
     if (buf.len < total) return error.BufferTooSmall;
     buf[0] = vlen;
     @memcpy(buf[1 .. 1 + vlen], version[0..vlen]);
+    std.mem.writeInt(u32, buf[1 + vlen ..][0..4], caps, .little);
     return buf[0..total];
 }
 
-pub fn decodeHello(payload: []const u8) ![]const u8 {
+pub fn decodeHello(payload: []const u8) !HelloMsg {
     if (payload.len < 1) return error.PayloadTooShort;
     const vlen = payload[0];
     if (payload.len < 1 + @as(usize, vlen)) return error.PayloadTooShort;
-    return payload[1 .. 1 + vlen];
+    const version = payload[1 .. 1 + vlen];
+    const caps_off = 1 + @as(usize, vlen);
+    const caps: u32 = if (payload.len >= caps_off + 4)
+        std.mem.readInt(u32, payload[caps_off..][0..4], .little)
+    else
+        0;
+    return .{ .version = version, .caps = caps };
 }
 
 // ── Theme colors ──
@@ -798,7 +853,27 @@ test "rename round-trip" {
 
 test "hello round-trip" {
     var buf: [128]u8 = undefined;
-    const payload = try encodeHello(&buf, "0.2.10");
-    const version = try decodeHello(payload);
-    try std.testing.expectEqualStrings("0.2.10", version);
+    const payload = try encodeHello(&buf, "0.2.10", 0);
+    const msg = try decodeHello(payload);
+    try std.testing.expectEqualStrings("0.2.10", msg.version);
+    try std.testing.expectEqual(@as(u32, 0), msg.caps);
+}
+
+test "hello caps round-trip" {
+    var buf: [128]u8 = undefined;
+    const payload = try encodeHello(&buf, "0.3.15", Capabilities.GRID_SYNC);
+    const msg = try decodeHello(payload);
+    try std.testing.expectEqualStrings("0.3.15", msg.version);
+    try std.testing.expectEqual(Capabilities.GRID_SYNC, msg.caps);
+}
+
+test "hello decode accepts legacy payload without caps" {
+    // Legacy peers sent just vlen + version. Decoder should default caps=0.
+    var buf: [128]u8 = undefined;
+    const v = "legacy";
+    buf[0] = v.len;
+    @memcpy(buf[1 .. 1 + v.len], v);
+    const msg = try decodeHello(buf[0 .. 1 + v.len]);
+    try std.testing.expectEqualStrings("legacy", msg.version);
+    try std.testing.expectEqual(@as(u32, 0), msg.caps);
 }
