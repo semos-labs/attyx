@@ -51,7 +51,7 @@ pub export fn attyx_copy_mode_enter() void {
     state = .{
         .mode = .navigate,
         .cursor_row = c.g_cursor_row - c.g_grid_top_offset - pr,
-        .cursor_col = c.g_cursor_col - pc,
+        .cursor_col = c.g_cursor_col - c.g_grid_left_offset - pc,
         .pane_row = pr,
         .pane_col = pc,
         .pane_rows = if (c.g_pane_rect_rows > 0) c.g_pane_rect_rows else getVisibleRows(),

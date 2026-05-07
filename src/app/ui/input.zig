@@ -220,6 +220,8 @@ const statusbar_mod = @import("../statusbar.zig");
 
 pub fn statusbarTabClick(col: c_int, grid_cols: c_int) void {
     if (terminal.g_statusbar_visible == 0) return;
+    // Side tabs hijack the tab section, so the statusbar doesn't render any.
+    if (terminal.g_tab_side != 0) return;
     const offset = statusbar_mod.tab_col_offset;
     if (col < offset) return;
     const adjusted_col: u16 = @intCast(@as(c_uint, @bitCast(col)) -| offset);
@@ -230,6 +232,44 @@ pub fn statusbarTabClick(col: c_int, grid_cols: c_int) void {
         remaining,
     ) orelse return;
     @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+    wake();
+}
+
+pub fn sideTabClick(row: c_int, grid_rows: c_int) void {
+    _ = grid_rows;
+    if (terminal.g_tab_side == 0) return;
+    if (row < 0) return;
+    const idx = tab_bar_mod.tabIndexAtRow(
+        @intCast(row),
+        @intCast(@atomicLoad(i32, &terminal.g_tab_count, .seq_cst)),
+    ) orelse return;
+    @atomicStore(i32, &g_tab_click_index, @as(i32, idx), .seq_cst);
+    wake();
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar resize drag — input thread writes pending width; PTY thread polls
+// each frame, applies via updateGridOffsets, and persists on drag end.
+// ---------------------------------------------------------------------------
+
+pub var g_sidebar_drag_active: i32 = 0;
+pub var g_sidebar_drag_pending_width: i32 = 0;
+pub var g_sidebar_drag_release_pending: i32 = 0;
+
+pub fn sidebarDragStart() void {
+    @atomicStore(i32, &g_sidebar_drag_pending_width, 0, .seq_cst);
+    @atomicStore(i32, &g_sidebar_drag_active, 1, .seq_cst);
+}
+
+pub fn sidebarDragUpdate(width: c_int) void {
+    if (@atomicLoad(i32, &g_sidebar_drag_active, .seq_cst) == 0) return;
+    @atomicStore(i32, &g_sidebar_drag_pending_width, width, .seq_cst);
+    wake();
+}
+
+pub fn sidebarDragEnd() void {
+    @atomicStore(i32, &g_sidebar_drag_active, 0, .seq_cst);
+    @atomicStore(i32, &g_sidebar_drag_release_pending, 1, .seq_cst);
     wake();
 }
 

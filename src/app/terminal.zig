@@ -25,6 +25,7 @@ const split_layout_mod = @import("split_layout.zig");
 const diag = @import("../logging/diag.zig");
 const platform = @import("../platform/platform.zig");
 const statusbar_mod = @import("statusbar.zig");
+const tab_bar_mod = @import("tab_bar.zig");
 pub const Statusbar = statusbar_mod.Statusbar;
 const ipc_server = @import("../ipc/server.zig");
 
@@ -155,8 +156,14 @@ pub export var g_app_version_len: c_int = @intCast(attyx.version.len);
 
 pub export var g_grid_top_offset: i32 = 0;
 pub export var g_grid_bottom_offset: i32 = 0;
+pub export var g_grid_left_offset: i32 = 0;
+pub export var g_grid_right_offset: i32 = 0;
 pub export var g_statusbar_visible: i32 = 0;
 pub export var g_statusbar_position: i32 = 0; // 0=top, 1=bottom
+pub export var g_tab_side: i32 = 0; // 0=top, 1=left, 2=right
+// User-resized side bar width in cells (0 = use sideBarWidth default).
+// Updated live by mouse drag; persisted to state dir on drag end.
+pub export var g_tab_side_width: i32 = 0;
 pub export var g_toggle_debug_overlay: i32 = 0;
 pub export var g_toggle_anchor_demo: i32 = 0;
 pub export var g_toggle_ai_demo: i32 = 0;
@@ -277,6 +284,10 @@ export fn attyx_picker_cmd(cmd: c_int) void { input.pickerCmd(cmd); }
 export fn attyx_tab_action(action: c_int) void { input.tabAction(action); }
 export fn attyx_tab_bar_click(col: c_int, grid_cols: c_int) void { input.tabBarClick(col, grid_cols); }
 export fn attyx_statusbar_tab_click(col: c_int, grid_cols: c_int) void { input.statusbarTabClick(col, grid_cols); }
+export fn attyx_side_tab_click(row: c_int, grid_rows: c_int) void { input.sideTabClick(row, grid_rows); }
+export fn attyx_sidebar_drag_start() void { input.sidebarDragStart(); }
+export fn attyx_sidebar_drag_update(width: c_int) void { input.sidebarDragUpdate(width); }
+export fn attyx_sidebar_drag_end() void { input.sidebarDragEnd(); }
 export fn attyx_split_action(action: c_int) void { input.splitAction(action); }
 export fn attyx_split_click(col: c_int, row: c_int) void { input.splitClick(col, row); }
 export fn attyx_split_drag_start(col: c_int, row: c_int) void { input.splitDragStart(col, row); }
@@ -342,6 +353,17 @@ pub fn run(
     g_native_tabs_enabled = if (config.tab_appearance == .native) @as(i32, 1) else @as(i32, 0);
     g_tab_always_show = if (config.tab_always_show) @as(i32, 1) else @as(i32, 0);
     g_tab_dim_unfocused = if (config.tab_dim_unfocused) @as(i32, 1) else @as(i32, 0);
+    g_tab_side = switch (config.tab_side) {
+        .none => 0,
+        .left => 1,
+        .right => 2,
+    };
+    // Native tabs win — they reserve the title bar instead of the grid.
+    if (g_native_tabs_enabled != 0) g_tab_side = 0;
+    // Restore the user's last sidebar width across restarts.
+    if (g_tab_side != 0) {
+        if (conn.loadSidebarWidth()) |saved| g_tab_side_width = @intCast(saved);
+    }
 
     var theme_registry = ThemeRegistry.init(allocator);
     defer theme_registry.deinit();
@@ -394,7 +416,16 @@ pub fn run(
             g_statusbar_visible = 1;
         }
     }
+    // Reserve side-tab gutter columns up-front too — otherwise the shell
+    // spawns at full grid width and the prompt overflows past the gutter
+    // until the first SIGWINCH lands.
+    if (g_tab_side != 0) {
+        const req_w: u16 = @intCast(@max(0, g_tab_side_width));
+        const sw: i32 = @intCast(tab_bar_mod.sideBarWidthRequested(config.cols, req_w));
+        if (g_tab_side == 1) g_grid_left_offset = sw else g_grid_right_offset = sw;
+    }
     const initial_pty_rows: u16 = @intCast(@max(1, @as(i32, config.rows) - g_grid_top_offset - g_grid_bottom_offset));
+    const initial_pty_cols: u16 = @intCast(@max(1, @as(i32, config.cols) - g_grid_left_offset - g_grid_right_offset));
 
     // Session mode: connect to daemon. On failure, fall back to direct PTY.
     // Ownership transfers to the initial pane's heap-allocated copy below.
@@ -476,13 +507,13 @@ pub fn run(
 
         // Try to get existing sessions
         sc.requestListSync(2000) catch {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, initial_pty_cols, initial_cwd, initial_shell) catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
                 break :attach_or_create;
             };
-            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
             conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
             break :attach_or_create;
@@ -491,13 +522,13 @@ pub fn run(
         // When -d / --working-directory is explicitly set, always create a
         // fresh session in that directory instead of reattaching to an existing one.
         if (config.working_directory != null) {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, initial_pty_cols, initial_cwd, initial_shell) catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
                 break :attach_or_create;
             };
-            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
             conn.saveLastSession(sid);
             logging.info("session", "created new session {d} for working directory", .{sid});
             break :attach_or_create;
@@ -533,26 +564,26 @@ pub fn run(
         }
 
         if (found_alive) |sid| {
-            if (!doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count)) {
+            if (!doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count)) {
                 logging.err("session", "attach to session {d} failed", .{sid});
-                const new_sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err2| {
+                const new_sid = sc.createSession("default", initial_pty_rows, initial_pty_cols, initial_cwd, initial_shell) catch |err2| {
                     logging.err("session", "create session failed: {}", .{err2});
                     sc.deinit();
                     session_client = null;
                     break :attach_or_create;
                 };
-                _ = doAttach(sc, new_sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+                _ = doAttach(sc, new_sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
             }
             conn.saveLastSession(found_alive.?);
             logging.info("session", "reattached to session {d}", .{found_alive.?});
         } else {
-            const sid = sc.createSession("default", initial_pty_rows, config.cols, initial_cwd, initial_shell) catch |err| {
+            const sid = sc.createSession("default", initial_pty_rows, initial_pty_cols, initial_cwd, initial_shell) catch |err| {
                 logging.err("session", "create session failed: {}", .{err});
                 sc.deinit();
                 session_client = null;
                 break :attach_or_create;
             };
-            _ = doAttach(sc, sid, initial_pty_rows, config.cols, &initial_pane_ids, &initial_pane_count);
+            _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
             conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
         }
@@ -567,9 +598,9 @@ pub fn run(
     // Spawn initial pane: xyron --ipc if detected, otherwise default shell
     if (xyron_heap_path) |xhp| {
         const xa: [2][:0]const u8 = .{ xhp, "--ipc" };
-        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, &xa, cwd_ptr, config.scrollback_lines);
+        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, initial_pty_cols, &xa, cwd_ptr, config.scrollback_lines);
     } else {
-        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, config.cols, spawn_argv, cwd_ptr, config.scrollback_lines);
+        initial_pane.* = try Pane.spawn(allocator, initial_pty_rows, initial_pty_cols, spawn_argv, cwd_ptr, config.scrollback_lines);
     }
 
     // Show visible error in terminal when xyron was enabled but detection failed.
@@ -613,7 +644,7 @@ pub fn run(
             if (layout_codec.deserialize(heap_sc.layout_buf[0..heap_sc.layout_len])) |info| {
                 if (info.tab_count > 0) {
                     tab_mgr.reset(); // tear down initial pane
-                    tab_mgr.reconstructFromLayout(&info, initial_pty_rows, config.cols, config.scrollback_lines) catch {
+                    tab_mgr.reconstructFromLayout(&info, initial_pty_rows, initial_pty_cols, config.scrollback_lines) catch {
                         logging.err("session", "layout reconstruction failed", .{});
                     };
                     if (tab_mgr.count > 0) {
@@ -688,9 +719,13 @@ pub fn run(
     defer allocator.free(scratch_cells);
 
     const active_eng = &tab_mgr.activePane().engine;
-    const total: usize = @as(usize, initial_pty_rows) * @as(usize, config.cols);
-    publish.fillCells(render_cells[0..total], active_eng, total, &initial_theme, null);
-    c.attyx_set_cursor(@intCast(active_eng.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))), @intCast(active_eng.state.cursor.col));
+    const total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+    const left_off_u16: u16 = @intCast(@max(0, g_grid_left_offset));
+    publish.fillCellsStrideAt(render_cells[0..total], active_eng, &initial_theme, config.cols, left_off_u16, null);
+    c.attyx_set_cursor(
+        @intCast(active_eng.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))),
+        @intCast(active_eng.state.cursor.col + left_off_u16),
+    );
 
     var session = try SessionLog.init(allocator);
     defer session.deinit();

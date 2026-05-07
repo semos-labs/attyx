@@ -77,6 +77,21 @@ pub const TabAppearance = enum {
     }
 };
 
+/// Tab side: render the built-in tab bar vertically on the left / right edge.
+/// `.none` keeps the default horizontal placement.
+pub const TabSide = enum {
+    none,
+    left,
+    right,
+
+    pub fn fromString(s: []const u8) ?TabSide {
+        if (std.mem.eql(u8, s, "none")) return .none;
+        if (std.mem.eql(u8, s, "left")) return .left;
+        if (std.mem.eql(u8, s, "right")) return .right;
+        return null;
+    }
+};
+
 const keybinds = @import("keybinds.zig");
 pub const KeybindOverride = keybinds.KeybindOverride;
 pub const SequenceEntry = keybinds.SequenceEntry;
@@ -170,6 +185,7 @@ pub const AppConfig = struct {
     tab_appearance: TabAppearance = .builtin,
     tab_always_show: bool = false,
     tab_dim_unfocused: bool = false,
+    tab_side: TabSide = .none,
 
     // [sessions]
     sessions_enabled: bool = false,
