@@ -219,7 +219,7 @@ fn deserializeSessionInto(r: *SliceReader, allocator: std.mem.Allocator, slot: *
     var s = &(slot.*.?);
     errdefer {
         for (&s.panes) |*pslot| {
-            if (pslot.*) |*p| { p.replay.deinit(); pslot.* = null; }
+            if (pslot.*) |*p| { p.freeTransferableState(); pslot.* = null; }
         }
         slot.* = null;
     }

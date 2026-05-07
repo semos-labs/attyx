@@ -216,12 +216,14 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
-        posix.close(self.master);
+        // master == -1 for inactive (deferred-spawn or daemon-host) panes;
+        // posix.close panics on EBADF in safe builds, so guard.
+        if (self.master != -1) posix.close(self.master);
         if (self.stdout_read_fd != -1) posix.close(self.stdout_read_fd);
         // Use raw C waitpid to handle ECHILD gracefully.
         // std.posix.waitpid treats ECHILD as unreachable, which panics
         // if the child was already reaped (common on some Linux distros).
-        _ = waitpid(self.pid, null, 1); // 1 = WNOHANG
+        if (self.pid != 0) _ = waitpid(self.pid, null, 1); // 1 = WNOHANG
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {

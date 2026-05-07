@@ -8,10 +8,36 @@ const platform = @import("../../platform/platform.zig");
 const HostConnection = if (is_windows) @import("host_pipe.zig").HostConnection else void;
 const host_pipe = if (is_windows) @import("host_pipe.zig") else struct {};
 const attyx = if (is_windows) @import("attyx") else struct {};
+const attyx_lib = @import("attyx");
+const Engine = attyx_lib.Engine;
+
+/// Scrollback lines the daemon-side engine retains. Per-pane cost is
+/// roughly `daemon_engine_scrollback_lines * cols * @sizeOf(Cell)`.
+/// 2048 × 80 × 32B ≈ 5 MB per pane — enough for the visible screen
+/// plus a buffer; scrollback beyond this is served via the ring buffer
+/// + RPC.
+pub const daemon_engine_scrollback_lines: usize = 2048;
 
 const win32_sleep = if (is_windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: std.os.windows.DWORD) callconv(.winapi) void;
 } else struct {};
+
+/// Heap-stored params for a pane whose PTY hasn't been spawned yet.
+/// Used so the daemon can defer the actual fork/exec until the client
+/// supplies real window dimensions — preventing the shell's first prompt
+/// from being rendered (and grid-synced) at config defaults (80×24).
+/// Kept off the DaemonPane to avoid bloating the by-value pane struct
+/// (`[32]?DaemonSession × max_panes_per_session` lives on the stack
+/// during hot-upgrade).
+pub const DeferredSpawnParams = struct {
+    cwd_z_buf: [4097]u8 = undefined,
+    cwd_len: u16 = 0,
+    shell_z_buf: [257]u8 = undefined,
+    shell_len: u16 = 0,
+    cmd_z_buf: [4097]u8 = undefined,
+    cmd_len: u16 = 0,
+    capture_stdout: bool = false,
+};
 
 
 /// A daemon-managed pane wrapping a PTY process and replay buffer.
@@ -55,6 +81,24 @@ pub const DaemonPane = struct {
     theme_cursor: [3]u8 = .{ 220, 220, 220 },
     theme_cursor_set: bool = false,
 
+    /// Authoritative VT engine (heap-allocated so DaemonPane stays slim
+    /// — `var sessions: [32]?DaemonSession` lives on the stack, and an
+    /// inline Engine here blows the stack). PTY bytes get fed here on
+    /// every read; grid-sync clients pull cells/cursor from engine.state.
+    /// Runs in parallel with the ring buffer (which the byte-stream path
+    /// and hot-upgrade handoff still depend on). Null until initialised.
+    engine: ?*Engine = null,
+    /// Monotonic counter bumped when engine.feed dirties any row.
+    engine_generation: u64 = 0,
+
+    /// Pending spawn params. When set, the PTY is inactive and the engine
+    /// is null — the actual fork/exec runs on the first `resize()` call,
+    /// using the resize dims so the shell's first prompt renders at the
+    /// real window size. Heap-allocated so the by-value pane stays small.
+    /// Cleared (and freed) once the spawn is activated.
+    deferred: ?*DeferredSpawnParams = null,
+
+
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
     /// POSIX only — Windows hot-upgrade builds panes directly in upgrade_windows.zig.
     pub const fromRestored = if (!is_windows) fromRestoredImpl else @compileError("fromRestored not available on Windows");
@@ -91,7 +135,39 @@ pub const DaemonPane = struct {
         pane.proc_name_len = nlen;
         // Restore ring buffer contents
         if (ring_data.len > 0) pane.replay.write(ring_data);
+        // Hot-upgrade handoff: rebuild engine from the inherited ring.
+        // Ring holds raw VT bytes, so feeding them reconstructs the
+        // pre-upgrade screen state (minus any bytes older than the ring).
+        if (allocEngine(allocator, rows, cols)) |eng| {
+            pane.engine = eng;
+            const slices = pane.replay.readSlices();
+            if (slices.first.len > 0) eng.feed(slices.first);
+            if (slices.second.len > 0) eng.feed(slices.second);
+            pane.engine_generation = 1;
+        }
         return pane;
+    }
+
+    /// Heap-allocate and init an Engine. Returns null on degenerate
+    /// dimensions or OOM — callers silently fall back to the byte-stream
+    /// path. Engine requires at least a 1×1 grid.
+    fn allocEngine(allocator: std.mem.Allocator, rows: u16, cols: u16) ?*Engine {
+        if (rows == 0 or cols == 0) return null;
+        const eng = allocator.create(Engine) catch return null;
+        eng.* = Engine.init(allocator, rows, cols, daemon_engine_scrollback_lines) catch {
+            allocator.destroy(eng);
+            return null;
+        };
+        return eng;
+    }
+
+    fn freeEngine(self: *DaemonPane) void {
+        if (self.engine) |eng| {
+            const alloc = eng.state.ring.allocator;
+            eng.deinit();
+            alloc.destroy(eng);
+            self.engine = null;
+        }
     }
 
     pub fn spawn(
@@ -157,7 +233,130 @@ pub const DaemonPane = struct {
             pane.stdout_allocator = allocator;
         }
 
+        pane.engine = allocEngine(allocator, rows, cols);
         return pane;
+    }
+
+    /// Spawn a pane in deferred mode: PTY is inactive, engine is null,
+    /// and the spawn params are stashed in a heap-allocated struct. The
+    /// real fork/exec runs on the first `resize()` call, using the resize
+    /// dims so the shell's first prompt renders at the actual window size
+    /// rather than the config defaults (which would bake 80-col newlines
+    /// into the grid that grid-sync then ships unchanged).
+    ///
+    /// Windows currently keeps the immediate-spawn path (host pipe READY
+    /// frame already gates against output before connect).
+    pub fn spawnDeferred(
+        allocator: std.mem.Allocator,
+        id: u32,
+        rows: u16,
+        cols: u16,
+        replay_capacity: usize,
+        cwd: ?[*:0]const u8,
+        shell: ?[*:0]const u8,
+        cmd: ?[*:0]const u8,
+        capture_stdout: bool,
+    ) !DaemonPane {
+        if (comptime is_windows) {
+            return spawn(allocator, id, rows, cols, replay_capacity, cwd, shell, cmd, capture_stdout);
+        }
+        const def = try allocator.create(DeferredSpawnParams);
+        def.* = .{};
+        if (cwd) |c| {
+            const slice = std.mem.sliceTo(c, 0);
+            const len: u16 = @intCast(@min(slice.len, def.cwd_z_buf.len - 1));
+            @memcpy(def.cwd_z_buf[0..len], slice[0..len]);
+            def.cwd_z_buf[len] = 0;
+            def.cwd_len = len;
+        }
+        if (shell) |s| {
+            const slice = std.mem.sliceTo(s, 0);
+            const len: u16 = @intCast(@min(slice.len, def.shell_z_buf.len - 1));
+            @memcpy(def.shell_z_buf[0..len], slice[0..len]);
+            def.shell_z_buf[len] = 0;
+            def.shell_len = len;
+        }
+        if (cmd) |c| {
+            const slice = std.mem.sliceTo(c, 0);
+            const len: u16 = @intCast(@min(slice.len, def.cmd_z_buf.len - 1));
+            @memcpy(def.cmd_z_buf[0..len], slice[0..len]);
+            def.cmd_z_buf[len] = 0;
+            def.cmd_len = len;
+        }
+        def.capture_stdout = capture_stdout;
+        return DaemonPane{
+            .id = id,
+            .pty = Pty.initInactive(),
+            .replay = try RingBuffer.init(allocator, replay_capacity),
+            .rows = rows,
+            .cols = cols,
+            .deferred = def,
+        };
+    }
+
+    /// First-resize activation for a deferred pane: fork+exec the PTY at
+    /// the supplied dims, allocate the engine to match, and free the
+    /// stashed spawn params. POSIX-only — Windows panes never set
+    /// `deferred` (spawnDeferred falls through to the immediate-spawn
+    /// host-pipe path on Windows). The early return on Windows lets
+    /// Zig prune the POSIX-only `Pty.spawn(opts)` call below at
+    /// comptime — the Windows `Pty.spawn` takes a different signature.
+    fn activateDeferred(self: *DaemonPane, rows: u16, cols: u16) !void {
+        if (comptime is_windows) return error.DeferredSpawnUnsupportedOnWindows;
+        const def = self.deferred orelse return;
+        const allocator = self.replay.allocator;
+
+        const cwd: ?[*:0]const u8 = if (def.cwd_len > 0) @ptrCast(&def.cwd_z_buf) else null;
+        const shell: ?[*:0]const u8 = if (def.shell_len > 0) @ptrCast(&def.shell_z_buf) else null;
+        const cmd: ?[*:0]const u8 = if (def.cmd_len > 0) @ptrCast(&def.cmd_z_buf) else null;
+
+        // Same shell-string→argv split as `spawn()`. Local buffers are
+        // fine here: Pty.spawn fork+exec copies argv into the child
+        // before returning, so the slices need only outlive this call.
+        var shell_argv: [4][:0]const u8 = undefined;
+        var shell_argc: usize = 0;
+        var shell_split_buf: [257]u8 = undefined;
+        const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
+            const shell_str = std.mem.sliceTo(s, 0);
+            if (shell_str.len == 0) break :blk null;
+            @memcpy(shell_split_buf[0..shell_str.len], shell_str);
+            var pos: usize = 0;
+            while (pos < shell_str.len and shell_argc < shell_argv.len) {
+                while (pos < shell_str.len and shell_split_buf[pos] == ' ') pos += 1;
+                if (pos >= shell_str.len) break;
+                const start = pos;
+                while (pos < shell_str.len and shell_split_buf[pos] != ' ') pos += 1;
+                shell_split_buf[pos] = 0;
+                shell_argv[shell_argc] = shell_split_buf[start..pos :0];
+                shell_argc += 1;
+                if (pos < shell_str.len) pos += 1;
+            }
+            if (shell_argc > 0) break :blk shell_argv[0..shell_argc] else break :blk null;
+        } else null;
+
+        self.pty = try Pty.spawn(.{
+            .rows = rows,
+            .cols = cols,
+            .cwd = cwd,
+            .argv = argv,
+            .startup_cmd = cmd,
+            .capture_stdout = def.capture_stdout,
+        });
+
+        if (def.capture_stdout) {
+            const cs = allocator.create(std.ArrayList(u8)) catch null;
+            if (cs) |c| c.* = .empty;
+            self.captured_stdout = cs;
+            self.stdout_allocator = allocator;
+        }
+
+        self.engine = allocEngine(allocator, rows, cols);
+        self.rows = rows;
+        self.cols = cols;
+        self.engine_generation = 1;
+
+        allocator.destroy(def);
+        self.deferred = null;
     }
 
     /// Windows: spawn a host process and connect to it via named pipe.
@@ -192,7 +391,7 @@ pub const DaemonPane = struct {
         }
         conn.host_pid = host_pid;
 
-        return DaemonPane{
+        var pane = DaemonPane{
             .id = id,
             .pty = Pty.initInactive(),
             .host_conn = conn,
@@ -200,6 +399,8 @@ pub const DaemonPane = struct {
             .rows = rows,
             .cols = cols,
         };
+        pane.engine = allocEngine(allocator, rows, cols);
+        return pane;
     }
 
     fn deriveShellType(shell_str: []const u8) []const u8 {
@@ -210,6 +411,16 @@ pub const DaemonPane = struct {
         if (std.mem.indexOf(u8, shell_str, "powershell") != null) return "pwsh";
         if (std.mem.indexOf(u8, shell_str, "cmd") != null) return "cmd";
         return "auto";
+    }
+
+    /// Feed bytes into the daemon-side engine and bump generation if any
+    /// row gets dirtied. Safe to call with no engine (no-op).
+    fn feedEngine(self: *DaemonPane, data: []const u8) void {
+        const eng = self.engine orelse return;
+        eng.feed(data);
+        if (eng.state.dirty.any()) {
+            self.engine_generation +%= 1;
+        }
     }
 
     /// Process data already in the output buffer (from host pipe frames).
@@ -225,6 +436,7 @@ pub const DaemonPane = struct {
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
+            self.feedEngine(data);
         }
     }
 
@@ -245,6 +457,7 @@ pub const DaemonPane = struct {
             self.trackModes(slice);
             self.trackOsc(slice);
             self.interceptQueries(slice);
+            self.feedEngine(slice);
         }
         return n;
     }
@@ -266,6 +479,7 @@ pub const DaemonPane = struct {
             self.trackModes(data);
             self.trackOsc(data);
             self.interceptQueries(data);
+            self.feedEngine(data);
         }
         return n;
     }
@@ -404,19 +618,28 @@ pub const DaemonPane = struct {
         }
     }
 
-    /// Resize the PTY.
+    /// Resize the PTY. For deferred panes (POSIX), the first resize call
+    /// is what triggers the actual fork/exec — the shell starts at the
+    /// supplied dims and never sees a config-default 80×24 phase.
     pub fn resize(self: *DaemonPane, rows: u16, cols: u16) !void {
+        if (self.deferred != null) {
+            return self.activateDeferred(rows, cols);
+        }
         if (comptime is_windows) {
             if (self.host_conn) |hc| {
                 if (!hc.sendResize(rows, cols)) return error.ResizeFailed;
                 self.rows = rows;
                 self.cols = cols;
+                if (rows > 0 and cols > 0) if (self.engine) |eng| eng.state.resize(rows, cols) catch {};
+                self.engine_generation +%= 1;
                 return;
             }
         }
         try self.pty.resize(rows, cols);
         self.rows = rows;
         self.cols = cols;
+        if (self.engine) |eng| eng.state.resize(rows, cols) catch {};
+        self.engine_generation +%= 1;
     }
 
     /// Force a full repaint after focus change so TUI apps re-render their
@@ -477,7 +700,27 @@ pub const DaemonPane = struct {
     }
 
     /// Check if the foreground process CWD changed. Returns the new CWD if changed, null otherwise.
+    /// Prefers the engine's OSC 7 working_directory (also set by xyron's
+    /// OSC 7339 cwd_changed event) — for xyron-wrapped shells, the
+    /// platform's getForegroundCwd returns xyron's own launch dir rather
+    /// than the user's shell cwd. Falls back to platform lookup for plain
+    /// shells (zsh/bash) that don't emit OSC 7.
     pub fn checkFgCwdChanged(self: *DaemonPane) ?[]const u8 {
+        // Prefer engine's OSC-reported cwd.
+        if (self.engine) |eng| {
+            if (eng.state.working_directory) |uri| {
+                if (parseCwdUri(uri)) |path| {
+                    const len: u16 = @intCast(@min(path.len, 512));
+                    if (len == self.fg_cwd_len and std.mem.eql(u8, self.fg_cwd[0..len], path[0..len])) {
+                        return null; // unchanged
+                    }
+                    @memcpy(self.fg_cwd[0..len], path[0..len]);
+                    self.fg_cwd_len = len;
+                    return self.fg_cwd[0..len];
+                }
+            }
+        }
+
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd = if (comptime is_windows)
             @as(?[]const u8, null)
@@ -492,6 +735,23 @@ pub const DaemonPane = struct {
         @memcpy(self.fg_cwd[0..len], resolved[0..len]);
         self.fg_cwd_len = len;
         return self.fg_cwd[0..len];
+    }
+
+    /// Strip a `file://[host]` prefix to get the path component.
+    /// Returns a slice of `uri` (caller doesn't free).
+    fn parseCwdUri(uri: []const u8) ?[]const u8 {
+        return parseCwdUriPublic(uri);
+    }
+
+    /// Public variant so other daemon modules can reuse this parser.
+    pub fn parseCwdUriPublic(uri: []const u8) ?[]const u8 {
+        const prefix = "file://";
+        if (!std.mem.startsWith(u8, uri, prefix)) return null;
+        const after_scheme = uri[prefix.len..];
+        const slash_idx = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return null;
+        const path = after_scheme[slash_idx..];
+        if (path.len == 0) return null;
+        return path;
     }
 
     const pane_queries = @import("pane_queries.zig");
@@ -521,6 +781,19 @@ pub const DaemonPane = struct {
         return &[_]u8{};
     }
 
+    /// Release everything except the PTY/host connection. Used during
+    /// hot-upgrade handoff (old process) where the PTY fd is inherited
+    /// by the new daemon, but the ring and engine allocations belong to
+    /// this process and must be freed before handoff.
+    pub fn freeTransferableState(self: *DaemonPane) void {
+        if (self.deferred) |def| {
+            self.replay.allocator.destroy(def);
+            self.deferred = null;
+        }
+        self.replay.deinit();
+        self.freeEngine();
+    }
+
     pub fn deinit(self: *DaemonPane) void {
         self.deinitHost();
         if (self.captured_stdout) |cs| {
@@ -529,6 +802,11 @@ pub const DaemonPane = struct {
                 alloc.destroy(cs);
             }
         }
+        if (self.deferred) |def| {
+            self.replay.allocator.destroy(def);
+            self.deferred = null;
+        }
+        self.freeEngine();
         self.pty.deinit();
         self.replay.deinit();
         self.* = undefined;

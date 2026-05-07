@@ -31,6 +31,7 @@ const selection = @import("selection.zig");
 const toast = attyx.overlay_toast;
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
+const grid_sync = @import("../daemon/grid_sync.zig");
 
 /// Re-export from actions module for external access.
 pub const computeSplitGaps = actions.computeSplitGaps;
@@ -179,23 +180,61 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
-    // When xyron is enabled in session mode, the daemon may not have output
-    // yet (xyron just started). Wait briefly for initial prompt data.
+    // Cold-launch dims handoff for daemon-backed startup pane.
+    //
+    // The session is created with the daemon pane in DEFERRED-SPAWN
+    // mode (`pane.deferred != null` on the daemon). The shell hasn't
+    // been forked yet — it will spawn at whatever dims we forward via
+    // the first pane_resize. So we wait for the main thread's real
+    // window dims to land in `g_pending_resize`, send pane_resize once,
+    // and the shell's very first prompt renders at the actual width.
+    //
+    // No stale 80×24 snapshot, no SIGWINCH-redraw nudge — there's
+    // nothing to redraw, the shell is starting fresh.
     if (ctx.session_client != null and ctx.xyron_path != null) {
         const startup_pane = ctx.tab_mgr.activePane();
         if (startup_pane.daemon_pane_id != null) {
+            logging.info("startup", "waiting for real window dims (session at {d}x{d})", .{ ctx.grid_cols, ctx.grid_rows });
+            // Wait up to 2s for `g_pending_resize` from the main thread.
+            // On timeout fall through with whatever dims we have so the
+            // deferred pane still activates (worst case: config defaults).
+            var dims_arrived = false;
+            for (0..40) |tick| {
+                var rr: c_int = 0;
+                var rc: c_int = 0;
+                if (c.attyx_check_resize(&rr, &rc) != 0) {
+                    logging.info("startup", "got resize {d}x{d} at tick {d}", .{ rc, rr, tick });
+                    const gaps = actions.computeSplitGaps();
+                    ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+                    ctx.grid_rows = @intCast(rr);
+                    ctx.grid_cols = @intCast(rc);
+                    c.attyx_set_grid_size(rc, rr);
+                    dims_arrived = true;
+                    break;
+                }
+                posix.nanosleep(0, 50_000_000); // 50ms
+            }
+            if (!dims_arrived) {
+                logging.warn("startup", "timed out waiting for window dims; activating at {d}x{d}", .{ ctx.grid_cols, ctx.grid_rows });
+            }
+            // Resize local panes + ship pane_resize to the daemon. This
+            // is what triggers the deferred spawn on the daemon side.
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
+            if (ctx.session_client) |sc_resize| {
+                if (startup_pane.daemon_pane_id) |dpid|
+                    sc_resize.sendPaneResize(dpid, pty_rows, ctx.grid_cols) catch {};
+            }
+            startup_pane.pending_pty_resize = false;
+            // Drain daemon messages until the shell draws its first
+            // prompt (cursor advances). Standard sync — no special
+            // post-resize delay needed since the shell is starting from
+            // scratch at the correct dims.
             for (0..40) |_| { // up to 2 seconds
                 if (ctx.session_client) |sc| {
                     _ = sc.recvData();
-                    while (sc.readMessage()) |msg| {
-                        switch (msg) {
-                            .pane_output => |out| {
-                                startup_pane.engine.feed(out.data);
-                                _ = startup_pane.engine.state.drainResponse();
-                            },
-                            else => {},
-                        }
-                    }
+                    while (sc.readMessage()) |msg|
+                        _ = applyDaemonContentMessage(ctx, msg);
                 }
                 if (startup_pane.engine.state.cursor.row > 0 or startup_pane.engine.state.cursor.col > 0) break;
                 posix.nanosleep(0, 50_000_000); // 50ms
@@ -732,6 +771,25 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const synced_vp: i32 = @bitCast(c.g_viewport_offset);
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
+        // Grid-sync: if the user scrolled past what we've hydrated, ask
+        // the daemon for older rows. Gate on `last_scrollback_rpc_sb` so
+        // we only fire one RPC per distinct scrollback count — a held
+        // PgUp keeps viewport_offset > sb until the response lands and
+        // grows sb, which then unblocks the next request.
+        if (ctx.session_client) |sc_rpc| {
+            if (sc_rpc.hasGridSync()) {
+                const active_pane = ctx.tab_mgr.activePane();
+                if (active_pane.daemon_pane_id) |dpid| {
+                    const sb: u32 = @intCast(publish.ctxEngine(ctx).state.ring.scrollbackCount());
+                    const vp: u32 = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
+                    if (vp > sb and active_pane.last_scrollback_rpc_sb != sb) {
+                        sc_rpc.sendGetScrollbackRange(dpid, sb, 256) catch {};
+                        active_pane.last_scrollback_rpc_sb = sb;
+                    }
+                }
+            }
+        }
+
         // Snapshot scrollback count before feeding data — used to adjust
         // selection coordinates when new content scrolls the viewport.
         const sb_before: i32 = @intCast(publish.ctxEngine(ctx).state.ring.scrollbackCount());
@@ -908,6 +966,32 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     .layout_sync => |sync| {
                         session_actions.handleLayoutSync(ctx, sync.layout);
                         got_data = true;
+                    },
+                    .grid_snapshot => |payload| {
+                        if (applyGridSnapshot(ctx, payload)) |res| {
+                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active) {
+                                got_data = true;
+                                actions.g_force_full_redraw = true;
+                            }
+                        }
+                    },
+                    .pane_title => |pt| {
+                        if (findPaneByDaemonId(ctx, pt.pane_id)) |result| {
+                            result.pane.engine.state.setTitle(pt.title);
+                            if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
+                        }
+                    },
+                    .scrollback_chunk => |payload| {
+                        const n = applyScrollbackChunk(ctx, payload);
+                        logging.debug("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
+                        got_data = true;
+                        actions.g_force_full_redraw = true;
+                    },
+                    .scrollback_range => |payload| {
+                        const n = applyScrollbackRange(ctx, payload);
+                        logging.debug("grid", "scrollback_range applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
+                        got_data = true;
+                        actions.g_force_full_redraw = true;
                     },
                     else => {},
                 }
@@ -1631,6 +1715,198 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
         }
     }
     return .ok;
+}
+
+/// Apply a grid_snapshot payload to the matching client-side pane. Returns
+/// info on success so the caller can decide whether to force a redraw.
+/// Shared by the startup drain (xyron path) and the main event loop so
+/// snapshots aren't silently dropped during startup.
+const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32 };
+fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
+    const info = grid_sync.decodeSnapshotHeader(payload) catch {
+        logging.warn("grid", "snapshot decode failed", .{});
+        return null;
+    };
+    const result = findPaneByDaemonId(ctx, info.pane_id) orelse {
+        logging.warn("grid", "snapshot for unknown pane {d}", .{info.pane_id});
+        return null;
+    };
+    // Resize engine if daemon's grid differs from ours. If cols changed,
+    // any cached scrollback rows have the old width and are no longer
+    // compatible with the new snapshot stream. The reflow pass inside
+    // state.resize will attempt to preserve scrollback, but its output
+    // may mismatch what the daemon has (the daemon did its own resize +
+    // reflow independently). Safest: wipe client scrollback on cols
+    // change so a fresh focus cycle re-hydrates from the daemon.
+    const ring_cols_before: usize = result.pane.engine.state.ring.cols;
+    const cols_changed = ring_cols_before != info.cols;
+    if (result.pane.engine.state.ring.screen_rows != info.rows or cols_changed) {
+        result.pane.engine.state.resize(info.rows, info.cols) catch return null;
+        if (cols_changed) {
+            // Drop any scrollback accumulated with the old cols: reset
+            // count to screen_rows (so scrollbackCount() == 0).
+            const ring = &result.pane.engine.state.ring;
+            ring.count = ring.screen_rows;
+        }
+    }
+    // Scrollback growth is handled EXPLICITLY via scrollback_chunk
+    // messages the daemon ships right before the snapshot (oldest-first
+    // order, appended to our ring). We no longer rely on shifting the
+    // client's own top-of-screen rows into scrollback — that was unsound
+    // when multiple daemon-side scrolls batched into one snapshot tick.
+    _ = info.scrollback_delta;
+    const cell_bytes = grid_sync.snapshotCellBytes(payload, info) catch return null;
+    var idx: usize = 0;
+    const end_row: usize = @as(usize, info.start_row) + info.row_count;
+    var row: usize = info.start_row;
+    while (row < end_row) : (row += 1) {
+        var col: usize = 0;
+        while (col < info.cols) : (col += 1) {
+            const packed_cell = grid_sync.readPackedCell(cell_bytes, idx);
+            result.pane.engine.state.ring.setScreenCell(
+                row,
+                col,
+                grid_sync.unpackCell(packed_cell),
+            );
+            idx += 1;
+        }
+        result.pane.engine.state.dirty.mark(row);
+    }
+    result.pane.engine.state.cursor.row = info.cursor_row;
+    result.pane.engine.state.cursor.col = info.cursor_col;
+    result.pane.engine.state.cursor_visible = info.cursor_visible;
+    result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
+    result.pane.engine.state.alt_active = info.alt_active;
+    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
+}
+
+/// Apply a scrollback_range payload (RPC response) to the matching pane,
+/// PREPENDING rows (newest-first wire order) at the oldest end of
+/// scrollback. Returns the number of rows actually prepended.
+fn applyScrollbackRange(ctx: *PtyThreadCtx, payload: []const u8) u16 {
+    const info = grid_sync.decodeScrollbackHeader(payload) catch return 0;
+    const result = findPaneByDaemonId(ctx, info.pane_id) orelse return 0;
+    const ring = &result.pane.engine.state.ring;
+    if (info.cols != ring.cols) return 0;
+    const cell_bytes = grid_sync.scrollbackCellBytes(payload, info) catch return 0;
+    const cols = info.cols;
+    var row_cells: [512]attyx.Cell = undefined;
+    var idx: usize = 0;
+    var r: u16 = 0;
+    var applied: u16 = 0;
+    while (r < info.row_count) : (r += 1) {
+        const limit: usize = @min(cols, row_cells.len);
+        for (0..limit) |c_idx| {
+            row_cells[c_idx] = grid_sync.unpackCell(grid_sync.readPackedCell(cell_bytes, idx));
+            idx += 1;
+        }
+        while (idx % cols != 0) : (idx += 1) {}
+        if (ring.prependRow(row_cells[0..limit], false)) applied += 1;
+    }
+    // No dirty-mark needed — the SCREEN didn't change, only scrollback
+    // (which affects what viewportRow returns for offsets > sb_old).
+    return applied;
+}
+
+/// Apply a scrollback_chunk payload to the matching pane, APPENDING rows
+/// (oldest-first wire order) at the newest end of scrollback. Returns the
+/// number of rows actually appended.
+fn applyScrollbackChunk(ctx: *PtyThreadCtx, payload: []const u8) u16 {
+    const info = grid_sync.decodeScrollbackHeader(payload) catch return 0;
+    const result = findPaneByDaemonId(ctx, info.pane_id) orelse return 0;
+    const ring = &result.pane.engine.state.ring;
+    if (info.cols != ring.cols) return 0;
+    const cell_bytes = grid_sync.scrollbackCellBytes(payload, info) catch return 0;
+    const cols = info.cols;
+    var row_cells: [512]attyx.Cell = undefined;
+    var idx: usize = 0;
+    var r: u16 = 0;
+    var applied: u16 = 0;
+    while (r < info.row_count) : (r += 1) {
+        const limit: usize = @min(cols, row_cells.len);
+        for (0..limit) |c_idx| {
+            row_cells[c_idx] = grid_sync.unpackCell(grid_sync.readPackedCell(cell_bytes, idx));
+            idx += 1;
+        }
+        while (idx % cols != 0) : (idx += 1) {}
+        if (ring.appendScrollbackRow(row_cells[0..limit], false)) applied += 1;
+    }
+    if (result.tab_idx == ctx.tab_mgr.active) {
+        result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
+    }
+    return applied;
+}
+
+/// Apply a daemon → client "content" message (cells, scrollback, title,
+/// cwd, proc name, byte-stream output) to the appropriate pane. Returns
+/// true if the message was a content message (handled) — false for
+/// loop-control messages (pane_died, replay_end, layout_sync) which
+/// the caller must handle itself.
+///
+/// Shared between the startup drain loop and the main event loop so
+/// metadata messages that arrive during startup don't get dropped.
+fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client.zig").DaemonMessage) bool {
+    switch (msg) {
+        .pane_output => |out| {
+            if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
+                if (result.pane.needs_engine_reinit) {
+                    if (result.pane.shadow_engine == null) {
+                        const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+                        const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+                        const shadow = @import("attyx").Engine.init(
+                            result.pane.allocator,
+                            rows,
+                            cols,
+                            ctx.applied_scrollback_lines,
+                        ) catch return true;
+                        result.pane.shadow_engine = shadow;
+                        result.pane.shadow_engine.?.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
+                    }
+                    result.pane.shadow_engine.?.feed(out.data);
+                    _ = result.pane.shadow_engine.?.state.drainResponse();
+                } else {
+                    result.pane.engine.feed(out.data);
+                    _ = result.pane.engine.state.drainResponse();
+                }
+            }
+            return true;
+        },
+        .grid_snapshot => |payload| {
+            _ = applyGridSnapshot(ctx, payload);
+            return true;
+        },
+        .scrollback_chunk => |payload| {
+            _ = applyScrollbackChunk(ctx, payload);
+            return true;
+        },
+        .scrollback_range => |payload| {
+            _ = applyScrollbackRange(ctx, payload);
+            return true;
+        },
+        .pane_fg_cwd => |fc| {
+            if (findPaneByDaemonId(ctx, fc.pane_id)) |result| {
+                const len: u16 = @intCast(@min(fc.cwd.len, 512));
+                @memcpy(result.pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
+                result.pane.daemon_fg_cwd_len = len;
+            }
+            return true;
+        },
+        .pane_title => |pt| {
+            if (findPaneByDaemonId(ctx, pt.pane_id)) |result| {
+                result.pane.engine.state.setTitle(pt.title);
+            }
+            return true;
+        },
+        .pane_proc_name => |pn| {
+            if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
+                const len: u8 = @intCast(@min(pn.name.len, 64));
+                @memcpy(result.pane.daemon_proc_name[0..len], pn.name[0..len]);
+                result.pane.daemon_proc_name_len = len;
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {

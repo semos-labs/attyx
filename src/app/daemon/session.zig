@@ -68,7 +68,11 @@ pub const DaemonSession = struct {
             session.shell_len = @intCast(slen);
         }
 
-        session.panes[0] = try DaemonPane.spawn(allocator, initial_pane_id, rows, cols, replay_capacity, cwd, shell, null, false);
+        // Defer the actual fork/exec until the client supplies real
+        // window dims (via the first pane_resize). The shell's first
+        // prompt then renders at the actual width — no 80-col-wrapped
+        // grid getting shipped via grid-sync.
+        session.panes[0] = try DaemonPane.spawnDeferred(allocator, initial_pane_id, rows, cols, replay_capacity, cwd, shell, null, false);
         session.pane_count = 1;
         return session;
     }
@@ -160,6 +164,11 @@ pub const DaemonSession = struct {
         self.rows = rows;
         self.cols = cols;
         const pane = self.firstPane() orelse return error.NoPanes;
+        // Skip deferred panes: their first activation must happen via an
+        // explicit pane_resize message carrying the real window dims, not
+        // via attach-time defaults (which would re-introduce the cold-
+        // launch wrap by spawning the shell at 80×24).
+        if (pane.deferred != null) return;
         try pane.resize(rows, cols);
     }
 

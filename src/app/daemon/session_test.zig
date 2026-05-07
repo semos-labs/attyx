@@ -254,6 +254,10 @@ test "pane input reaches PTY and produces output" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
@@ -290,7 +294,10 @@ test "pane resize updates dimensions via stty" {
     defer client.deinit();
 
     var buf: [4200]u8 = undefined;
-    const cp = try protocol.encodeCreate(&buf, "resize-test", 24, 80, "/tmp", "");
+    // Use /bin/sh: smaller startup cost than zsh, no shell-integration
+    // recursion under SIGWINCH-during-init, and `stty size` works the
+    // same. The test only cares that the kernel TIOCSWINSZ propagated.
+    const cp = try protocol.encodeCreate(&buf, "resize-test", 24, 80, "/tmp", "/bin/sh");
     try client.send(.create, cp);
     const created = try client.expect(.created, 5000);
     const sid = try protocol.decodeCreated(created);
@@ -301,12 +308,16 @@ test "pane resize updates dimensions via stty" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     // Focus the pane so we get output
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
     // Wait for shell startup, drain initial output
-    posix.nanosleep(0, 200_000_000);
+    posix.nanosleep(0, 400_000_000);
     _ = client.tryParse(.pane_output);
     client.read_len = 0;
 
@@ -361,6 +372,10 @@ test "focus_panes triggers replay_end for new panes" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
@@ -381,14 +396,14 @@ test "hello returns hello_ack with daemon version" {
 
     var buf: [256]u8 = undefined;
     // Send hello with a fake client version
-    const hp = try protocol.encodeHello(&buf, "99.0.0");
+    const hp = try protocol.encodeHello(&buf, "99.0.0", 0);
     try client.send(.hello, hp);
 
     // Daemon should respond with hello_ack containing its own version
     const ack_payload = try client.expect(.hello_ack, 5000);
-    const daemon_version = try protocol.decodeHello(ack_payload);
+    const daemon_hello = try protocol.decodeHello(ack_payload);
     // Version must be non-empty and match the compiled-in version
-    try testing.expect(daemon_version.len > 0);
+    try testing.expect(daemon_hello.version.len > 0);
 }
 
 test "hello with matching version does not trigger upgrade flag" {
@@ -400,17 +415,18 @@ test "hello with matching version does not trigger upgrade flag" {
 
     var buf: [256]u8 = undefined;
     // First, discover the daemon's version via hello
-    const hp = try protocol.encodeHello(&buf, "probe");
+    const hp = try protocol.encodeHello(&buf, "probe", 0);
     try client.send(.hello, hp);
     const ack = try client.expect(.hello_ack, 5000);
-    const version = try protocol.decodeHello(ack);
+    const probe_hello = try protocol.decodeHello(ack);
+    const version = probe_hello.version;
 
     // Now send hello with the matching version
-    const hp2 = try protocol.encodeHello(&buf, version);
+    const hp2 = try protocol.encodeHello(&buf, version, 0);
     try client.send(.hello, hp2);
     const ack2 = try client.expect(.hello_ack, 5000);
-    const v2 = try protocol.decodeHello(ack2);
-    try testing.expectEqualStrings(version, v2);
+    const h2 = try protocol.decodeHello(ack2);
+    try testing.expectEqualStrings(version, h2.version);
 
     // Daemon should still be running (not trying to upgrade/restart)
     // Verify by creating a session successfully

@@ -214,7 +214,7 @@ fn deserializeSession(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !D
     errdefer {
         for (&s.panes) |*pslot| {
             if (pslot.*) |*p| {
-                p.replay.deinit();
+                p.freeTransferableState();
                 pslot.* = null;
             }
         }
@@ -600,7 +600,7 @@ pub fn tryRecoverStale(
         if (slot.*) |*s| {
             for (&s.panes) |*pslot| {
                 if (pslot.*) |*p| {
-                    p.replay.deinit();
+                    p.freeTransferableState();
                     pslot.* = null;
                 }
             }
@@ -680,9 +680,9 @@ test "serialize/deserialize round-trip" {
     const slices = rp.replay.readSlices();
     try std.testing.expectEqualStrings("hello world", slices.first);
 
-    // Clean up ring buffers (don't deinit panes — fake fd/pid)
-    sessions[0].?.panes[0].?.replay.deinit();
-    out_sessions[0].?.panes[0].?.replay.deinit();
+    // Clean up ring buffers + engines (don't deinit panes — fake fd/pid)
+    sessions[0].?.panes[0].?.freeTransferableState();
+    out_sessions[0].?.panes[0].?.freeTransferableState();
 }
 
 test "stale recovery strips panes and marks sessions dead" {
@@ -738,7 +738,7 @@ test "stale recovery strips panes and marks sessions dead" {
         if (slot.*) |*rs| {
             for (&rs.panes) |*pslot| {
                 if (pslot.*) |*p| {
-                    p.replay.deinit();
+                    p.freeTransferableState();
                     pslot.* = null;
                 }
             }

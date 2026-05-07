@@ -73,6 +73,15 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
             .pane_created => {},
             .err => {},
             .hello_ack => {},
+            // Grid-sync messages: ignored on Windows until the grid-sync
+            // receivers in event_loop.zig are ported over. The Windows
+            // build advertises caps=0 in its hello, so a spec-conforming
+            // daemon won't send these — but in practice a mixed-version
+            // daemon or rogue server could, and we must not panic on them.
+            .grid_snapshot => {},
+            .scrollback_chunk => {},
+            .scrollback_range => {},
+            .pane_title => {},
         }
     }
     return got_output;
