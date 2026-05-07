@@ -297,8 +297,12 @@ pub const DaemonPane = struct {
     /// First-resize activation for a deferred pane: fork+exec the PTY at
     /// the supplied dims, allocate the engine to match, and free the
     /// stashed spawn params. POSIX-only — Windows panes never set
-    /// `deferred`.
+    /// `deferred` (spawnDeferred falls through to the immediate-spawn
+    /// host-pipe path on Windows). The early return on Windows lets
+    /// Zig prune the POSIX-only `Pty.spawn(opts)` call below at
+    /// comptime — the Windows `Pty.spawn` takes a different signature.
     fn activateDeferred(self: *DaemonPane, rows: u16, cols: u16) !void {
+        if (comptime is_windows) return error.DeferredSpawnUnsupportedOnWindows;
         const def = self.deferred orelse return;
         const allocator = self.replay.allocator;
 
