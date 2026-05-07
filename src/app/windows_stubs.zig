@@ -342,6 +342,16 @@ export fn attyx_statusbar_tab_click(col: c_int, grid_cols: c_int) void {
         @atomicStore(i32, &tab_click_index, idx, .seq_cst);
 }
 
+export fn attyx_side_tab_click(row: c_int, grid_rows: c_int) void {
+    _ = row;
+    _ = grid_rows;
+    // Windows port: vertical tabs not yet implemented.
+}
+
+export fn attyx_sidebar_drag_start() void {}
+export fn attyx_sidebar_drag_update(width: c_int) void { _ = width; }
+export fn attyx_sidebar_drag_end() void {}
+
 // ---------------------------------------------------------------------------
 // Splits — atomic action signals
 // ---------------------------------------------------------------------------
@@ -514,9 +524,13 @@ pub export var g_app_version_len: c_int = 0;
 
 pub export var g_grid_top_offset: i32 = 0;
 pub export var g_grid_bottom_offset: i32 = 0;
+pub export var g_grid_left_offset: i32 = 0;
+pub export var g_grid_right_offset: i32 = 0;
 pub export var g_statusbar_visible: i32 = 0;
 pub export var g_statusbar_position: i32 = 0;
 pub export var g_tab_bar_visible: i32 = 0;
+pub export var g_tab_side: i32 = 0;
+pub export var g_tab_side_width: i32 = 0;
 pub export var g_toggle_debug_overlay: i32 = 0;
 pub export var g_toggle_anchor_demo: i32 = 0;
 pub export var g_toggle_ai_demo: i32 = 0;

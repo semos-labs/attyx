@@ -140,10 +140,11 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     ctx.grid_rows = @intCast(rr);
                     ctx.grid_cols = @intCast(rc);
                     const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                    ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
+                    const pty_cols: u16 = @intCast(@max(1, rc - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+                    ctx.tab_mgr.resizeAll(pty_rows, pty_cols);
                     // Send TIOCSWINSZ immediately so the shell starts at the
                     // correct size — no debounce during startup.
-                    startup_pane.pty.resize(pty_rows, @intCast(rc)) catch {};
+                    startup_pane.pty.resize(pty_rows, pty_cols) catch {};
                     startup_pane.pending_pty_resize = false;
                     c.attyx_set_grid_size(rc, rr);
                 }
@@ -162,12 +163,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Publish whatever the engine has to the cell buffer.
         {
             const eng = &startup_pane.engine;
-            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
+            const left_off_u16: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+            const grid_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
             c.attyx_begin_cell_update();
-            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+            const bg_cell = publish.bgCell(&ctx.active_theme);
+            @memset(ctx.cells[0..grid_total], bg_cell);
+            publish.fillCellsStrideAt(ctx.cells[0..grid_total], eng, &ctx.active_theme, ctx.grid_cols, left_off_u16, null);
             c.attyx_set_cursor(
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                @intCast(eng.state.cursor.col),
+                @intCast(eng.state.cursor.col + left_off_u16),
             );
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
@@ -198,12 +202,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
             // Publish whatever we got
             const eng = &startup_pane.engine;
-            const total = eng.state.ring.screen_rows * eng.state.ring.cols;
+            const left_off_u16: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+            const grid_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
             c.attyx_begin_cell_update();
-            publish.fillCells(ctx.cells[0..total], eng, total, &ctx.active_theme, null);
+            const bg_cell = publish.bgCell(&ctx.active_theme);
+            @memset(ctx.cells[0..grid_total], bg_cell);
+            publish.fillCellsStrideAt(ctx.cells[0..grid_total], eng, &ctx.active_theme, ctx.grid_cols, left_off_u16, null);
             c.attyx_set_cursor(
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                @intCast(eng.state.cursor.col),
+                @intCast(eng.state.cursor.col + left_off_u16),
             );
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
@@ -484,6 +491,58 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     ctx.tab_mgr.switchTo(idx);
                     actions.switchActiveTab(ctx);
                 }
+            }
+        }
+
+        // Sidebar drag-resize: apply any pending width and persist on release.
+        if (terminal.g_tab_side != 0) {
+            const dragging = @atomicLoad(i32, &input.g_sidebar_drag_active, .seq_cst) != 0;
+            const pending = @atomicLoad(i32, &input.g_sidebar_drag_pending_width, .seq_cst);
+            if ((dragging or pending != 0) and pending > 0) {
+                const cur = @atomicLoad(i32, &terminal.g_tab_side_width, .seq_cst);
+                if (pending != cur) {
+                    @atomicStore(i32, &terminal.g_tab_side_width, pending, .seq_cst);
+                    // Recompute offsets, resize all pane engines, and flush
+                    // the pending TIOCSWINSZ → SIGWINCH so the shell reflows
+                    // live. handleResize() normally does this for OS-level
+                    // window resizes; sidebar drag bypasses that path.
+                    publish.updateGridOffsets(ctx);
+                    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+                        if (maybe_layout.*) |*lay| {
+                            var sd_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+                            const sd_count = lay.collectLeaves(&sd_leaves);
+                            for (sd_leaves[0..sd_count]) |fleaf| {
+                                const was_pending = fleaf.pane.pending_pty_resize;
+                                const pr = fleaf.pane.pending_pty_rows;
+                                const pc = fleaf.pane.pending_pty_cols;
+                                fleaf.pane.flushPtyResize();
+                                if (was_pending and !fleaf.pane.pending_pty_resize) {
+                                    if (fleaf.pane.daemon_pane_id) |dpid| {
+                                        if (ctx.session_client) |sc| {
+                                            sc.sendPaneResize(dpid, pr, pc) catch {};
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    actions.g_force_full_redraw = true;
+                }
+            }
+            const release = @atomicRmw(i32, &input.g_sidebar_drag_release_pending, .Xchg, 0, .seq_cst);
+            if (release != 0) {
+                // Persist the actually-applied (clamped) width, not the raw
+                // drag value, so a runaway drag past the half-cap doesn't
+                // serialize a useless huge number.
+                const applied: i32 = if (terminal.g_tab_side == 1)
+                    terminal.g_grid_left_offset
+                else
+                    terminal.g_grid_right_offset;
+                if (applied > 0) {
+                    @atomicStore(i32, &terminal.g_tab_side_width, applied, .seq_cst);
+                    @import("../session_connect.zig").saveSidebarWidth(@intCast(applied));
+                }
+                @atomicStore(i32, &input.g_sidebar_drag_pending_width, 0, .seq_cst);
             }
         }
 
@@ -1098,11 +1157,16 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 // multiple non-atomic global writes (g_pane_rect_*) span the
                 // begin/end window.
                 const scratch_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
-                split_render.fillCellsSplit(
+                const split_left_off: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+                const split_right_off: u16 = @intCast(@max(0, terminal.g_grid_right_offset));
+                const split_eng_cols: u16 = ctx.grid_cols -| split_left_off -| split_right_off;
+                split_render.fillCellsSplitAt(
                     @ptrCast(ctx.scratch_cells),
                     layout,
                     pty_rows,
+                    split_eng_cols,
                     ctx.grid_cols,
+                    split_left_off,
                     &ctx.active_theme,
                 );
                 c.attyx_begin_cell_update();
@@ -1116,17 +1180,21 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
                     @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                    @intCast(eng.state.cursor.col + rect.col),
+                    @intCast(eng.state.cursor.col + rect.col + split_left_off),
                 );
                 c.attyx_mark_all_dirty();
                 actions.g_force_full_redraw = false;
             } else {
+                const left_off: i32 = terminal.g_grid_left_offset;
+                const right_off: i32 = terminal.g_grid_right_offset;
                 const pty_rows_s: i32 = @max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset);
+                const pty_cols_s: i32 = @max(1, @as(i32, ctx.grid_cols) - left_off - right_off);
                 terminal.g_pane_rect_row = 0;
                 terminal.g_pane_rect_col = 0;
                 terminal.g_pane_rect_rows = pty_rows_s;
-                terminal.g_pane_rect_cols = @intCast(ctx.grid_cols);
+                terminal.g_pane_rect_cols = pty_cols_s;
                 const eng = publish.ctxEngine(ctx);
+                const left_off_u16: u16 = @intCast(@max(0, left_off));
                 // Force full redraw when frames were throttled during rapid
                 // output — incremental dirty tracking may miss rows when
                 // the engine processes many screenfuls between publishes.
@@ -1143,9 +1211,17 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     const scratch_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
                     const bg_cell = publish.bgCell(&ctx.active_theme);
                     @memset(ctx.scratch_cells[0..scratch_total], bg_cell);
-                    publish.fillCellsStride(ctx.scratch_cells[0..scratch_total], eng, &ctx.active_theme, ctx.grid_cols, null);
+                    publish.fillCellsStrideAt(ctx.scratch_cells[0..scratch_total], eng, &ctx.active_theme, ctx.grid_cols, left_off_u16, null);
                     c.attyx_begin_cell_update();
                     @memcpy(ctx.cells[0..scratch_total], ctx.scratch_cells[0..scratch_total]);
+                } else if (left_off_u16 != 0 or right_off > 0) {
+                    // Side tabs reserve gutter columns; partial dirty must use
+                    // the grid stride + left offset so engine cells land in
+                    // the right place. The gutter cells stay as the bg fill
+                    // from the last full redraw.
+                    c.attyx_begin_cell_update();
+                    const live_total: usize = @as(usize, ctx.grid_rows) * @as(usize, ctx.grid_cols);
+                    publish.fillCellsStrideAt(ctx.cells[0..live_total], eng, &ctx.active_theme, ctx.grid_cols, left_off_u16, &eng.state.dirty);
                 } else {
                     c.attyx_begin_cell_update();
                     const total = eng.state.ring.screen_rows * eng.state.ring.cols;
@@ -1155,7 +1231,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
                 c.attyx_set_cursor(
                     @intCast(eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
-                    @intCast(eng.state.cursor.col),
+                    @intCast(eng.state.cursor.col + left_off_u16),
                 );
                 if (full_redraw) {
                     c.attyx_mark_all_dirty();

@@ -35,6 +35,9 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
 
     const pty_rows: u16 = @intCast(@max(1, rr - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols_i: i32 = @max(1, rc - terminal.g_grid_left_offset - terminal.g_grid_right_offset);
+    const pty_cols: u16 = @intCast(pty_cols_i);
+    const left_off_u16: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
 
     // Drain in-flight daemon data at the OLD grid size for the active
     // pane BEFORE resizing.  Old-size output must be processed
@@ -58,7 +61,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
         }
     }
 
-    ctx.tab_mgr.resizeAll(pty_rows, @intCast(rc));
+    ctx.tab_mgr.resizeAll(pty_rows, pty_cols);
 
     // Forward resize to each session-backed pane on the daemon.
     // Only send when the local debounce fires (pending_pty_resize is false)
@@ -100,27 +103,31 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     c.attyx_begin_cell_update();
     const resize_layout = ctx.tab_mgr.activeLayout();
     if (resize_layout.pane_count > 1 and !resize_layout.isZoomed()) {
-        split_render.fillCellsSplit(
+        split_render.fillCellsSplitAt(
             @ptrCast(ctx.cells),
             resize_layout,
             pty_rows,
+            pty_cols,
             @intCast(rc),
+            left_off_u16,
             &ctx.active_theme,
         );
         const resize_rect = resize_layout.pool[resize_layout.focused].rect;
         const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + resize_rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
-            @intCast(publish.ctxEngine(ctx).state.cursor.col + resize_rect.col),
+            @intCast(publish.ctxEngine(ctx).state.cursor.col + resize_rect.col + left_off_u16),
         );
         c.attyx_mark_all_dirty();
     } else {
-        const new_total = nr * nc;
-        publish.fillCells(ctx.cells[0..new_total], publish.ctxEngine(ctx), new_total, &ctx.active_theme, null);
+        const new_total: usize = @as(usize, @intCast(rr)) * @as(usize, @intCast(rc));
+        const bg_cell = publish.bgCell(&ctx.active_theme);
+        @memset(ctx.cells[0..new_total], bg_cell);
+        publish.fillCellsStrideAt(ctx.cells[0..new_total], publish.ctxEngine(ctx), &ctx.active_theme, @intCast(rc), left_off_u16, null);
         const vp_cur = @min(publish.ctxEngine(ctx).state.viewport_offset, publish.ctxEngine(ctx).state.ring.scrollbackCount());
         c.attyx_set_cursor(
             @intCast(publish.ctxEngine(ctx).state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset))),
-            @intCast(publish.ctxEngine(ctx).state.cursor.col),
+            @intCast(publish.ctxEngine(ctx).state.cursor.col + left_off_u16),
         );
         c.attyx_set_dirty(&publish.ctxEngine(ctx).state.dirty.bits);
     }

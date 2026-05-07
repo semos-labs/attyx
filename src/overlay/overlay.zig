@@ -135,6 +135,11 @@ pub const OverlayManager = struct {
         self.grid_cols = vp.grid_cols;
         self.grid_rows = vp.grid_rows;
 
+        // Full window bounds (vp.grid_* describes the engine's content area;
+        // overlays can extend into reserved gutter / statusbar rows).
+        const win_cols: u16 = vp.grid_cols + vp.offset_col;
+        const win_rows: u16 = vp.grid_rows + vp.offset_row;
+
         for (&self.layers) |*layer| {
             if (!layer.visible or layer.cells == null) continue;
 
@@ -149,16 +154,18 @@ pub const OverlayManager = struct {
                 layer.col = rect.col + vp.offset_col;
                 layer.row = rect.row + vp.offset_row;
             } else {
-                // Fallback: simple clamp
-                if (layer.width > vp.grid_cols) {
+                // Fallback: clamp against the FULL window so overlays anchored
+                // to the gutter (e.g. side tab bar) aren't pulled into the
+                // engine area on completion repositioning.
+                if (layer.width > win_cols) {
                     layer.col = 0;
-                } else if (layer.col + layer.width > vp.grid_cols) {
-                    layer.col = vp.grid_cols - layer.width;
+                } else if (layer.col + layer.width > win_cols) {
+                    layer.col = win_cols - layer.width;
                 }
-                if (layer.height > vp.grid_rows) {
+                if (layer.height > win_rows) {
                     layer.row = 0;
-                } else if (layer.row + layer.height > vp.grid_rows) {
-                    layer.row = vp.grid_rows - layer.height;
+                } else if (layer.row + layer.height > win_rows) {
+                    layer.row = win_rows - layer.height;
                 }
             }
         }

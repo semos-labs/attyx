@@ -53,9 +53,13 @@ export var g_app_version: [*]const u8 = @ptrCast(&_ver_stub);
 export var g_app_version_len: c_int = 0;
 export var g_grid_top_offset: i32 = 0;
 export var g_grid_bottom_offset: i32 = 0;
+export var g_grid_left_offset: i32 = 0;
+export var g_grid_right_offset: i32 = 0;
 export var g_statusbar_visible: i32 = 0;
 export var g_statusbar_position: i32 = 0;
 export var g_tab_bar_visible: i32 = 0;
+export var g_tab_side: i32 = 0;
+export var g_tab_side_width: i32 = 0;
 export var g_toggle_debug_overlay: i32 = 0;
 export fn attyx_toggle_debug_overlay() void {}
 export var g_toggle_anchor_demo: i32 = 0;
@@ -88,6 +92,10 @@ export fn attyx_picker_cmd(_: c_int) void {}
 export fn attyx_tab_action(_: c_int) void {}
 export fn attyx_tab_bar_click(_: c_int, _: c_int) void {}
 export fn attyx_statusbar_tab_click(_: c_int, _: c_int) void {}
+export fn attyx_side_tab_click(_: c_int, _: c_int) void {}
+export fn attyx_sidebar_drag_start() void {}
+export fn attyx_sidebar_drag_update(_: c_int) void {}
+export fn attyx_sidebar_drag_end() void {}
 
 // Split pane stubs (terminal.zig provides the real implementations)
 export fn attyx_split_action(_: c_int) void {}

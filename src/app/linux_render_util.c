@@ -175,6 +175,10 @@ int emitString(Vertex* v, int i, GlyphCache* gc,
 
 int cellIsSelected(int row, int col) {
     if (!g_sel_active) return 0;
+    // Selection coords are engine-relative; translate the screen-grid col
+    // back into engine space before any comparison.
+    col -= g_grid_left_offset;
+    if (col < 0) return 0;
     // With splits, clip selection to focused pane rect
     if ((g_copy_mode || g_split_active) && g_pane_rect_rows > 0) {
         int pr = g_pane_rect_row, pc = g_pane_rect_col;

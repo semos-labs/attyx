@@ -136,6 +136,12 @@
 # Dim inactive/unfocused tabs.  [restart]
 # dim_unfocused = false
 
+# Render tabs vertically on the side instead of horizontally on top.
+# Valid values: "none" (default — top), "left", "right". When set to
+# "left" or "right" the tab bar is always visible (independent of the
+# statusbar) and reserves up to 10% of the window width.  [live]
+# side = "none"
+
 
 # ── Splits ────────────────────────────────────────────────────────────
 

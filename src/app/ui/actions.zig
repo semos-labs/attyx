@@ -399,28 +399,34 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     var cursor_row: usize = 0;
     var cursor_col: usize = 0;
 
+    const left_off_u16: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+    const right_off_u16: u16 = @intCast(@max(0, terminal.g_grid_right_offset));
+    const eng_cols: u16 = grid_cols -| left_off_u16 -| right_off_u16;
+
     if (layout.pane_count > 1 and !layout.isZoomed()) {
         const pty_rows: u16 = @intCast(@max(1, @as(i32, grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-        split_render.fillCellsSplit(
+        split_render.fillCellsSplitAt(
             @ptrCast(ctx.scratch_cells),
             layout,
             pty_rows,
+            eng_cols,
             grid_cols,
+            left_off_u16,
             &ctx.active_theme,
         );
         const rect = layout.pool[layout.focused].rect;
         const eng = &pane.engine;
         const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
         cursor_row = eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset));
-        cursor_col = eng.state.cursor.col + rect.col;
+        cursor_col = eng.state.cursor.col + rect.col + left_off_u16;
     } else {
         const bg_cell = publish.bgCell(&ctx.active_theme);
         @memset(scratch, bg_cell);
         const eng = &pane.engine;
-        publish.fillCellsStride(scratch, eng, &ctx.active_theme, grid_cols, null);
+        publish.fillCellsStrideAt(scratch, eng, &ctx.active_theme, grid_cols, left_off_u16, null);
         const vp_cur = @min(eng.state.viewport_offset, eng.state.ring.scrollbackCount());
         cursor_row = eng.state.cursor.row + vp_cur + @as(usize, @intCast(terminal.g_grid_top_offset));
-        cursor_col = eng.state.cursor.col;
+        cursor_col = eng.state.cursor.col + left_off_u16;
         eng.state.dirty.clear();
     }
 

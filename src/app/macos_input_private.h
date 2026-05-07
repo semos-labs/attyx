@@ -12,6 +12,7 @@
     CGFloat _scrollAccum;
     BOOL _selecting;
     BOOL _splitDragging;
+    BOOL _sidebarDragging;
     int _clickCount;
     NSMutableString* _markedText;
     NSRange _markedRange;

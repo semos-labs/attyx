@@ -27,9 +27,19 @@ extern volatile int g_cursor_col;
 // Overlays are NOT shifted — they render at the original offY.
 extern volatile int g_grid_top_offset;
 extern volatile int g_grid_bottom_offset;
+// Number of grid columns reserved on each side for the vertical tab bar.
+// When non-zero, the engine grid is narrower than the window grid and
+// content is shifted right by g_grid_left_offset cells.  Overlays are NOT
+// shifted — they render at the original offX.
+extern volatile int g_grid_left_offset;
+extern volatile int g_grid_right_offset;
 extern volatile int g_statusbar_visible;
 extern volatile int g_statusbar_position; // 0=top, 1=bottom
 extern volatile int g_tab_bar_visible;
+extern volatile int g_tab_side; // 0=top (default), 1=left, 2=right
+// User-resized side bar width in cells. 0 = use built-in default.
+// Written by the input thread during a sidebar drag.
+extern volatile int g_tab_side_width;
 
 // Spawn a new attyx window (new instance via NSWorkspace, or fork for Linux/dev).
 void attyx_spawn_new_window(void);
@@ -350,7 +360,7 @@ extern volatile uint64_t g_image_gen; // bumped when image placements change
 // Overlay system (written by PTY thread inside seqlock, read by renderer)
 // ---------------------------------------------------------------------------
 
-#define ATTYX_OVERLAY_MAX_CELLS  2048
+#define ATTYX_OVERLAY_MAX_CELLS  8192
 #define ATTYX_OVERLAY_MAX_LAYERS 16
 
 typedef struct {
@@ -519,6 +529,14 @@ extern volatile int g_session_switch_id;         // main→PTY: session ID to sw
 void attyx_tab_action(int action);
 void attyx_tab_bar_click(int col, int grid_cols);
 void attyx_statusbar_tab_click(int col, int grid_cols);
+// Vertical tab bar click: row is the grid row clicked within the side bar.
+void attyx_side_tab_click(int row, int grid_rows);
+
+// Sidebar drag-to-resize: input thread reports the user's drag.
+// `width` is the desired sidebar width in cells (engine-clamped on the PTY thread).
+void attyx_sidebar_drag_start(void);
+void attyx_sidebar_drag_update(int width);
+void attyx_sidebar_drag_end(void);
 
 // Split pane management (called from input thread via keybind dispatch)
 void attyx_split_action(int action);

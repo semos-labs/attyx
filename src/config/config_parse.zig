@@ -5,6 +5,7 @@ const AppConfig = config_mod.AppConfig;
 const CursorShapeConfig = config_mod.CursorShapeConfig;
 const CellSize = config_mod.CellSize;
 const TabAppearance = config_mod.TabAppearance;
+const TabSide = config_mod.TabSide;
 const PopupConfigEntry = config_mod.PopupConfigEntry;
 const KeybindOverride = config_mod.KeybindOverride;
 const SequenceEntry = config_mod.SequenceEntry;
@@ -383,6 +384,19 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             config.tab_dim_unfocused = v.bool;
         } else {
             std.debug.print("error: {s}: tabs.dim_unfocused must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "tabs", "side")) |v| {
+        if (v == .string) {
+            if (TabSide.fromString(v.string)) |side| {
+                config.tab_side = side;
+            } else {
+                std.debug.print("error: {s}: tabs.side must be \"none\", \"left\", or \"right\"\n", .{path});
+                return error.ConfigValidationError;
+            }
+        } else {
+            std.debug.print("error: {s}: tabs.side must be a string\n", .{path});
             return error.ConfigValidationError;
         }
     }

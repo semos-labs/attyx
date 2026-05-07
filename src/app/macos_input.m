@@ -61,10 +61,13 @@ static int mouseModifiers(NSEventModifierFlags flags) {
 }
 
 static void sendSgrMouse(int button, int col, int row, BOOL press) {
-    // Adjust row from screen-space to content-space: subtract the grid top
-    // offset (statusbar / tab bar rows) so TUI apps receive correct coords.
+    // Adjust to content-space: subtract the grid top / left offsets
+    // (statusbar / tab bar / side tab gutter) so TUI apps receive coords
+    // relative to their visible terminal area.
     row -= g_grid_top_offset;
+    col -= g_grid_left_offset;
     if (row < 1) row = 1;
+    if (col < 1) col = 1;
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
                        button, col, row, press ? 'M' : 'm');
@@ -379,6 +382,30 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     int col, row;
     mouseCell0(event, self, &col, &row);
 
+    // Sidebar resize drag — clicking on (or within ±1 cell of) the vertical
+    // border column starts a drag. The wider hit zone makes the line easier
+    // to grab without precisely targeting a single cell.
+    if (g_tab_side != 0) {
+        int border_col = (g_tab_side == 1) ? (g_grid_left_offset - 1) : (g_cols - g_grid_right_offset);
+        if (border_col >= 0 && col >= border_col - 1 && col <= border_col + 1) {
+            attyx_sidebar_drag_start();
+            _sidebarDragging = YES;
+            [[NSCursor resizeLeftRightCursor] set];
+            return;
+        }
+    }
+
+    // Side tab bar click: consume if click lands inside the reserved gutter.
+    if (g_tab_side != 0) {
+        int side_w = (g_tab_side == 1) ? g_grid_left_offset : g_grid_right_offset;
+        int side_col_start = (g_tab_side == 1) ? 0 : (g_cols - side_w);
+        int side_col_end = side_col_start + side_w;
+        if (col >= side_col_start && col < side_col_end) {
+            attyx_side_tab_click(row, g_rows);
+            return;
+        }
+    }
+
     // Tab bar click: consume if click is on the tab bar row
     if (row == 0 && g_tab_bar_visible) {
         attyx_tab_bar_click(col, g_cols);
@@ -397,6 +424,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     // Overlay click: consume if hit
     if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
+    // Engine column space (subtract gutter for split / selection / TUI use).
+    int eng_col = col - g_grid_left_offset;
+    int eng_cols = g_cols - g_grid_left_offset - g_grid_right_offset;
+    if (eng_cols < 1) eng_cols = 1;
+
     // Let pane switching win over app mouse tracking so OpenCode and other
     // mouse-aware apps do not trap clicks meant to focus another split.
     if (g_split_active && g_pane_rect_rows > 0) {
@@ -404,8 +436,8 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         int pr = g_pane_rect_row, pc = g_pane_rect_col;
         int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
         if (content_row >= 0 &&
-            (content_row < pr || content_row >= pe || col < pc || col >= pce)) {
-            attyx_split_click(col, row);
+            (content_row < pr || content_row >= pe || eng_col < pc || eng_col >= pce)) {
+            attyx_split_click(eng_col, row);
             return;
         }
     }
@@ -423,15 +455,17 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
     // Split pane click: focus the clicked pane + start drag resize
     if (g_split_active) {
-        attyx_split_drag_start(col, row);
+        attyx_split_drag_start(eng_col, row);
         _splitDragging = YES;
-        attyx_split_click(col, row);
+        attyx_split_click(eng_col, row);
     }
 
     // Adjust row to content space for selection and cell access.
     // Tab bar, statusbar, overlay, and split all use grid-space row above.
     row -= g_grid_top_offset;
     if (row < 0) row = 0;
+    if (eng_col < 0) eng_col = 0;
+    if (eng_col >= eng_cols) eng_col = eng_cols - 1;
 
     // Clamp to focused pane bounds when splits are active
     if (g_split_active && g_pane_rect_rows > 0) {
@@ -439,8 +473,8 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
         if (row < pr) row = pr;
         if (row >= pe) row = pe - 1;
-        if (col < pc) col = pc;
-        if (col >= pce) col = pce - 1;
+        if (eng_col < pc) eng_col = pc;
+        if (eng_col >= pce) eng_col = pce - 1;
     }
 
     // Cmd-click link handling runs earlier (before mouse-reporting) so it
@@ -449,7 +483,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     // Shift-click extends existing selection
     if ((event.modifierFlags & NSEventModifierFlagShift) && g_sel_active) {
         g_sel_end_row = row;
-        g_sel_end_col = col;
+        g_sel_end_col = eng_col;
         _selecting = YES;
         attyx_mark_all_dirty();
         return;
@@ -459,19 +493,19 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
     if (_clickCount >= 3) {
         g_sel_start_row = row; g_sel_start_col = 0;
-        g_sel_end_row = row;   g_sel_end_col = g_cols - 1;
+        g_sel_end_row = row;   g_sel_end_col = eng_cols - 1;
         g_sel_active = 1;
         _selecting = YES;
     } else if (_clickCount == 2) {
         int wStart, wEnd;
-        findWordBounds(row, col, g_cols, &wStart, &wEnd);
+        findWordBounds(row, eng_col, eng_cols, &wStart, &wEnd);
         g_sel_start_row = row; g_sel_start_col = wStart;
         g_sel_end_row = row;   g_sel_end_col = wEnd;
         g_sel_active = 1;
         _selecting = YES;
     } else {
-        g_sel_start_row = row; g_sel_start_col = col;
-        g_sel_end_row = row;   g_sel_end_col = col;
+        g_sel_start_row = row; g_sel_start_col = eng_col;
+        g_sel_end_row = row;   g_sel_end_col = eng_col;
         g_sel_active = 0;
         _selecting = YES;
     }
@@ -493,6 +527,12 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         return;
     }
     _leftDown = NO;
+    if (_sidebarDragging) {
+        attyx_sidebar_drag_end();
+        _sidebarDragging = NO;
+        [[NSCursor IBeamCursor] set];
+        return;
+    }
     if (_splitDragging) {
         if (g_split_drag_active) attyx_split_drag_end();
         _splitDragging = NO;
@@ -658,6 +698,16 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         }
         return;
     }
+    if (_sidebarDragging) {
+        int col, row;
+        mouseCell0(event, self, &col, &row);
+        // For left-side bars, width = mouse col + 1 (cells to the left of cursor).
+        // For right-side bars, width = grid_cols - mouse col.
+        int new_w = (g_tab_side == 1) ? (col + 1) : (g_cols - col);
+        attyx_sidebar_drag_update(new_w);
+        [[NSCursor resizeLeftRightCursor] set];
+        return;
+    }
     if (_splitDragging && g_split_drag_active) {
         int col, row;
         mouseCell0(event, self, &col, &row);
@@ -704,6 +754,11 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         mouseCell0(event, self, &col, &row);
         row -= g_grid_top_offset;
         if (row < 0) row = 0;
+        int eng_col = col - g_grid_left_offset;
+        int eng_cols = g_cols - g_grid_left_offset - g_grid_right_offset;
+        if (eng_cols < 1) eng_cols = 1;
+        if (eng_col < 0) eng_col = 0;
+        if (eng_col >= eng_cols) eng_col = eng_cols - 1;
 
         // Clamp to focused pane bounds when splits are active
         if (g_split_active && g_pane_rect_rows > 0) {
@@ -711,21 +766,21 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
             if (row < pr) row = pr;
             if (row >= pe) row = pe - 1;
-            if (col < pc) col = pc;
-            if (col >= pce) col = pce - 1;
+            if (eng_col < pc) eng_col = pc;
+            if (eng_col >= pce) eng_col = pce - 1;
         }
 
-        if (col == g_sel_end_col && row == g_sel_end_row) return;
+        if (eng_col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (_clickCount >= 3) {
             g_sel_end_row = row;
-            g_sel_end_col = (row >= g_sel_start_row) ? g_cols - 1 : 0;
-            if (row < g_sel_start_row) g_sel_start_col = g_cols - 1;
+            g_sel_end_col = (row >= g_sel_start_row) ? eng_cols - 1 : 0;
+            if (row < g_sel_start_row) g_sel_start_col = eng_cols - 1;
             else g_sel_start_col = 0;
         } else if (_clickCount == 2) {
             int wStart, wEnd;
-            findWordBounds(row, col, g_cols, &wStart, &wEnd);
-            if (row > g_sel_start_row || (row == g_sel_start_row && col >= g_sel_start_col)) {
+            findWordBounds(row, eng_col, eng_cols, &wStart, &wEnd);
+            if (row > g_sel_start_row || (row == g_sel_start_row && eng_col >= g_sel_start_col)) {
                 g_sel_end_row = row;
                 g_sel_end_col = wEnd;
             } else {
@@ -734,7 +789,7 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             }
         } else {
             g_sel_end_row = row;
-            g_sel_end_col = col;
+            g_sel_end_col = eng_col;
         }
         g_sel_active = 1;
         attyx_mark_all_dirty();
@@ -815,6 +870,23 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             }
         }
         return;
+    }
+    // Sidebar separator hover: show resize cursor over (and ±1 cell from)
+    // the vertical line.
+    if (g_tab_side != 0) {
+        static BOOL wasOnSidebar = NO;
+        int hcol, hrow;
+        mouseCell0(event, self, &hcol, &hrow);
+        int border_col = (g_tab_side == 1) ? (g_grid_left_offset - 1) : (g_cols - g_grid_right_offset);
+        if (border_col >= 0 && hcol >= border_col - 1 && hcol <= border_col + 1) {
+            [[NSCursor resizeLeftRightCursor] set];
+            wasOnSidebar = YES;
+            return;
+        }
+        if (wasOnSidebar) {
+            wasOnSidebar = NO;
+            [[NSCursor IBeamCursor] set];
+        }
     }
     // Split separator hover: always check before mouse tracking so the
     // resize cursor appears even when the focused pane tracks the mouse.

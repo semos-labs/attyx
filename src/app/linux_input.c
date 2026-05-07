@@ -452,6 +452,7 @@ static int g_click_count = 0;
 static int g_selecting = 0;
 static int g_left_down = 0;
 static int g_split_dragging = 0;
+static int g_sidebar_dragging = 0;
 
 static inline int clampInt(int val, int lo, int hi) {
     if (val < lo) return lo;
@@ -494,10 +495,13 @@ void mouseToCell1(double mx, double my, int* outCol, int* outRow) {
 }
 
 static void sendSgrMouse(int button, int col, int row, int press) {
-    // Adjust row from screen-space to content-space: subtract the grid top
-    // offset (statusbar / tab bar rows) so TUI apps receive correct coords.
+    // Adjust to content-space: subtract grid top / left offsets (statusbar
+    // / tab bar rows / side tab gutter) so TUI apps receive coords relative
+    // to their visible terminal area.
     row -= g_grid_top_offset;
+    col -= g_grid_left_offset;
     if (row < 1) row = 1;
+    if (col < 1) col = 1;
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
                        button, col, row, press ? 'M' : 'm');
@@ -739,6 +743,29 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             int col, row;
             mouseToCell(mx, my, &col, &row);
 
+            // Sidebar resize drag — clicking on (or within ±1 cell of)
+            // the vertical border starts a drag.
+            if (g_tab_side != 0) {
+                int border_col = (g_tab_side == 1) ? (g_grid_left_offset - 1) : (g_cols - g_grid_right_offset);
+                if (border_col >= 0 && col >= border_col - 1 && col <= border_col + 1) {
+                    attyx_sidebar_drag_start();
+                    g_sidebar_dragging = 1;
+                    glfwSetCursor(w, glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR));
+                    return;
+                }
+            }
+
+            // Side tab bar click: consume if click lands inside the gutter.
+            if (g_tab_side != 0) {
+                int side_w = (g_tab_side == 1) ? g_grid_left_offset : g_grid_right_offset;
+                int side_col_start = (g_tab_side == 1) ? 0 : (g_cols - side_w);
+                int side_col_end = side_col_start + side_w;
+                if (col >= side_col_start && col < side_col_end) {
+                    attyx_side_tab_click(row, g_rows);
+                    return;
+                }
+            }
+
             // Tab bar click: consume if click is on the tab bar row
             if (row == 0 && g_tab_bar_visible) {
                 attyx_tab_bar_click(col, g_cols);
@@ -757,6 +784,10 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             // Overlay click: consume if hit
             if (g_overlay_has_actions && attyx_overlay_click(col, row)) return;
 
+            int eng_col = col - g_grid_left_offset;
+            int eng_cols = g_cols - g_grid_left_offset - g_grid_right_offset;
+            if (eng_cols < 1) eng_cols = 1;
+
             // Let pane switching win over app mouse tracking so OpenCode and other
             // mouse-aware apps do not trap clicks meant to focus another split.
             if (g_split_active && g_pane_rect_rows > 0) {
@@ -764,8 +795,8 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                 int pr = g_pane_rect_row, pc = g_pane_rect_col;
                 int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
                 if (content_row >= 0 &&
-                    (content_row < pr || content_row >= pe || col < pc || col >= pce)) {
-                    attyx_split_click(col, row);
+                    (content_row < pr || content_row >= pe || eng_col < pc || eng_col >= pce)) {
+                    attyx_split_click(eng_col, row);
                     return;
                 }
             }
@@ -780,15 +811,17 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
 
             // Split pane click: focus the clicked pane + start drag resize
             if (g_split_active) {
-                attyx_split_drag_start(col, row);
+                attyx_split_drag_start(eng_col, row);
                 g_split_dragging = 1;
-                attyx_split_click(col, row);
+                attyx_split_click(eng_col, row);
             }
 
             // Adjust row to content space for selection and cell access.
             // Tab bar, statusbar, overlay, and split all use grid-space row above.
             row -= g_grid_top_offset;
             if (row < 0) row = 0;
+            if (eng_col < 0) eng_col = 0;
+            if (eng_col >= eng_cols) eng_col = eng_cols - 1;
 
             // Clamp to focused pane bounds when splits are active
             if (g_split_active && g_pane_rect_rows > 0) {
@@ -796,8 +829,8 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                 int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
                 if (row < pr) row = pr;
                 if (row >= pe) row = pe - 1;
-                if (col < pc) col = pc;
-                if (col >= pce) col = pce - 1;
+                if (eng_col < pc) eng_col = pc;
+                if (eng_col >= pce) eng_col = pce - 1;
             }
 
             // Ctrl-click link handling runs earlier (before mouse-reporting)
@@ -806,7 +839,7 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             // Shift-click extends existing selection
             if ((mods & GLFW_MOD_SHIFT) && g_sel_active) {
                 g_sel_end_row = row;
-                g_sel_end_col = col;
+                g_sel_end_col = eng_col;
                 g_selecting = 1;
                 g_left_down = 1;
                 attyx_mark_all_dirty();
@@ -814,27 +847,27 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             }
 
             double now = glfwGetTime();
-            if (now - g_last_click_time < 0.35 && col == g_last_click_col && row == g_last_click_row)
+            if (now - g_last_click_time < 0.35 && eng_col == g_last_click_col && row == g_last_click_row)
                 g_click_count++;
             else
                 g_click_count = 1;
             g_last_click_time = now;
-            g_last_click_col = col;
+            g_last_click_col = eng_col;
             g_last_click_row = row;
 
             if (g_click_count >= 3) {
                 g_sel_start_row = row; g_sel_start_col = 0;
-                g_sel_end_row = row;   g_sel_end_col = g_cols - 1;
+                g_sel_end_row = row;   g_sel_end_col = eng_cols - 1;
                 g_sel_active = 1;
             } else if (g_click_count == 2) {
                 int wS, wE;
-                findWordBounds(row, col, g_cols, &wS, &wE);
+                findWordBounds(row, eng_col, eng_cols, &wS, &wE);
                 g_sel_start_row = row; g_sel_start_col = wS;
                 g_sel_end_row = row;   g_sel_end_col = wE;
                 g_sel_active = 1;
             } else {
-                g_sel_start_row = row; g_sel_start_col = col;
-                g_sel_end_row = row;   g_sel_end_col = col;
+                g_sel_start_row = row; g_sel_start_col = eng_col;
+                g_sel_end_row = row;   g_sel_end_col = eng_col;
                 g_sel_active = 0;
             }
             g_selecting = 1;
@@ -842,6 +875,12 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
             attyx_mark_all_dirty();
         } else {
             g_left_down = 0;
+            if (g_sidebar_dragging) {
+                attyx_sidebar_drag_end();
+                g_sidebar_dragging = 0;
+                glfwSetCursor(w, glfwCreateStandardCursor(GLFW_IBEAM_CURSOR));
+                return;
+            }
             if (g_split_dragging) {
                 if (g_split_drag_active) attyx_split_drag_end();
                 g_split_dragging = 0;
@@ -942,11 +981,36 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         }
         return;
     }
+    if (g_sidebar_dragging) {
+        int col, row;
+        mouseToCell(mx, my, &col, &row);
+        int new_w = (g_tab_side == 1) ? (col + 1) : (g_cols - col);
+        attyx_sidebar_drag_update(new_w);
+        return;
+    }
     if (g_split_dragging && g_split_drag_active) {
         int col, row;
         mouseToCell(mx, my, &col, &row);
         attyx_split_drag_update(col, row);
         return;
+    }
+
+    // Sidebar separator hover: show resize cursor over (and ±1 cell from)
+    // the vertical line.
+    if (g_tab_side != 0) {
+        static int wasOnSidebar = 0;
+        int hcol, hrow;
+        mouseToCell(mx, my, &hcol, &hrow);
+        int border_col = (g_tab_side == 1) ? (g_grid_left_offset - 1) : (g_cols - g_grid_right_offset);
+        if (border_col >= 0 && hcol >= border_col - 1 && hcol <= border_col + 1) {
+            glfwSetCursor(w, glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR));
+            wasOnSidebar = 1;
+            return;
+        }
+        if (wasOnSidebar) {
+            wasOnSidebar = 0;
+            glfwSetCursor(w, glfwCreateStandardCursor(GLFW_IBEAM_CURSOR));
+        }
     }
 
     // Split separator hover: check before mouse tracking so the resize
@@ -1020,6 +1084,11 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
         mouseToCell(mx, my, &col, &row);
         row -= g_grid_top_offset;
         if (row < 0) row = 0;
+        int eng_col = col - g_grid_left_offset;
+        int eng_cols = g_cols - g_grid_left_offset - g_grid_right_offset;
+        if (eng_cols < 1) eng_cols = 1;
+        if (eng_col < 0) eng_col = 0;
+        if (eng_col >= eng_cols) eng_col = eng_cols - 1;
 
         // Clamp to focused pane bounds when splits are active
         if (g_split_active && g_pane_rect_rows > 0) {
@@ -1027,28 +1096,28 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
             int pe = pr + g_pane_rect_rows, pce = pc + g_pane_rect_cols;
             if (row < pr) row = pr;
             if (row >= pe) row = pe - 1;
-            if (col < pc) col = pc;
-            if (col >= pce) col = pce - 1;
+            if (eng_col < pc) eng_col = pc;
+            if (eng_col >= pce) eng_col = pce - 1;
         }
 
-        if (col == g_sel_end_col && row == g_sel_end_row) return;
+        if (eng_col == g_sel_end_col && row == g_sel_end_row) return;
 
         if (g_click_count >= 3) {
             g_sel_end_row = row;
-            g_sel_end_col = (row >= g_sel_start_row) ? g_cols - 1 : 0;
-            if (row < g_sel_start_row) g_sel_start_col = g_cols - 1;
+            g_sel_end_col = (row >= g_sel_start_row) ? eng_cols - 1 : 0;
+            if (row < g_sel_start_row) g_sel_start_col = eng_cols - 1;
             else g_sel_start_col = 0;
         } else if (g_click_count == 2) {
             int wS, wE;
-            findWordBounds(row, col, g_cols, &wS, &wE);
+            findWordBounds(row, eng_col, eng_cols, &wS, &wE);
             g_sel_end_row = row;
-            if (row > g_sel_start_row || (row == g_sel_start_row && col >= g_sel_start_col))
+            if (row > g_sel_start_row || (row == g_sel_start_row && eng_col >= g_sel_start_col))
                 g_sel_end_col = wE;
             else
                 g_sel_end_col = wS;
         } else {
             g_sel_end_row = row;
-            g_sel_end_col = col;
+            g_sel_end_col = eng_col;
         }
         g_sel_active = 1;
         attyx_mark_all_dirty();
