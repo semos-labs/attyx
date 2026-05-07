@@ -494,10 +494,18 @@ void mouseToCell1(double mx, double my, int* outCol, int* outRow) {
 }
 
 static void sendSgrMouse(int button, int col, int row, int press) {
-    // Adjust row from screen-space to content-space: subtract the grid top
-    // offset (statusbar / tab bar rows) so TUI apps receive correct coords.
-    row -= g_grid_top_offset;
+    // Convert from screen-grid 1-based coords to focused-pane 1-based coords:
+    //   - subtract g_grid_top_offset for tab bar / statusbar rows
+    //   - subtract g_pane_rect_row/col for the pane's offset within the split
+    // Without this, mouse-aware apps (opencode, vim, …) running in any pane
+    // other than the top-left one receive coords past their visible area
+    // and their own selection / click handling breaks.
+    row -= g_grid_top_offset + g_pane_rect_row;
+    col -= g_pane_rect_col;
     if (row < 1) row = 1;
+    if (col < 1) col = 1;
+    if (g_pane_rect_cols > 0 && col > g_pane_rect_cols) col = g_pane_rect_cols;
+    if (g_pane_rect_rows > 0 && row > g_pane_rect_rows) row = g_pane_rect_rows;
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
                        button, col, row, press ? 'M' : 'm');
