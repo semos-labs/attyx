@@ -392,6 +392,32 @@ pub fn loadLastSession() ?u32 {
     return std.fmt.parseInt(u32, buf[0..n], 10) catch null;
 }
 
+pub fn getSidebarWidthPath(buf: *[256]u8) ?[]const u8 {
+    return statePath(buf, "sidebar-width{s}");
+}
+
+pub fn saveSidebarWidth(width: u16) void {
+    var path_buf: [256]u8 = undefined;
+    const path = getSidebarWidthPath(&path_buf) orelse return;
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{width}) catch return;
+    const file = std.fs.createFileAbsolute(path, .{}) catch return;
+    defer file.close();
+    file.writeAll(id_str) catch {};
+}
+
+pub fn loadSidebarWidth() ?u16 {
+    var path_buf: [256]u8 = undefined;
+    const path = getSidebarWidthPath(&path_buf) orelse return null;
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    var buf: [16]u8 = undefined;
+    const n = file.read(&buf) catch return null;
+    if (n == 0) return null;
+    const trimmed = std.mem.trim(u8, buf[0..n], &std.ascii.whitespace);
+    return std.fmt.parseInt(u16, trimmed, 10) catch null;
+}
+
 // ── One-time migration: move runtime files from config dir to state dir ──
 
 /// Migrate runtime files from ~/.config/attyx/ to the XDG state directory.

@@ -324,6 +324,7 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
     const pane_row: u16 = if (in_split) @intCast(layout.pool[layout.focused].rect.row) else 0;
     const pane_col: u16 = if (in_split) @intCast(layout.pool[layout.focused].rect.col) else 0;
     const top_offset: u16 = @intCast(terminal.g_grid_top_offset);
+    const left_offset: u16 = @intCast(terminal.g_grid_left_offset);
 
     return .{
         .grid_cols = @intCast(eng.state.ring.cols),
@@ -335,7 +336,7 @@ pub fn viewportInfoFromCtx(ctx: *PtyThreadCtx) overlay_anchor.ViewportInfo {
         .sel_end_col = if (sel_end_col_raw >= 0) @intCast(@as(u32, @bitCast(sel_end_col_raw))) else 0,
         .alt_active = eng.state.alt_active,
         .offset_row = pane_row + top_offset,
-        .offset_col = pane_col,
+        .offset_col = pane_col + left_offset,
     };
 }
 
@@ -364,6 +365,7 @@ pub fn viewportInfoForPane(ctx: *PtyThreadCtx, pane_id: u32) ?overlay_anchor.Vie
     const pane_row: u16 = if (in_split) @intCast(layout.pool[idx].rect.row) else 0;
     const pane_col: u16 = if (in_split) @intCast(layout.pool[idx].rect.col) else 0;
     const top_offset: u16 = @intCast(terminal.g_grid_top_offset);
+    const left_offset: u16 = @intCast(terminal.g_grid_left_offset);
 
     const st = &pane.engine.state;
     return .{
@@ -376,7 +378,7 @@ pub fn viewportInfoForPane(ctx: *PtyThreadCtx, pane_id: u32) ?overlay_anchor.Vie
         .sel_end_col = 0,
         .alt_active = st.alt_active,
         .offset_row = pane_row + top_offset,
-        .offset_col = pane_col,
+        .offset_col = pane_col + left_offset,
     };
 }
 
@@ -648,12 +650,29 @@ pub fn fillCellsStride(
     stride: u16,
     dirty: ?*const DirtyRows,
 ) void {
+    fillCellsStrideAt(cells, eng, theme, stride, 0, dirty);
+}
+
+/// Like `fillCellsStride`, but writes engine cells starting at column
+/// `col_offset` within each buffer row. Used when vertical side tabs
+/// reserve the leftmost N columns of the displayed grid.
+pub fn fillCellsStrideAt(
+    cells: []c.AttyxCell,
+    eng: *Engine,
+    theme: *const Theme,
+    stride: u16,
+    col_offset: u16,
+    dirty: ?*const DirtyRows,
+) void {
     const vp = eng.state.viewport_offset;
     const cols = eng.state.ring.cols;
-    const rows = eng.state.ring.screen_rows;
     const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
     const stride_usize: usize = stride;
-    const cols_to_copy = @min(@as(usize, cols), stride_usize);
+    const off: usize = col_offset;
+    const remaining: usize = if (off >= stride_usize) 0 else stride_usize - off;
+    const cols_to_copy = @min(@as(usize, cols), remaining);
+    const max_rows = if (stride_usize > 0) cells.len / stride_usize else 0;
+    const rows = @min(eng.state.ring.screen_rows, max_rows);
 
     for (0..rows) |row| {
         const row_cells = eng.state.ring.viewportRow(vp, row);
@@ -661,7 +680,7 @@ pub fn fillCellsStride(
         if (dirty) |d| {
             if (!d.isDirty(row)) continue;
         }
-        const base = row * stride_usize;
+        const base = row * stride_usize + off;
         for (0..cols_to_copy) |col| {
             cells[base + col] = cellToAttyxCell(row_cells[col], theme);
         }
@@ -691,15 +710,30 @@ pub fn statusbarActive(ctx: *PtyThreadCtx) bool {
 }
 
 /// Centralized offset calculation for tab bar, search bar, and statusbar.
-/// Resizes panes when the total consumed rows change.
+/// Resizes panes when the total consumed rows or columns change.
 pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
-    const old_total = terminal.g_grid_top_offset + terminal.g_grid_bottom_offset;
+    const old_top = terminal.g_grid_top_offset;
+    const old_bottom = terminal.g_grid_bottom_offset;
+    const old_left = terminal.g_grid_left_offset;
+    const old_right = terminal.g_grid_right_offset;
     var top: i32 = 0;
     var bottom: i32 = 0;
+    var left: i32 = 0;
+    var right: i32 = 0;
     const sb_active = statusbarActive(ctx);
     const native_tabs = (terminal.g_native_tabs_enabled != 0);
     const always_show = (terminal.g_tab_always_show != 0);
     const search_active = (@as(i32, @bitCast(c.g_search_active)) != 0);
+    const tab_side = terminal.g_tab_side; // 0=top, 1=left, 2=right
+    const side_active = !native_tabs and tab_side != 0;
+
+    // Side tab bar: reserves left/right columns whenever configured.
+    // Persistent reservation (no flicker) — user opted in by setting tabs.side.
+    if (side_active and ctx.grid_cols > 0) {
+        const req: u16 = @intCast(@max(0, terminal.g_tab_side_width));
+        const w: i32 = @intCast(tab_bar_mod.sideBarWidthRequested(ctx.grid_cols, req));
+        if (tab_side == 1) left = w else right = w;
+    }
 
     // Bottom row: statusbar at bottom (unaffected by search)
     if (sb_active) {
@@ -715,14 +749,15 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
         terminal.g_statusbar_visible = 0;
     }
 
-    // Top row: search > statusbar-top > tab bar (mutually exclusive)
+    // Top row: search > statusbar-top > horizontal tab bar (mutually exclusive).
+    // When side tabs are active, the top horizontal tab bar is suppressed.
     if (search_active) {
         top += 1;
         terminal.g_tab_bar_visible = 0;
     } else if (sb_active and ctx.statusbar.?.config.position == .top) {
         top += 1;
         // tab_bar_visible already 0 from above
-    } else if (!sb_active and !native_tabs) {
+    } else if (!sb_active and !native_tabs and !side_active) {
         const show_builtin = (ctx.tab_mgr.count > 1) or always_show;
         if (show_builtin) top += 1;
         terminal.g_tab_bar_visible = if (show_builtin) @as(i32, 1) else @as(i32, 0);
@@ -731,11 +766,20 @@ pub fn updateGridOffsets(ctx: *PtyThreadCtx) void {
     }
     terminal.g_grid_top_offset = top;
     terminal.g_grid_bottom_offset = bottom;
+    terminal.g_grid_left_offset = left;
+    terminal.g_grid_right_offset = right;
     @atomicStore(i32, &terminal.g_tab_count, @as(i32, ctx.tab_mgr.count), .seq_cst);
-    const new_total = top + bottom;
-    if (new_total != old_total and ctx.grid_rows > 0) {
-        const pty_rows = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_rows) - new_total)));
-        ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
+
+    const changed = (top != old_top) or (bottom != old_bottom) or
+        (left != old_left) or (right != old_right);
+    if (changed and ctx.grid_rows > 0 and ctx.grid_cols > 0) {
+        const pty_rows = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_rows) - top - bottom)));
+        const pty_cols = @as(u16, @intCast(@max(1, @as(i32, ctx.grid_cols) - left - right)));
+        ctx.tab_mgr.resizeAll(pty_rows, pty_cols);
+        // Layout changed — force a full-buffer recompose so the gutter
+        // columns get refilled with bg cells before the side tab overlay
+        // paints on top.
+        @import("actions.zig").g_force_full_redraw = true;
     }
 }
 pub const updateGridTopOffset = updateGridOffsets;
@@ -804,7 +848,8 @@ fn computeZoomedTabs(ctx: *PtyThreadCtx) u16 {
     return mask;
 }
 
-/// Generate the tab bar overlay (only visible when count > 1 and statusbar is not active).
+/// Generate the tab bar overlay (horizontal on top by default, vertical on
+/// the side when `tabs.side` is configured).
 pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     const mgr = ctx.overlay_mgr orelse return;
 
@@ -814,20 +859,24 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         return;
     }
 
-    // When statusbar is active, tabs are rendered inside the statusbar overlay
-    if (statusbarActive(ctx)) {
-        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
-        return;
-    }
+    const tab_side = terminal.g_tab_side; // 0=top, 1=left, 2=right
+    const side_active = (tab_side != 0);
 
-    // Search takes priority for the top row — yield while it's active
-    if (@as(i32, @bitCast(c.g_search_active)) != 0) {
-        if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
-        return;
+    // Horizontal tab bar yields to statusbar / search; the vertical side
+    // tab bar coexists with both — it lives outside the top/bottom area.
+    if (!side_active) {
+        if (statusbarActive(ctx)) {
+            if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+            return;
+        }
+        if (@as(i32, @bitCast(c.g_search_active)) != 0) {
+            if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+            return;
+        }
     }
 
     const always_show = (terminal.g_tab_always_show != 0);
-    if (ctx.tab_mgr.count <= 1 and !always_show) {
+    if (!side_active and ctx.tab_mgr.count <= 1 and !always_show) {
         if (mgr.isVisible(.tab_bar)) {
             mgr.hide(.tab_bar);
         }
@@ -839,7 +888,6 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
     var name_bufs: [tab_bar_mod.max_tabs][256]u8 = undefined;
     resolveTabTitles(ctx, &titles, &statuses, &name_bufs);
 
-    var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const zoomed_tabs = computeZoomedTabs(ctx);
     const tbg = ctx.active_theme.background;
     const tfg = ctx.active_theme.foreground;
@@ -854,6 +902,13 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
             return @intCast((@as(u16, bg_c) * 13 + @as(u16, fg_c) * 7) / 20);
         }
     }.m;
+    // Dim border for the side bar separator: blend bg ~85% toward fg for a
+    // subtle line that's visible but not distracting.
+    const mix_border = struct {
+        fn m(bg_c: u8, fg_c: u8) u8 {
+            return @intCast((@as(u16, bg_c) * 17 + @as(u16, fg_c) * 3) / 20);
+        }
+    }.m;
     const tab_style = tab_bar_mod.Style{
         .tab_bg = .{ .r = mix20(tbg.r, tfg.r), .g = mix20(tbg.g, tfg.g), .b = mix20(tbg.b, tfg.b) },
         .active_tab_bg = .{ .r = mix35(tbg.r, tfg.r), .g = mix35(tbg.g, tfg.g), .b = mix35(tbg.b, tfg.b) },
@@ -861,7 +916,54 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
         .active_fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
         .num_highlight_bg = .{ .r = tfg.r / 2, .g = tfg.g / 2, .b = tfg.b / 2 },
         .num_highlight_fg = .{ .r = tfg.r, .g = tfg.g, .b = tfg.b },
+        .border_fg = .{ .r = mix_border(tbg.r, tfg.r), .g = mix_border(tbg.g, tfg.g), .b = mix_border(tbg.b, tfg.b) },
+        // Side tabs sit on the reserved gutter and should be fully opaque so
+        // nothing bleeds through; the horizontal bar keeps the historical 230.
+        .bg_alpha = if (side_active) @as(u8, 255) else @as(u8, 230),
     };
+
+    if (side_active) {
+        const req_w: u16 = @intCast(@max(0, terminal.g_tab_side_width));
+        const width: u16 = tab_bar_mod.sideBarWidthRequested(ctx.grid_cols, req_w);
+        if (width == 0 or ctx.grid_rows == 0) {
+            if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+            return;
+        }
+        // Side bar lives outside the statusbar/search rows: it starts after
+        // any top reservation and ends before any bottom reservation.
+        const top_off: u16 = @intCast(@max(0, terminal.g_grid_top_offset));
+        const bot_off: u16 = @intCast(@max(0, terminal.g_grid_bottom_offset));
+        const avail_h: u16 = ctx.grid_rows -| top_off -| bot_off;
+        if (avail_h == 0) {
+            if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
+            return;
+        }
+        // Stack-side buffer must hold width × height. Cap at the overlay
+        // limit so we never exceed what the C bridge can publish.
+        const max_cells: usize = @intCast(c.ATTYX_OVERLAY_MAX_CELLS);
+        var v_cells: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.StyledCell = undefined;
+        const max_h_for_buf: u16 = @intCast(max_cells / @as(usize, width));
+        const height: u16 = @min(avail_h, max_h_for_buf);
+        const left_side = (tab_side == 1);
+        const result = tab_bar_mod.generateVertical(
+            v_cells[0 .. @as(usize, width) * @as(usize, height)],
+            ctx.tab_mgr.count,
+            ctx.tab_mgr.active,
+            width,
+            height,
+            tab_style,
+            &titles,
+            zoomed_tabs,
+            &statuses,
+            left_side, // border on right edge for left-side bars
+        ) orelse return;
+        const place_col: u16 = if (left_side) 0 else ctx.grid_cols -| width;
+        mgr.setContent(.tab_bar, place_col, top_off, result.width, result.height, result.cells) catch return;
+        if (!mgr.isVisible(.tab_bar)) mgr.show(.tab_bar);
+        return;
+    }
+
+    var tab_cells: [512]overlay_mod.StyledCell = undefined;
     const result = tab_bar_mod.generate(
         &tab_cells,
         ctx.tab_mgr.count,
@@ -949,7 +1051,11 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         .bg_alpha = sb.config.background_opacity,
     };
     // When native tabs are active, hide the tab section in the statusbar.
-    const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0) 0 else ctx.tab_mgr.count;
+    // When a side tab bar is active, the statusbar gives up its tab section
+    // to the side bar (the side bar starts below the statusbar row, so the
+    // statusbar is free to span the full window width).
+    const side_active = (terminal.g_tab_side != 0);
+    const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0 or side_active) 0 else ctx.tab_mgr.count;
     const zoomed_tabs = computeZoomedTabs(ctx);
     const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs, &statuses) orelse return;
 

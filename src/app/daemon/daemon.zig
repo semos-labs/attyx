@@ -194,7 +194,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             if (slot.*) |*s| {
                 for (&s.panes, 0..) |*pslot, pi| {
                     if (pslot.*) |*p| {
-                        if (p.alive) {
+                        // Skip deferred-spawn panes (master == -1 until
+                        // first resize triggers the actual fork/exec).
+                        if (p.alive and p.pty.master >= 0) {
                             fds[nfds] = .{ .fd = p.pty.master, .events = 0x0001, .revents = 0 };
                             pty_fd_map[pty_fd_count] = .{ .session_idx = si, .pane_idx = pi };
                             pty_fd_count += 1;
@@ -249,10 +251,25 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                 coalesced += n;
                             }
                             if (coalesced == 0) break;
+                            // Grid-sync title change propagation (OSC 0/2):
+                            // the client's engine is passive in grid-sync mode,
+                            // so title updates have to be shipped explicitly.
+                            const title_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.title_changed else false;
+                            if (title_dirty) {
+                                if (pane.engine) |eng_ptr| eng_ptr.state.title_changed = false;
+                            }
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
-                                        cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
+                                        if (cl.hasGridSync() and pane.engine != null) {
+                                            cl.sendGridSnapshot(pane, false);
+                                            if (title_dirty) {
+                                                const t = pane.engine.?.state.title orelse "";
+                                                cl.sendPaneTitle(pane.id, t);
+                                            }
+                                        } else {
+                                            cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);
+                                        }
                                     }
                                 }
                             }
@@ -510,6 +527,7 @@ fn deleteVersionFile() void {
 }
 
 fn setNonBlocking(fd: posix.fd_t) void {
+    if (fd < 0) return; // deferred-spawn pane: PTY not yet active
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;

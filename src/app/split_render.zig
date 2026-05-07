@@ -34,15 +34,32 @@ pub const Cell = extern struct {
 
 /// Fill the cell buffer from a multi-pane split layout.
 /// Draws separators and composites each pane's engine into its region.
+///
+/// The buffer has dimensions `grid_rows × full_grid_cols` (stride passed
+/// separately as `buf_stride`). Pane rectangles are engine-relative; they
+/// are shifted right by `col_offset` so the side-tab gutter (if any) is
+/// preserved.
 pub fn fillCellsSplit(
     cells: [*]Cell,
     layout_ptr: *SplitLayout,
     grid_rows: u16,
-    grid_cols: u16,
+    eng_cols: u16,
+    theme: *const Theme,
+) void {
+    fillCellsSplitAt(cells, layout_ptr, grid_rows, eng_cols, eng_cols, 0, theme);
+}
+
+pub fn fillCellsSplitAt(
+    cells: [*]Cell,
+    layout_ptr: *SplitLayout,
+    grid_rows: u16,
+    eng_cols: u16,
+    buf_stride: u16,
+    col_offset: u16,
     theme: *const Theme,
 ) void {
     // 1. Clear entire buffer to dark background
-    const total: usize = @as(usize, grid_rows) * @as(usize, grid_cols);
+    const total: usize = @as(usize, grid_rows) * @as(usize, buf_stride);
     const bg = theme.background;
     for (0..total) |i| {
         cells[i] = .{
@@ -59,25 +76,26 @@ pub fn fillCellsSplit(
         };
     }
 
-    // If zoomed, render only the zoomed pane at full grid size
+    // If zoomed, render only the zoomed pane across the engine's full grid size
     if (layout_ptr.isZoomed()) {
         const zoomed_pane = layout_ptr.pool[layout_ptr.zoomed_leaf].pane orelse return;
-        const full_rect = Rect{ .row = 0, .col = 0, .rows = grid_rows, .cols = grid_cols };
-        fillRegion(cells, &zoomed_pane.engine, full_rect, grid_cols, theme);
+        const full_rect = Rect{ .row = 0, .col = col_offset, .rows = grid_rows, .cols = eng_cols };
+        fillRegion(cells, &zoomed_pane.engine, full_rect, buf_stride, theme);
         return;
     }
 
-    // 2. Draw separator characters on branch nodes
-    drawSeparators(cells, layout_ptr, grid_rows, grid_cols, theme);
+    // 2. Draw separator characters on branch nodes (shifted by col_offset)
+    drawSeparatorsAt(cells, layout_ptr, grid_rows, eng_cols, buf_stride, col_offset, theme);
 
     // 3. Fill each leaf's region from its engine
     var leaves: [max_panes]LeafEntry = undefined;
     const leaf_count = layout_ptr.collectLeaves(&leaves);
     const dim = (term_globals.g_tab_dim_unfocused != 0);
     for (leaves[0..leaf_count]) |leaf| {
-        fillRegion(cells, &leaf.pane.engine, leaf.rect, grid_cols, theme);
+        const shifted = Rect{ .row = leaf.rect.row, .col = leaf.rect.col + col_offset, .rows = leaf.rect.rows, .cols = leaf.rect.cols };
+        fillRegion(cells, &leaf.pane.engine, shifted, buf_stride, theme);
         if (dim and leaf.index != layout_ptr.focused) {
-            dimRegion(cells, leaf.rect, grid_cols);
+            dimRegion(cells, shifted, buf_stride);
         }
     }
 }
@@ -120,13 +138,28 @@ fn dimRegion(cells: [*]Cell, rect: Rect, grid_cols: u16) void {
 }
 
 /// Walk branch nodes and draw box-drawing separator characters.
+fn drawSeparatorsAt(
+    cells: [*]Cell,
+    layout_ptr: *SplitLayout,
+    grid_rows: u16,
+    eng_cols: u16,
+    buf_stride: u16,
+    col_offset: u16,
+    theme: *const Theme,
+) void {
+    drawSeparators(cells, layout_ptr, grid_rows, eng_cols, theme, buf_stride, col_offset);
+}
+
 fn drawSeparators(
     cells: [*]Cell,
     layout_ptr: *SplitLayout,
     grid_rows: u16,
     grid_cols: u16,
     theme: *const Theme,
+    buf_stride_param: u16,
+    col_offset: u16,
 ) void {
+    const buf_stride: u16 = if (buf_stride_param == 0) grid_cols else buf_stride_param;
     // Dim the separator: blend foreground 1/3 toward background
     const fg = .{
         .r = @as(u8, @intCast((@as(u16, theme.foreground.r) + @as(u16, theme.background.r) * 2) / 3)),
@@ -161,13 +194,14 @@ fn drawSeparators(
                 const available = rect.cols -| gap_h;
                 const left_cols = @as(u16, @intFromFloat(@as(f32, @floatFromInt(available)) * node.ratio));
                 const padding = (gap_h -| 1) / 2;
-                const sep_col = rect.col + left_cols + padding;
-                if (sep_col >= grid_cols) continue;
+                const sep_col_eng = rect.col + left_cols + padding;
+                if (sep_col_eng >= grid_cols) continue;
+                const sep_col = sep_col_eng + col_offset;
                 // Extend into parent gaps so vertical lines meet horizontal ones
                 const row_start = rect.row -| gap_v;
                 const row_end = @min(grid_rows, rect.row + rect.rows + gap_v);
                 for (row_start..row_end) |r| {
-                    const idx = r * @as(usize, grid_cols) + sep_col;
+                    const idx = r * @as(usize, buf_stride) + sep_col;
                     cells[idx] = sep_cell_template;
                     cells[idx].character = 0x2502; // │
                 }
@@ -178,10 +212,12 @@ fn drawSeparators(
                 const padding = (gap_v -| 1) / 2;
                 const sep_row = rect.row + top_rows + padding;
                 if (sep_row >= grid_rows) continue;
-                const row_offset = @as(usize, sep_row) * @as(usize, grid_cols);
+                const row_offset = @as(usize, sep_row) * @as(usize, buf_stride);
                 // Extend into parent gaps so horizontal lines meet vertical ones
-                const col_start = rect.col -| gap_h;
-                const col_end = @min(grid_cols, rect.col + rect.cols + gap_h);
+                const col_start_eng = rect.col -| gap_h;
+                const col_end_eng = @min(grid_cols, rect.col + rect.cols + gap_h);
+                const col_start: usize = @as(usize, col_start_eng) + col_offset;
+                const col_end: usize = @as(usize, col_end_eng) + col_offset;
                 for (col_start..col_end) |cc| {
                     cells[row_offset + cc] = sep_cell_template;
                     cells[row_offset + cc].character = 0x2500; // ─
@@ -190,10 +226,12 @@ fn drawSeparators(
         }
     }
 
-    // Pass 2: fix up intersections with proper junction characters
-    const gcols: usize = grid_cols;
+    // Pass 2: fix up intersections — only scan the engine area in the buffer.
+    const gcols: usize = buf_stride;
+    const eng_col_start: usize = col_offset;
+    const eng_col_end: usize = col_offset + grid_cols;
     for (0..grid_rows) |r| {
-        for (0..gcols) |cc| {
+        for (eng_col_start..eng_col_end) |cc| {
             const idx = r * gcols + cc;
             const ch = cells[idx].character;
             if (ch != 0x2502 and ch != 0x2500) continue;
@@ -201,8 +239,8 @@ fn drawSeparators(
             // Check 4 neighbors for separator lines
             const has_up = r > 0 and isVerticalSep(cells[(r - 1) * gcols + cc].character);
             const has_down = r + 1 < grid_rows and isVerticalSep(cells[(r + 1) * gcols + cc].character);
-            const has_left = cc > 0 and isHorizontalSep(cells[r * gcols + (cc - 1)].character);
-            const has_right = cc + 1 < gcols and isHorizontalSep(cells[r * gcols + (cc + 1)].character);
+            const has_left = cc > eng_col_start and isHorizontalSep(cells[r * gcols + (cc - 1)].character);
+            const has_right = cc + 1 < eng_col_end and isHorizontalSep(cells[r * gcols + (cc + 1)].character);
 
             const junction = junctionChar(has_up, has_down, has_left, has_right);
             if (junction != 0) cells[idx].character = junction;

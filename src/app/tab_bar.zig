@@ -25,6 +25,10 @@ pub const Style = struct {
     agent_idle_fg: Rgb = .{ .r = 96, .g = 208, .b = 120 },
     agent_running_fg: Rgb = .{ .r = 255, .g = 170, .b = 64 },
     agent_waiting_fg: Rgb = .{ .r = 176, .g = 112, .b = 255 },
+    /// Foreground for the vertical separator border in side mode. Defaults
+    /// to a dimmed gray; callers can blend toward the active theme bg/fg
+    /// for better contrast.
+    border_fg: Rgb = .{ .r = 70, .g = 70, .b = 80 },
     bg_alpha: u8 = 230,
 };
 
@@ -424,6 +428,220 @@ pub fn generate(
     };
 }
 
+pub const min_side_width: u16 = 8;
+pub const default_side_width: u16 = 24;
+
+/// Side bar width in cells. Honors the user override (`requested`) when
+/// non-zero; otherwise falls back to a readable fixed default. Always
+/// clamped to [min_side_width, grid_cols / 2] so the content area stays
+/// usable.
+pub fn sideBarWidthRequested(grid_cols: u16, requested: u16) u16 {
+    if (grid_cols == 0) return 0;
+    const half: u16 = grid_cols / 2;
+    var w: u16 = if (requested != 0) requested else default_side_width;
+    if (w < min_side_width) w = min_side_width;
+    if (w > half) w = half;
+    if (w == 0) w = 1;
+    return w;
+}
+
+pub fn sideBarWidth(grid_cols: u16) u16 {
+    return sideBarWidthRequested(grid_cols, 0);
+}
+
+/// Vertical tab bar result: a `width` × `height` block of cells laid out
+/// row-major (`cells[row * width + col]`).
+pub const VerticalResult = struct {
+    cells: []StyledCell,
+    width: u16,
+    height: u16,
+};
+
+/// Cached row span [start, end) per tab for hit testing in vertical mode.
+var v_cached_starts: [max_tabs]u16 = .{0} ** max_tabs;
+var v_cached_ends: [max_tabs]u16 = .{0} ** max_tabs;
+var v_cached_count: u8 = 0;
+
+/// Generate vertical tab bar cells into a caller-provided buffer.
+/// Each tab takes one row; cells inside the bar are laid out row-major
+/// with `width` columns and `height` rows.
+///
+/// Visual style: rows are mostly transparent (terminal background shows
+/// through). The active row gets a subtle highlight bg behind its text.
+/// A vertical box-drawing separator `│` runs along the inner edge —
+/// rightmost col when `border_on_right = true` (left-side bar), leftmost
+/// col otherwise (right-side bar).
+pub fn generateVertical(
+    buf: []StyledCell,
+    tab_count: u8,
+    active: u8,
+    width: u16,
+    height: u16,
+    style: Style,
+    titles: *const TabTitles,
+    zoomed_tabs: u16,
+    statuses: *const AgentStatuses,
+    border_on_right: bool,
+) ?VerticalResult {
+    if (width == 0 or height == 0 or tab_count == 0) return null;
+    const total: usize = @as(usize, width) * @as(usize, height);
+    if (buf.len < total) return null;
+
+    const transparent: StyledCell = .{
+        .char = ' ',
+        .fg = style.fg,
+        .bg = .{ .r = 0, .g = 0, .b = 0 },
+        .bg_alpha = 0,
+    };
+
+    // Border lives on the inner edge: rightmost col for left-side bars,
+    // leftmost col for right-side bars. The remaining columns hold tab text
+    // and stay transparent so the terminal background shows through.
+    const border_col: u16 = if (border_on_right) width - 1 else 0;
+    const text_start: u16 = if (border_on_right) 0 else 1;
+    const text_end: u16 = if (border_on_right) width - 1 else width;
+
+    // Initialize: transparent everywhere, with a vertical line on border col.
+    for (0..height) |r| {
+        const base = r * @as(usize, width);
+        for (0..width) |c2| buf[base + c2] = transparent;
+        buf[base + border_col] = .{
+            .char = 0x2502, // │
+            .fg = style.border_fg,
+            .bg = .{ .r = 0, .g = 0, .b = 0 },
+            .bg_alpha = 0,
+        };
+    }
+
+    var fallback_bufs: [max_tabs][20]u8 = undefined;
+    var resolved: [max_tabs]ParsedTitle = undefined;
+    for (0..tab_count) |i| {
+        resolved[i] = parseAgentTitle(resolveTitle(titles, i, &fallback_bufs[i]));
+    }
+
+    const writeCell = struct {
+        fn w(buf2: []StyledCell, idx: usize, ch: u21, fg: Rgb, is_act: bool, st: Style) void {
+            if (is_act) {
+                const abg = st.active_tab_bg orelse st.tab_bg;
+                buf2[idx] = .{ .char = ch, .fg = fg, .bg = abg, .bg_alpha = st.bg_alpha };
+            } else {
+                buf2[idx] = .{ .char = ch, .fg = fg, .bg = .{ .r = 0, .g = 0, .b = 0 }, .bg_alpha = 0 };
+            }
+        }
+    }.w;
+
+    v_cached_count = tab_count;
+    var row: u16 = 0;
+    for (0..tab_count) |i| {
+        if (row >= height) break;
+        v_cached_starts[i] = row;
+
+        const is_active = (i == active);
+        const t_fg = if (is_active) (style.active_fg orelse style.fg) else style.fg;
+        const merged_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
+        const row_base = @as(usize, row) * width;
+
+        if (text_end <= text_start) {
+            v_cached_ends[i] = row + 1;
+            row += 1;
+            continue;
+        }
+
+        // Paint active row's text area with the highlight bg.
+        if (is_active) {
+            const abg = style.active_tab_bg orelse style.tab_bg;
+            for (text_start..text_end) |c2| {
+                buf[row_base + c2] = .{ .char = ' ', .fg = t_fg, .bg = abg, .bg_alpha = style.bg_alpha };
+            }
+        }
+
+        // Layout: " " (1) [zoom 2]? [agent 2]? title… " N "(right)
+        var col: u16 = text_start;
+        if (col < text_end) { writeCell(buf, row_base + col, ' ', t_fg, is_active, style); col += 1; }
+        const tab_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
+        if (tab_zoomed) {
+            if (col < text_end) { writeCell(buf, row_base + col, 0x229E, t_fg, is_active, style); col += 1; }
+            if (col < text_end) { writeCell(buf, row_base + col, ' ', t_fg, is_active, style); col += 1; }
+        }
+        if (merged_status != .none) {
+            const dot_fg = switch (merged_status) {
+                .generic => style.agent_fg,
+                .idle => style.agent_idle_fg,
+                .running => style.agent_running_fg,
+                .waiting => style.agent_waiting_fg,
+                .none => t_fg,
+            };
+            if (col < text_end) { writeCell(buf, row_base + col, 0x25CF, dot_fg, is_active, style); col += 1; }
+            if (col < text_end) { writeCell(buf, row_base + col, ' ', t_fg, is_active, style); col += 1; }
+        }
+
+        // Tab number badge at the right edge of the text area: " N " or " NN ".
+        var num_buf: [3]u8 = undefined;
+        const num = std.fmt.bufPrint(&num_buf, "{d}", .{i + 1}) catch "?";
+        const badge_w: u16 = @intCast(num.len + 2);
+        const badge_start: u16 = if (text_end > text_start + badge_w) text_end - badge_w else text_start;
+        const title_end: u16 = if (badge_start > col) badge_start else col;
+
+        // Title characters fill [col, title_end).
+        var title_col: u16 = col;
+        const title = resolved[i].title;
+        var ti: usize = 0;
+        while (nextCodepoint(title, &ti)) |cp| {
+            if (title_col >= title_end) break;
+            if (unicode.isCombiningMark(cp) or unicode.isZeroWidth(cp)) {
+                if (title_col > text_start) {
+                    const cidx = row_base + (title_col - 1);
+                    if (buf[cidx].combining[0] == 0) {
+                        buf[cidx].combining[0] = cp;
+                    } else if (buf[cidx].combining[1] == 0) {
+                        buf[cidx].combining[1] = cp;
+                    }
+                }
+                continue;
+            }
+            const w = unicode.charDisplayWidth(cp);
+            if (title_col + w > title_end) break;
+            writeCell(buf, row_base + title_col, cp, t_fg, is_active, style);
+            title_col += 1;
+            if (w == 2 and title_col < title_end) {
+                writeCell(buf, row_base + title_col, ' ', t_fg, is_active, style);
+                title_col += 1;
+            }
+        }
+
+        // Badge: " N " — uses num highlight colors when active.
+        if (badge_start < text_end) {
+            const n_fg = if (is_active) style.num_highlight_fg else style.fg;
+            const n_bg = if (is_active) style.num_highlight_bg else style.tab_bg;
+            const use_alpha: u8 = if (is_active) style.bg_alpha else 0;
+            buf[row_base + badge_start] = .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = use_alpha };
+            var bi: u16 = badge_start + 1;
+            for (num) |ch| {
+                if (bi >= text_end) break;
+                buf[row_base + bi] = .{ .char = ch, .fg = n_fg, .bg = n_bg, .bg_alpha = use_alpha };
+                bi += 1;
+            }
+            while (bi < text_end) : (bi += 1) {
+                buf[row_base + bi] = .{ .char = ' ', .fg = n_fg, .bg = n_bg, .bg_alpha = use_alpha };
+            }
+        }
+
+        v_cached_ends[i] = row + 1;
+        row += 1;
+    }
+
+    return .{ .cells = buf[0..total], .width = width, .height = height };
+}
+
+/// Map a row within the side tab bar back to a tab index.
+pub fn tabIndexAtRow(row: u16, tab_count: u8) ?u8 {
+    const count = @min(tab_count, v_cached_count);
+    for (0..count) |i| {
+        if (row >= v_cached_starts[i] and row < v_cached_ends[i]) return @intCast(i);
+    }
+    return null;
+}
+
 /// Given a column position, return the tab index at that column (or null if outside tabs
 /// or on a gap between tabs). Accounts for scroll offset and overflow indicators.
 pub fn tabIndexAtCol(col: u16, tab_count: u8, grid_cols: u16) ?u8 {
@@ -732,6 +950,64 @@ test "tabIndexAtCol: works with scroll offset" {
 
     // Col 19 is tab content (no right indicator) — virtual col 18+15=33, tab 4 (starts 28, width 6)
     try std.testing.expectEqual(@as(?u8, 4), tabIndexAtCol(19, 5, 20));
+}
+
+test "sideBarWidth: fixed 24 cells, shrinks only on narrow windows" {
+    try std.testing.expectEqual(@as(u16, 24), sideBarWidth(80));
+    try std.testing.expectEqual(@as(u16, 24), sideBarWidth(120));
+    try std.testing.expectEqual(@as(u16, 24), sideBarWidth(300));
+    try std.testing.expectEqual(@as(u16, 20), sideBarWidth(40)); // half of 40
+    try std.testing.expectEqual(@as(u16, 0), sideBarWidth(0));
+}
+
+test "sideBarWidthRequested: honors override clamped to [min, half]" {
+    try std.testing.expectEqual(@as(u16, 30), sideBarWidthRequested(120, 30));
+    try std.testing.expectEqual(@as(u16, 8), sideBarWidthRequested(120, 4)); // below min
+    try std.testing.expectEqual(@as(u16, 60), sideBarWidthRequested(120, 200)); // capped at half
+    try std.testing.expectEqual(@as(u16, 24), sideBarWidthRequested(120, 0)); // default
+}
+
+test "generateVertical: lays out one tab per row with badge + border" {
+    var buf: [16 * 24]StyledCell = undefined;
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "vim";
+    titles[1] = "zsh";
+    // Left-side bar → border on right (column width-1 = 15).
+    const result = generateVertical(&buf, 2, 1, 16, 24, .{}, &titles, 0, &no_statuses, true) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 16), result.width);
+    try std.testing.expectEqual(@as(u16, 24), result.height);
+
+    // Border column: vertical line at col 15 of every row.
+    try std.testing.expectEqual(@as(u21, 0x2502), result.cells[15].char);
+    try std.testing.expectEqual(@as(u21, 0x2502), result.cells[16 * 5 + 15].char);
+
+    // Row 0: tab 0 — title text, badge `" 1 "` ends just before the border.
+    try std.testing.expectEqual(@as(u21, 'v'), result.cells[1].char);
+    try std.testing.expectEqual(@as(u21, '1'), result.cells[13].char);
+
+    // Row 1: tab 1 (active)
+    const r1 = 16 * 1;
+    try std.testing.expectEqual(@as(u21, 'z'), result.cells[r1 + 1].char);
+    try std.testing.expectEqual(@as(u21, '2'), result.cells[r1 + 13].char);
+
+    // Empty rows below the last tab keep transparent bg with border line.
+    try std.testing.expectEqual(@as(u8, 0), result.cells[16 * 10 + 5].bg_alpha);
+    try std.testing.expectEqual(@as(u21, 0x2502), result.cells[16 * 10 + 15].char);
+
+    // Hit test
+    try std.testing.expectEqual(@as(?u8, 0), tabIndexAtRow(0, 2));
+    try std.testing.expectEqual(@as(?u8, 1), tabIndexAtRow(1, 2));
+    try std.testing.expectEqual(@as(?u8, null), tabIndexAtRow(5, 2));
+}
+
+test "generateVertical: right-side bar puts border at column 0" {
+    var buf: [16 * 8]StyledCell = undefined;
+    var titles: TabTitles = .{null} ** max_tabs;
+    titles[0] = "a";
+    const result = generateVertical(&buf, 1, 0, 16, 8, .{}, &titles, 0, &no_statuses, false) orelse return error.TestUnexpectedResult;
+    // Border at col 0 every row.
+    try std.testing.expectEqual(@as(u21, 0x2502), result.cells[0].char);
+    try std.testing.expectEqual(@as(u21, 0x2502), result.cells[16].char);
 }
 
 test "autoScroll: active tab scrolled into view" {

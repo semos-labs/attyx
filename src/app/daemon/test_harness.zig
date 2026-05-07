@@ -47,7 +47,8 @@ pub const TestDaemon = struct {
             if (slot.*) |*s| {
                 for (&s.panes, 0..) |*pslot, pi| {
                     if (pslot.*) |*p| {
-                        if (p.alive) {
+                        // Skip deferred-spawn panes (master == -1).
+                        if (p.alive and p.pty.master >= 0) {
                             fds[nfds] = .{ .fd = p.pty.master, .events = 0x0001, .revents = 0 };
                             pty_fd_map[pty_fd_count] = .{ .session_idx = si, .pane_idx = pi };
                             pty_fd_count += 1;
@@ -294,6 +295,7 @@ pub fn writeAllBlocking(fd: posix.fd_t, data: []const u8) !void {
 }
 
 pub fn setNonBlocking(fd: posix.fd_t) void {
+    if (fd < 0) return; // deferred-spawn pane: PTY not yet active
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const O_NONBLOCK: i32 = if (@import("builtin").os.tag == .linux) 0o4000 else 0x0004;
@@ -346,7 +348,7 @@ pub const TestEnv = struct {
             if (slot.*) |*s| {
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*p| {
-                        p.replay.deinit();
+                        p.freeTransferableState();
                         pslot.* = null;
                     }
                 }
