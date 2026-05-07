@@ -254,6 +254,10 @@ test "pane input reaches PTY and produces output" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
@@ -290,7 +294,10 @@ test "pane resize updates dimensions via stty" {
     defer client.deinit();
 
     var buf: [4200]u8 = undefined;
-    const cp = try protocol.encodeCreate(&buf, "resize-test", 24, 80, "/tmp", "");
+    // Use /bin/sh: smaller startup cost than zsh, no shell-integration
+    // recursion under SIGWINCH-during-init, and `stty size` works the
+    // same. The test only cares that the kernel TIOCSWINSZ propagated.
+    const cp = try protocol.encodeCreate(&buf, "resize-test", 24, 80, "/tmp", "/bin/sh");
     try client.send(.create, cp);
     const created = try client.expect(.created, 5000);
     const sid = try protocol.decodeCreated(created);
@@ -301,12 +308,16 @@ test "pane resize updates dimensions via stty" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     // Focus the pane so we get output
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
     // Wait for shell startup, drain initial output
-    posix.nanosleep(0, 200_000_000);
+    posix.nanosleep(0, 400_000_000);
     _ = client.tryParse(.pane_output);
     client.read_len = 0;
 
@@ -360,6 +371,10 @@ test "focus_panes triggers replay_end for new panes" {
     const attached = try client.expect(.attached, 5000);
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
+
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
 
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);

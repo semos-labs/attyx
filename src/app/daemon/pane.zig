@@ -22,6 +22,23 @@ const win32_sleep = if (is_windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: std.os.windows.DWORD) callconv(.winapi) void;
 } else struct {};
 
+/// Heap-stored params for a pane whose PTY hasn't been spawned yet.
+/// Used so the daemon can defer the actual fork/exec until the client
+/// supplies real window dimensions — preventing the shell's first prompt
+/// from being rendered (and grid-synced) at config defaults (80×24).
+/// Kept off the DaemonPane to avoid bloating the by-value pane struct
+/// (`[32]?DaemonSession × max_panes_per_session` lives on the stack
+/// during hot-upgrade).
+pub const DeferredSpawnParams = struct {
+    cwd_z_buf: [4097]u8 = undefined,
+    cwd_len: u16 = 0,
+    shell_z_buf: [257]u8 = undefined,
+    shell_len: u16 = 0,
+    cmd_z_buf: [4097]u8 = undefined,
+    cmd_len: u16 = 0,
+    capture_stdout: bool = false,
+};
+
 
 /// A daemon-managed pane wrapping a PTY process and replay buffer.
 /// Multiple DaemonPanes live inside a DaemonSession.
@@ -73,6 +90,13 @@ pub const DaemonPane = struct {
     engine: ?*Engine = null,
     /// Monotonic counter bumped when engine.feed dirties any row.
     engine_generation: u64 = 0,
+
+    /// Pending spawn params. When set, the PTY is inactive and the engine
+    /// is null — the actual fork/exec runs on the first `resize()` call,
+    /// using the resize dims so the shell's first prompt renders at the
+    /// real window size. Heap-allocated so the by-value pane stays small.
+    /// Cleared (and freed) once the spawn is activated.
+    deferred: ?*DeferredSpawnParams = null,
 
 
     /// Restore a pane from deserialized state (inherited PTY fd across exec).
@@ -211,6 +235,124 @@ pub const DaemonPane = struct {
 
         pane.engine = allocEngine(allocator, rows, cols);
         return pane;
+    }
+
+    /// Spawn a pane in deferred mode: PTY is inactive, engine is null,
+    /// and the spawn params are stashed in a heap-allocated struct. The
+    /// real fork/exec runs on the first `resize()` call, using the resize
+    /// dims so the shell's first prompt renders at the actual window size
+    /// rather than the config defaults (which would bake 80-col newlines
+    /// into the grid that grid-sync then ships unchanged).
+    ///
+    /// Windows currently keeps the immediate-spawn path (host pipe READY
+    /// frame already gates against output before connect).
+    pub fn spawnDeferred(
+        allocator: std.mem.Allocator,
+        id: u32,
+        rows: u16,
+        cols: u16,
+        replay_capacity: usize,
+        cwd: ?[*:0]const u8,
+        shell: ?[*:0]const u8,
+        cmd: ?[*:0]const u8,
+        capture_stdout: bool,
+    ) !DaemonPane {
+        if (comptime is_windows) {
+            return spawn(allocator, id, rows, cols, replay_capacity, cwd, shell, cmd, capture_stdout);
+        }
+        const def = try allocator.create(DeferredSpawnParams);
+        def.* = .{};
+        if (cwd) |c| {
+            const slice = std.mem.sliceTo(c, 0);
+            const len: u16 = @intCast(@min(slice.len, def.cwd_z_buf.len - 1));
+            @memcpy(def.cwd_z_buf[0..len], slice[0..len]);
+            def.cwd_z_buf[len] = 0;
+            def.cwd_len = len;
+        }
+        if (shell) |s| {
+            const slice = std.mem.sliceTo(s, 0);
+            const len: u16 = @intCast(@min(slice.len, def.shell_z_buf.len - 1));
+            @memcpy(def.shell_z_buf[0..len], slice[0..len]);
+            def.shell_z_buf[len] = 0;
+            def.shell_len = len;
+        }
+        if (cmd) |c| {
+            const slice = std.mem.sliceTo(c, 0);
+            const len: u16 = @intCast(@min(slice.len, def.cmd_z_buf.len - 1));
+            @memcpy(def.cmd_z_buf[0..len], slice[0..len]);
+            def.cmd_z_buf[len] = 0;
+            def.cmd_len = len;
+        }
+        def.capture_stdout = capture_stdout;
+        return DaemonPane{
+            .id = id,
+            .pty = Pty.initInactive(),
+            .replay = try RingBuffer.init(allocator, replay_capacity),
+            .rows = rows,
+            .cols = cols,
+            .deferred = def,
+        };
+    }
+
+    /// First-resize activation for a deferred pane: fork+exec the PTY at
+    /// the supplied dims, allocate the engine to match, and free the
+    /// stashed spawn params. POSIX-only — Windows panes never set
+    /// `deferred`.
+    fn activateDeferred(self: *DaemonPane, rows: u16, cols: u16) !void {
+        const def = self.deferred orelse return;
+        const allocator = self.replay.allocator;
+
+        const cwd: ?[*:0]const u8 = if (def.cwd_len > 0) @ptrCast(&def.cwd_z_buf) else null;
+        const shell: ?[*:0]const u8 = if (def.shell_len > 0) @ptrCast(&def.shell_z_buf) else null;
+        const cmd: ?[*:0]const u8 = if (def.cmd_len > 0) @ptrCast(&def.cmd_z_buf) else null;
+
+        // Same shell-string→argv split as `spawn()`. Local buffers are
+        // fine here: Pty.spawn fork+exec copies argv into the child
+        // before returning, so the slices need only outlive this call.
+        var shell_argv: [4][:0]const u8 = undefined;
+        var shell_argc: usize = 0;
+        var shell_split_buf: [257]u8 = undefined;
+        const argv: ?[]const [:0]const u8 = if (shell) |s| blk: {
+            const shell_str = std.mem.sliceTo(s, 0);
+            if (shell_str.len == 0) break :blk null;
+            @memcpy(shell_split_buf[0..shell_str.len], shell_str);
+            var pos: usize = 0;
+            while (pos < shell_str.len and shell_argc < shell_argv.len) {
+                while (pos < shell_str.len and shell_split_buf[pos] == ' ') pos += 1;
+                if (pos >= shell_str.len) break;
+                const start = pos;
+                while (pos < shell_str.len and shell_split_buf[pos] != ' ') pos += 1;
+                shell_split_buf[pos] = 0;
+                shell_argv[shell_argc] = shell_split_buf[start..pos :0];
+                shell_argc += 1;
+                if (pos < shell_str.len) pos += 1;
+            }
+            if (shell_argc > 0) break :blk shell_argv[0..shell_argc] else break :blk null;
+        } else null;
+
+        self.pty = try Pty.spawn(.{
+            .rows = rows,
+            .cols = cols,
+            .cwd = cwd,
+            .argv = argv,
+            .startup_cmd = cmd,
+            .capture_stdout = def.capture_stdout,
+        });
+
+        if (def.capture_stdout) {
+            const cs = allocator.create(std.ArrayList(u8)) catch null;
+            if (cs) |c| c.* = .empty;
+            self.captured_stdout = cs;
+            self.stdout_allocator = allocator;
+        }
+
+        self.engine = allocEngine(allocator, rows, cols);
+        self.rows = rows;
+        self.cols = cols;
+        self.engine_generation = 1;
+
+        allocator.destroy(def);
+        self.deferred = null;
     }
 
     /// Windows: spawn a host process and connect to it via named pipe.
@@ -472,8 +614,13 @@ pub const DaemonPane = struct {
         }
     }
 
-    /// Resize the PTY.
+    /// Resize the PTY. For deferred panes (POSIX), the first resize call
+    /// is what triggers the actual fork/exec — the shell starts at the
+    /// supplied dims and never sees a config-default 80×24 phase.
     pub fn resize(self: *DaemonPane, rows: u16, cols: u16) !void {
+        if (self.deferred != null) {
+            return self.activateDeferred(rows, cols);
+        }
         if (comptime is_windows) {
             if (self.host_conn) |hc| {
                 if (!hc.sendResize(rows, cols)) return error.ResizeFailed;
@@ -635,6 +782,10 @@ pub const DaemonPane = struct {
     /// by the new daemon, but the ring and engine allocations belong to
     /// this process and must be freed before handoff.
     pub fn freeTransferableState(self: *DaemonPane) void {
+        if (self.deferred) |def| {
+            self.replay.allocator.destroy(def);
+            self.deferred = null;
+        }
         self.replay.deinit();
         self.freeEngine();
     }
@@ -646,6 +797,10 @@ pub const DaemonPane = struct {
                 cs.deinit(alloc);
                 alloc.destroy(cs);
             }
+        }
+        if (self.deferred) |def| {
+            self.replay.allocator.destroy(def);
+            self.deferred = null;
         }
         self.freeEngine();
         self.pty.deinit();

@@ -176,17 +176,61 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
-    // When xyron is enabled in session mode, the daemon may not have output
-    // yet (xyron just started). Wait briefly for initial prompt data.
+    // Cold-launch dims handoff for daemon-backed startup pane.
+    //
+    // The session is created with the daemon pane in DEFERRED-SPAWN
+    // mode (`pane.deferred != null` on the daemon). The shell hasn't
+    // been forked yet — it will spawn at whatever dims we forward via
+    // the first pane_resize. So we wait for the main thread's real
+    // window dims to land in `g_pending_resize`, send pane_resize once,
+    // and the shell's very first prompt renders at the actual width.
+    //
+    // No stale 80×24 snapshot, no SIGWINCH-redraw nudge — there's
+    // nothing to redraw, the shell is starting fresh.
     if (ctx.session_client != null and ctx.xyron_path != null) {
         const startup_pane = ctx.tab_mgr.activePane();
         if (startup_pane.daemon_pane_id != null) {
+            logging.info("startup", "waiting for real window dims (session at {d}x{d})", .{ ctx.grid_cols, ctx.grid_rows });
+            // Wait up to 2s for `g_pending_resize` from the main thread.
+            // On timeout fall through with whatever dims we have so the
+            // deferred pane still activates (worst case: config defaults).
+            var dims_arrived = false;
+            for (0..40) |tick| {
+                var rr: c_int = 0;
+                var rc: c_int = 0;
+                if (c.attyx_check_resize(&rr, &rc) != 0) {
+                    logging.info("startup", "got resize {d}x{d} at tick {d}", .{ rc, rr, tick });
+                    const gaps = actions.computeSplitGaps();
+                    ctx.tab_mgr.updateGaps(gaps.h, gaps.v);
+                    ctx.grid_rows = @intCast(rr);
+                    ctx.grid_cols = @intCast(rc);
+                    c.attyx_set_grid_size(rc, rr);
+                    dims_arrived = true;
+                    break;
+                }
+                posix.nanosleep(0, 50_000_000); // 50ms
+            }
+            if (!dims_arrived) {
+                logging.warn("startup", "timed out waiting for window dims; activating at {d}x{d}", .{ ctx.grid_cols, ctx.grid_rows });
+            }
+            // Resize local panes + ship pane_resize to the daemon. This
+            // is what triggers the deferred spawn on the daemon side.
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            ctx.tab_mgr.resizeAll(pty_rows, ctx.grid_cols);
+            if (ctx.session_client) |sc_resize| {
+                if (startup_pane.daemon_pane_id) |dpid|
+                    sc_resize.sendPaneResize(dpid, pty_rows, ctx.grid_cols) catch {};
+            }
+            startup_pane.pending_pty_resize = false;
+            // Drain daemon messages until the shell draws its first
+            // prompt (cursor advances). Standard sync — no special
+            // post-resize delay needed since the shell is starting from
+            // scratch at the correct dims.
             for (0..40) |_| { // up to 2 seconds
                 if (ctx.session_client) |sc| {
                     _ = sc.recvData();
-                    while (sc.readMessage()) |msg| {
+                    while (sc.readMessage()) |msg|
                         _ = applyDaemonContentMessage(ctx, msg);
-                    }
                 }
                 if (startup_pane.engine.state.cursor.row > 0 or startup_pane.engine.state.cursor.col > 0) break;
                 posix.nanosleep(0, 50_000_000); // 50ms
@@ -203,18 +247,6 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
-            // Nudge the daemon to re-fire TIOCSWINSZ / SIGWINCH so the
-            // shell redraws its prompt at the current-known dimensions.
-            // Without this, starship/zsh's first-paint prompt can land at
-            // stale dims (size race with window init / xyron child proc)
-            // and wrap awkwardly until user input triggers zle redraw.
-            if (ctx.session_client) |sc2| {
-                if (startup_pane.daemon_pane_id) |dpid| {
-                    const pty_rows: u16 = @intCast(eng.state.ring.screen_rows);
-                    const pty_cols: u16 = @intCast(eng.state.ring.cols);
-                    sc2.sendPaneResize(dpid, pty_rows, pty_cols) catch {};
-                }
-            }
         }
     }
 

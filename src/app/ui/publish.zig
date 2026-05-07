@@ -650,10 +650,11 @@ pub fn fillCellsStride(
 ) void {
     const vp = eng.state.viewport_offset;
     const cols = eng.state.ring.cols;
-    const rows = eng.state.ring.screen_rows;
     const wrapped: *volatile [c.ATTYX_MAX_ROWS]u8 = @ptrCast(&c.g_row_wrapped);
     const stride_usize: usize = stride;
     const cols_to_copy = @min(@as(usize, cols), stride_usize);
+    const max_rows = if (stride_usize > 0) cells.len / stride_usize else 0;
+    const rows = @min(eng.state.ring.screen_rows, max_rows);
 
     for (0..rows) |row| {
         const row_cells = eng.state.ring.viewportRow(vp, row);

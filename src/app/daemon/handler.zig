@@ -328,6 +328,13 @@ fn handleFocusPanes(
         }
         if (!was_active) {
             if (session.findPane(new_id)) |pane| {
+                // Skip drain/snapshot for deferred panes: the PTY hasn't
+                // been spawned yet (master == -1) and there's no engine
+                // to ship. The first pane_resize will activate the spawn,
+                // and the regular daemon poll loop will ship the snapshot
+                // once shell output starts flowing.
+                const pty_inactive = if (comptime is_windows) false else (pane.pty.master < 0);
+                if (pane.deferred != null or pty_inactive) continue;
                 // Drain any buffered PTY output into the ring buffer.
                 // On Windows, Pty.read blocks (INFINITE wait), so use
                 // peekAvail + read to only drain what's available.
@@ -557,6 +564,7 @@ fn findSession(sessions: *[max_sessions]?DaemonSession, id: u32) ?*DaemonSession
 
 fn setNonBlocking(fd: std.posix.fd_t) void {
     if (comptime is_windows) return; // Windows handles don't use fcntl
+    if (fd < 0) return; // deferred-spawn pane: PTY not yet active
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const platform = @import("../../platform/platform.zig");

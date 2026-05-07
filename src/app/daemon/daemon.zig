@@ -194,7 +194,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
             if (slot.*) |*s| {
                 for (&s.panes, 0..) |*pslot, pi| {
                     if (pslot.*) |*p| {
-                        if (p.alive) {
+                        // Skip deferred-spawn panes (master == -1 until
+                        // first resize triggers the actual fork/exec).
+                        if (p.alive and p.pty.master >= 0) {
                             fds[nfds] = .{ .fd = p.pty.master, .events = 0x0001, .revents = 0 };
                             pty_fd_map[pty_fd_count] = .{ .session_idx = si, .pane_idx = pi };
                             pty_fd_count += 1;
@@ -525,6 +527,7 @@ fn deleteVersionFile() void {
 }
 
 fn setNonBlocking(fd: posix.fd_t) void {
+    if (fd < 0) return; // deferred-spawn pane: PTY not yet active
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;

@@ -124,11 +124,15 @@ test "daemon: session created with cwd spawns shell in that directory" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
     // Wait for shell startup, drain initial output
-    posix.nanosleep(0, 200_000_000);
+    posix.nanosleep(0, 400_000_000);
     _ = client.tryParse(.pane_output);
     client.read_len = 0;
 
@@ -162,10 +166,14 @@ test "daemon: session with home cwd spawns in home" {
     const v2 = try protocol.decodeAttachedV2(attached);
     const pane_id = v2.pane_ids[0];
 
+    // Pane is deferred-spawn until first pane_resize activates it.
+    const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+    try client.send(.pane_resize, init_rp);
+
     const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
     try client.send(.focus_panes, fp);
 
-    posix.nanosleep(0, 200_000_000);
+    posix.nanosleep(0, 400_000_000);
     _ = client.tryParse(.pane_output);
     client.read_len = 0;
 
@@ -243,10 +251,14 @@ test "daemon: two sessions with different cwds" {
         const v2 = try protocol.decodeAttachedV2(attached);
         const pane_id = v2.pane_ids[0];
 
+        // Pane is deferred-spawn until first pane_resize activates it.
+        const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+        try client.send(.pane_resize, init_rp);
+
         const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
         try client.send(.focus_panes, fp);
 
-        posix.nanosleep(0, 200_000_000);
+        posix.nanosleep(0, 400_000_000);
         _ = client.tryParse(.pane_output);
         client.read_len = 0;
 
@@ -257,9 +269,19 @@ test "daemon: two sessions with different cwds" {
         try testing.expect(found);
     }
 
-    // Detach, then attach to session 2, verify different cwd
+    // Detach, then attach to session 2, verify different cwd.
+    // Drain pending session-1 output post-detach by reading from the
+    // socket until quiet — otherwise stale pane_output messages can
+    // outpace the .attached response in the kernel recv buffer.
     try client.send(.detach, &.{});
-    posix.nanosleep(0, 50_000_000);
+    posix.nanosleep(0, 200_000_000);
+    drain_loop: for (0..10) |_| {
+        var fds = [1]posix.pollfd{.{ .fd = client.fd, .events = 0x0001, .revents = 0 }};
+        _ = posix.poll(&fds, 50) catch break :drain_loop;
+        if (fds[0].revents & 0x0001 == 0) break :drain_loop;
+        var dbuf: [4096]u8 = undefined;
+        _ = posix.read(client.fd, &dbuf) catch break :drain_loop;
+    }
     client.read_len = 0;
 
     {
@@ -269,10 +291,14 @@ test "daemon: two sessions with different cwds" {
         const v2 = try protocol.decodeAttachedV2(attached);
         const pane_id = v2.pane_ids[0];
 
+        // Pane is deferred-spawn until first pane_resize activates it.
+        const init_rp = try protocol.encodePaneResize(&buf, pane_id, 24, 80);
+        try client.send(.pane_resize, init_rp);
+
         const fp = try protocol.encodeFocusPanes(&buf, &.{pane_id});
         try client.send(.focus_panes, fp);
 
-        posix.nanosleep(0, 200_000_000);
+        posix.nanosleep(0, 400_000_000);
         _ = client.tryParse(.pane_output);
         client.read_len = 0;
 

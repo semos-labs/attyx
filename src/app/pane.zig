@@ -30,6 +30,15 @@ else
 /// the shell with prompt redraws that create ghost content.
 const pty_resize_throttle_ns: i128 = 80 * std.time.ns_per_ms;
 
+/// First-resize debounce. On cold start, tiling window managers
+/// (aerospace, yabai, ...) create the window at some default size and
+/// *then* retile. If we fire TIOCSWINSZ on the first resize event
+/// immediately, the shell renders its prompt at the wrong width and then
+/// gets a SIGWINCH mid-render — producing stranded wrap artifacts. By
+/// delaying the first resize until its dimensions have been stable for
+/// this long, the retile-induced resize coalesces with the initial size.
+const pty_initial_resize_debounce_ns: i128 = 150 * std.time.ns_per_ms;
+
 pub const Pane = struct {
     engine: Engine,
     pty: Pty,
@@ -71,6 +80,11 @@ pub const Pane = struct {
     pending_pty_cols: u16 = 0,
     pending_pty_resize: bool = false,
     last_pty_resize_ns: i128 = 0,
+    /// Timestamp when current pending dims were first set (resets each
+    /// time the pending dims change). Used by flushPtyResize to enforce
+    /// the first-resize debounce: the first TIOCSWINSZ isn't sent until
+    /// the dims have been stable for pty_initial_resize_debounce_ns.
+    pending_pty_since_ns: i128 = 0,
     /// Xyron IPC: persistent event connection for this pane (completions, etc.)
     xyron_ipc: ?*IpcClient = null,
     /// Xyron IPC: whether handshake has been completed for this pane.
@@ -247,13 +261,19 @@ pub const Pane = struct {
         if (self.shadow_engine) |*s| {
             s.state.resize(rows, cols) catch {};
         }
-        // Leading-edge throttle: record pending dimensions but don't reset
-        // the timer. flushPtyResize() fires immediately on the first event,
-        // then at most once per throttle interval during continuous resizing.
+        // Record pending dimensions. The *first* TIOCSWINSZ is gated by a
+        // debounce window (see pty_initial_resize_debounce_ns) so that a
+        // WM retile arriving just after window creation coalesces with the
+        // initial size. Subsequent resizes use leading-edge throttle.
         if (rows != old_rows or cols != old_cols) {
+            const now = std.time.nanoTimestamp();
+            const dims_changed = (rows != self.pending_pty_rows) or (cols != self.pending_pty_cols);
             self.pending_pty_rows = rows;
             self.pending_pty_cols = cols;
             self.pending_pty_resize = true;
+            if (dims_changed or self.pending_pty_since_ns == 0) {
+                self.pending_pty_since_ns = now;
+            }
         }
     }
 
@@ -262,7 +282,16 @@ pub const Pane = struct {
     pub fn flushPtyResize(self: *Pane) void {
         if (!self.pending_pty_resize) return;
         const now = std.time.nanoTimestamp();
-        if (now - self.last_pty_resize_ns < pty_resize_throttle_ns) return;
+        if (self.last_pty_resize_ns == 0) {
+            // First fire: require the pending dims to have been stable
+            // for the initial debounce window. A WM retile arriving
+            // within this window updates pending_pty_since_ns (via
+            // resize()) and restarts the wait — so by the time we fire,
+            // the dims reflect the *settled* window size.
+            if (now - self.pending_pty_since_ns < pty_initial_resize_debounce_ns) return;
+        } else if (now - self.last_pty_resize_ns < pty_resize_throttle_ns) {
+            return;
+        }
 
         if (self.daemon_pane_id) |dpid| {
             if (self.session_client) |sc| {
