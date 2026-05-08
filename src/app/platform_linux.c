@@ -489,6 +489,14 @@ void attyx_run(AttyxCell* cells, int cols, int rows) {
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     }
 
+#ifdef GLFW_X11_CLASS_NAME
+    glfwWindowHintString(GLFW_X11_CLASS_NAME,    "attyx");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "attyx");
+#endif
+#ifdef GLFW_WAYLAND_APP_ID
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID,    "attyx");
+#endif
+
     g_window = glfwCreateWindow(winW, winH, "Attyx", NULL, NULL);
     if (!g_window) {
         ATTYX_LOG_ERR("platform", "failed to create window");
