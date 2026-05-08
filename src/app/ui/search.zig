@@ -155,9 +155,12 @@ pub fn generateSearchBar(ctx: *PtyThreadCtx) void {
         .{},
     ) catch return;
 
-    // Search always takes the top row (row 0) — it has highest priority
+    // Search always takes the top row (row 0) — it has highest priority.
+    // When a side tab bar is active, it runs full-height through row 0, so
+    // the search bar starts after the sidebar's left gutter.
     const search_row: u16 = 0;
-    mgr.setContent(.search_bar, 0, search_row, result.width, result.height, result.cells) catch {
+    const left_off: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+    mgr.setContent(.search_bar, left_off, search_row, result.width, result.height, result.cells) catch {
         mgr.allocator.free(result.cells);
         return;
     };

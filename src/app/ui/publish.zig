@@ -929,21 +929,13 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
             if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
             return;
         }
-        // Side bar lives outside the statusbar/search rows: it starts after
-        // any top reservation and ends before any bottom reservation.
-        const top_off: u16 = @intCast(@max(0, terminal.g_grid_top_offset));
-        const bot_off: u16 = @intCast(@max(0, terminal.g_grid_bottom_offset));
-        const avail_h: u16 = ctx.grid_rows -| top_off -| bot_off;
-        if (avail_h == 0) {
-            if (mgr.isVisible(.tab_bar)) mgr.hide(.tab_bar);
-            return;
-        }
-        // Stack-side buffer must hold width × height. Cap at the overlay
-        // limit so we never exceed what the C bridge can publish.
+        // Side bar spans the full window height. The statusbar and search
+        // bar yield their sidebar columns so the bar runs uninterrupted from
+        // the very top to the very bottom.
         const max_cells: usize = @intCast(c.ATTYX_OVERLAY_MAX_CELLS);
         var v_cells: [c.ATTYX_OVERLAY_MAX_CELLS]overlay_mod.StyledCell = undefined;
         const max_h_for_buf: u16 = @intCast(max_cells / @as(usize, width));
-        const height: u16 = @min(avail_h, max_h_for_buf);
+        const height: u16 = @min(ctx.grid_rows, max_h_for_buf);
         const left_side = (tab_side == 1);
         const result = tab_bar_mod.generateVertical(
             v_cells[0 .. @as(usize, width) * @as(usize, height)],
@@ -958,7 +950,7 @@ pub fn generateTabBar(ctx: *PtyThreadCtx) void {
             left_side, // border on right edge for left-side bars
         ) orelse return;
         const place_col: u16 = if (left_side) 0 else ctx.grid_cols -| width;
-        mgr.setContent(.tab_bar, place_col, top_off, result.width, result.height, result.cells) catch return;
+        mgr.setContent(.tab_bar, place_col, 0, result.width, result.height, result.cells) catch return;
         if (!mgr.isVisible(.tab_bar)) mgr.show(.tab_bar);
         return;
     }
@@ -1051,13 +1043,20 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
         .bg_alpha = sb.config.background_opacity,
     };
     // When native tabs are active, hide the tab section in the statusbar.
-    // When a side tab bar is active, the statusbar gives up its tab section
-    // to the side bar (the side bar starts below the statusbar row, so the
-    // statusbar is free to span the full window width).
+    // When a side tab bar is active, the side bar runs full-height through
+    // the statusbar's row, so the statusbar yields the sidebar columns and
+    // only spans the remaining (PTY) columns.
     const side_active = (terminal.g_tab_side != 0);
     const sb_tab_count: u8 = if (terminal.g_native_tabs_enabled != 0 or side_active) 0 else ctx.tab_mgr.count;
     const zoomed_tabs = computeZoomedTabs(ctx);
-    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, ctx.grid_cols, sb_style, &titles, zoomed_tabs, &statuses) orelse return;
+    const left_off: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
+    const right_off: u16 = @intCast(@max(0, terminal.g_grid_right_offset));
+    const sb_width: u16 = ctx.grid_cols -| left_off -| right_off;
+    if (sb_width == 0) {
+        if (mgr.isVisible(.statusbar)) mgr.hide(.statusbar);
+        return;
+    }
+    const result = statusbar_mod.generate(&sb_cells, sb, sb_tab_count, ctx.tab_mgr.active, sb_width, sb_style, &titles, zoomed_tabs, &statuses) orelse return;
 
     // Skip overlay update if statusbar content hasn't changed.
     const cell_count = @as(usize, result.width) * @as(usize, result.height);
@@ -1066,6 +1065,6 @@ pub fn generateStatusbar(ctx: *PtyThreadCtx) void {
     last_statusbar_hash = hash;
 
     const row: u16 = if (sb.config.position == .top) 0 else ctx.grid_rows -| 1;
-    mgr.setContent(.statusbar, 0, row, result.width, result.height, result.cells) catch return;
+    mgr.setContent(.statusbar, left_off, row, result.width, result.height, result.cells) catch return;
     if (!mgr.isVisible(.statusbar)) mgr.show(.statusbar);
 }
