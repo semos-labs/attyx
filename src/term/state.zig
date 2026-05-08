@@ -215,11 +215,21 @@ pub const TerminalState = struct {
                 self.dirty.mark(self.cursor.row);
             },
             .insert_lines => |n| {
-                self.ring.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n), self.bceCell());
-                self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+                // IL/DL are no-ops when the cursor is outside the scroll
+                // region (xterm/DEC VT). Applying them anyway shifts rows
+                // outside the region — TUIs that emit IL/DL while the
+                // cursor lives in a fixed footer/header expect the region
+                // to stay untouched, and we'd leave residual cells where
+                // the rows shifted from.
+                if (self.cursor.row >= self.scroll_top and self.cursor.row <= self.scroll_bottom) {
+                    self.ring.scrollDownRegionN(self.cursor.row, self.scroll_bottom, @intCast(n), self.bceCell());
+                    self.dirty.markRange(self.cursor.row, self.scroll_bottom);
+                }
             },
             .delete_lines => |n| {
-                if (self.cursor.row == self.scroll_top and self.isFullScreenScroll()) {
+                if (self.cursor.row < self.scroll_top or self.cursor.row > self.scroll_bottom) {
+                    // No-op: cursor outside scroll region.
+                } else if (self.cursor.row == self.scroll_top and self.isFullScreenScroll()) {
                     const count: usize = @min(@as(usize, @intCast(n)), self.scroll_bottom - self.cursor.row + 1);
                     for (0..count) |_| {
                         self.fullScreenScroll();
