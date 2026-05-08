@@ -1238,9 +1238,19 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
         sendSgrMouse(btn, col, row, 1);
         return;
     }
-    if (g_alt_screen) return;
     int lines = (int)yoff;
     if (lines == 0) lines = (yoff > 0) ? 1 : -1;
+
+    // Alt screen (TUI apps without mouse tracking): translate scroll into
+    // up/down arrow key sequences so apps like less/man/vim can scroll.
+    if (g_alt_screen) {
+        unsigned char letter = (lines > 0) ? 'A' : 'B';
+        int n = lines > 0 ? lines : -lines;
+        unsigned char buf[3] = { 0x1b, g_cursor_keys_app ? (unsigned char)'O' : (unsigned char)'[', letter };
+        for (int i = 0; i < n; i++) attyx_send_input(buf, 3);
+        return;
+    }
+
     // Overlay scroll: consume if hit
     if (g_overlay_has_actions) {
         double mx, my;

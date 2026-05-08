@@ -1030,40 +1030,37 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
         return;
     }
 
-    if (g_alt_screen) return;
-
     CGFloat dy = event.scrollingDeltaY;
+    int lines;
+    if (event.hasPreciseScrollingDeltas) {
+        _scrollAccum += dy;
+        CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
+        lines = (int)(_scrollAccum / threshold);
+        if (lines == 0) return;
+        _scrollAccum -= lines * threshold;
+    } else {
+        lines = (int)dy;
+        if (lines == 0) lines = (dy > 0) ? 1 : -1;
+    }
+
+    // Alt screen (TUI apps without mouse tracking): translate scroll into
+    // up/down arrow key sequences so apps like less/man/vim can scroll.
+    if (g_alt_screen) {
+        char letter = (lines > 0) ? 'A' : 'B';
+        int n = lines > 0 ? lines : -lines;
+        uint8_t buf[3] = { 0x1b, g_cursor_keys_app ? 'O' : '[', (uint8_t)letter };
+        for (int i = 0; i < n; i++) attyx_send_input(buf, 3);
+        return;
+    }
 
     // Overlay scroll: check before viewport scrollback
     if (g_overlay_has_actions) {
         int col0, row0;
         mouseCell0(event, self, &col0, &row0);
-        int lines;
-        if (event.hasPreciseScrollingDeltas) {
-            _scrollAccum += dy;
-            CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
-            lines = (int)(_scrollAccum / threshold);
-            if (lines == 0) return;
-            _scrollAccum -= lines * threshold;
-        } else {
-            lines = (int)dy;
-            if (lines == 0) lines = (dy > 0) ? 1 : -1;
-        }
         if (attyx_overlay_scroll(col0, row0, lines)) return;
         // Not on overlay — fall through to viewport scroll
-        attyx_scroll_viewport(lines);
-    } else if (event.hasPreciseScrollingDeltas) {
-        _scrollAccum += dy;
-        CGFloat threshold = g_cell_pt_h > 0 ? g_cell_pt_h : 16.0;
-        int lines = (int)(_scrollAccum / threshold);
-        if (lines == 0) return;
-        _scrollAccum -= lines * threshold;
-        attyx_scroll_viewport(lines);
-    } else {
-        int lines = (int)dy;
-        if (lines == 0) lines = (dy > 0) ? 1 : -1;
-        attyx_scroll_viewport(lines);
     }
+    attyx_scroll_viewport(lines);
 }
 
 @end
