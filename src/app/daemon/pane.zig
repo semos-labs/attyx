@@ -415,11 +415,21 @@ pub const DaemonPane = struct {
 
     /// Feed bytes into the daemon-side engine and bump generation if any
     /// row gets dirtied. Safe to call with no engine (no-op).
+    ///
+    /// Also drains any device reports the engine produced (DSR, DA1/DA2,
+    /// cursor position, DECRQM, OSC color queries, kitty kbd flags) and
+    /// writes them back to the PTY input so the program sees its replies.
+    /// Without this, prompt-style tools that issue ESC[6n at startup
+    /// (gh auth, survey-based UIs) hang waiting for a response that never
+    /// arrives.
     fn feedEngine(self: *DaemonPane, data: []const u8) void {
         const eng = self.engine orelse return;
         eng.feed(data);
         if (eng.state.dirty.any()) {
             self.engine_generation +%= 1;
+        }
+        if (eng.state.drainResponse()) |resp| {
+            self.writeToPtyInput(resp);
         }
     }
 
@@ -435,7 +445,6 @@ pub const DaemonPane = struct {
             }
             self.trackModes(data);
             self.trackOsc(data);
-            self.interceptQueries(data);
             self.feedEngine(data);
         }
     }
@@ -456,7 +465,6 @@ pub const DaemonPane = struct {
             }
             self.trackModes(slice);
             self.trackOsc(slice);
-            self.interceptQueries(slice);
             self.feedEngine(slice);
         }
         return n;
@@ -478,7 +486,6 @@ pub const DaemonPane = struct {
             }
             self.trackModes(data);
             self.trackOsc(data);
-            self.interceptQueries(data);
             self.feedEngine(data);
         }
         return n;
@@ -752,13 +759,6 @@ pub const DaemonPane = struct {
         const path = after_scheme[slash_idx..];
         if (path.len == 0) return null;
         return path;
-    }
-
-    const pane_queries = @import("pane_queries.zig");
-
-    /// Scan PTY output for terminal queries and write immediate responses.
-    fn interceptQueries(self: *DaemonPane, data: []const u8) void {
-        pane_queries.interceptQueries(self, data);
     }
 
     /// Non-blocking drain of stdout capture pipe into captured_stdout buffer.

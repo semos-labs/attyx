@@ -414,6 +414,15 @@ fn handleSetThemeColors(
             pane.theme_bg = msg.bg;
             pane.theme_cursor = msg.cursor;
             pane.theme_cursor_set = msg.cursor_set;
+            // Sync to engine so OSC 10/11/12 queries answer with the active theme.
+            if (pane.engine) |eng| {
+                eng.state.theme_colors.fg = .{ .r = msg.fg[0], .g = msg.fg[1], .b = msg.fg[2] };
+                eng.state.theme_colors.bg = .{ .r = msg.bg[0], .g = msg.bg[1], .b = msg.bg[2] };
+                eng.state.theme_colors.cursor = if (msg.cursor_set)
+                    .{ .r = msg.cursor[0], .g = msg.cursor[1], .b = msg.cursor[2] }
+                else
+                    null;
+            }
         }
     }
 }
