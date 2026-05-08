@@ -567,6 +567,8 @@ pub const DaemonClient = struct {
                 // chunks in the same snapshot ship 0 so the client doesn't
                 // double-shift.
                 .scrollback_delta = if (start == 0) scrollback_delta else 0,
+                .mouse_tracking = @intFromEnum(eng.state.mouse_tracking),
+                .mouse_sgr = eng.state.mouse_sgr,
             }) catch return;
 
             // Pack cells into the scratch buffer via memcpy — the wire

@@ -448,7 +448,15 @@ pub fn publishState(ctx: *PtyThreadCtx) void {
         @intFromBool(ctxEngine(ctx).state.mouse_sgr),
     );
     c.g_scrollback_count = @intCast(ctxEngine(ctx).state.ring.scrollbackCount());
-    c.g_alt_screen = @intFromBool(ctxEngine(ctx).state.alt_active);
+    // Clear native selection on altscreen entry: TUIs (claude code, opencode,
+    // etc.) handle their own selection, and the prior selection's coords no
+    // longer correspond to visible content once the alt buffer takes over.
+    const alt_now = ctxEngine(ctx).state.alt_active;
+    if (alt_now and c.g_alt_screen == 0 and c.g_sel_active != 0) {
+        c.g_sel_active = 0;
+        c.attyx_mark_all_dirty();
+    }
+    c.g_alt_screen = @intFromBool(alt_now);
 
     c.g_cursor_shape = @intFromEnum(ctxEngine(ctx).state.cursor_shape);
     c.g_cursor_visible = @intFromBool(ctxEngine(ctx).state.cursor_visible);

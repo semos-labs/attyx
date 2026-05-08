@@ -134,6 +134,12 @@ pub const cursor_visible_flag: u8 = 1 << 0;
 pub const alt_active_flag: u8 = 1 << 1;
 pub const final_chunk_flag: u8 = 1 << 2;
 
+// `mode_flags` (formerly `_pad`) bit layout. Old daemons emit 0, which
+// decodes to mouse_tracking=off / mouse_sgr=false — matching pre-existing
+// client behavior (mouse state was never propagated), so no regression.
+pub const mouse_tracking_mask: u16 = 0b11; // bits 0–1
+pub const mouse_sgr_flag: u16 = 1 << 2; // bit 2
+
 /// grid_snapshot header. Each message carries a CONTIGUOUS row range
 /// `[start_row, start_row + row_count)` of the pane grid. Large panes
 /// require multiple messages (bounded by the 64KB wire framing). The
@@ -158,7 +164,10 @@ pub const SnapshotHeader = extern struct {
     /// screen rows into scrollback, mirroring what happened on the daemon.
     /// Subsequent chunks in the same snapshot carry delta=0.
     scrollback_delta: u16,
-    _pad: u16 = 0,
+    /// Mouse mode bits (see mouse_tracking_mask / mouse_sgr_flag). Was
+    /// `_pad: u16 = 0` in earlier protocol versions; old daemons send 0,
+    /// which decodes as off/false — same as the legacy client behavior.
+    mode_flags: u16 = 0,
 };
 
 comptime {
@@ -181,6 +190,8 @@ pub const SnapshotInfo = struct {
     row_count: u16,
     final_chunk: bool,
     scrollback_delta: u16,
+    mouse_tracking: u8 = 0, // matches MouseTrackingMode enum (off=0..any_event=3)
+    mouse_sgr: bool = false,
 };
 
 pub fn encodedSnapshotChunkSize(cols: u16, row_count: u16) usize {
@@ -194,6 +205,8 @@ pub fn encodeSnapshotHeader(buf: []u8, info: SnapshotInfo) !usize {
     if (info.cursor_visible) flags |= cursor_visible_flag;
     if (info.alt_active) flags |= alt_active_flag;
     if (info.final_chunk) flags |= final_chunk_flag;
+    var mode_flags: u16 = @as(u16, info.mouse_tracking) & mouse_tracking_mask;
+    if (info.mouse_sgr) mode_flags |= mouse_sgr_flag;
     const hdr: SnapshotHeader = .{
         .pane_id = info.pane_id,
         .generation_lo = @truncate(info.generation),
@@ -207,6 +220,7 @@ pub fn encodeSnapshotHeader(buf: []u8, info: SnapshotInfo) !usize {
         .start_row = info.start_row,
         .row_count = info.row_count,
         .scrollback_delta = info.scrollback_delta,
+        .mode_flags = mode_flags,
     };
     @memcpy(buf[0..snapshot_header_size], std.mem.asBytes(&hdr));
     return snapshot_header_size;
@@ -232,6 +246,8 @@ pub fn decodeSnapshotHeader(payload: []const u8) !SnapshotInfo {
         .row_count = hdr.row_count,
         .final_chunk = hdr.flags & final_chunk_flag != 0,
         .scrollback_delta = hdr.scrollback_delta,
+        .mouse_tracking = @intCast(hdr.mode_flags & mouse_tracking_mask),
+        .mouse_sgr = hdr.mode_flags & mouse_sgr_flag != 0,
     };
 }
 

@@ -1789,6 +1789,12 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     result.pane.engine.state.cursor_visible = info.cursor_visible;
     result.pane.engine.state.cursor_shape = @enumFromInt(info.cursor_shape);
     result.pane.engine.state.alt_active = info.alt_active;
+    // Mouse mode propagation: in grid-sync the client engine never sees
+    // DECSET 1000/1002/1003/1006, so without this the client thinks the
+    // app isn't tracking mouse and consumes click-drag as native selection
+    // — preventing TUIs (claude code, opencode) from receiving mouse input.
+    result.pane.engine.state.mouse_tracking = @enumFromInt(info.mouse_tracking);
+    result.pane.engine.state.mouse_sgr = info.mouse_sgr;
     return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
 }
 
