@@ -318,6 +318,73 @@ test "golden: DL deletes 2 lines" {
         "     \n");
 }
 
+// IL/DL must no-op when the cursor is outside the scroll region. TUIs that
+// keep a fixed footer (prompt, status bar) move the cursor up to redraw
+// content, leaving the cursor above the region; an IL there used to shift
+// rows that were never meant to move.
+
+test "golden: IL no-op when cursor above scroll region" {
+    // 4 rows, scroll region [2,3] (1-based), cursor at row 1, then IL.
+    try expectSnapshot(4, 5,
+        "AAAA\r\nBBBB\r\nCCCC\r\nDDDD" ++
+        "\x1b[2;3r" ++
+        "\x1b[1;1H" ++
+        "\x1b[L",
+        "AAAA \n" ++
+        "BBBB \n" ++
+        "CCCC \n" ++
+        "DDDD \n");
+}
+
+test "golden: IL no-op when cursor below scroll region" {
+    try expectSnapshot(4, 5,
+        "AAAA\r\nBBBB\r\nCCCC\r\nDDDD" ++
+        "\x1b[2;3r" ++
+        "\x1b[4;1H" ++
+        "\x1b[L",
+        "AAAA \n" ++
+        "BBBB \n" ++
+        "CCCC \n" ++
+        "DDDD \n");
+}
+
+test "golden: DL no-op when cursor above scroll region" {
+    try expectSnapshot(4, 5,
+        "AAAA\r\nBBBB\r\nCCCC\r\nDDDD" ++
+        "\x1b[2;3r" ++
+        "\x1b[1;1H" ++
+        "\x1b[M",
+        "AAAA \n" ++
+        "BBBB \n" ++
+        "CCCC \n" ++
+        "DDDD \n");
+}
+
+test "golden: DL no-op when cursor below scroll region" {
+    try expectSnapshot(4, 5,
+        "AAAA\r\nBBBB\r\nCCCC\r\nDDDD" ++
+        "\x1b[2;3r" ++
+        "\x1b[4;1H" ++
+        "\x1b[M",
+        "AAAA \n" ++
+        "BBBB \n" ++
+        "CCCC \n" ++
+        "DDDD \n");
+}
+
+test "golden: IL still works inside scroll region" {
+    // Cursor at row 2 (inside [2,3]), IL pushes BBBB to row 3, drops CCCC.
+    try expectSnapshot(4, 5,
+        "AAAA\r\nBBBB\r\nCCCC\r\nDDDD" ++
+        "\x1b[2;3r" ++
+        "\x1b[2;1H" ++
+        "\x1b[L",
+        "AAAA \n" ++
+        "     \n" ++
+        "BBBB \n" ++
+        "DDDD \n");
+}
+
 // ===========================================================================
 // CSI @ — Insert Characters (ICH)
 // ===========================================================================
