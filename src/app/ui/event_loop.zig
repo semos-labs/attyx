@@ -327,7 +327,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             for (ctx.active_theme.palette, 0..) |opt_color, i| {
                 if (opt_color) |p| sb.ansi_palette[i] = .{ .r = p.r, .g = p.g, .b = p.b };
             }
-            statusbar_refreshed = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, publish.ctxEngine(ctx).state.working_directory);
+            // SSR-mode panes don't populate engine.state.working_directory
+            // because the daemon owns the parser. Fall back to the daemon's
+            // fg_cwd notification (raw path) and present it as a file:// URI
+            // so the widget paths (which expect URIs) handle it uniformly.
+            const sb_pane = ctx.tab_mgr.activePane();
+            var sb_cwd_buf: [@import("../statusbar.zig").max_output_len]u8 = undefined;
+            const sb_cwd: ?[]const u8 = blk: {
+                if (sb_pane.engine.state.working_directory) |uri| break :blk uri;
+                if (sb_pane.daemon_fg_cwd_len == 0) break :blk null;
+                const path = sb_pane.daemon_fg_cwd[0..sb_pane.daemon_fg_cwd_len];
+                break :blk std.fmt.bufPrint(&sb_cwd_buf, "file://{s}", .{path}) catch null;
+            };
+            statusbar_refreshed = sb.tick(std.time.timestamp(), publish.ctxPty(ctx).master, sb_cwd);
         };
 
         // Debug overlay toggle check
