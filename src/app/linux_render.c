@@ -487,25 +487,32 @@ int drawFrame(void) {
             bgVertCount += 6;
         }
 
-        // Detected URLs: show underline only when hovered
-        int dRow = g_detected_url_row;
-        int dStart = g_detected_url_start_col;
-        int dEnd = g_detected_url_end_col;
-        if (g_detected_url_len > 0 && dRow >= 0 && dRow < rows) {
+        // Detected URLs: show underline only when hovered. Multi-row URLs
+        // get an underline on every row in the [start_row..end_row] range.
+        int dSr = g_detected_url_start_row;
+        int dEr = g_detected_url_end_row;
+        int dSc = g_detected_url_start_col;
+        int dEc = g_detected_url_end_col;
+        if (g_detected_url_len > 0 && dSr >= 0 && dEr >= dSr) {
             float lr = 0.4f, lg = 0.7f, lb = 1.0f;
-            for (int c = dStart; c <= dEnd && c < cols; c++) {
-                if (bgVertCount + 6 > g_bg_vert_cap) break;
-                float lx0 = offX + c * gw;
-                float lx1 = lx0 + gw;
-                float ly1 = offY + (dRow + 1) * gh;
-                float ly0 = ly1 - ulH;
-                g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
-                g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
-                g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
-                g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
-                g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
-                g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
-                bgVertCount += 6;
+            for (int dr = dSr; dr <= dEr && dr < rows; dr++) {
+                if (dr < 0) continue;
+                int cs = (dr == dSr) ? dSc : 0;
+                int ce = (dr == dEr) ? dEc : cols - 1;
+                for (int c = cs; c <= ce && c < cols; c++) {
+                    if (bgVertCount + 6 > g_bg_vert_cap) break;
+                    float lx0 = offX + c * gw;
+                    float lx1 = lx0 + gw;
+                    float ly1 = offY + (dr + 1) * gh;
+                    float ly0 = ly1 - ulH;
+                    g_bg_verts[bgVertCount+0] = (Vertex){ lx0,ly0, 0,0, lr,lg,lb,1 };
+                    g_bg_verts[bgVertCount+1] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                    g_bg_verts[bgVertCount+2] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                    g_bg_verts[bgVertCount+3] = (Vertex){ lx1,ly0, 0,0, lr,lg,lb,1 };
+                    g_bg_verts[bgVertCount+4] = (Vertex){ lx1,ly1, 0,0, lr,lg,lb,1 };
+                    g_bg_verts[bgVertCount+5] = (Vertex){ lx0,ly1, 0,0, lr,lg,lb,1 };
+                    bgVertCount += 6;
+                }
             }
         }
     }

@@ -864,6 +864,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 // color queries, etc.) and responds directly to
                                 // avoid round-trip latency and duplicate responses.
                                 _ = result.pane.engine.state.drainResponse();
+                                if (result.pane.engine.state.drainClipboard()) |bytes| {
+                                    if (bytes.len > 0) c.attyx_clipboard_copy(bytes.ptr, @intCast(bytes.len));
+                                }
                             }
                         }
                     },
@@ -1885,6 +1888,9 @@ fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client
                 } else {
                     result.pane.engine.feed(out.data);
                     _ = result.pane.engine.state.drainResponse();
+                    if (result.pane.engine.state.drainClipboard()) |bytes| {
+                        if (bytes.len > 0) c.attyx_clipboard_copy(bytes.ptr, @intCast(bytes.len));
+                    }
                 }
             }
             return true;

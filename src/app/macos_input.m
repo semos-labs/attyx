@@ -172,60 +172,88 @@ static BOOL isTrailingPunct(uint32_t ch) {
             ch == ')' || ch == ']' || ch == '>');
 }
 
+// Logical-line URL detection. Walks `g_row_wrapped` to treat a soft-wrapped
+// sequence of grid rows as one continuous string, so URLs that wrap across
+// rows are detected and reported as a single span.
+//
+// Output range is given as (startRow, startCol) → (endRow, endCol) inclusive.
+// For multi-row URLs the caller draws an underline per row, clipping start/end
+// to row boundaries.
 static BOOL detectUrlAtCell(int row, int col, int cols,
-                            int *outStart, int *outEnd,
+                            int *outStartRow, int *outStartCol,
+                            int *outEndRow, int *outEndCol,
                             char *outUrl, int urlBufSize, int *outUrlLen) {
-    if (!g_cells || cols <= 0) return NO;
-    int base = row * cols;
+    if (!g_cells || cols <= 0 || row < 0 || row >= g_rows) return NO;
 
-    char rowText[1024];
-    int len = cols < 1023 ? cols : 1023;
-    for (int i = 0; i < len; i++) {
-        uint32_t ch = g_cells[base + i].character;
-        rowText[i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+    // Identify the logical line that contains `row`: walk back while the
+    // previous row is flagged wrapped, forward while the current row is.
+    // Cap the window so a malicious wrap-storm can't blow the scratch buffer.
+    const int max_rows = 32;
+    int startR = row;
+    while (startR > 0 && row - startR < max_rows / 2 && g_row_wrapped[startR - 1]) startR--;
+    int endR = row;
+    while (endR + 1 < g_rows && endR - row < max_rows / 2 && g_row_wrapped[endR]) endR++;
+
+    const int line_rows = endR - startR + 1;
+    const int line_cols = cols;
+    const int total = line_rows * line_cols;
+    enum { TEXT_MAX = 4096 };
+    if (total <= 0 || total >= TEXT_MAX) return NO;
+
+    char text[TEXT_MAX];
+    for (int r = 0; r < line_rows; r++) {
+        const int base = (startR + r) * cols;
+        for (int i = 0; i < line_cols; i++) {
+            const uint32_t ch = g_cells[base + i].character;
+            text[r * line_cols + i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+        }
     }
-    rowText[len] = '\0';
+    text[total] = '\0';
 
-    const char *schemes[] = { "https://", "http://" };
-    const int schemeLens[] = { 8, 7 };
+    const int clickIdx = (row - startR) * line_cols + col;
+
+    static const char *schemes[] = { "https://", "http://" };
+    static const int schemeLens[] = { 8, 7 };
 
     for (int s = 0; s < 2; s++) {
-        const char *haystack = rowText;
+        const char *haystack = text;
         while (1) {
             const char *found = strstr(haystack, schemes[s]);
             if (!found) break;
-            int startCol = (int)(found - rowText);
-            int endCol = startCol + schemeLens[s];
+            int startIdx = (int)(found - text);
+            int endIdx = startIdx + schemeLens[s];
 
-            while (endCol < len && isUrlChar(g_cells[base + endCol].character))
-                endCol++;
-            endCol--;
+            while (endIdx < total && isUrlChar((uint32_t)(unsigned char)text[endIdx]))
+                endIdx++;
+            endIdx--;
 
-            while (endCol > startCol + schemeLens[s] && isTrailingPunct(g_cells[base + endCol].character))
-                endCol--;
+            while (endIdx > startIdx + schemeLens[s] &&
+                   isTrailingPunct((uint32_t)(unsigned char)text[endIdx]))
+                endIdx--;
 
+            // Greedy paren balance — pull in closing parens if the URL itself
+            // contains unbalanced open parens (e.g. Wikipedia URLs).
             {
                 int opens = 0, closes = 0;
-                for (int i = startCol; i <= endCol; i++) {
-                    uint32_t ch = g_cells[base + i].character;
+                for (int i = startIdx; i <= endIdx; i++) {
+                    const char ch = text[i];
                     if (ch == '(') opens++;
                     if (ch == ')') closes++;
                 }
-                while (opens > closes && endCol + 1 < len && g_cells[base + endCol + 1].character == ')') {
-                    endCol++;
+                while (opens > closes && endIdx + 1 < total && text[endIdx + 1] == ')') {
+                    endIdx++;
                     closes++;
                 }
             }
 
-            if (col >= startCol && col <= endCol) {
-                *outStart = startCol;
-                *outEnd = endCol;
-                int urlLen = endCol - startCol + 1;
+            if (clickIdx >= startIdx && clickIdx <= endIdx) {
+                *outStartRow = startR + startIdx / line_cols;
+                *outStartCol = startIdx % line_cols;
+                *outEndRow = startR + endIdx / line_cols;
+                *outEndCol = endIdx % line_cols;
+                int urlLen = endIdx - startIdx + 1;
                 if (urlLen >= urlBufSize) urlLen = urlBufSize - 1;
-                for (int i = 0; i < urlLen; i++) {
-                    uint32_t ch = g_cells[base + startCol + i].character;
-                    outUrl[i] = (ch >= 32 && ch < 127) ? (char)ch : '?';
-                }
+                memcpy(outUrl, text + startIdx, urlLen);
                 outUrl[urlLen] = '\0';
                 *outUrlLen = urlLen;
                 return YES;
@@ -368,10 +396,10 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
                     }
                     return;
                 }
-                int dStart, dEnd;
+                int dSr, dSc, dEr, dEc;
                 char dUrl[DETECTED_URL_MAX];
                 int dLen = 0;
-                if (detectUrlAtCell(cr, cc, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                if (detectUrlAtCell(cr, cc, cols, &dSr, &dSc, &dEr, &dEc, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
                     NSString* urlStr = [[NSString alloc] initWithBytes:dUrl
                                                                length:dLen
                                                              encoding:NSUTF8StringEncoding];
@@ -936,27 +964,29 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             lid = g_cells[row * cols + col].link_id;
         }
 
-        int detStart = -1, detEnd = -1;
+        int detSr = -1, detSc = -1, detEr = -1, detEc = -1;
         char detUrlBuf[DETECTED_URL_MAX];
         int detUrlLen = 0;
         BOOL hasDetected = NO;
         if (lid == 0 && g_cells && col >= 0 && col < cols && row >= 0 && row < rows_n) {
             hasDetected = detectUrlAtCell(row, col, cols,
-                                          &detStart, &detEnd,
+                                          &detSr, &detSc, &detEr, &detEc,
                                           detUrlBuf, DETECTED_URL_MAX, &detUrlLen);
         }
 
         BOOL isLink = (lid != 0 || hasDetected);
         int prevOscRow = g_hover_row;
-        int prevDetRow = g_detected_url_row;
-        int prevDetStart = g_detected_url_start_col;
-        int prevDetEnd = g_detected_url_end_col;
+        int prevDetSr = g_detected_url_start_row;
+        int prevDetEr = g_detected_url_end_row;
+        int prevDetSc = g_detected_url_start_col;
+        int prevDetEc = g_detected_url_end_col;
         uint32_t prevLid = g_hover_link_id;
 
         BOOL oscChanged = (lid != prevLid);
         BOOL detChanged = NO;
         if (hasDetected) {
-            detChanged = (row != prevDetRow || detStart != prevDetStart || detEnd != prevDetEnd);
+            detChanged = (detSr != prevDetSr || detEr != prevDetEr ||
+                          detSc != prevDetSc || detEc != prevDetEc);
         } else if (g_detected_url_len > 0) {
             detChanged = YES;
         }
@@ -968,12 +998,14 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
             if (hasDetected) {
                 memcpy(g_detected_url, detUrlBuf, detUrlLen + 1);
                 g_detected_url_len = detUrlLen;
-                g_detected_url_row = row;
-                g_detected_url_start_col = detStart;
-                g_detected_url_end_col = detEnd;
+                g_detected_url_start_row = detSr;
+                g_detected_url_start_col = detSc;
+                g_detected_url_end_row = detEr;
+                g_detected_url_end_col = detEc;
             } else {
                 g_detected_url_len = 0;
-                g_detected_url_row = -1;
+                g_detected_url_start_row = -1;
+                g_detected_url_end_row = -1;
             }
 
             if (isLink) {
@@ -984,10 +1016,25 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
 
             if (prevOscRow >= 0 && prevOscRow < 256)
                 __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevOscRow >> 6], (uint64_t)1 << (prevOscRow & 63));
-            if (prevDetRow >= 0 && prevDetRow < 256)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevDetRow >> 6], (uint64_t)1 << (prevDetRow & 63));
-            if (row >= 0 && row < 256 && isLink)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
+            // Mark every row of the previous detected-URL span dirty so the
+            // old underline is erased even if the URL was multi-row.
+            if (prevDetSr >= 0 && prevDetEr >= 0) {
+                for (int r = prevDetSr; r <= prevDetEr && r < 256; r++) {
+                    if (r < 0) continue;
+                    __sync_fetch_and_or((volatile uint64_t*)&g_dirty[r >> 6], (uint64_t)1 << (r & 63));
+                }
+            }
+            if (isLink) {
+                // Dirty every row of the new span.
+                int sr = (lid != 0) ? row : detSr;
+                int er = (lid != 0) ? row : detEr;
+                if (sr >= 0 && er >= 0) {
+                    for (int r = sr; r <= er && r < 256; r++) {
+                        if (r < 0) continue;
+                        __sync_fetch_and_or((volatile uint64_t*)&g_dirty[r >> 6], (uint64_t)1 << (r & 63));
+                    }
+                }
+            }
         }
     }
 

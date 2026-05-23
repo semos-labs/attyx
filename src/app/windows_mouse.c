@@ -254,10 +254,10 @@ LRESULT win_handleLButtonDown(HWND hwnd, LPARAM lParam) {
                     g_left_down = 1;
                     return 0;
                 }
-                int dStart, dEnd;
+                int dSr, dSc, dEr, dEc;
                 char dUrl[DETECTED_URL_MAX];
                 int dLen = 0;
-                if (detectUrlAtCell(cr, cc, cols, &dStart, &dEnd,
+                if (detectUrlAtCell(cr, cc, cols, &dSr, &dSc, &dEr, &dEc,
                                     dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
                     dUrl[dLen] = '\0';
                     ShellExecuteA(NULL, "open", dUrl, NULL, NULL, SW_SHOW);

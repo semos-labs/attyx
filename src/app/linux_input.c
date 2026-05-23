@@ -732,10 +732,10 @@ static void mouseButtonCallback(GLFWwindow* w, int button, int action, int mods)
                             g_left_down = 1;
                             return;
                         }
-                        int dStart, dEnd;
+                        int dSr, dSc, dEr, dEc;
                         char dUrl[DETECTED_URL_MAX];
                         int dLen = 0;
-                        if (detectUrlAtCell(cr, cc, cols, &dStart, &dEnd, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
+                        if (detectUrlAtCell(cr, cc, cols, &dSr, &dSc, &dEr, &dEc, dUrl, DETECTED_URL_MAX, &dLen) && dLen > 0) {
                             char cmd[2200];
                             snprintf(cmd, sizeof(cmd), "xdg-open '%s' &", dUrl);
                             (void)system(cmd);
@@ -1146,25 +1146,29 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
             lid = g_cells[row * cols + col].link_id;
 
         // Regex URL detection fallback
-        int detStart = -1, detEnd = -1;
+        int detSr = -1, detSc = -1, detEr = -1, detEc = -1;
         char detUrlBuf[DETECTED_URL_MAX];
         int detUrlLen = 0;
         int hasDetected = 0;
         if (lid == 0 && g_cells && col >= 0 && col < cols && row >= 0 && row < nrows) {
             hasDetected = detectUrlAtCell(row, col, cols,
-                                          &detStart, &detEnd,
+                                          &detSr, &detSc, &detEr, &detEc,
                                           detUrlBuf, DETECTED_URL_MAX, &detUrlLen);
         }
 
         int isLink = (lid != 0 || hasDetected);
         int prevOscRow = g_hover_row;
-        int prevDetRow = g_detected_url_row;
+        int prevDetSr = g_detected_url_start_row;
+        int prevDetEr = g_detected_url_end_row;
+        int prevDetSc = g_detected_url_start_col;
+        int prevDetEc = g_detected_url_end_col;
         uint32_t prevLid = g_hover_link_id;
 
         int oscChanged = (lid != prevLid);
         int detChanged = 0;
         if (hasDetected) {
-            detChanged = (row != prevDetRow || detStart != g_detected_url_start_col || detEnd != g_detected_url_end_col);
+            detChanged = (detSr != prevDetSr || detEr != prevDetEr ||
+                          detSc != prevDetSc || detEc != prevDetEc);
         } else if (g_detected_url_len > 0) {
             detChanged = 1;
         }
@@ -1176,12 +1180,14 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
             if (hasDetected) {
                 memcpy(g_detected_url, detUrlBuf, detUrlLen + 1);
                 g_detected_url_len = detUrlLen;
-                g_detected_url_row = row;
-                g_detected_url_start_col = detStart;
-                g_detected_url_end_col = detEnd;
+                g_detected_url_start_row = detSr;
+                g_detected_url_start_col = detSc;
+                g_detected_url_end_row = detEr;
+                g_detected_url_end_col = detEc;
             } else {
                 g_detected_url_len = 0;
-                g_detected_url_row = -1;
+                g_detected_url_start_row = -1;
+                g_detected_url_end_row = -1;
             }
 
             if (isLink)
@@ -1191,10 +1197,22 @@ static void cursorPosCallback(GLFWwindow* w, double mx, double my) {
 
             if (prevOscRow >= 0 && prevOscRow < 256)
                 __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevOscRow >> 6], (uint64_t)1 << (prevOscRow & 63));
-            if (prevDetRow >= 0 && prevDetRow < 256)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[prevDetRow >> 6], (uint64_t)1 << (prevDetRow & 63));
-            if (row >= 0 && row < 256 && isLink)
-                __sync_fetch_and_or((volatile uint64_t*)&g_dirty[row >> 6], (uint64_t)1 << (row & 63));
+            if (prevDetSr >= 0 && prevDetEr >= 0) {
+                for (int r = prevDetSr; r <= prevDetEr && r < 256; r++) {
+                    if (r < 0) continue;
+                    __sync_fetch_and_or((volatile uint64_t*)&g_dirty[r >> 6], (uint64_t)1 << (r & 63));
+                }
+            }
+            if (isLink) {
+                int sr = (lid != 0) ? row : detSr;
+                int er = (lid != 0) ? row : detEr;
+                if (sr >= 0 && er >= 0) {
+                    for (int r = sr; r <= er && r < 256; r++) {
+                        if (r < 0) continue;
+                        __sync_fetch_and_or((volatile uint64_t*)&g_dirty[r >> 6], (uint64_t)1 << (r & 63));
+                    }
+                }
+            }
         }
     }
 

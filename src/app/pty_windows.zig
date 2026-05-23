@@ -537,6 +537,16 @@ pub const Pty = struct {
         setEnvW("COLORTERM", "truecolor");
         setEnvW("TERM_PROGRAM", "attyx");
         setEnvW("ATTYX", "1");
+        // Signal OSC 8 hyperlink support to apps that gate emission on a
+        // terminal whitelist. Only set if the user hasn't already, so an
+        // explicit FORCE_HYPERLINK=0 in the env keeps hyperlinks off.
+        {
+            const force_hl: [16:0]u16 = comptime toUtf16Literal("FORCE_HYPERLINK");
+            var probe_buf: [4]u16 = undefined;
+            if (GetEnvironmentVariableW(&force_hl, &probe_buf, probe_buf.len) == 0) {
+                setEnvW("FORCE_HYPERLINK", "1");
+            }
+        }
 
         // Build the command line and set up shell integration.
         const cmd_line = buildCommandLine(opts) orelse return error.CommandLineFailed;

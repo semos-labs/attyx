@@ -431,6 +431,10 @@ pub const DaemonPane = struct {
         if (eng.state.drainResponse()) |resp| {
             self.writeToPtyInput(resp);
         }
+        // The daemon has no access to a system clipboard — the client's
+        // engine sees the same bytes and applies OSC 52 there. Discard
+        // the daemon's copy to avoid stale state piling up.
+        _ = eng.state.drainClipboard();
     }
 
     /// Process data already in the output buffer (from host pipe frames).

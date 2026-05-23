@@ -248,6 +248,11 @@ pub const Pane = struct {
             body_buf[notif.body.len] = 0;
             c.attyx_platform_notify(&title_buf, &body_buf);
         }
+        if (self.engine.state.drainClipboard()) |bytes| {
+            if (bytes.len > 0) {
+                c.attyx_clipboard_copy(bytes.ptr, @intCast(bytes.len));
+            }
+        }
     }
 
     pub fn resize(self: *Pane, rows: u16, cols: u16) void {

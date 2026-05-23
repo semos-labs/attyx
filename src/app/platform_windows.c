@@ -171,8 +171,9 @@ volatile int g_hover_row = -1;
 // Regex-detected URL hover state
 char g_detected_url[DETECTED_URL_MAX];
 volatile int g_detected_url_len = 0;
-volatile int g_detected_url_row = -1;
+volatile int g_detected_url_start_row = -1;
 volatile int g_detected_url_start_col = 0;
+volatile int g_detected_url_end_row = -1;
 volatile int g_detected_url_end_col = 0;
 
 // Image placements
@@ -252,7 +253,8 @@ void attyx_clear_hover(void) {
     g_hover_link_id = 0;
     g_hover_row = -1;
     g_detected_url_len = 0;
-    g_detected_url_row = -1;
+    g_detected_url_start_row = -1;
+    g_detected_url_end_row = -1;
 }
 
 void attyx_scroll_viewport(int delta) {

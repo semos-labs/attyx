@@ -218,60 +218,79 @@ static int isTrailingPunct(uint32_t ch) {
             ch == ')' || ch == ']' || ch == '>');
 }
 
+// Walks `g_row_wrapped` to treat soft-wrapped grid rows as one logical line
+// so URLs that span row boundaries are detected as a single span. Output
+// span is reported as (startRow, startCol) → (endRow, endCol) inclusive.
 int detectUrlAtCell(int row, int col, int cols,
-                    int *outStart, int *outEnd,
+                    int *outStartRow, int *outStartCol,
+                    int *outEndRow, int *outEndCol,
                     char *outUrl, int urlBufSize, int *outUrlLen) {
-    if (!g_cells || cols <= 0) return 0;
-    int base = row * cols;
+    if (!g_cells || cols <= 0 || row < 0 || row >= g_rows) return 0;
 
-    char rowText[1024];
-    int len = cols < 1023 ? cols : 1023;
-    for (int i = 0; i < len; i++) {
-        uint32_t ch = g_cells[base + i].character;
-        rowText[i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+    const int max_rows = 32;
+    int startR = row;
+    while (startR > 0 && row - startR < max_rows / 2 && g_row_wrapped[startR - 1]) startR--;
+    int endR = row;
+    while (endR + 1 < g_rows && endR - row < max_rows / 2 && g_row_wrapped[endR]) endR++;
+
+    const int line_rows = endR - startR + 1;
+    const int line_cols = cols;
+    const int total = line_rows * line_cols;
+    enum { TEXT_MAX = 4096 };
+    if (total <= 0 || total >= TEXT_MAX) return 0;
+
+    char text[TEXT_MAX];
+    for (int r = 0; r < line_rows; r++) {
+        const int base = (startR + r) * cols;
+        for (int i = 0; i < line_cols; i++) {
+            const uint32_t ch = g_cells[base + i].character;
+            text[r * line_cols + i] = (ch >= 32 && ch < 127) ? (char)ch : ' ';
+        }
     }
-    rowText[len] = '\0';
+    text[total] = '\0';
 
-    const char *schemes[] = { "https://", "http://" };
-    const int schemeLens[] = { 8, 7 };
+    const int clickIdx = (row - startR) * line_cols + col;
+
+    static const char *schemes[] = { "https://", "http://" };
+    static const int schemeLens[] = { 8, 7 };
 
     for (int s = 0; s < 2; s++) {
-        const char *haystack = rowText;
+        const char *haystack = text;
         while (1) {
             const char *found = strstr(haystack, schemes[s]);
             if (!found) break;
-            int startCol = (int)(found - rowText);
-            int endCol = startCol + schemeLens[s];
+            int startIdx = (int)(found - text);
+            int endIdx = startIdx + schemeLens[s];
 
-            while (endCol < len && isUrlChar(g_cells[base + endCol].character))
-                endCol++;
-            endCol--;
+            while (endIdx < total && isUrlChar((uint32_t)(unsigned char)text[endIdx]))
+                endIdx++;
+            endIdx--;
 
-            while (endCol > startCol + schemeLens[s] && isTrailingPunct(g_cells[base + endCol].character))
-                endCol--;
+            while (endIdx > startIdx + schemeLens[s] &&
+                   isTrailingPunct((uint32_t)(unsigned char)text[endIdx]))
+                endIdx--;
 
             {
                 int opens = 0, closes = 0;
-                for (int i = startCol; i <= endCol; i++) {
-                    uint32_t ch = g_cells[base + i].character;
+                for (int i = startIdx; i <= endIdx; i++) {
+                    char ch = text[i];
                     if (ch == '(') opens++;
                     if (ch == ')') closes++;
                 }
-                while (opens > closes && endCol + 1 < len && g_cells[base + endCol + 1].character == ')') {
-                    endCol++;
+                while (opens > closes && endIdx + 1 < total && text[endIdx + 1] == ')') {
+                    endIdx++;
                     closes++;
                 }
             }
 
-            if (col >= startCol && col <= endCol) {
-                *outStart = startCol;
-                *outEnd = endCol;
-                int urlLen = endCol - startCol + 1;
+            if (clickIdx >= startIdx && clickIdx <= endIdx) {
+                *outStartRow = startR + startIdx / line_cols;
+                *outStartCol = startIdx % line_cols;
+                *outEndRow = startR + endIdx / line_cols;
+                *outEndCol = endIdx % line_cols;
+                int urlLen = endIdx - startIdx + 1;
                 if (urlLen >= urlBufSize) urlLen = urlBufSize - 1;
-                for (int i = 0; i < urlLen; i++) {
-                    uint32_t ch = g_cells[base + startCol + i].character;
-                    outUrl[i] = (ch >= 32 && ch < 127) ? (char)ch : '?';
-                }
+                memcpy(outUrl, text + startIdx, urlLen);
                 outUrl[urlLen] = '\0';
                 *outUrlLen = urlLen;
                 return 1;

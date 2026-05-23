@@ -166,3 +166,94 @@ test "OSC 2 sets window title" {
     try std.testing.expect(e.state.title != null);
     try std.testing.expectEqualStrings("my title", e.state.title.?);
 }
+
+test "OSC 52 sets clipboard from base64" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 20, 100);
+    defer e.deinit();
+
+    // "hello" base64 = "aGVsbG8="
+    e.feed("\x1b]52;c;aGVsbG8=\x07");
+    const got = e.state.drainClipboard() orelse return error.NoClipboard;
+    try std.testing.expectEqualStrings("hello", got);
+    // Drain is one-shot.
+    try std.testing.expect(e.state.drainClipboard() == null);
+}
+
+test "OSC 52 query (?) is ignored" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 20, 100);
+    defer e.deinit();
+
+    e.feed("\x1b]52;c;?\x07");
+    try std.testing.expect(e.state.drainClipboard() == null);
+}
+
+test "OSC 52 ignores invalid base64" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 20, 100);
+    defer e.deinit();
+
+    e.feed("\x1b]52;c;!!!not-base64!!!\x07");
+    try std.testing.expect(e.state.drainClipboard() == null);
+}
+
+test "OSC 8 around styled text (Claude Code PR pattern)" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 40, 100);
+    defer e.deinit();
+
+    // Mimic Claude Code: SGR bold+red + OSC 8 start + "#791" + OSC 8 end + SGR reset
+    // Use BEL terminator (\x07) instead of ESC \\ — both should work.
+    e.feed("PR \x1b[1;31m\x1b]8;;https://github.com/x/y/pull/791\x07#791\x1b]8;;\x07\x1b[0m end");
+
+    // "PR " has no link
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 0).link_id);
+    // "#791" has the link
+    const lid = e.state.ring.getScreenCell(0, 3).link_id;
+    try std.testing.expect(lid != 0);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 4).link_id);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 5).link_id);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 6).link_id);
+    // " end" has no link
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 7).link_id);
+    // And the styling stuck — '#' should be bold + red
+    try std.testing.expect(e.state.ring.getScreenCell(0, 3).style.bold);
+}
+
+test "OSC 8 with id= params" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 40, 100);
+    defer e.deinit();
+
+    e.feed("\x1b]8;id=foo;https://example.com\x1b\\X\x1b]8;;\x1b\\");
+    const lid = e.state.ring.getScreenCell(0, 0).link_id;
+    try std.testing.expect(lid != 0);
+    const uri = e.state.getLinkUri(lid) orelse return error.NoUri;
+    try std.testing.expectEqualStrings("https://example.com", uri);
+}
+
+test "OSC 8 stamps link_id onto printed cells" {
+    const alloc = std.testing.allocator;
+    var e = try Engine.init(alloc, 4, 40, 100);
+    defer e.deinit();
+
+    // "PR " (no link) + OSC8 start + "#791" + OSC8 end + " trailing" (no link)
+    e.feed("PR \x1b]8;;https://example.com/pull/791\x1b\\#791\x1b]8;;\x1b\\ trailing");
+
+    // Cells for "PR " should have link_id = 0
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 0).link_id);
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 1).link_id);
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 2).link_id);
+    // Cells for "#791" should have a non-zero link_id
+    const lid = e.state.ring.getScreenCell(0, 3).link_id;
+    try std.testing.expect(lid != 0);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 4).link_id);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 5).link_id);
+    try std.testing.expectEqual(lid, e.state.ring.getScreenCell(0, 6).link_id);
+    // Cells after OSC8 end should be link_id 0 again
+    try std.testing.expectEqual(@as(u32, 0), e.state.ring.getScreenCell(0, 7).link_id);
+    // URI can be looked up
+    const uri = e.state.getLinkUri(lid) orelse return error.NoUri;
+    try std.testing.expectEqualStrings("https://example.com/pull/791", uri);
+}

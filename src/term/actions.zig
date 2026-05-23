@@ -198,6 +198,10 @@ pub const Action = union(enum) {
 
     /// OSC 9 / OSC 777 — desktop notification. Payload borrowed from parser osc_buf.
     notify: Notification,
+
+    /// OSC 52 — set system clipboard. Payload is decoded UTF-8 bytes,
+    /// borrowed from parser osc_buf, valid until next parser call.
+    clipboard_set: []const u8,
 };
 
 /// Desktop notification payload (OSC 9 / OSC 777).
