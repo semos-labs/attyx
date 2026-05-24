@@ -541,7 +541,7 @@ pub const Pty = struct {
         // terminal whitelist. Only set if the user hasn't already, so an
         // explicit FORCE_HYPERLINK=0 in the env keeps hyperlinks off.
         {
-            const force_hl: [16:0]u16 = comptime toUtf16Literal("FORCE_HYPERLINK");
+            const force_hl: [15:0]u16 = comptime toUtf16Literal("FORCE_HYPERLINK");
             var probe_buf: [4]u16 = undefined;
             if (GetEnvironmentVariableW(&force_hl, &probe_buf, probe_buf.len) == 0) {
                 setEnvW("FORCE_HYPERLINK", "1");
