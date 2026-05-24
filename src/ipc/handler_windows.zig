@@ -218,8 +218,10 @@ fn dispatch(action: Action) void {
 }
 
 fn handleTabCreate(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
-    const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - @import("../app/windows_stubs.zig").g_grid_top_offset - @import("../app/windows_stubs.zig").g_grid_bottom_offset));
-    ctx.tab_mgr.addTab(rows, ctx.grid_cols, null, ctx.applied_scrollback_lines) catch {
+    const ws = @import("../app/windows_stubs.zig");
+    const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
+    ctx.tab_mgr.addTab(rows, cols, null, ctx.applied_scrollback_lines) catch {
         sendError(cmd, "failed to create tab");
         return;
     };
@@ -237,13 +239,14 @@ fn handleSplit(cmd: *queue.IpcCommand, ctx: *WinCtx, dir: split_layout_mod.Direc
     const ws = @import("../app/windows_stubs.zig");
     const layout = ctx.tab_mgr.activeLayout();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
     const publish = @import("../app/ui/publish.zig");
 
     const new_pane = ctx.allocator.create(Pane) catch {
         sendError(cmd, "failed to create pane");
         return;
     };
-    new_pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch {
+    new_pane.* = Pane.spawn(ctx.allocator, pty_rows, pty_cols, null, null, ctx.applied_scrollback_lines) catch {
         ctx.allocator.destroy(new_pane);
         sendError(cmd, "failed to spawn pane");
         return;
@@ -256,7 +259,7 @@ fn handleSplit(cmd: *queue.IpcCommand, ctx: *WinCtx, dir: split_layout_mod.Direc
         sendError(cmd, "failed to split");
         return;
     };
-    layout.layout(pty_rows, ctx.grid_cols);
+    layout.layout(pty_rows, pty_cols);
     event_loop.switchActiveTab(ctx);
 
     var id_buf: [16]u8 = undefined;
@@ -269,6 +272,7 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
     const ws = @import("../app/windows_stubs.zig");
     const publish = @import("../app/ui/publish.zig");
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
 
     // Build "pwsh.exe -NoProfile -Command <command>" argv (fallback to cmd.exe /c)
     const shell_info = resolveShellForCommand(ctx.allocator) orelse {
@@ -289,7 +293,7 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
         sendError(cmd, "out of memory");
         return;
     };
-    pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, &argv, null, ctx.applied_scrollback_lines) catch {
+    pane.* = Pane.spawn(ctx.allocator, pty_rows, pty_cols, &argv, null, ctx.applied_scrollback_lines) catch {
         ctx.allocator.destroy(pane);
         sendError(cmd, "failed to spawn pane");
         return;
@@ -299,7 +303,7 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
 
     switch (mode) {
         .tab => {
-            ctx.tab_mgr.addTabWithPane(pane, pty_rows, ctx.grid_cols) catch {
+            ctx.tab_mgr.addTabWithPane(pane, pty_rows, pty_cols) catch {
                 pane.deinit();
                 ctx.allocator.destroy(pane);
                 sendError(cmd, "failed to create tab");
@@ -317,7 +321,7 @@ fn handleWaitCreate(cmd: *queue.IpcCommand, ctx: *WinCtx, mode: enum { tab, spli
                 sendError(cmd, "failed to split");
                 return;
             };
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             event_loop.switchActiveTab(ctx);
         },
     }
@@ -376,7 +380,8 @@ fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     } else {
         _ = found.layout.closePaneAt(found.pool_idx, ctx.allocator);
         const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-        found.layout.layout(pty_rows, ctx.grid_cols);
+        const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
+        found.layout.layout(pty_rows, pty_cols);
         if (tab_idx == ctx.tab_mgr.active) event_loop.switchActiveTab(ctx);
     }
     sendOk(cmd, "");
@@ -570,7 +575,8 @@ fn handleSessionCreate(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
 
     const ws = @import("../app/windows_stubs.zig");
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-    const sid = smgr.createSession(name, pty_rows, ctx.grid_cols, ctx.theme, ctx.applied_scrollback_lines) catch {
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
+    const sid = smgr.createSession(name, pty_rows, pty_cols, ctx.theme, ctx.applied_scrollback_lines) catch {
         sendError(cmd, "failed to create session");
         return;
     };
@@ -779,10 +785,11 @@ fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     }
     const ws = @import("../app/windows_stubs.zig");
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
     if (found.layout.isZoomed()) {
-        found.layout.focusedPane().resize(pty_rows, ctx.grid_cols);
+        found.layout.focusedPane().resize(pty_rows, pty_cols);
     } else {
-        found.layout.layout(pty_rows, ctx.grid_cols);
+        found.layout.layout(pty_rows, pty_cols);
     }
     event_loop.switchActiveTab(ctx);
     sendOk(cmd, "");
@@ -801,7 +808,8 @@ fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     layout.rotatePanes();
     const ws = @import("../app/windows_stubs.zig");
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-    layout.layout(pty_rows, ctx.grid_cols);
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
+    layout.layout(pty_rows, pty_cols);
     event_loop.switchActiveTab(ctx);
     sendOk(cmd, "");
 }

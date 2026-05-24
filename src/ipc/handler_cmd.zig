@@ -23,7 +23,7 @@ const sendError = handler.sendError;
 pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: bool) void {
     const command = cmd.payload[0..cmd.payload_len];
     const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    const cols: u16 = ctx.grid_cols;
+    const cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
     var osc7_buf: [statusbar.max_output_len]u8 = undefined;
     const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
@@ -119,7 +119,7 @@ pub fn handleTabCreateWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, wait: 
 /// Mirrors the .tab_new action logic from actions.zig.
 pub fn handleTabCreate(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    const cols: u16 = ctx.grid_cols;
+    const cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
     var osc7_buf: [statusbar.max_output_len]u8 = undefined;
     const resolved = actions.resolveFocusedCwd(ctx, &osc7_buf);
@@ -285,7 +285,8 @@ pub fn handleSplitWithCmd(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx, dir: split
         pane.engine.state.theme_colors = publish.themeToEngineColors(&ctx.active_theme);
     }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    layout.layout(pty_rows, ctx.grid_cols);
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+    layout.layout(pty_rows, pty_cols);
 
     split_actions.notifyPaneSizes(ctx, layout);
     actions.updateSplitActive(ctx);
@@ -362,7 +363,8 @@ pub fn handlePaneCloseTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
             }
         }
         const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-        found.layout.layout(pty_rows, ctx.grid_cols);
+        const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+        found.layout.layout(pty_rows, pty_cols);
         split_actions.notifyPaneSizes(ctx, found.layout);
         actions.updateSplitActive(ctx);
     }
@@ -449,10 +451,11 @@ pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         found.layout.focused = prev_focused;
     }
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
     if (found.layout.isZoomed()) {
-        found.layout.focusedPane().resize(pty_rows, ctx.grid_cols);
+        found.layout.focusedPane().resize(pty_rows, pty_cols);
     } else {
-        found.layout.layout(pty_rows, ctx.grid_cols);
+        found.layout.layout(pty_rows, pty_cols);
     }
     split_actions.notifyPaneSizes(ctx, found.layout);
     actions.switchActiveTab(ctx);
@@ -473,7 +476,8 @@ pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void
 
     layout.rotatePanes();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-    layout.layout(pty_rows, ctx.grid_cols);
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+    layout.layout(pty_rows, pty_cols);
     split_actions.notifyPaneSizes(ctx, layout);
     actions.switchActiveTab(ctx);
     sendOk(cmd, "");

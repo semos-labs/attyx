@@ -41,7 +41,7 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
             // Use full terminal dimensions, not the focused pane's engine
             // dimensions — those are split-adjusted when a split is active.
             const rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-            const cols: u16 = ctx.grid_cols;
+            const cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
             var osc7_buf: [statusbar.max_output_len]u8 = undefined;
             const resolved = resolveFocusedCwd(ctx, &osc7_buf);
             defer if (resolved.owned) if (resolved.cwd) |cwd| ctx.allocator.free(cwd);
@@ -219,7 +219,8 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
                 publish.updateGridTopOffset(ctx);
             } else {
                 const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                layout.layout(pty_rows, ctx.grid_cols);
+                const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+                layout.layout(pty_rows, pty_cols);
                 split_actions_mod.notifyPaneSizes(ctx, layout);
                 updateSplitActive(ctx);
             }
@@ -232,10 +233,11 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         .pane_focus_right => { layout.navigate(.right); switchActiveTab(ctx); saveSessionLayout(ctx); },
         .pane_resize_left, .pane_resize_right => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
             if (layout.findResizeTarget(.vertical)) |target| {
-                const step = cellsToRatio(ctx.split_resize_step, ctx.grid_cols);
+                const step = cellsToRatio(ctx.split_resize_step, pty_cols);
                 const delta: f32 = if (action == .pane_resize_left) -step else step;
-                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target, delta, pty_rows, pty_cols)) {
                     split_actions_mod.notifyPaneSizes(ctx, layout);
                     switchActiveTab(ctx);
                 }
@@ -243,10 +245,11 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         },
         .pane_resize_up, .pane_resize_down => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
             if (layout.findResizeTarget(.horizontal)) |target| {
                 const step = cellsToRatio(ctx.split_resize_step, pty_rows);
                 const delta: f32 = if (action == .pane_resize_up) -step else step;
-                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target, delta, pty_rows, pty_cols)) {
                     split_actions_mod.notifyPaneSizes(ctx, layout);
                     switchActiveTab(ctx);
                 }
@@ -254,15 +257,16 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         },
         .pane_resize_grow, .pane_resize_shrink => {
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
             if (layout.findSmartResizeTarget()) |target| {
-                const total = if (target.direction == .vertical) ctx.grid_cols else pty_rows;
+                const total = if (target.direction == .vertical) pty_cols else pty_rows;
                 const step = cellsToRatio(ctx.split_resize_step, total);
                 // Grow = increase focused pane's share.
                 // If focused is first child (left/top), grow means increase ratio.
                 // If focused is second child (right/bottom), grow means decrease ratio.
                 const sign: f32 = if (target.is_first_child) 1.0 else -1.0;
                 const grow_sign: f32 = if (action == .pane_resize_grow) sign else -sign;
-                if (layout.resizeNode(target.branch, step * grow_sign, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target.branch, step * grow_sign, pty_rows, pty_cols)) {
                     split_actions_mod.notifyPaneSizes(ctx, layout);
                     switchActiveTab(ctx);
                 }
@@ -271,20 +275,22 @@ pub fn processSplitActions(ctx: *PtyThreadCtx) void {
         .pane_rotate => {
             layout.rotatePanes();
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-            layout.layout(pty_rows, ctx.grid_cols);
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+            layout.layout(pty_rows, pty_cols);
             split_actions_mod.notifyPaneSizes(ctx, layout);
             switchActiveTab(ctx);
         },
         .pane_zoom_toggle => {
             layout.toggleZoom();
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
             if (layout.isZoomed()) {
                 // Resize zoomed pane to fill entire area
                 const pane = layout.focusedPane();
-                pane.resize(pty_rows, ctx.grid_cols);
+                pane.resize(pty_rows, pty_cols);
             } else {
                 // Re-layout all panes to their split rects
-                layout.layout(pty_rows, ctx.grid_cols);
+                layout.layout(pty_rows, pty_cols);
             }
             split_actions_mod.notifyPaneSizes(ctx, layout);
             switchActiveTab(ctx);
@@ -297,6 +303,7 @@ pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
     if (ctx.tab_mgr.count == 0) return;
     const layout = ctx.tab_mgr.activeLayout();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
     if (@atomicRmw(i32, &input.g_split_drag_start_pending, .Xchg, 0, .seq_cst) != 0) {
         const col: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_split_drag_start_col, .seq_cst)));
@@ -336,7 +343,7 @@ pub fn processSplitDrag(ctx: *PtyThreadCtx) void {
             };
 
             layout.pool[branch_idx].ratio = new_ratio;
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             // Don't notify daemon during drag — too many resize messages.
             // Daemon gets notified on drag end below.
             switchActiveTab(ctx);

@@ -1135,7 +1135,8 @@ fn checkPaneExits(ctx: *WinCtx, pane_exited: *bool) void {
         } else {
             _ = lay.closePaneAt(exited_idx, ctx.allocator);
             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
-            lay.layout(pty_rows, ctx.grid_cols);
+            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
+            lay.layout(pty_rows, pty_cols);
             if (tab_idx == ctx.tab_mgr.active) switchActiveTab(ctx);
             c.attyx_mark_all_dirty();
         }
