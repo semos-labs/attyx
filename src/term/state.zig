@@ -90,6 +90,13 @@ pub const TerminalState = struct {
     notify_body_len: usize = 0,
     notify_pending: bool = false,
 
+    // -- Clipboard buffer (OSC 52, consumed by app layer) ------------------
+    // Sized to match parser osc_buf_size (4096); base64 decodes to ≤ 3/4 of
+    // the encoded length so the decoded payload always fits.
+    clipboard_buf: [4096]u8 = undefined,
+    clipboard_len: usize = 0,
+    clipboard_pending: bool = false,
+
     // -- Viewport offset (scrollback browsing) ------------------------------
     viewport_offset: usize = 0,
 
@@ -176,7 +183,7 @@ pub const TerminalState = struct {
         }
 
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .xyron_event, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .xyron_event, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify, .clipboard_set => {},
             else => {
                 self.wrap_next = false;
             },
@@ -295,6 +302,7 @@ pub const TerminalState = struct {
             .query_color => |target| self.respondColorQuery(target),
             .query_palette_color => |idx| self.respondPaletteColorQuery(idx),
             .notify => |n| self.queueNotification(n.title, n.body),
+            .clipboard_set => |bytes| self.queueClipboard(bytes),
         }
 
         if (self.cursor.row != old_cursor_row) {
@@ -660,6 +668,19 @@ pub const TerminalState = struct {
             .title = self.notify_title_buf[0..self.notify_title_len],
             .body = self.notify_body_buf[0..self.notify_body_len],
         };
+    }
+
+    fn queueClipboard(self: *TerminalState, bytes: []const u8) void {
+        const n = @min(bytes.len, self.clipboard_buf.len);
+        @memcpy(self.clipboard_buf[0..n], bytes[0..n]);
+        self.clipboard_len = n;
+        self.clipboard_pending = true;
+    }
+
+    pub fn drainClipboard(self: *TerminalState) ?[]const u8 {
+        if (!self.clipboard_pending) return null;
+        self.clipboard_pending = false;
+        return self.clipboard_buf[0..self.clipboard_len];
     }
 
     // -- Graphics (state_graphics.zig) ------------------------------------

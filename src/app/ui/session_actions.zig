@@ -112,6 +112,7 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
 pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
     // Skip if already attached to this session
     if (sc.attached_session_id) |current| {
@@ -130,13 +131,13 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     terminal.g_pty_master = -1;
 
     // Attach to new session
-    sc.attach(session_id, pty_rows, ctx.grid_cols) catch return;
+    sc.attach(session_id, pty_rows, pty_cols) catch return;
     const attach_result = sc.waitForAttach(3000) catch return;
 
     // Reconstruct tabs from layout blob
     if (sc.layout_len > 0) {
         if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
-            ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {};
+            ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, pty_cols, ctx.applied_scrollback_lines) catch {};
         } else |_| {}
     }
 
@@ -144,7 +145,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     if (ctx.tab_mgr.count == 0 and attach_result.pane_count > 0) {
         const Pane = @import("../pane.zig").Pane;
         const pane = ctx.tab_mgr.allocator.create(Pane) catch return;
-        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch {
+        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, pty_rows, pty_cols, ctx.applied_scrollback_lines) catch {
             ctx.tab_mgr.allocator.destroy(pane);
             return;
         };
@@ -166,7 +167,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     if (ctx.tab_mgr.count > 0) {
         for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
             if (maybe_layout.*) |*lay| {
-                lay.layout(pty_rows, ctx.grid_cols);
+                lay.layout(pty_rows, pty_cols);
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
                 for (leaves[0..lc]) |leaf| {
@@ -205,6 +206,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
 pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
     const name = if (std.mem.lastIndexOfScalar(u8, cwd, '/')) |i|
         if (i + 1 < cwd.len) cwd[i + 1 ..] else cwd
     else
@@ -216,7 +218,7 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
         std.fmt.bufPrint(&xyron_buf, "{s} --ipc", .{xp}) catch @as([]const u8, xp)
     else
         "";
-    const new_id = sc.createSession(session_name, pty_rows, ctx.grid_cols, cwd, shell) catch |err| {
+    const new_id = sc.createSession(session_name, pty_rows, pty_cols, cwd, shell) catch |err| {
         logging.err("session-picker", "create failed: {}", .{err});
         return;
     };
@@ -254,8 +256,9 @@ pub fn handleLayoutSync(ctx: *PtyThreadCtx, layout_data: []const u8) void {
     const info = layout_codec.deserialize(layout_data) catch return;
 
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
-    ctx.tab_mgr.syncFromLayout(&info, pty_rows, ctx.grid_cols, ctx.applied_scrollback_lines) catch return;
+    ctx.tab_mgr.syncFromLayout(&info, pty_rows, pty_cols, ctx.applied_scrollback_lines) catch return;
 
     if (ctx.tab_mgr.count == 0) {
         c.attyx_request_quit();

@@ -36,12 +36,15 @@ extern volatile int g_kitty_kbd_flags;
 extern volatile uint32_t g_hover_link_id;
 extern volatile int g_hover_row;
 
-// Regex-detected URL hover state
+// Regex-detected URL hover state. Multi-row URLs are reported as
+// (start_row, start_col) → (end_row, end_col) inclusive — the renderer
+// draws an underline on every row in the range.
 #define DETECTED_URL_MAX 2048
 extern char g_detected_url[DETECTED_URL_MAX];
 extern volatile int g_detected_url_len;
-extern volatile int g_detected_url_row;
+extern volatile int g_detected_url_start_row;
 extern volatile int g_detected_url_start_col;
+extern volatile int g_detected_url_end_row;
 extern volatile int g_detected_url_end_col;
 
 // Row-level dirty bitset

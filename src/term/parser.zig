@@ -555,11 +555,50 @@ pub const Parser = struct {
             10 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .foreground } else .nop,
             11 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .background } else .nop,
             12 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .cursor } else .nop,
+            // OSC 52 — set/query system clipboard.
+            // Format: <selection>;<base64data>  (selection chars in "cpqs0-7")
+            // We accept any selection char, decode base64, and emit clipboard_set.
+            // Query form (";?") and explicit-clear (";") are ignored.
+            52 => self.dispatchOsc52(rest),
             // OSC 777 — rxvt/Kitty-style: ESC]777;notify;title;body BEL
             777 => dispatchOsc777(rest),
             7337 => dispatchOsc7337(rest),
             7339 => dispatchOsc7339(rest),
             else => .nop,
         };
+    }
+
+    /// OSC 52 — set/query system clipboard.
+    ///
+    /// Parses `<selection>;<base64data>` (the OSC payload after "52;").
+    /// Decodes base64 in place inside osc_buf — base64 is strictly longer
+    /// than its decoded form, so the decoded slice always fits.
+    /// Returns `.clipboard_set` with the decoded bytes, or `.nop` for
+    /// queries, clear operations, and malformed input.
+    fn dispatchOsc52(self: *Parser, rest: []const u8) Action {
+        // Split on ';'. Selection char is informational — we always target
+        // the system clipboard regardless of what the app requested.
+        const sep = std.mem.indexOfScalar(u8, rest, ';') orelse return .nop;
+        const data = rest[sep + 1 ..];
+        // Query ("?") or empty payload — ignore. Responding to OSC 52
+        // queries would leak clipboard contents to arbitrary apps.
+        if (data.len == 0 or data[0] == '?') return .nop;
+
+        // Compute where `data` lives inside osc_buf so we can decode in place.
+        const buf_base = @intFromPtr(&self.osc_buf[0]);
+        const data_base = @intFromPtr(&data[0]);
+        if (data_base < buf_base) return .nop;
+        const data_off = data_base - buf_base;
+        if (data_off + data.len > self.osc_buf.len) return .nop;
+
+        const decoder = std.base64.standard.Decoder;
+        const decoded_len = decoder.calcSizeForSlice(data) catch return .nop;
+        // Decode into a scratch slice then move into osc_buf to avoid
+        // alias issues — output is shorter than input so the move is safe.
+        var scratch: [Parser.osc_buf_size]u8 = undefined;
+        decoder.decode(scratch[0..decoded_len], data) catch return .nop;
+        const dst = self.osc_buf[data_off..][0..decoded_len];
+        @memcpy(dst, scratch[0..decoded_len]);
+        return .{ .clipboard_set = dst };
     }
 };

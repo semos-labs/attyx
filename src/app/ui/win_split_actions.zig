@@ -23,12 +23,13 @@ pub fn processSplitActions(ctx: *WinCtx) void {
     const action: Action = @enumFromInt(@as(u8, @intCast(action_raw)));
     const layout = ctx.tab_mgr.activeLayout();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
 
     switch (action) {
         .split_vertical, .split_horizontal => {
             const dir: split_layout_mod.Direction = if (action == .split_vertical) .vertical else .horizontal;
             logging.info("split", "split request: dir={s} pty_rows={d} cols={d}", .{
-                if (dir == .vertical) "vertical" else "horizontal", pty_rows, ctx.grid_cols,
+                if (dir == .vertical) "vertical" else "horizontal", pty_rows, pty_cols,
             });
 
             if (ctx.session_client) |sc| {
@@ -57,7 +58,7 @@ pub fn processSplitActions(ctx: *WinCtx) void {
             } else {
                 // No daemon: spawn local ConPTY.
                 const new_pane = ctx.allocator.create(Pane) catch return;
-                new_pane.* = Pane.spawn(ctx.allocator, pty_rows, ctx.grid_cols, null, null, ctx.applied_scrollback_lines) catch |err| {
+                new_pane.* = Pane.spawn(ctx.allocator, pty_rows, pty_cols, null, null, ctx.applied_scrollback_lines) catch |err| {
                     logging.err("split", "Pane.spawn failed: {}", .{err});
                     ctx.allocator.destroy(new_pane);
                     return;
@@ -71,7 +72,7 @@ pub fn processSplitActions(ctx: *WinCtx) void {
                     return;
                 };
             }
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             notifyPaneSizes(ctx, layout);
             event_loop.switchActiveTab(ctx);
             event_loop.saveLayoutToDaemon(ctx);
@@ -92,7 +93,7 @@ pub fn processSplitActions(ctx: *WinCtx) void {
                 return;
             }
             _ = layout.closePane(ctx.allocator);
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             notifyPaneSizes(ctx, layout);
             event_loop.switchActiveTab(ctx);
             event_loop.saveLayoutToDaemon(ctx);
@@ -103,23 +104,23 @@ pub fn processSplitActions(ctx: *WinCtx) void {
         .pane_focus_right => { layout.navigate(.right); event_loop.switchActiveTab(ctx); },
         .pane_zoom_toggle => {
             layout.toggleZoom();
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             notifyPaneSizes(ctx, layout);
             event_loop.switchActiveTab(ctx);
             event_loop.saveLayoutToDaemon(ctx);
         },
         .pane_rotate => {
             layout.rotatePanes();
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
             notifyPaneSizes(ctx, layout);
             event_loop.switchActiveTab(ctx);
             event_loop.saveLayoutToDaemon(ctx);
         },
         .pane_resize_left, .pane_resize_right => {
             if (layout.findResizeTarget(.vertical)) |target| {
-                const step = cellsToRatio(ctx.split_resize_step, ctx.grid_cols);
+                const step = cellsToRatio(ctx.split_resize_step, pty_cols);
                 const delta: f32 = if (action == .pane_resize_left) -step else step;
-                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target, delta, pty_rows, pty_cols)) {
                     notifyPaneSizes(ctx, layout);
                     event_loop.switchActiveTab(ctx);
                     event_loop.saveLayoutToDaemon(ctx);
@@ -130,7 +131,7 @@ pub fn processSplitActions(ctx: *WinCtx) void {
             if (layout.findResizeTarget(.horizontal)) |target| {
                 const step = cellsToRatio(ctx.split_resize_step, pty_rows);
                 const delta: f32 = if (action == .pane_resize_up) -step else step;
-                if (layout.resizeNode(target, delta, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target, delta, pty_rows, pty_cols)) {
                     notifyPaneSizes(ctx, layout);
                     event_loop.switchActiveTab(ctx);
                     event_loop.saveLayoutToDaemon(ctx);
@@ -139,11 +140,11 @@ pub fn processSplitActions(ctx: *WinCtx) void {
         },
         .pane_resize_grow, .pane_resize_shrink => {
             if (layout.findSmartResizeTarget()) |target| {
-                const total = if (target.direction == .vertical) ctx.grid_cols else pty_rows;
+                const total = if (target.direction == .vertical) pty_cols else pty_rows;
                 const step = cellsToRatio(ctx.split_resize_step, total);
                 const sign: f32 = if (target.is_first_child) 1.0 else -1.0;
                 const grow_sign: f32 = if (action == .pane_resize_grow) sign else -sign;
-                if (layout.resizeNode(target.branch, step * grow_sign, pty_rows, ctx.grid_cols)) {
+                if (layout.resizeNode(target.branch, step * grow_sign, pty_rows, pty_cols)) {
                     notifyPaneSizes(ctx, layout);
                     event_loop.switchActiveTab(ctx);
                     event_loop.saveLayoutToDaemon(ctx);
@@ -175,6 +176,7 @@ pub fn processSplitClick(ctx: *WinCtx) void {
 pub fn processSplitDrag(ctx: *WinCtx) void {
     const layout = ctx.tab_mgr.activeLayout();
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws.g_grid_top_offset - ws.g_grid_bottom_offset));
+    const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - ws.g_grid_left_offset - ws.g_grid_right_offset));
 
     // Drag start: find branch at separator position
     if (@atomicRmw(i32, &ws.split_drag_start_pending, .Xchg, 0, .seq_cst) != 0) {
@@ -211,7 +213,7 @@ pub fn processSplitDrag(ctx: *WinCtx) void {
             };
 
             layout.pool[branch_idx].ratio = new_ratio;
-            layout.layout(pty_rows, ctx.grid_cols);
+            layout.layout(pty_rows, pty_cols);
         }
     }
 

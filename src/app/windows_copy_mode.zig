@@ -274,7 +274,6 @@ fn matchAt(cells: [*]const c.AttyxCell, abs_row: usize, abs_col: usize, grid_col
 // ---------------------------------------------------------------------------
 
 pub export fn attyx_copy_mode_enter() void {
-    if (c.g_alt_screen != 0) return;
     cs = .{
         .mode = .navigate,
         .cr = c.g_cursor_row - c.g_grid_top_offset - c.g_pane_rect_row,

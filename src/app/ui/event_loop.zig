@@ -679,7 +679,8 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             continue;
                         } else {
                             const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
-                            lay.layout(pty_rows, ctx.grid_cols);
+                            const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
+                            lay.layout(pty_rows, pty_cols);
                             if (ti == ctx.tab_mgr.active) {
                                 actions.updateSplitActive(ctx);
                                 actions.switchActiveTab(ctx);
@@ -864,6 +865,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 // color queries, etc.) and responds directly to
                                 // avoid round-trip latency and duplicate responses.
                                 _ = result.pane.engine.state.drainResponse();
+                                if (result.pane.engine.state.drainClipboard()) |bytes| {
+                                    if (bytes.len > 0) c.attyx_clipboard_copy(bytes.ptr, @intCast(bytes.len));
+                                }
                             }
                         }
                     },
@@ -903,9 +907,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                                 // After closeTab, result.tab_idx is stale (tabs shifted
                                 // left), so only access it when the tab wasn't removed.
                                 const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                                const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
                                 if (close_result != .last_pane) {
                                     if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
-                                        l.layout(pty_rows, ctx.grid_cols);
+                                        l.layout(pty_rows, pty_cols);
                                         var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                                         const rlc = l.collectLeaves(&rl);
                                         for (rl[0..rlc]) |leaf| {
@@ -1693,10 +1698,11 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
                 }
                 // Re-layout surviving panes (use active tab after potential shift)
                 const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
+                const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
                 if (close_result == .last_pane) {
                     // Tab was removed — don't access result.tab_idx (shifted).
                 } else if (ctx.tab_mgr.tabs[result.tab_idx]) |*l| {
-                    l.layout(pty_rows, ctx.grid_cols);
+                    l.layout(pty_rows, pty_cols);
                     var rl: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                     const rlc = l.collectLeaves(&rl);
                     for (rl[0..rlc]) |leaf| {
@@ -1885,6 +1891,9 @@ fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client
                 } else {
                     result.pane.engine.feed(out.data);
                     _ = result.pane.engine.state.drainResponse();
+                    if (result.pane.engine.state.drainClipboard()) |bytes| {
+                        if (bytes.len > 0) c.attyx_clipboard_copy(bytes.ptr, @intCast(bytes.len));
+                    }
                 }
             }
             return true;

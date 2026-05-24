@@ -45,7 +45,6 @@ pub export var g_copy_search_len: c_int = 0;
 pub export var g_copy_search_dirty: c_int = 0;
 
 pub export fn attyx_copy_mode_enter() void {
-    if (c.g_alt_screen != 0) return;
     const pr = c.g_pane_rect_row;
     const pc = c.g_pane_rect_col;
     state = .{

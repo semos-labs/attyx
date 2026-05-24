@@ -129,6 +129,11 @@ pub const Pty = struct {
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
             _ = setenv("ATTYX_PID", attyx_pid, 1);
+            // Signal OSC 8 hyperlink support to apps that gate emission on a
+            // terminal whitelist (npm `supports-hyperlinks`, etc.). They check
+            // FORCE_HYPERLINK first, so this opts us in without lying about
+            // TERM_PROGRAM. overwrite=0 — respects a value the user set.
+            _ = setenv("FORCE_HYPERLINK", "1", 0);
 
             // Set startup command for shell integration to execute after init.
             // This ensures the command runs with the user's full PATH loaded.

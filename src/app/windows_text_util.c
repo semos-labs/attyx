@@ -10,69 +10,93 @@
 // URL detection — simple http:// / https:// prefix scan
 // ---------------------------------------------------------------------------
 
-int detectUrlAtCell(int row, int col, int cols,
-                    int *outStart, int *outEnd,
-                    char *outUrl, int urlBufSize, int *outUrlLen) {
-    if (!g_cells || cols <= 0 || col < 0 || col >= cols) return 0;
-    int base = row * cols;
+static int isUrlBreakChar(uint32_t ch) {
+    if (ch <= 32) return 1;
+    return (ch == '"' || ch == '\'' || ch == '<' || ch == '>' ||
+            ch == '(' || ch == ')' || ch == '[' || ch == ']' ||
+            ch == '{' || ch == '}');
+}
 
-    // Scan left from col to find a potential URL start.
-    int scanStart = col;
-    int maxScanBack = (col > 2048) ? col - 2048 : 0;
-    while (scanStart > maxScanBack) {
-        uint32_t ch = g_cells[base + scanStart].character;
-        if (ch <= 32 || ch == '"' || ch == '\'' || ch == '<' || ch == '>' ||
-            ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}')
-            break;
+// Logical-line URL detection. Walks g_row_wrapped to treat wrapped rows as
+// one continuous string and emits (startRow, startCol)→(endRow, endCol).
+int detectUrlAtCell(int row, int col, int cols,
+                    int *outStartRow, int *outStartCol,
+                    int *outEndRow, int *outEndCol,
+                    char *outUrl, int urlBufSize, int *outUrlLen) {
+    if (!g_cells || cols <= 0 || col < 0 || col >= cols ||
+        row < 0 || row >= g_rows) return 0;
+
+    const int max_rows = 32;
+    int startR = row;
+    while (startR > 0 && row - startR < max_rows / 2 && g_row_wrapped[startR - 1]) startR--;
+    int endR = row;
+    while (endR + 1 < g_rows && endR - row < max_rows / 2 && g_row_wrapped[endR]) endR++;
+    const int line_rows = endR - startR + 1;
+    const int total = line_rows * cols;
+    const int clickIdx = (row - startR) * cols + col;
+
+    // Scan left from clickIdx to find a potential URL start.
+    int scanStart = clickIdx;
+    while (scanStart > 0) {
+        int r = startR + scanStart / cols;
+        int c = scanStart % cols;
+        if (isUrlBreakChar(g_cells[r * cols + c].character)) break;
         scanStart--;
     }
-    if (g_cells[base + scanStart].character <= 32 || scanStart < col)
-        scanStart++;
+    {
+        int r = startR + scanStart / cols;
+        int c = scanStart % cols;
+        if (isUrlBreakChar(g_cells[r * cols + c].character) || scanStart < clickIdx) {
+            // Step past the break / past where we started scanning.
+            if (isUrlBreakChar(g_cells[r * cols + c].character)) scanStart++;
+        }
+    }
 
-    // Check for http:// or https:// prefix at scanStart
+    // Check for http:// or https:// prefix at scanStart.
     static const char* prefixes[] = { "https://", "http://" };
     static const int prefix_lens[] = { 8, 7 };
     int matchedPrefix = -1;
     for (int p = 0; p < 2; p++) {
-        int plen = prefix_lens[p];
-        if (scanStart + plen > cols) continue;
+        const int plen = prefix_lens[p];
+        if (scanStart + plen > total) continue;
         int match = 1;
         for (int i = 0; i < plen; i++) {
-            if ((uint32_t)prefixes[p][i] != g_cells[base + scanStart + i].character) {
-                match = 0;
-                break;
-            }
+            int idx = scanStart + i;
+            int r = startR + idx / cols;
+            int c = idx % cols;
+            if ((uint32_t)prefixes[p][i] != g_cells[r * cols + c].character) { match = 0; break; }
         }
         if (match) { matchedPrefix = p; break; }
     }
     if (matchedPrefix < 0) return 0;
 
-    // Scan right to find URL end (stop at whitespace, quotes, brackets)
+    // Scan right to find URL end.
     int scanEnd = scanStart + prefix_lens[matchedPrefix];
-    while (scanEnd < cols) {
-        uint32_t ch = g_cells[base + scanEnd].character;
-        if (ch <= 32 || ch == '"' || ch == '\'' || ch == '<' || ch == '>' ||
-            ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}')
-            break;
+    while (scanEnd < total) {
+        int r = startR + scanEnd / cols;
+        int c = scanEnd % cols;
+        if (isUrlBreakChar(g_cells[r * cols + c].character)) break;
         scanEnd++;
     }
     scanEnd--; // last valid char
 
-    // Strip trailing punctuation
     while (scanEnd > scanStart) {
-        uint32_t ch = g_cells[base + scanEnd].character;
+        int r = startR + scanEnd / cols;
+        int c = scanEnd % cols;
+        uint32_t ch = g_cells[r * cols + c].character;
         if (ch == '.' || ch == ',' || ch == ';' || ch == ':' || ch == '!')
             scanEnd--;
         else
             break;
     }
 
-    if (col < scanStart || col > scanEnd) return 0;
+    if (clickIdx < scanStart || clickIdx > scanEnd) return 0;
 
-    // Build UTF-8 URL string
     int pos = 0;
     for (int i = scanStart; i <= scanEnd && pos < urlBufSize - 1; i++) {
-        uint32_t ch = g_cells[base + i].character;
+        int r = startR + i / cols;
+        int c = i % cols;
+        uint32_t ch = g_cells[r * cols + c].character;
         if (ch < 0x80) {
             outUrl[pos++] = (char)ch;
         } else if (ch < 0x800 && pos + 1 < urlBufSize) {
@@ -91,8 +115,10 @@ int detectUrlAtCell(int row, int col, int cols,
     }
     outUrl[pos] = 0;
 
-    *outStart = scanStart;
-    *outEnd = scanEnd;
+    *outStartRow = startR + scanStart / cols;
+    *outStartCol = scanStart % cols;
+    *outEndRow = startR + scanEnd / cols;
+    *outEndCol = scanEnd % cols;
     *outUrlLen = pos;
     return 1;
 }
