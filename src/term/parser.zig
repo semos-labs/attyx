@@ -495,6 +495,20 @@ pub const Parser = struct {
         return .{ .notify = .{ .title = "", .body = after } };
     }
 
+    /// Parse OSC 9. iTerm2 uses "OSC 9 ; <text>" for a desktop notification,
+    /// but ConEmu overloads it with numeric subcommands: "OSC 9 ; 4 ; ..."
+    /// (progress) and "OSC 9 ; 9 ; <path>" (working directory). Nushell on
+    /// Windows emits the cwd form, which must not surface as a notification
+    /// reading "9;c:\\". Only the free-form iTerm2 text becomes a notification.
+    fn dispatchOsc9(rest: []const u8) Action {
+        if (std.mem.indexOfScalar(u8, rest, ';')) |sep| {
+            if (sep > 0 and (std.fmt.parseInt(u16, rest[0..sep], 10) catch null) != null) {
+                return .nop;
+            }
+        }
+        return .{ .notify = .{ .title = "", .body = rest } };
+    }
+
     fn dispatchOsc7339(rest: []const u8) Action {
         // Format: "xyron:{json}"
         const prefix = "xyron:";
@@ -550,8 +564,8 @@ pub const Parser = struct {
             4 => parseOscPaletteQuery(rest),
             7 => .{ .set_cwd = rest },
             8 => csi.makeOscHyperlink(rest),
-            // OSC 9 — iTerm2-style notification: ESC]9;body BEL
-            9 => .{ .notify = .{ .title = "", .body = rest } },
+            // OSC 9 — iTerm2 notification, or a ConEmu numeric subcommand.
+            9 => dispatchOsc9(rest),
             10 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .foreground } else .nop,
             11 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .background } else .nop,
             12 => if (std.mem.eql(u8, rest, "?")) .{ .query_color = .cursor } else .nop,
