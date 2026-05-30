@@ -167,6 +167,37 @@ test "OSC 2 sets window title" {
     try std.testing.expectEqualStrings("my title", e.state.title.?);
 }
 
+test "OSC 9 ConEmu subcommands are not desktop notifications" {
+    // OSC 9 is overloaded: iTerm2 uses "OSC 9 ; <text>" for a notification,
+    // while ConEmu uses numeric subcommands ("9;4;..." progress, "9;9;<path>"
+    // cwd). Only the iTerm2 free-form text must surface as a notification.
+    const parser = @import("parser.zig");
+    {
+        var p = parser.Parser{};
+        var is_notify = false;
+        for ("\x1b]9;9;/tmp\x07") |b| {
+            if (p.next(b)) |a| is_notify = (a == .notify);
+        }
+        try std.testing.expect(!is_notify);
+    }
+    {
+        var p = parser.Parser{};
+        var is_notify = false;
+        for ("\x1b]9;4;1;50\x07") |b| {
+            if (p.next(b)) |a| is_notify = (a == .notify);
+        }
+        try std.testing.expect(!is_notify);
+    }
+    {
+        var p = parser.Parser{};
+        var is_notify = false;
+        for ("\x1b]9;hello\x07") |b| {
+            if (p.next(b)) |a| is_notify = (a == .notify);
+        }
+        try std.testing.expect(is_notify);
+    }
+}
+
 test "OSC 52 sets clipboard from base64" {
     const alloc = std.testing.allocator;
     var e = try Engine.init(alloc, 4, 20, 100);
