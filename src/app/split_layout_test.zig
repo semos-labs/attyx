@@ -203,3 +203,27 @@ test "SplitLayout: toggleZoom sets and clears zoomed_leaf" {
     layout.toggleZoom();
     try std.testing.expect(!layout.isZoomed());
 }
+
+test "SplitLayout: paneAt returns zoomed pane for clicks anywhere" {
+    const allocator = std.testing.allocator;
+    var pane_a = try createTestPane(allocator);
+    defer destroyTestPane(allocator, &pane_a);
+
+    var layout = SplitLayout.init(&pane_a);
+    layout.layout(24, 80);
+
+    var pane_b = try createTestPane(allocator);
+    defer destroyTestPane(allocator, &pane_b);
+    try layout.splitPaneWith(.vertical, &pane_b);
+    layout.layout(24, 80);
+
+    // Focus the second pane and zoom it.
+    const zoomed = layout.focused;
+    layout.toggleZoom();
+    try std.testing.expect(layout.isZoomed());
+
+    // A click in the hidden pane's former region must land in the zoomed pane,
+    // not reveal the hidden one.
+    try std.testing.expectEqual(zoomed, layout.paneAt(0, 0).?);
+    try std.testing.expectEqual(zoomed, layout.paneAt(12, 70).?);
+}
