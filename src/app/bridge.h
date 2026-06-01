@@ -255,6 +255,9 @@ void attyx_toggle_shell_picker(void);
 extern volatile int g_tab_picker_active;  // 1 = tab picker overlay has focus
 void attyx_toggle_tab_picker(void);
 
+// Move-tab-to-session: reuses the session picker overlay in "move" mode
+void attyx_toggle_move_to_session(void);
+
 // Session picker input: input thread -> PTY thread (Zig-side)
 extern volatile int g_session_picker_active;  // 1 = session picker overlay has focus
 void attyx_picker_insert_char(uint32_t codepoint);

@@ -70,6 +70,48 @@ pub fn openSessionPicker(ctx: *PtyThreadCtx) void {
     logging.info("session-picker", "opened overlay picker", .{});
 }
 
+/// Open the session picker in "move tab to session" mode: it lists the other
+/// running sessions and, on Enter, moves the active tab to the chosen one.
+/// No filesystem finder and no create/kill/rename — just pick a destination.
+pub fn openSessionPickerMove(ctx: *PtyThreadCtx) void {
+    if (ctx.popup_state != null) actions.closePopup(ctx);
+
+    const sc = ctx.session_client orelse return;
+    sc.requestListSync(2000) catch return;
+
+    const current_id: ?u32 = sc.attached_session_id;
+
+    var state = SessionPickerState{};
+    var count: u8 = 0;
+    for (sc.pending_list[0..sc.pending_list_count]) |le| {
+        // Only alive sessions, never the one we're already in.
+        if (!le.alive) continue;
+        if (current_id != null and le.id == current_id.?) continue;
+        state.entries[count] = .{
+            .id = le.id,
+            .name_len = le.name_len,
+            .alive = le.alive,
+        };
+        @memcpy(state.entries[count].name[0..le.name_len], le.name[0..le.name_len]);
+        count += 1;
+        if (count >= picker_state_mod.max_entries) break;
+    }
+
+    const panel_h = @as(u16, @intCast(@max(3, ctx.grid_rows))) / 2;
+    const visible = if (panel_h > 5) @as(u8, @intCast(panel_h - 5)) else 3;
+
+    state.load(state.entries[0..count], count, current_id);
+    state.move_mode = true;
+    state.visible_rows = visible;
+    state.adjustScroll();
+
+    g_picker_state = state;
+    @atomicStore(i32, &terminal.g_session_picker_active, 1, .seq_cst);
+
+    renderAndPublish(ctx);
+    logging.info("session-picker", "opened move-to-session picker", .{});
+}
+
 /// Configure finder parameters (called when config is loaded/reloaded).
 pub fn setFinderConfig(root: []const u8, depth: u8, show_hidden: bool) void {
     g_finder_root = root;
@@ -195,6 +237,11 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
         .switch_session => |id| {
             closeSessionPicker(ctx);
             session_actions.doSessionSwitch(ctx, id);
+            return true;
+        },
+        .move_to_session => |id| {
+            closeSessionPicker(ctx);
+            session_actions.doMoveActiveTabToSession(ctx, id);
             return true;
         },
         .switch_to_default => {

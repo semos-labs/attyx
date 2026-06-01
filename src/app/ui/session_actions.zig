@@ -203,6 +203,58 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     logging.info("session-picker", "switched to session {d}", .{session_id});
 }
 
+/// Move the active tab (and all its split panes) to another session, then
+/// switch to that session and land on the moved tab. The panes keep running —
+/// the daemon transfers them live rather than killing and respawning.
+pub fn doMoveActiveTabToSession(ctx: *PtyThreadCtx, dest_session_id: u32) void {
+    const sc = ctx.session_client orelse return;
+    if (ctx.tab_mgr.count == 0) return;
+    if (sc.attached_session_id) |current| {
+        if (current == dest_session_id) return; // can't move to the same session
+    }
+
+    // Serialize the active tab's split tree into a one-tab blob for the daemon.
+    var tab_buf: [4096]u8 = undefined;
+    const tab_len = ctx.tab_mgr.serializeActiveTab(&tab_buf) catch return;
+    if (tab_len == 0) return;
+
+    // Collect the active tab's daemon-backed pane IDs.
+    var pane_ids: [split_layout_mod.max_panes]u32 = undefined;
+    var pane_count: u8 = 0;
+    if (ctx.tab_mgr.tabs[ctx.tab_mgr.active]) |*lay| {
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = lay.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            if (leaf.pane.daemon_pane_id) |dpid| {
+                pane_ids[pane_count] = dpid;
+                pane_count += 1;
+            }
+        }
+    }
+    if (pane_count == 0) return;
+
+    // Hand the live panes + the tab layout to the daemon and wait for it to
+    // confirm. We only mutate local state on success, so a rejection (e.g. the
+    // destination is at its tab/pane cap) leaves the tab exactly where it is
+    // rather than orphaning the running processes.
+    sc.sendMovePanes(dest_session_id, pane_ids[0..pane_count], tab_buf[0..tab_len]) catch return;
+    if (!sc.waitForMoveResult(5000)) {
+        logging.info("session-picker", "move to session {d} rejected", .{dest_session_id});
+        return;
+    }
+
+    // Drop the tab locally WITHOUT a close_pane round-trip — the daemon now
+    // owns those panes in the destination session, so closing them would kill
+    // the very processes we just moved.
+    ctx.tab_mgr.closeTab(ctx.tab_mgr.active);
+
+    // Switch to the destination. doSessionSwitch saves the (now tab-less)
+    // source layout, attaches the destination, and reconstructs from its
+    // layout — which the daemon just made end on the moved tab.
+    doSessionSwitch(ctx, dest_session_id);
+    logging.info("session-picker", "moved tab to session {d}", .{dest_session_id});
+}
+
 pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
     const sc = ctx.session_client orelse return;
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));

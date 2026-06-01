@@ -85,6 +85,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .copy_mode_enter, .name = "copy_mode", .description = "Enter copy/visual mode", .scope = .global, .mac_hotkey = "ctrl+shift+space", .linux_hotkey = "ctrl+shift+space" },
     .{ .action = .theme_picker_toggle, .name = "theme_picker", .description = "Pick theme", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .tab_picker_toggle, .name = "tab_picker", .description = "Pick tab", .scope = .global, .mac_hotkey = "cmd+shift+t", .linux_hotkey = "ctrl+alt+t" },
+    .{ .action = .move_to_session, .name = "move_to_session", .description = "Move to session", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .open_config, .name = "open_config", .description = "Open config in editor", .scope = .global, .mac_hotkey = "cmd+,", .linux_hotkey = "ctrl+," },
     // Tab select by number
     .{ .action = .tab_select_1, .name = "tab_select_1", .description = "Switch to tab 1", .scope = .global, .mac_hotkey = "cmd+1", .linux_hotkey = "alt+1" },

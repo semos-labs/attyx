@@ -33,6 +33,62 @@ fn writeStoredTabTitle(tab: *layout_codec.TabLayout, explicit: ?[]const u8, fall
     tab.title_flags = 0;
 }
 
+/// Fill a layout_codec.TabLayout from a live SplitLayout: compact the node
+/// pool, resolve the tab title, and copy the split tree (leaf pane IDs use the
+/// daemon pane ID so they round-trip across sessions).
+fn fillTabLayout(lay: *SplitLayout, tab: *layout_codec.TabLayout) void {
+    // Remap pool indices to compact indices (skip empty slots).
+    var remap: [split_layout_mod.max_nodes]u8 = .{0xFF} ** split_layout_mod.max_nodes;
+    var compact_count: u8 = 0;
+    for (lay.pool, 0..) |node, ni| {
+        if (node.tag != .empty) {
+            remap[ni] = compact_count;
+            compact_count += 1;
+        }
+    }
+    tab.node_count = compact_count;
+    tab.root_idx = if (lay.root < split_layout_mod.max_nodes) remap[lay.root] else 0;
+    tab.focused_idx = if (lay.focused < split_layout_mod.max_nodes) remap[lay.focused] else 0;
+
+    const focused_pane = lay.focusedPane();
+    const fallback_title: ?[]const u8 = focused_pane.engine.state.title orelse blk: {
+        if (comptime @import("builtin").os.tag != .windows) {
+            var name_buf: [256]u8 = undefined;
+            if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
+                break :blk name;
+        }
+        break :blk focused_pane.getDaemonProcName() orelse lay.getHintTitle();
+    };
+    writeStoredTabTitle(tab, lay.getTitle(), fallback_title);
+
+    var ci: u8 = 0;
+    for (lay.pool) |node| {
+        switch (node.tag) {
+            .leaf => {
+                tab.nodes[ci] = .{
+                    .tag = .leaf,
+                    .pane_id = if (node.pane) |p| p.daemon_pane_id orelse 0 else 0,
+                };
+                ci += 1;
+            },
+            .branch => {
+                tab.nodes[ci] = .{
+                    .tag = .branch,
+                    .direction = switch (node.direction) {
+                        .vertical => .vertical,
+                        .horizontal => .horizontal,
+                    },
+                    .ratio_x100 = @intFromFloat(node.ratio * 100.0),
+                    .child_left = if (node.children[0] < split_layout_mod.max_nodes) remap[node.children[0]] else 0xFF,
+                    .child_right = if (node.children[1] < split_layout_mod.max_nodes) remap[node.children[1]] else 0xFF,
+                };
+                ci += 1;
+            },
+            .empty => {},
+        }
+    }
+}
+
 fn restoreTabTitle(layout: *SplitLayout, tab: *const layout_codec.TabLayout) void {
     const title = tab.getTitle() orelse {
         layout.clearTitle();
@@ -467,59 +523,25 @@ pub const TabManager = struct {
 
         for (0..self.count) |ti| {
             if (self.tabs[ti]) |*lay| {
-                var tab = &info.tabs[ti];
-                // Remap pool indices to compact indices (skip empty slots)
-                var remap: [split_layout_mod.max_nodes]u8 = .{0xFF} ** split_layout_mod.max_nodes;
-                var compact_count: u8 = 0;
-                for (lay.pool, 0..) |node, ni| {
-                    if (node.tag != .empty) {
-                        remap[ni] = compact_count;
-                        compact_count += 1;
-                    }
-                }
-                tab.node_count = compact_count;
-                tab.root_idx = if (lay.root < split_layout_mod.max_nodes) remap[lay.root] else 0;
-                tab.focused_idx = if (lay.focused < split_layout_mod.max_nodes) remap[lay.focused] else 0;
-
-                const focused_pane = lay.focusedPane();
-                const fallback_title: ?[]const u8 = focused_pane.engine.state.title orelse blk: {
-                    if (comptime @import("builtin").os.tag != .windows) {
-                        var name_buf: [256]u8 = undefined;
-                        if (platform.getForegroundProcessName(focused_pane.pty.master, &name_buf)) |name|
-                            break :blk name;
-                    }
-                    break :blk focused_pane.getDaemonProcName() orelse lay.getHintTitle();
-                };
-                writeStoredTabTitle(tab, lay.getTitle(), fallback_title);
-
-                var ci: u8 = 0;
-                for (lay.pool) |node| {
-                    switch (node.tag) {
-                        .leaf => {
-                            tab.nodes[ci] = .{
-                                .tag = .leaf,
-                                .pane_id = if (node.pane) |p| p.daemon_pane_id orelse 0 else 0,
-                            };
-                            ci += 1;
-                        },
-                        .branch => {
-                            tab.nodes[ci] = .{
-                                .tag = .branch,
-                                .direction = switch (node.direction) {
-                                    .vertical => .vertical,
-                                    .horizontal => .horizontal,
-                                },
-                                .ratio_x100 = @intFromFloat(node.ratio * 100.0),
-                                .child_left = if (node.children[0] < split_layout_mod.max_nodes) remap[node.children[0]] else 0xFF,
-                                .child_right = if (node.children[1] < split_layout_mod.max_nodes) remap[node.children[1]] else 0xFF,
-                            };
-                            ci += 1;
-                        },
-                        .empty => {},
-                    }
-                }
+                fillTabLayout(lay, &info.tabs[ti]);
             }
         }
+
+        return layout_codec.serialize(&info, buf);
+    }
+
+    /// Serialize just the active tab as a standalone one-tab layout blob.
+    /// Used to ship a tab to another session when moving it. Returns 0 if
+    /// there is no active tab.
+    pub fn serializeActiveTab(self: *TabManager, buf: []u8) !u16 {
+        if (self.count == 0) return 0;
+        const lay = &(self.tabs[self.active] orelse return 0);
+
+        var info = layout_codec.LayoutInfo{};
+        info.tab_count = 1;
+        info.active_tab = 0;
+        info.focused_pane_id = lay.focusedPane().daemon_pane_id orelse 0;
+        fillTabLayout(lay, &info.tabs[0]);
 
         return layout_codec.serialize(&info, buf);
     }

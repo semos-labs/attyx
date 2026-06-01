@@ -177,6 +177,10 @@ pub export fn attyx_dispatch_action(action_raw: u8) u8 {
             c.attyx_toggle_tab_picker();
             return 1;
         },
+        .move_to_session => {
+            c.attyx_toggle_move_to_session();
+            return 1;
+        },
         .session_create => {
             if (c.g_popup_active != 0) {
                 const b = [_]u8{0x0e}; // Ctrl-N byte

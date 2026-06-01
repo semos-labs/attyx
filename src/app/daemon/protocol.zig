@@ -31,6 +31,8 @@ pub const MessageType = enum(u8) {
     rename = 0x0E,
     hello = 0x0F,
     set_theme_colors = 0x10,
+    /// Move one tab's panes (and their layout subtree) into another session.
+    move_panes = 0x11,
 
     // Client → Daemon (grid-sync, server-side engine). Reserved in Phase 1;
     // encoders/decoders land with the daemon-side engine in Phase 2.
@@ -50,6 +52,8 @@ pub const MessageType = enum(u8) {
     layout_sync = 0x8C,
     hello_ack = 0x8D,
     pane_fg_cwd = 0x8E,
+    /// Result of a move_panes request: 1 byte, 1 = moved, 0 = rejected.
+    moved = 0x8F,
 
     // Daemon → Client (grid-sync). Reserved in Phase 1; payload format
     // (PackedCell layout, dirty-row bitmap, etc.) defined in Phase 2.
@@ -360,6 +364,29 @@ pub fn encodeFocusPanes(buf: []u8, pane_ids: []const u32) ![]u8 {
     return buf[0..total];
 }
 
+/// Encode MovePanes payload:
+///   dest_session_id:u32, count:u8, pane_ids:[count]u32, tab_len:u16, tab_layout:[tab_len]u8
+/// `tab_layout` is a serialized one-tab LayoutInfo blob describing the moved tab's
+/// split structure (the same format the daemon stores per session).
+pub fn encodeMovePanes(buf: []u8, dest_session_id: u32, pane_ids: []const u32, tab_layout: []const u8) ![]u8 {
+    const count: u8 = @intCast(@min(pane_ids.len, 32));
+    const tab_len: u16 = @intCast(@min(tab_layout.len, 4096));
+    const total: usize = 4 + 1 + @as(usize, count) * 4 + 2 + tab_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], dest_session_id, .little);
+    buf[4] = count;
+    var pos: usize = 5;
+    for (0..count) |i| {
+        std.mem.writeInt(u32, buf[pos..][0..4], pane_ids[i], .little);
+        pos += 4;
+    }
+    std.mem.writeInt(u16, buf[pos..][0..2], tab_len, .little);
+    pos += 2;
+    if (tab_len > 0) @memcpy(buf[pos .. pos + tab_len], tab_layout[0..tab_len]);
+    pos += tab_len;
+    return buf[0..pos];
+}
+
 /// Encode PaneInput payload: pane_id:u32, bytes:[N]u8
 pub fn encodePaneInput(buf: []u8, pane_id: u32, bytes: []const u8) ![]u8 {
     const total = 4 + bytes.len;
@@ -505,6 +532,36 @@ pub fn decodeFocusPanes(payload: []const u8) !FocusPanesMsg {
     return msg;
 }
 
+pub const MovePanesMsg = struct {
+    dest_session_id: u32,
+    count: u8,
+    pane_ids: [32]u32,
+    tab_layout: []const u8,
+};
+
+pub fn decodeMovePanes(payload: []const u8) !MovePanesMsg {
+    if (payload.len < 5) return error.PayloadTooShort;
+    const dest_session_id = std.mem.readInt(u32, payload[0..4], .little);
+    const count = payload[4];
+    if (count > 32) return error.InvalidCount;
+    var pos: usize = 5;
+    if (payload.len < pos + @as(usize, count) * 4 + 2) return error.PayloadTooShort;
+    var pane_ids: [32]u32 = .{0} ** 32;
+    for (0..count) |i| {
+        pane_ids[i] = std.mem.readInt(u32, payload[pos..][0..4], .little);
+        pos += 4;
+    }
+    const tab_len = std.mem.readInt(u16, payload[pos..][0..2], .little);
+    pos += 2;
+    if (payload.len < pos + @as(usize, tab_len)) return error.PayloadTooShort;
+    return .{
+        .dest_session_id = dest_session_id,
+        .count = count,
+        .pane_ids = pane_ids,
+        .tab_layout = payload[pos .. pos + tab_len],
+    };
+}
+
 pub const PaneInputMsg = struct { pane_id: u32, bytes: []const u8 };
 
 pub fn decodePaneInput(payload: []const u8) !PaneInputMsg {
@@ -529,6 +586,18 @@ pub fn decodePaneResize(payload: []const u8) !PaneResizeMsg {
 pub fn decodePaneCreated(payload: []const u8) !u32 {
     if (payload.len < 4) return error.PayloadTooShort;
     return std.mem.readInt(u32, payload[0..4], .little);
+}
+
+/// Encode Moved result payload: ok:u8 (1 = moved, 0 = rejected).
+pub fn encodeMoved(buf: []u8, ok: bool) ![]u8 {
+    if (buf.len < 1) return error.BufferTooSmall;
+    buf[0] = @intFromBool(ok);
+    return buf[0..1];
+}
+
+pub fn decodeMoved(payload: []const u8) !bool {
+    if (payload.len < 1) return error.PayloadTooShort;
+    return payload[0] != 0;
 }
 
 pub const PaneDiedMsg = struct {

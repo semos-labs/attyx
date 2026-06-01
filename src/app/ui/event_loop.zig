@@ -419,6 +419,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Move-tab-to-session toggle check (reuses the session picker overlay)
+        if (@atomicRmw(i32, &terminal.g_toggle_move_to_session, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_session_picker_active != 0) {
+                session_picker_ui.closeSessionPicker(ctx);
+            } else {
+                session_picker_ui.openSessionPickerMove(ctx);
+            }
+        }
+
         // Direct session create (Ctrl+Shift+N without picker)
         if (@atomicRmw(i32, &terminal.g_create_session_direct, .Xchg, 0, .seq_cst) != 0) {
             session_actions.createSessionDirect(ctx);

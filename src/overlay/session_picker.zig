@@ -39,6 +39,8 @@ pub const PickerAction = union(enum) {
     create_session_at: []const u8,
     kill_session: u32,
     rename_session: struct { id: u32, name: []const u8 },
+    /// "Move tab to session" mode: the user picked the destination session.
+    move_to_session: u32,
     close: void,
 };
 
@@ -48,6 +50,10 @@ pub const SessionPickerState = struct {
     selected: u8 = 0,
     scroll_offset: u8 = 0,
     mode: PickerMode = .browsing,
+    /// When true, the picker chooses a destination for "Move tab to session"
+    /// instead of switching. Hides the "New session"/filesystem rows and the
+    /// rename/kill/detach shortcuts; Enter emits `.move_to_session`.
+    move_mode: bool = false,
 
     // Filter
     filter_buf: [64]u8 = .{0} ** 64,
@@ -187,6 +193,13 @@ pub const SessionPickerState = struct {
             },
             7 => return .close, // Escape
             8 => { // Enter
+                if (self.move_mode) {
+                    if (self.selected < self.filtered_count) {
+                        const e = &self.entries[self.filtered_indices[self.selected]];
+                        return .{ .move_to_session = e.id };
+                    }
+                    return .none;
+                }
                 if (self.selected < self.filtered_count) {
                     const e = &self.entries[self.filtered_indices[self.selected]];
                     return .{ .switch_session = e.id };
@@ -199,7 +212,8 @@ pub const SessionPickerState = struct {
             },
             9 => self.moveUp(), // Up
             10 => self.moveDown(), // Down
-            11 => { // Ctrl-R — rename
+            11 => { // Ctrl-R — rename (disabled while picking a move target)
+                if (self.move_mode) return .none;
                 if (self.filtered_count > 0 and self.selected < self.filtered_count) {
                     const e = &self.entries[self.filtered_indices[self.selected]];
                     const nlen = e.name_len;
@@ -208,7 +222,8 @@ pub const SessionPickerState = struct {
                     self.mode = .renaming;
                 }
             },
-            12 => { // Ctrl-X — kill (only for alive sessions)
+            12 => { // Ctrl-X — kill (only for alive sessions; disabled in move mode)
+                if (self.move_mode) return .none;
                 if (self.filtered_count > 0 and self.selected < self.filtered_count) {
                     const e = &self.entries[self.filtered_indices[self.selected]];
                     if (e.alive) {
@@ -222,7 +237,10 @@ pub const SessionPickerState = struct {
                 self.selected = 0;
                 self.adjustScroll();
             },
-            14 => return .switch_to_default, // Ctrl-D — switch to hidden "default" session
+            14 => { // Ctrl-D — switch to hidden "default" session (disabled in move mode)
+                if (self.move_mode) return .none;
+                return .switch_to_default;
+            },
             15 => { // Ctrl-W — delete word backward
                 if (self.filter_len > 0) {
                     self.filter_len = deleteWordBackward(&self.filter_buf, self.filter_len);
@@ -253,7 +271,9 @@ pub const SessionPickerState = struct {
     }
 
     /// Total items = filtered sessions + fs results + 1 ("New session" entry).
+    /// In move mode only existing sessions are selectable.
     pub fn totalCount(self: *const SessionPickerState) u8 {
+        if (self.move_mode) return self.filtered_count;
         return self.filtered_count +| self.fs_count +| 1;
     }
 
@@ -440,6 +460,34 @@ test "handleCmd: enter on session returns switch_session" {
         .switch_session => |id| try std.testing.expectEqual(@as(u32, 42), id),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "move mode: enter returns move_to_session and hides New entry" {
+    var state = SessionPickerState{};
+    state.move_mode = true;
+    state.entries[0] = .{ .id = 11, .name_len = 3, .alive = true };
+    @memcpy(state.entries[0].name[0..3], "one");
+    state.entries[1] = .{ .id = 22, .name_len = 3, .alive = true };
+    @memcpy(state.entries[1].name[0..3], "two");
+    state.entry_count = 2;
+    state.applyFilter();
+
+    // No "New session" row in move mode.
+    try std.testing.expectEqual(@as(u8, 2), state.totalCount());
+
+    state.selected = 1;
+    const action = state.handleCmd(8); // Enter
+    switch (action) {
+        .move_to_session => |id| try std.testing.expectEqual(@as(u32, 22), id),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Rename/kill/detach shortcuts are disabled while picking a move target.
+    try std.testing.expectEqual(PickerMode.browsing, state.mode);
+    _ = state.handleCmd(11); // Ctrl-R
+    try std.testing.expectEqual(PickerMode.browsing, state.mode);
+    _ = state.handleCmd(12); // Ctrl-X
+    try std.testing.expectEqual(PickerMode.browsing, state.mode);
 }
 
 test "handleCmd: enter on 'New session' returns create_session" {
