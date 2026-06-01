@@ -177,6 +177,12 @@ fn processAction(ctx: *WinCtx, action: picker_state_mod.PickerAction) bool {
             close(ctx);
             return true;
         },
+        // "Move tab to session" is not wired on Windows yet; the picker never
+        // enters move mode here, so this is unreachable in practice.
+        .move_to_session => {
+            close(ctx);
+            return true;
+        },
         .create_session => {
             close(ctx);
             const ws_stubs = @import("../windows_stubs.zig");
