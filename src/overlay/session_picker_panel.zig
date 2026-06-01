@@ -136,7 +136,9 @@ pub fn renderSessionPicker(
         }
         break :blk false;
     };
-    const hint_text: []const u8 = switch (state.mode) {
+    const hint_text: []const u8 = if (state.move_mode)
+        "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter move here \xe2\x80\xa2 esc cancel"
+    else switch (state.mode) {
         .browsing => if (in_default)
             "\xe2\x86\x91\xe2\x86\x93 navigate \xe2\x80\xa2 enter select \xe2\x80\xa2 ^R rename \xe2\x80\xa2 ^X delete \xe2\x80\xa2 esc close"
         else
@@ -228,7 +230,7 @@ pub fn renderSessionPicker(
     } };
 
     const config = PanelConfig{
-        .title = "Sessions",
+        .title = if (state.move_mode) "Move tab to session" else "Sessions",
         .width = .{ .percent = 50 },
         .height = .{ .percent = 50 },
         .border = .rounded,

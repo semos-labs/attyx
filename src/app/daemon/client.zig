@@ -429,6 +429,15 @@ pub const DaemonClient = struct {
         self.sendRaw(&buf);
     }
 
+    /// Send the result of a move_panes request (1 = moved, 0 = rejected).
+    pub fn sendMoved(self: *DaemonClient, ok: bool) void {
+        var buf: [protocol.header_size + 1]u8 = undefined;
+        var payload: [1]u8 = undefined;
+        _ = protocol.encodeMoved(&payload, ok) catch return;
+        _ = protocol.encodeMessage(&buf, .moved, &payload) catch return;
+        self.sendRaw(&buf);
+    }
+
     /// Send a PaneOutput message (pane-multiplexed PTY output).
     /// Large payloads are split into multiple messages.
     pub fn sendPaneOutput(self: *DaemonClient, pane_id: u32, pty_data: []const u8) void {

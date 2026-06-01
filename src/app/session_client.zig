@@ -293,6 +293,14 @@ pub const SessionClient = struct {
         try self.sendMessage(.close_pane, payload);
     }
 
+    /// Ask the daemon to move one tab's panes (described by `tab_layout`, a
+    /// serialized one-tab layout blob) into another session, live.
+    pub fn sendMovePanes(self: *SessionClient, dest_session_id: u32, pane_ids: []const u32, tab_layout: []const u8) !void {
+        var payload_buf: [4 + 1 + 32 * 4 + 2 + 4096]u8 = undefined;
+        const payload = try protocol.encodeMovePanes(&payload_buf, dest_session_id, pane_ids, tab_layout);
+        try self.sendMessage(.move_panes, payload);
+    }
+
     pub fn sendFocusPanes(self: *SessionClient, pane_ids: []const u32) !void {
         var payload_buf: [129]u8 = undefined;
         const payload = try protocol.encodeFocusPanes(&payload_buf, pane_ids);
@@ -447,6 +455,38 @@ pub const SessionClient = struct {
             elapsed += 100;
         }
         return error.Timeout;
+    }
+
+    /// Wait for the daemon's response to a move_panes request. Returns true if
+    /// the move was applied, false if it was rejected, timed out, or the
+    /// connection dropped (the caller must not destroy local state on false).
+    pub fn waitForMoveResult(self: *SessionClient, timeout_ms: u32) bool {
+        var elapsed: u32 = 0;
+        while (elapsed < timeout_ms) {
+            while (self.availableBytes() >= protocol.header_size) {
+                const buf = self.read_buf[self.read_off..self.read_len];
+                const header = protocol.decodeHeader(buf[0..protocol.header_size]) catch {
+                    self.consumeBytes(1);
+                    continue;
+                };
+                const total = protocol.header_size + header.payload_len;
+                if (self.availableBytes() < total) break;
+                const payload = buf[protocol.header_size..total];
+                if (header.msg_type == .moved) {
+                    const ok = protocol.decodeMoved(payload) catch false;
+                    self.consumeBytes(total);
+                    return ok;
+                }
+                if (header.msg_type == .err) {
+                    self.consumeBytes(total);
+                    return false;
+                }
+                self.consumeOrBuffer(header.msg_type, payload, total);
+            }
+            if (!self.pollAndRecv(100)) return false;
+            elapsed += 100;
+        }
+        return false;
     }
 
     /// Pop the next buffered pane death captured during a blocking wait.

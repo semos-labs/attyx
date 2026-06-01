@@ -3,7 +3,8 @@ const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 const attyx = @import("attyx");
 const protocol = @import("protocol.zig");
-const DaemonSession = @import("session.zig").DaemonSession;
+const session_mod = @import("session.zig");
+const DaemonSession = session_mod.DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
 const DaemonPane = @import("pane.zig").DaemonPane;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
@@ -44,6 +45,7 @@ pub fn handleMessage(
         .pane_input => handlePaneInput(cl, msg.payload, sessions),
         .pane_resize => handlePaneResize(cl, msg.payload, sessions),
         .save_layout => handleSaveLayout(cl, msg.payload, sessions, clients),
+        .move_panes => handleMovePanes(cl, msg.payload, sessions, clients),
         .set_theme_colors => handleSetThemeColors(cl, msg.payload, sessions),
         .get_scrollback_range => handleGetScrollbackRange(cl, msg.payload, sessions),
 
@@ -488,6 +490,124 @@ fn handleSaveLayout(
             }
         }
     }
+}
+
+/// Move one tab's panes (and their layout subtree) from the client's attached
+/// session into another session. The PTYs/processes are transferred live — no
+/// kill, no respawn. The moved tab is appended to the destination's stored
+/// layout and made active, so the client (which switches to the destination
+/// right after) lands on it.
+fn handleMovePanes(
+    cl: *DaemonClient,
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+    clients: *[max_clients]?DaemonClient,
+) void {
+    const msg = protocol.decodeMovePanes(payload) catch {
+        cl.sendMoved(false);
+        return;
+    };
+    // getAttachedSession already replies with an error if we're not attached.
+    const source = getAttachedSession(cl, sessions) orelse return;
+    const dest = findSession(sessions, msg.dest_session_id) orelse {
+        cl.sendMoved(false);
+        return;
+    };
+    if (dest.id == source.id) {
+        cl.sendMoved(false);
+        return;
+    }
+
+    // Snapshot the destination's existing panes BEFORE we adopt anything.
+    var dest_existing: [session_mod.max_panes_per_session]u32 = undefined;
+    const dest_existing_count = dest.collectPaneIds(&dest_existing);
+
+    // Parse the destination's current layout (empty if it has none yet).
+    var dest_info: layout_codec.LayoutInfo = if (dest.layout_len > 0)
+        (layout_codec.deserialize(dest.layout_data[0..dest.layout_len]) catch layout_codec.LayoutInfo{})
+    else
+        layout_codec.LayoutInfo{};
+
+    // A session created but never attached has no layout blob yet. Synthesize a
+    // single-pane tab for each existing pane so they aren't dropped from the
+    // view once we append the moved tab.
+    if (dest_info.tab_count == 0) {
+        for (0..dest_existing_count) |i| {
+            if (dest_info.tab_count >= layout_codec.max_tabs) break;
+            var t = &dest_info.tabs[dest_info.tab_count];
+            t.node_count = 1;
+            t.root_idx = 0;
+            t.focused_idx = 0;
+            t.title_len = 0;
+            t.title_flags = 0;
+            t.nodes[0] = .{ .tag = .leaf, .pane_id = dest_existing[i] };
+            dest_info.tab_count += 1;
+        }
+    }
+    if (dest_info.tab_count >= layout_codec.max_tabs) {
+        cl.sendMoved(false);
+        return;
+    }
+
+    // Parse the moved tab's layout subtree (a one-tab blob from the client).
+    const moved = layout_codec.deserialize(msg.tab_layout) catch {
+        cl.sendMoved(false);
+        return;
+    };
+    if (moved.tab_count == 0) {
+        cl.sendMoved(false);
+        return;
+    }
+
+    // Validate capacity up-front using the count of panes that actually exist
+    // in the source, so we never leave the move half-applied.
+    var movable: u8 = 0;
+    for (0..msg.count) |i| {
+        if (source.findPane(msg.pane_ids[i]) != null) movable += 1;
+    }
+    if (movable == 0) {
+        cl.sendMoved(false);
+        return;
+    }
+    if (@as(usize, dest.pane_count) + movable > session_mod.max_panes_per_session) {
+        cl.sendMoved(false);
+        return;
+    }
+
+    // Transfer the live panes (no deinit).
+    for (0..msg.count) |i| {
+        if (source.takePaneById(msg.pane_ids[i])) |pane| {
+            dest.adoptPane(pane) catch {
+                // Capacity was validated above, so this shouldn't happen;
+                // if it does, drop the pane rather than corrupt either side.
+                var p = pane;
+                p.deinit();
+            };
+        }
+    }
+
+    // Append the moved tab to the destination layout and make it active.
+    const new_idx = dest_info.tab_count;
+    dest_info.tabs[new_idx] = moved.tabs[0];
+    dest_info.tab_count += 1;
+    dest_info.active_tab = new_idx;
+    dest_info.focused_pane_id = moved.focused_pane_id;
+    if (layout_codec.serialize(&dest_info, &dest.layout_data)) |len| {
+        dest.layout_len = len;
+    } else |_| {}
+
+    // Live-update any other clients viewing the destination session so the
+    // new tab appears without them having to reattach.
+    for (clients) |*cslot| {
+        if (cslot.*) |*other| {
+            if (other == cl) continue;
+            if (other.attached_session) |osid| {
+                if (osid == dest.id) other.sendLayoutSync(dest);
+            }
+        }
+    }
+
+    cl.sendMoved(true);
 }
 
 // ── Session revive ──

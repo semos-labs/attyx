@@ -118,6 +118,34 @@ pub const DaemonSession = struct {
         return false;
     }
 
+    /// Remove a pane by ID WITHOUT destroying it, returning the pane value so
+    /// another session can adopt it. Unlike removePane, this does NOT call
+    /// deinit() — the PTY/process/engine stay alive across the move.
+    pub fn takePaneById(self: *DaemonSession, pane_id: u32) ?DaemonPane {
+        for (&self.panes) |*slot| {
+            if (slot.*) |p| {
+                if (p.id == pane_id) {
+                    slot.* = null;
+                    self.pane_count -= 1;
+                    if (self.pane_count == 0) self.alive = false;
+                    return p;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Adopt an already-spawned pane moved from another session. Takes ownership
+    /// of its PTY/engine without re-spawning. Returns error.TooManyPanes if full.
+    pub fn adoptPane(self: *DaemonSession, pane: DaemonPane) !void {
+        const slot_idx = for (&self.panes, 0..) |*slot, i| {
+            if (slot.* == null) break i;
+        } else return error.TooManyPanes;
+        self.panes[slot_idx] = pane;
+        self.pane_count += 1;
+        self.alive = true;
+    }
+
     /// Find a pane by ID.
     pub fn findPane(self: *DaemonSession, pane_id: u32) ?*DaemonPane {
         for (&self.panes) |*slot| {

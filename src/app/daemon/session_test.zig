@@ -5,6 +5,7 @@ const std = @import("std");
 const posix = std.posix;
 const testing = std.testing;
 const protocol = @import("protocol.zig");
+const layout_codec = @import("../layout_codec.zig");
 const harness = @import("test_harness.zig");
 const setup = harness.setup;
 const teardown = harness.teardown;
@@ -459,6 +460,80 @@ test "two clients see same session list" {
     const count = try protocol.decodeSessionList(list_payload, &entries);
     try testing.expectEqual(@as(u16, 1), count);
     try testing.expectEqualStrings("shared", entries[0].name);
+}
+
+test "move tab transfers pane to another session and empties the source" {
+    var env = try setup();
+    defer teardown(&env);
+
+    var client = try TestClient.connect(env.path());
+    defer client.deinit();
+
+    var buf: [4200]u8 = undefined;
+
+    // Source session A.
+    const cpa = try protocol.encodeCreate(&buf, "src", 24, 80, "/tmp", "");
+    try client.send(.create, cpa);
+    const sid_a = try protocol.decodeCreated(try client.expect(.created, 5000));
+
+    // Destination session B.
+    const cpb = try protocol.encodeCreate(&buf, "dst", 24, 80, "/tmp", "");
+    try client.send(.create, cpb);
+    const sid_b = try protocol.decodeCreated(try client.expect(.created, 5000));
+
+    // Attach A, grab its (only) pane id.
+    const ap = try protocol.encodeAttach(&buf, sid_a, 24, 80);
+    try client.send(.attach, ap);
+    const v2a = try protocol.decodeAttachedV2(try client.expect(.attached, 5000));
+    try testing.expectEqual(@as(u8, 1), v2a.pane_count);
+    const moved_pane = v2a.pane_ids[0];
+
+    // Build a one-tab layout blob describing that pane, then move it to B.
+    var info = layout_codec.LayoutInfo{};
+    info.tab_count = 1;
+    info.active_tab = 0;
+    info.focused_pane_id = moved_pane;
+    info.tabs[0].node_count = 1;
+    info.tabs[0].root_idx = 0;
+    info.tabs[0].focused_idx = 0;
+    info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = moved_pane };
+    var tab_buf: [256]u8 = undefined;
+    const tab_len = try layout_codec.serialize(&info, &tab_buf);
+
+    var mbuf: [512]u8 = undefined;
+    const mp = try protocol.encodeMovePanes(&mbuf, sid_b, &[_]u32{moved_pane}, tab_buf[0..tab_len]);
+    try client.send(.move_panes, mp);
+    posix.nanosleep(0, 50_000_000);
+
+    // Source A lost its only pane → it is now dead. B is still alive.
+    try client.send(.detach, &.{});
+    posix.nanosleep(0, 20_000_000);
+    try client.send(.list, &.{});
+    var entries: [32]protocol.DecodedListEntry = undefined;
+    const count = try protocol.decodeSessionList(try client.expect(.session_list, 5000), &entries);
+    try testing.expectEqual(@as(u16, 2), count);
+    for (entries[0..count]) |e| {
+        if (e.id == sid_a) try testing.expect(!e.alive);
+        if (e.id == sid_b) try testing.expect(e.alive);
+    }
+
+    // Attach B: it now owns its original pane plus the moved one, and its
+    // layout ends on the moved tab.
+    const apb = try protocol.encodeAttach(&buf, sid_b, 24, 80);
+    try client.send(.attach, apb);
+    const v2b = try protocol.decodeAttachedV2(try client.expect(.attached, 5000));
+    try testing.expectEqual(@as(u8, 2), v2b.pane_count);
+
+    var has_moved = false;
+    for (v2b.pane_ids[0..v2b.pane_count]) |pid| {
+        if (pid == moved_pane) has_moved = true;
+    }
+    try testing.expect(has_moved);
+
+    const layout = try layout_codec.deserialize(v2b.layout);
+    try testing.expectEqual(@as(u8, 2), layout.tab_count);
+    try testing.expectEqual(@as(u8, 1), layout.active_tab); // moved tab is last + active
+    try testing.expectEqual(moved_pane, layout.tabs[1].nodes[0].pane_id);
 }
 
 // Restoration & layout tests in session_restore_test.zig
