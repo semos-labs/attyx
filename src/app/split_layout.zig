@@ -382,6 +382,10 @@ pub const SplitLayout = struct {
 
     /// Find which leaf node contains the given grid position.
     pub fn paneAt(self: *SplitLayout, row: u16, col: u16) ?u8 {
+        // When zoomed, the zoomed pane fills the entire area and is the only
+        // pane rendered, so every click must land in it. Hidden panes keep
+        // their pre-zoom rects in the tree and must not be hittable.
+        if (self.isZoomed()) return self.zoomed_leaf;
         return self.paneAtNode(self.root, row, col);
     }
 
