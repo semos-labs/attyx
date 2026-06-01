@@ -290,6 +290,7 @@ export fn attyx_sidebar_drag_update(width: c_int) void { input.sidebarDragUpdate
 export fn attyx_sidebar_drag_end() void { input.sidebarDragEnd(); }
 export fn attyx_split_action(action: c_int) void { input.splitAction(action); }
 export fn attyx_split_click(col: c_int, row: c_int) void { input.splitClick(col, row); }
+export fn attyx_scroll_at(col: c_int, row: c_int, delta: c_int) void { input.scrollAt(col, row, delta); }
 export fn attyx_split_drag_start(col: c_int, row: c_int) void { input.splitDragStart(col, row); }
 export fn attyx_split_drag_update(col: c_int, row: c_int) void { input.splitDragUpdate(col, row); }
 export fn attyx_split_drag_end() void { input.splitDragEnd(); }

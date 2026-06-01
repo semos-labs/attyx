@@ -111,6 +111,11 @@ extern volatile int g_alt_screen;
 // Marks all rows dirty so the renderer redraws.
 void attyx_scroll_viewport(int delta);
 
+// Route a wheel-scroll delta to the pane under the cursor. (col, row) are in
+// engine-column / grid-row space (the split-click convention); the PTY thread
+// subtracts the top offset and resolves the pane via the split layout.
+void attyx_scroll_at(int col, int row, int delta);
+
 // Mark all rows dirty (used after viewport changes).
 void attyx_mark_all_dirty(void);
 

@@ -423,6 +423,18 @@ pub const TerminalState = struct {
         }
     }
 
+    /// Adjust the scrollback viewport by `delta` lines, clamping to
+    /// [0, scrollbackCount]. Positive scrolls back into history. Returns true
+    /// if the offset changed.
+    pub fn scrollViewport(self: *TerminalState, delta: i64) bool {
+        const sb: i64 = @intCast(self.ring.scrollbackCount());
+        const cur: i64 = @intCast(self.viewport_offset);
+        const nv = std.math.clamp(cur + delta, 0, sb);
+        if (nv == cur) return false;
+        self.viewport_offset = @intCast(nv);
+        return true;
+    }
+
     /// Returns true when a scroll should use zero-copy ring advance
     /// (full-screen on main buffer with scroll region covering all rows).
     fn isFullScreenScroll(self: *const TerminalState) bool {

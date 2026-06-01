@@ -784,6 +784,30 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         const synced_vp: i32 = @bitCast(c.g_viewport_offset);
         publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
 
+        // Mouse-wheel scroll routed to the pane under the cursor (not the
+        // focused pane). The focused pane's viewport mirrors the global
+        // g_viewport_offset (synced just above, written back at end of loop);
+        // non-focused panes carry their own viewport_offset which the split
+        // renderer honors per-pane, so apply the delta directly and force a
+        // redraw since viewport_changed only tracks the focused pane.
+        if (@atomicRmw(i32, &input.g_scroll_at_pending, .Xchg, 0, .seq_cst) != 0) {
+            const scroll_delta = @atomicRmw(i32, &input.g_scroll_at_delta, .Xchg, 0, .seq_cst);
+            if (scroll_delta != 0) {
+                const scol: u16 = @intCast(@max(0, @atomicLoad(i32, &input.g_scroll_at_col, .seq_cst)));
+                const srow_raw = @atomicLoad(i32, &input.g_scroll_at_row, .seq_cst);
+                const srow: u16 = @intCast(@max(0, srow_raw - terminal.g_grid_top_offset));
+                const layout = ctx.tab_mgr.activeLayout();
+                if (layout.paneAt(srow, scol)) |target_idx| {
+                    if (layout.pool[target_idx].pane) |target_pane| {
+                        const changed = target_pane.engine.state.scrollViewport(scroll_delta);
+                        if (changed and target_idx != layout.focused) {
+                            actions.g_force_full_redraw = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Grid-sync: if the user scrolled past what we've hydrated, ask
         // the daemon for older rows. Gate on `last_scrollback_rpc_sb` so
         // we only fire one RPC per distinct scrollback count — a held

@@ -432,3 +432,31 @@ test "scrollback: col-change resize saves dropped rows via reflow" {
     try std.testing.expectEqual(@as(u21, 'G'), engine.state.ring.getRow(2)[0].char);
     try std.testing.expectEqual(@as(u21, 'J'), engine.state.ring.getRow(3)[0].char);
 }
+
+test "scrollViewport: clamps to scrollback range and reports change" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 3, 100);
+    defer engine.deinit();
+
+    // Push several lines into scrollback on a 2-row screen.
+    engine.feed("AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\r\nFFF");
+    const sb = engine.state.ring.scrollbackCount();
+    try std.testing.expect(sb > 1);
+    try std.testing.expectEqual(@as(usize, 0), engine.state.viewport_offset);
+
+    // Scroll back into history.
+    try std.testing.expect(engine.state.scrollViewport(2));
+    try std.testing.expectEqual(@as(usize, 2), engine.state.viewport_offset);
+
+    // Over-scroll clamps to scrollbackCount (and still reports a change).
+    try std.testing.expect(engine.state.scrollViewport(@as(i64, @intCast(sb)) + 100));
+    try std.testing.expectEqual(sb, engine.state.viewport_offset);
+
+    // Already at the top: no further change.
+    try std.testing.expect(!engine.state.scrollViewport(5));
+
+    // Negative delta returns toward the bottom, clamped at 0.
+    try std.testing.expect(engine.state.scrollViewport(-1000));
+    try std.testing.expectEqual(@as(usize, 0), engine.state.viewport_offset);
+    try std.testing.expect(!engine.state.scrollViewport(-1));
+}

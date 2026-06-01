@@ -100,6 +100,7 @@ export fn attyx_sidebar_drag_end() void {}
 // Split pane stubs (terminal.zig provides the real implementations)
 export fn attyx_split_action(_: c_int) void {}
 export fn attyx_split_click(_: c_int, _: c_int) void {}
+export fn attyx_scroll_at(_: c_int, _: c_int, _: c_int) void {}
 export var g_split_active: i32 = 0;
 export var g_pane_rect_row: i32 = 0;
 export var g_pane_rect_col: i32 = 0;

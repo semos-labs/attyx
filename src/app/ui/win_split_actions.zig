@@ -171,6 +171,28 @@ pub fn processSplitClick(ctx: *WinCtx) void {
     }
 }
 
+// ── Wheel scroll routed to the pane under the cursor ──
+//
+// The focused pane's viewport mirrors the global g_viewport_offset (synced by
+// the loop); non-focused panes carry their own viewport_offset which the split
+// renderer honors per-pane. Returns true when a non-focused pane scrolled, so
+// the caller forces a redraw (the loop's viewport_changed only tracks focus).
+pub fn processSplitScroll(ctx: *WinCtx) bool {
+    if (@atomicRmw(i32, &ws.g_scroll_at_pending, .Xchg, 0, .seq_cst) == 0) return false;
+    const delta = @atomicRmw(i32, &ws.g_scroll_at_delta, .Xchg, 0, .seq_cst);
+    if (delta == 0) return false;
+    const scol: u16 = @intCast(@max(0, @atomicLoad(i32, &ws.g_scroll_at_col, .seq_cst)));
+    const srow: u16 = @intCast(@max(0, @atomicLoad(i32, &ws.g_scroll_at_row, .seq_cst) - ws.g_grid_top_offset));
+    const layout = ctx.tab_mgr.activeLayout();
+    if (layout.paneAt(srow, scol)) |target_idx| {
+        if (layout.pool[target_idx].pane) |target_pane| {
+            const changed = target_pane.engine.state.scrollViewport(delta);
+            return changed and target_idx != layout.focused;
+        }
+    }
+    return false;
+}
+
 // ── Split drag ──
 
 pub fn processSplitDrag(ctx: *WinCtx) void {

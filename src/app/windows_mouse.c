@@ -692,12 +692,14 @@ LRESULT win_handleMouseWheel(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     if (g_alt_screen) return 0;
     int lines = delta / WHEEL_DELTA;
     if (lines == 0) lines = (delta > 0) ? 1 : -1;
+    int col, row;
+    mouseToCell(px, py, &col, &row);
     if (g_overlay_has_actions) {
-        int col, row;
-        mouseToCell(px, py, &col, &row);
         if (attyx_overlay_scroll(col, row, lines)) return 0;
     }
-    attyx_scroll_viewport(lines);
+    // Route to the pane under the cursor (grid-space row; PTY thread subtracts
+    // the top offset). Column matches the split-click convention on Windows.
+    attyx_scroll_at(col, row, lines);
     return 0;
 }
 
