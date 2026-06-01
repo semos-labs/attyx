@@ -1269,15 +1269,17 @@ static void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
         return;
     }
 
+    double mx, my;
+    glfwGetCursorPos(w, &mx, &my);
+    int col, row;
+    mouseToCell(mx, my, &col, &row);
+
     // Overlay scroll: consume if hit
     if (g_overlay_has_actions) {
-        double mx, my;
-        glfwGetCursorPos(w, &mx, &my);
-        int col, row;
-        mouseToCell(mx, my, &col, &row);
         if (attyx_overlay_scroll(col, row, lines)) return;
     }
-    attyx_scroll_viewport(lines);
+    // Route to the pane under the cursor (engine-space col, grid-space row).
+    attyx_scroll_at(col - g_grid_left_offset, row, lines);
 }
 
 // ---------------------------------------------------------------------------

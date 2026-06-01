@@ -219,6 +219,10 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const synced_vp: i32 = @bitCast(c.g_viewport_offset);
         publish.syncViewportFromC(&ctx.tab_mgr.activePane().engine.state);
 
+        // Wheel scroll routed to the pane under the cursor; a non-focused pane
+        // scroll forces a redraw since viewport_changed only tracks focus.
+        const scrolled_bg_pane = win_split.processSplitScroll(ctx);
+
         // ── Flush debounced PTY resizes ──
         flushPtyResizes(ctx);
 
@@ -288,14 +292,14 @@ pub fn ptyReaderThread(ctx: *WinCtx) void {
         const viewport_offset = eng.state.viewport_offset;
         const search_vp_changed = (viewport_offset != last_published_vp);
         const viewport_changed = search_vp_changed;
-        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited;
+        const need_update = got_data or viewport_changed or search_input_changed or overlay_input_changed or tabs_changed or statusbar_refreshed or pane_exited or scrolled_bg_pane;
 
         if (need_update) {
             // Coalesce rapid updates (4ms) to avoid cursor blink glitch,
             // but don't delay enough to feel laggy.
             const now = std.time.nanoTimestamp();
             const min_frame_ns: i128 = 4 * std.time.ns_per_ms;
-            if (got_data and !viewport_changed and !tabs_changed and !pane_exited and (now - last_publish_ns) < min_frame_ns) {
+            if (got_data and !viewport_changed and !tabs_changed and !pane_exited and !scrolled_bg_pane and (now - last_publish_ns) < min_frame_ns) {
                 // Always keep scrollback count current so scroll
                 // clamping uses the real range, even on throttled frames.
                 c.g_scrollback_count = @intCast(eng.state.ring.scrollbackCount());

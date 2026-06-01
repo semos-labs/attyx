@@ -379,6 +379,18 @@ export fn attyx_split_click(col: c_int, row: c_int) void {
     @atomicStore(i32, &split_click_pending, 1, .seq_cst);
 }
 
+pub var g_scroll_at_col: i32 = -1;
+pub var g_scroll_at_row: i32 = -1;
+pub var g_scroll_at_delta: i32 = 0;
+pub var g_scroll_at_pending: i32 = 0;
+
+export fn attyx_scroll_at(col: c_int, row: c_int, delta: c_int) void {
+    @atomicStore(i32, &g_scroll_at_col, col, .seq_cst);
+    @atomicStore(i32, &g_scroll_at_row, row, .seq_cst);
+    _ = @atomicRmw(i32, &g_scroll_at_delta, .Add, delta, .seq_cst);
+    @atomicStore(i32, &g_scroll_at_pending, 1, .seq_cst);
+}
+
 export fn attyx_split_drag_start(col: c_int, row: c_int) void {
     @atomicStore(i32, &split_drag_start_col, col, .seq_cst);
     @atomicStore(i32, &split_drag_start_row, row, .seq_cst);

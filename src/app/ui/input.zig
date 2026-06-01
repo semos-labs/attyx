@@ -306,6 +306,20 @@ pub fn splitClick(col: c_int, row: c_int) void {
     @atomicStore(i32, &g_split_click_pending, 1, .seq_cst);
 }
 
+// Mouse-wheel scroll routed by cursor position. The PTY thread applies the
+// accumulated delta to the pane under (col, row) rather than the focused pane.
+pub var g_scroll_at_col: i32 = -1;
+pub var g_scroll_at_row: i32 = -1;
+pub var g_scroll_at_delta: i32 = 0;
+pub var g_scroll_at_pending: i32 = 0;
+
+pub fn scrollAt(col: c_int, row: c_int, delta: c_int) void {
+    @atomicStore(i32, &g_scroll_at_col, col, .seq_cst);
+    @atomicStore(i32, &g_scroll_at_row, row, .seq_cst);
+    _ = @atomicRmw(i32, &g_scroll_at_delta, .Add, delta, .seq_cst);
+    @atomicStore(i32, &g_scroll_at_pending, 1, .seq_cst);
+}
+
 // Split pane drag resize state
 pub var g_split_drag_start_col: i32 = -1;
 pub var g_split_drag_start_row: i32 = -1;

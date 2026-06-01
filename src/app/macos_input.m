@@ -1101,13 +1101,14 @@ static void findWordBounds(int row, int col, int cols, int *outStart, int *outEn
     }
 
     // Overlay scroll: check before viewport scrollback
+    int gcol, grow;
+    mouseCell0(event, self, &gcol, &grow);
     if (g_overlay_has_actions) {
-        int col0, row0;
-        mouseCell0(event, self, &col0, &row0);
-        if (attyx_overlay_scroll(col0, row0, lines)) return;
+        if (attyx_overlay_scroll(gcol, grow, lines)) return;
         // Not on overlay — fall through to viewport scroll
     }
-    attyx_scroll_viewport(lines);
+    // Route to the pane under the cursor (engine-space col, grid-space row).
+    attyx_scroll_at(gcol - g_grid_left_offset, grow, lines);
 }
 
 @end
