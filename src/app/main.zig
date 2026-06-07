@@ -18,7 +18,7 @@ export fn attyx_handle_key(_: u16, _: u8, _: u8, _: u32) void {}
 export fn attyx_get_link_uri(_: u32, _: [*]u8, _: c_int) c_int { return 0; }
 export var g_needs_reload_config: i32 = 0;
 export var g_kitty_kbd_flags: i32 = 0;
-export var g_macos_option_as_alt: i32 = 0;
+export var g_macos_option_as_alt: i32 = 1;
 export var g_needs_font_rebuild: i32 = 0;
 export var g_needs_window_update: i32 = 0;
 export fn attyx_trigger_config_reload() void {}

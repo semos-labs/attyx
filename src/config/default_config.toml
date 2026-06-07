@@ -127,15 +127,15 @@
 [keyboard]
 
 # macOS only: how the Option (⌥) key behaves.  [live]
-# - false   Option composes characters using your keyboard layout, e.g.
-#           Option+ñ → ~ on a Spanish layout (the macOS default). Use this
-#           if international/accented characters aren't typing correctly.
 # - true    Option acts as Alt/Meta and sends ESC-prefixed sequences
-#           (e.g. for Meta keybindings in vim, emacs, or tmux).
+#           (e.g. for Meta keybindings in vim, emacs, or tmux). Default.
+# - false   Option composes characters using your keyboard layout, e.g.
+#           Option+ñ → ~ on a Spanish layout. Use this if international or
+#           accented characters aren't typing correctly.
 # - "left"  Only the left Option key acts as Alt; the right one composes.
 # - "right" Only the right Option key acts as Alt; the left one composes.
 # Arrow-key word navigation (Option+←/→) works regardless of this setting.
-# option_as_alt = false
+# option_as_alt = true
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────

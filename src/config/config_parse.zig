@@ -846,8 +846,8 @@ test "invalid tabs.appearance rejects" {
 test "keyboard.option_as_alt parses bool and string" {
     const alloc = std.testing.allocator;
 
-    // Default is none (Option composes special characters).
-    try std.testing.expectEqual(OptionAsAlt.none, (AppConfig{}).option_as_alt);
+    // Default is both (Option acts as Alt/Meta).
+    try std.testing.expectEqual(OptionAsAlt.both, (AppConfig{}).option_as_alt);
 
     {
         var cfg = AppConfig{};

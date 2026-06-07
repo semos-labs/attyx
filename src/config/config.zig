@@ -210,7 +210,7 @@ pub const AppConfig = struct {
     _owned_statusbar: bool = false,
 
     // [keyboard]
-    option_as_alt: OptionAsAlt = .none,
+    option_as_alt: OptionAsAlt = .both,
 
     // [splits]
     split_resize_step: u16 = 4,
