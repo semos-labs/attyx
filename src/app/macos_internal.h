@@ -32,6 +32,9 @@ extern volatile int g_mouse_sgr;
 // Kitty keyboard protocol flags
 extern volatile int g_kitty_kbd_flags;
 
+// Option-as-Alt mode: 0=none (compose), 1=both, 2=left option, 3=right option
+extern volatile int g_macos_option_as_alt;
+
 // Hyperlink hover state
 extern volatile uint32_t g_hover_link_id;
 extern volatile int g_hover_row;
