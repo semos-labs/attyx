@@ -6,6 +6,7 @@ const CursorShapeConfig = config_mod.CursorShapeConfig;
 const CellSize = config_mod.CellSize;
 const TabAppearance = config_mod.TabAppearance;
 const TabSide = config_mod.TabSide;
+const OptionAsAlt = config_mod.OptionAsAlt;
 const PopupConfigEntry = config_mod.PopupConfigEntry;
 const KeybindOverride = config_mod.KeybindOverride;
 const SequenceEntry = config_mod.SequenceEntry;
@@ -353,6 +354,21 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             }
         } else {
             std.debug.print("error: {s}: splits.resize_step must be an integer\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
+    // [keyboard]
+    if (Lookup.get(root, "keyboard", "option_as_alt")) |v| {
+        const parsed: ?OptionAsAlt = switch (v) {
+            .bool => |b| if (b) OptionAsAlt.both else OptionAsAlt.none,
+            .string => |s| OptionAsAlt.fromString(s),
+            else => null,
+        };
+        if (parsed) |oaa| {
+            config.option_as_alt = oaa;
+        } else {
+            std.debug.print("error: {s}: keyboard.option_as_alt must be true, false, \"left\", or \"right\"\n", .{path});
             return error.ConfigValidationError;
         }
     }
@@ -825,4 +841,37 @@ test "invalid tabs.appearance rejects" {
     ;
 
     try std.testing.expectError(error.ConfigValidationError, applyToml(alloc, toml_str, "<test>", &cfg));
+}
+
+test "keyboard.option_as_alt parses bool and string" {
+    const alloc = std.testing.allocator;
+
+    // Default is none (Option composes special characters).
+    try std.testing.expectEqual(OptionAsAlt.none, (AppConfig{}).option_as_alt);
+
+    {
+        var cfg = AppConfig{};
+        defer cfg.deinit();
+        try applyToml(alloc, "[keyboard]\noption_as_alt = true\n", "<test>", &cfg);
+        try std.testing.expectEqual(OptionAsAlt.both, cfg.option_as_alt);
+    }
+    {
+        var cfg = AppConfig{};
+        defer cfg.deinit();
+        try applyToml(alloc, "[keyboard]\noption_as_alt = false\n", "<test>", &cfg);
+        try std.testing.expectEqual(OptionAsAlt.none, cfg.option_as_alt);
+    }
+    {
+        var cfg = AppConfig{};
+        defer cfg.deinit();
+        try applyToml(alloc, "[keyboard]\noption_as_alt = \"right\"\n", "<test>", &cfg);
+        try std.testing.expectEqual(OptionAsAlt.right, cfg.option_as_alt);
+    }
+}
+
+test "invalid keyboard.option_as_alt rejects" {
+    const alloc = std.testing.allocator;
+    var cfg = AppConfig{};
+
+    try std.testing.expectError(error.ConfigValidationError, applyToml(alloc, "[keyboard]\noption_as_alt = \"meta\"\n", "<test>", &cfg));
 }

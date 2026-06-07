@@ -655,6 +655,7 @@ pub fn doReloadConfig(ctx: *PtyThreadCtx) void {
         c.g_font_ligatures = @intFromBool(new_cfg.font_ligatures);
         ctx.applied_font_ligatures = new_cfg.font_ligatures;
     }
+    terminal.g_macos_option_as_alt = new_cfg.option_as_alt.encode();
 
     // Scrollback
     if (new_cfg.scrollback_lines != ctx.applied_scrollback_lines) {

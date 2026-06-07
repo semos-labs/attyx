@@ -77,6 +77,23 @@ static uint8_t buildMods(NSEventModifierFlags flags) {
     return m;
 }
 
+// Device-dependent modifier bits distinguishing the two physical Option keys.
+#define ATTYX_LEFT_OPTION_MASK  0x20  // NX_DEVICELALTKEYMASK
+#define ATTYX_RIGHT_OPTION_MASK 0x40  // NX_DEVICELRALTKEYMASK
+
+// Whether the Option key in `flags` should act as Alt/Meta (emit an ESC-prefixed
+// sequence) instead of composing a character (e.g. Option+ñ → ~ on a Spanish
+// layout). Controlled by g_macos_option_as_alt: 0=none, 1=both, 2=left, 3=right.
+static BOOL optionActsAsAlt(NSEventModifierFlags flags) {
+    if (!(flags & NSEventModifierFlagOption)) return NO;
+    switch (g_macos_option_as_alt) {
+        case 1:  return YES;
+        case 2:  return (flags & ATTYX_LEFT_OPTION_MASK) != 0;
+        case 3:  return (flags & ATTYX_RIGHT_OPTION_MASK) != 0;
+        default: return NO;
+    }
+}
+
 // Build key + codepoint for keybind matching from an NSEvent.
 static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
     uint16_t mapped = mapKeyCode(event.keyCode);
@@ -310,8 +327,11 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         return YES;
     }
 
-    // Ctrl+key or Alt+key with a character
-    if (ctrl || (flags & NSEventModifierFlagOption)) {
+    // Ctrl+key or Alt+key with a character. When Option does NOT act as Alt
+    // (the default), let the key fall through to interpretKeyEvents so macOS
+    // composes the layout's character (e.g. Option+ñ → ~) instead of emitting
+    // an ESC-prefixed Meta sequence.
+    if (ctrl || optionActsAsAlt(flags)) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
             uint32_t cp = [chars characterAtIndex:0];

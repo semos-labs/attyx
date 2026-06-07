@@ -92,6 +92,37 @@ pub const TabSide = enum {
     }
 };
 
+/// macOS Option-key behavior. `.none` lets the Option key compose special
+/// characters (the macOS default, e.g. Option+ñ → ~ on a Spanish layout).
+/// The other variants make Option act as Alt/Meta and emit ESC-prefixed
+/// sequences, optionally restricted to one physical Option key.
+pub const OptionAsAlt = enum {
+    none,
+    both,
+    left,
+    right,
+
+    /// Accepts booleans (`true`/`false`) and the strings
+    /// `"true"`/`"false"`/`"both"`/`"left"`/`"right"`.
+    pub fn fromString(s: []const u8) ?OptionAsAlt {
+        if (std.mem.eql(u8, s, "false") or std.mem.eql(u8, s, "none")) return .none;
+        if (std.mem.eql(u8, s, "true") or std.mem.eql(u8, s, "both")) return .both;
+        if (std.mem.eql(u8, s, "left")) return .left;
+        if (std.mem.eql(u8, s, "right")) return .right;
+        return null;
+    }
+
+    /// Encode for the C bridge: 0=none, 1=both, 2=left, 3=right.
+    pub fn encode(self: OptionAsAlt) i32 {
+        return switch (self) {
+            .none => 0,
+            .both => 1,
+            .left => 2,
+            .right => 3,
+        };
+    }
+};
+
 const keybinds = @import("keybinds.zig");
 pub const KeybindOverride = keybinds.KeybindOverride;
 pub const SequenceEntry = keybinds.SequenceEntry;
@@ -177,6 +208,9 @@ pub const AppConfig = struct {
     // [statusbar]
     statusbar: ?StatusbarConfig = null,
     _owned_statusbar: bool = false,
+
+    // [keyboard]
+    option_as_alt: OptionAsAlt = .none,
 
     // [splits]
     split_resize_step: u16 = 4,
