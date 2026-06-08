@@ -30,19 +30,27 @@ const emitter_name = "attyx-agent-status";
 
 const EventSpec = struct { name: []const u8, matcher: ?[]const u8, state: []const u8 };
 
-const event_specs = [_]EventSpec{
+/// Claude Code hooks (settings.json). PermissionRequest is status-only — the
+/// emitter writes nothing to stdout, so it makes no allow/deny decision and the
+/// prompt shows normally. Notification's `notify` branch classifies the message
+/// into input vs idle.
+const claude_events = [_]EventSpec{
     .{ .name = "UserPromptSubmit", .matcher = null, .state = "working" },
     .{ .name = "PreToolUse", .matcher = "*", .state = "working" },
-    // Claude is blocked on the user — a permission approval, plan approval, or
-    // an AskUserQuestion multiple-choice prompt. Status-only: the emitter
-    // writes nothing to stdout, so it makes no decision and the prompt shows
-    // normally.
     .{ .name = "PermissionRequest", .matcher = null, .state = "input" },
-    // Notification fires for permission prompts and the idle-timeout prompt;
-    // the emitter's `notify` branch classifies the message into input vs idle.
     .{ .name = "Notification", .matcher = null, .state = "notify" },
     .{ .name = "Stop", .matcher = null, .state = "idle" },
     .{ .name = "SessionEnd", .matcher = null, .state = "none" },
+};
+
+/// Codex hooks (~/.codex/hooks.json) — same JSON shape as Claude. Codex has no
+/// Notification or SessionEnd events, so there's no idle-prompt or clear-on-exit
+/// signal; the dot rests at idle after a turn.
+const codex_events = [_]EventSpec{
+    .{ .name = "UserPromptSubmit", .matcher = null, .state = "working" },
+    .{ .name = "PreToolUse", .matcher = null, .state = "working" },
+    .{ .name = "PermissionRequest", .matcher = null, .state = "input" },
+    .{ .name = "Stop", .matcher = null, .state = "idle" },
 };
 
 /// Install the emitter and inject hooks into every discovered Claude config
@@ -61,13 +69,59 @@ pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
     const emitter_path = std.fmt.allocPrint(a, "{s}/{s}", .{ agent_bin, emitter_name }) catch return;
     writeAtomic(a, emitter_path, emitter_script, 0o755);
 
-    // 2. Inject hooks into each Claude config dir's settings.json.
+    // 2. Claude — merge hooks into each config dir's settings.json.
     var dirs = std.ArrayList([]const u8){};
     discoverClaudeConfigDirs(a, home, &dirs);
     for (dirs.items) |dir| {
         mkdirp(a, dir);
-        ensureHooks(a, dir, emitter_path);
+        const settings = std.fmt.allocPrint(a, "{s}/settings.json", .{dir}) catch continue;
+        ensureHooksFile(a, settings, emitter_path, &claude_events);
     }
+
+    // 3. Codex — same JSON hook shape, at ~/.codex/hooks.json.
+    installCodex(a, home, emitter_path);
+
+    // 4. opencode — a JS plugin that shells out to the emitter.
+    installOpenCode(a, home, emitter_path);
+}
+
+/// Codex: merge hooks into ~/.codex/hooks.json and enable the hooks feature.
+fn installCodex(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
+    const dir = std.fmt.allocPrint(a, "{s}/.codex", .{home}) catch return;
+    // Only act if Codex is actually set up (don't create ~/.codex speculatively).
+    var d = std.fs.cwd().openDir(dir, .{}) catch return;
+    d.close();
+    const hooks_path = std.fmt.allocPrint(a, "{s}/hooks.json", .{dir}) catch return;
+    ensureHooksFile(a, hooks_path, emitter_path, &codex_events);
+    ensureCodexFeatureFlag(a, dir);
+}
+
+/// Ensure `[features] hooks = true` in ~/.codex/config.toml. Conservative: only
+/// appends the table when the file has no `[features]` section, to avoid
+/// creating a duplicate TOML table. (Hooks are on by default in current Codex,
+/// so this is belt-and-suspenders.)
+fn ensureCodexFeatureFlag(a: std.mem.Allocator, codex_dir: []const u8) void {
+    const path = std.fmt.allocPrint(a, "{s}/config.toml", .{codex_dir}) catch return;
+    const existing = readFile(a, path) orelse "";
+    if (std.mem.indexOf(u8, existing, "[features]") != null) return; // user manages it
+    const appended = std.fmt.allocPrint(a, "{s}{s}[features]\nhooks = true\n", .{
+        existing,
+        if (existing.len > 0 and existing[existing.len - 1] != '\n') "\n" else "",
+    }) catch return;
+    writeAtomic(a, path, appended, 0o644);
+}
+
+/// opencode: write a plugin that maps its event bus onto the emitter.
+fn installOpenCode(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
+    const cfg = std.fmt.allocPrint(a, "{s}/.config/opencode", .{home}) catch return;
+    // Only act if opencode is configured.
+    var d = std.fs.cwd().openDir(cfg, .{}) catch return;
+    d.close();
+    const plugin_dir = std.fmt.allocPrint(a, "{s}/plugin", .{cfg}) catch return;
+    mkdirp(a, plugin_dir);
+    const plugin_path = std.fmt.allocPrint(a, "{s}/attyx-status.js", .{plugin_dir}) catch return;
+    const plugin = std.fmt.allocPrint(a, opencode_plugin_fmt, .{emitter_path}) catch return;
+    writeAtomic(a, plugin_path, plugin, 0o644);
 }
 
 /// Collect Claude config dirs to inject into: ~/.claude (the default) plus any
@@ -87,14 +141,14 @@ fn discoverClaudeConfigDirs(a: std.mem.Allocator, home: []const u8, out: *std.Ar
     }
 }
 
-/// Merge our hooks into <config_dir>/settings.json. No-op if already present.
-fn ensureHooks(a: std.mem.Allocator, config_dir: []const u8, emitter_path: []const u8) void {
-    const settings_path = std.fmt.allocPrint(a, "{s}/settings.json", .{config_dir}) catch return;
-    const content = readFile(a, settings_path) orelse "{}";
+/// Merge `events` hooks into a JSON hooks file (Claude settings.json or Codex
+/// hooks.json — same `{ "hooks": { ... } }` shape). No-op if already present.
+fn ensureHooksFile(a: std.mem.Allocator, path: []const u8, emitter_path: []const u8, events: []const EventSpec) void {
+    const content = readFile(a, path) orelse "{}";
 
     // Fast path: every command already present → leave the file untouched
-    // (don't reformat the user's settings on subsequent runs).
-    if (hasAllCommands(a, content, emitter_path)) return;
+    // (don't reformat the user's file on subsequent runs).
+    if (hasAllCommands(a, content, emitter_path, events)) return;
 
     var parsed = std.json.parseFromSlice(std.json.Value, a, content, .{}) catch {
         // Malformed JSON — never overwrite the user's file blind.
@@ -103,13 +157,13 @@ fn ensureHooks(a: std.mem.Allocator, config_dir: []const u8, emitter_path: []con
     if (parsed.value != .object) return;
     const root = &parsed.value;
 
-    mergeHooks(a, &root.object, emitter_path) catch return;
+    mergeHooks(a, &root.object, emitter_path, events) catch return;
 
     const out = std.json.Stringify.valueAlloc(a, root.*, .{ .whitespace = .indent_2 }) catch return;
-    writeAtomic(a, settings_path, out, 0o644);
+    writeAtomic(a, path, out, 0o644);
 }
 
-fn mergeHooks(a: std.mem.Allocator, root_obj: *std.json.ObjectMap, emitter_path: []const u8) !void {
+fn mergeHooks(a: std.mem.Allocator, root_obj: *std.json.ObjectMap, emitter_path: []const u8, events: []const EventSpec) !void {
     // Get or create the "hooks" object.
     if (root_obj.getPtr("hooks")) |hv| {
         if (hv.* != .object) return error.UnexpectedShape;
@@ -118,7 +172,7 @@ fn mergeHooks(a: std.mem.Allocator, root_obj: *std.json.ObjectMap, emitter_path:
     }
     const hooks_obj = &root_obj.getPtr("hooks").?.object;
 
-    for (event_specs) |ev| {
+    for (events) |ev| {
         const command = try std.fmt.allocPrint(a, "{s} {s}", .{ emitter_path, ev.state });
         try ensureEventHook(a, hooks_obj, ev.name, ev.matcher, command);
     }
@@ -172,9 +226,9 @@ fn groupIsAttyx(group: std.json.Value) bool {
     return false;
 }
 
-/// True when settings already contains every command we'd inject.
-fn hasAllCommands(a: std.mem.Allocator, content: []const u8, emitter_path: []const u8) bool {
-    for (event_specs) |ev| {
+/// True when the file already contains every command we'd inject.
+fn hasAllCommands(a: std.mem.Allocator, content: []const u8, emitter_path: []const u8, events: []const EventSpec) bool {
+    for (events) |ev| {
         const command = std.fmt.allocPrint(a, "{s} {s}", .{ emitter_path, ev.state }) catch return false;
         if (std.mem.indexOf(u8, content, command) == null) return false;
     }
@@ -258,8 +312,55 @@ const emitter_script =
     \\  idle|working|input|none) ;;
     \\  *) exit 0 ;;
     \\esac
-    \\printf '\033]7337;agent-status;claude;%s\a' "$s" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
+    \\printf '\033]7337;agent-status;agent;%s\a' "$s" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
     \\exit 0
+    \\
+;
+
+/// opencode plugin. `{s}` is the absolute emitter path. opencode has no clean
+/// "turn started" event, so working is derived from tool.execute.before and
+/// assistant message updates; session.idle → idle; permission.asked → input.
+/// Runs the emitter via Node's child_process (env, incl. ATTYX_PID/ATTYX_TTY,
+/// is inherited, so the emitter self-gates and targets the pane tty).
+const opencode_plugin_fmt =
+    \\// Attyx agent status plugin — reports opencode's run state to the
+    \\// terminal via the attyx emitter. No-op outside attyx (emitter self-gates).
+    \\import {{ spawnSync }} from "node:child_process";
+    \\const EMIT = "{s}";
+    \\function emit(state) {{
+    \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\const AttyxStatus = async (ctx) => {{
+    \\  return {{
+    \\    event: async ({{ event }}) => {{
+    \\      const props = (event && event.properties) || {{}};
+    \\      switch (event && event.type) {{
+    \\        case "tool.execute.before":
+    \\          emit("working");
+    \\          break;
+    \\        case "message.part.updated":
+    \\          if (props.part && props.part.type === "text") emit("working");
+    \\          break;
+    \\        case "permission.asked":
+    \\          emit("input");
+    \\          break;
+    \\        case "session.idle":
+    \\          emit("idle");
+    \\          break;
+    \\        case "session.status":
+    \\          if (props.status && props.status.type === "idle") emit("idle");
+    \\          break;
+    \\        case "session.deleted":
+    \\          emit("none");
+    \\          break;
+    \\        default:
+    \\          break;
+    \\      }}
+    \\    }},
+    \\  }};
+    \\}};
+    \\export {{ AttyxStatus }};
+    \\export default AttyxStatus;
     \\
 ;
 
@@ -272,7 +373,7 @@ const testing = std.testing;
 fn mergeToString(a: std.mem.Allocator, input: []const u8, emitter: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, a, input, .{});
     const root = &parsed.value;
-    try mergeHooks(a, &root.object, emitter);
+    try mergeHooks(a, &root.object, emitter, &claude_events);
     return std.json.Stringify.valueAlloc(a, root.*, .{ .whitespace = .indent_2 });
 }
 
@@ -333,13 +434,37 @@ test "hasAllCommands detects a fully-injected file" {
     defer arena.deinit();
     const a = arena.allocator();
     const out = try mergeToString(a, "{}", "/E/attyx-agent-status");
-    try testing.expect(hasAllCommands(a, out, "/E/attyx-agent-status"));
-    try testing.expect(!hasAllCommands(a, "{}", "/E/attyx-agent-status"));
+    try testing.expect(hasAllCommands(a, out, "/E/attyx-agent-status", &claude_events));
+    try testing.expect(!hasAllCommands(a, "{}", "/E/attyx-agent-status", &claude_events));
 }
 
 test "emitter script self-gates on ATTYX_PID and emits the OSC" {
     try testing.expect(std.mem.indexOf(u8, emitter_script, "[ -n \"$ATTYX_PID\" ] || exit 0") != null);
-    try testing.expect(std.mem.indexOf(u8, emitter_script, "]7337;agent-status;claude;%s") != null);
+    try testing.expect(std.mem.indexOf(u8, emitter_script, "]7337;agent-status;agent;%s") != null);
+}
+
+test "codex events cover working, input, and idle" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, "{}", .{});
+    try mergeHooks(a, &parsed.value.object, "/E/attyx-agent-status", &codex_events);
+    const out = try std.json.Stringify.valueAlloc(a, parsed.value, .{ .whitespace = .indent_2 });
+    for ([_][]const u8{ "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop" }) |ev|
+        try testing.expect(std.mem.indexOf(u8, out, ev) != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Notification") == null); // codex has none
+    try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status input") != null);
+}
+
+test "opencode plugin embeds the emitter path and maps key events" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const plugin = try std.fmt.allocPrint(a, opencode_plugin_fmt, .{"/E/attyx-agent-status"});
+    try testing.expect(std.mem.indexOf(u8, plugin, "const EMIT = \"/E/attyx-agent-status\"") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "permission.asked") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "session.idle") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
 }
 
 test "install generates the emitter and injects hooks into ~/.claude" {
