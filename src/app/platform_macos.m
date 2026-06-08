@@ -307,8 +307,15 @@ void attyx_platform_close_window(void) {
 // Desktop notifications (OSC 9 / OSC 777)
 // ---------------------------------------------------------------------------
 
+// UNUserNotificationCenter throws if the process has no app bundle (e.g. a bare
+// dev binary run directly rather than from Attyx.app). Gate all use on this.
+static BOOL attyxHasBundle(void) {
+    return [[NSBundle mainBundle] bundleIdentifier] != nil;
+}
+
 void attyx_platform_notify(const char* title, const char* body) {
     if (!body || body[0] == '\0') return;
+    if (!attyxHasBundle()) return;
 
     NSString* nsTitle = title && title[0]
         ? [NSString stringWithUTF8String:title]
@@ -353,6 +360,7 @@ void attyx_platform_notify(const char* title, const char* body) {
 // otherwise it's suppressed when focused (the user already sees the dot).
 void attyx_platform_notify_agent(const char* title, const char* body, uint32_t ipc_id, int force) {
     if (!body || body[0] == '\0') return;
+    if (!attyxHasBundle()) return;
     if (!force && [NSApp isActive]) return;
 
     NSString* nsTitle = title && title[0] ? [NSString stringWithUTF8String:title] : @"Attyx";
@@ -424,7 +432,10 @@ void attyx_spawn_new_window(void) {
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ApplePressAndHoldEnabled"];
 
     // Receive agent-status notification clicks (and show banners while focused).
-    [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+    // Guarded: UNUserNotificationCenter throws without an app bundle (dev binary).
+    if (attyxHasBundle()) {
+        [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+    }
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
