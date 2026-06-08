@@ -150,6 +150,7 @@ fn handleAttach(
         return;
     };
     cl.attached_session = attach.session_id;
+    session.last_accessed = std.time.nanoTimestamp();
 
     // Revive dead (recent) sessions by spawning fresh panes.
     if (!session.alive) {

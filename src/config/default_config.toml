@@ -201,7 +201,8 @@
 # Enable session management (named sessions with persist/switch).  [restart]
 # enabled = false
 
-# Root directory for the session finder to search.  [restart]
+# Root directory for the session finder. Folders here are offered when creating
+# a session, and "Create <name>" makes a new directory under this root.  [restart]
 # root = "~"
 
 # How many directory levels deep the session finder searches (1-8).  [restart]

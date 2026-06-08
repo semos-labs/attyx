@@ -254,6 +254,26 @@ pub const SessionEntry = struct {
     attention: u8 = 0,
 };
 
+/// Order entries by recency of access — most recently accessed first.
+/// `access[i]` is the access timestamp for `entries[i]` (parallel arrays).
+/// Stable for equal timestamps (preserves the caller's original order), so
+/// sessions that were never attached fall back to slot order.
+pub fn orderEntriesByAccess(entries: []SessionEntry, access: []i128) void {
+    // Stable insertion sort, descending by access timestamp.
+    var i: usize = 1;
+    while (i < entries.len) : (i += 1) {
+        const entry_tmp = entries[i];
+        const access_tmp = access[i];
+        var j: usize = i;
+        while (j > 0 and access[j - 1] < access_tmp) : (j -= 1) {
+            entries[j] = entries[j - 1];
+            access[j] = access[j - 1];
+        }
+        entries[j] = entry_tmp;
+        access[j] = access_tmp;
+    }
+}
+
 /// Encode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}],
 /// then a trailing block of per-entry status tallies [{ready:u8, working:u8, attention:u8}].
 /// The trailing block is appended after all entries so older decoders (which stop
@@ -937,6 +957,34 @@ test "error round-trip" {
     const msg = try decodeError(payload);
     try std.testing.expectEqual(@as(u8, 3), msg.code);
     try std.testing.expectEqualStrings("not found", msg.msg);
+}
+
+test "orderEntriesByAccess: most recent first, stable for ties" {
+    var entries = [_]SessionEntry{
+        .{ .id = 1, .name = "a", .alive = true },
+        .{ .id = 2, .name = "b", .alive = true },
+        .{ .id = 3, .name = "c", .alive = true },
+        .{ .id = 4, .name = "never", .alive = false },
+    };
+    // ids 1,2,3 attached in that order; id 4 never attached (ts 0).
+    var access = [_]i128{ 100, 200, 300, 0 };
+    orderEntriesByAccess(&entries, &access);
+
+    // Descending by timestamp: 3, 2, 1, then the never-attached one last.
+    try std.testing.expectEqual(@as(u32, 3), entries[0].id);
+    try std.testing.expectEqual(@as(u32, 2), entries[1].id);
+    try std.testing.expectEqual(@as(u32, 1), entries[2].id);
+    try std.testing.expectEqual(@as(u32, 4), entries[3].id);
+
+    // Ties preserve original order (stable): two entries with equal ts.
+    var tied = [_]SessionEntry{
+        .{ .id = 10, .name = "x", .alive = true },
+        .{ .id = 11, .name = "y", .alive = true },
+    };
+    var tied_access = [_]i128{ 50, 50 };
+    orderEntriesByAccess(&tied, &tied_access);
+    try std.testing.expectEqual(@as(u32, 10), tied[0].id);
+    try std.testing.expectEqual(@as(u32, 11), tied[1].id);
 }
 
 test "session list round-trip" {

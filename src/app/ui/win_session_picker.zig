@@ -230,6 +230,37 @@ fn processAction(ctx: *WinCtx, action: picker_state_mod.PickerAction) bool {
             event_loop.switchSession(ctx);
             return true;
         },
+        .create_session_named => |name| {
+            var name_buf: [64]u8 = undefined;
+            const nlen = @min(name.len, name_buf.len);
+            @memcpy(name_buf[0..nlen], name[0..nlen]);
+
+            const finder = &(g_finder_state orelse {
+                close(ctx);
+                return true;
+            });
+            const root = finder.getRootPath();
+            var abs_buf: [512]u8 = undefined;
+            const sep: []const u8 = if (comptime @import("builtin").os.tag == .windows) "\\" else "/";
+            const abs_path = std.fmt.bufPrint(&abs_buf, "{s}{s}{s}", .{ root, sep, name_buf[0..nlen] }) catch {
+                close(ctx);
+                return true;
+            };
+            std.fs.makeDirAbsolute(abs_path) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => {
+                    close(ctx);
+                    return true;
+                },
+            };
+            close(ctx);
+            const ws_stubs = @import("../windows_stubs.zig");
+            const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - ws_stubs.g_grid_top_offset - ws_stubs.g_grid_bottom_offset));
+            const sid = smgr.createSession(name_buf[0..nlen], pty_rows, ctx.grid_cols, ctx.theme, ctx.applied_scrollback_lines) catch return true;
+            _ = smgr.switchTo(sid) catch {};
+            event_loop.switchSession(ctx);
+            return true;
+        },
         .kill_session => |sid| {
             smgr.kill(sid) catch {};
             refreshEntries(ctx);

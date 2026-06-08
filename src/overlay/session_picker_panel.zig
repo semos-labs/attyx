@@ -114,6 +114,14 @@ pub fn renderSessionPicker(
                 .label = fs_copy,
                 .enabled = true,
             };
+        } else if (state.createRowVisible() and i == state.filtered_count +| state.fs_count) {
+            // "Create <typed-name>" entry — makes a new session directory.
+            const name = state.filter_buf[0..state.filter_len];
+            const label = std.fmt.allocPrint(tmp, "{s} Create \"{s}\"", .{ icons.new, name }) catch "";
+            menu_items[menu_count] = .{
+                .label = label,
+                .enabled = true,
+            };
         } else {
             // "New session" entry
             var new_buf: [64]u8 = undefined;
