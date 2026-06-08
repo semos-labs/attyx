@@ -507,7 +507,7 @@ pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) voi
 // ── Socket path (must match session_connect.zig) ──
 
 fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    const suffix = if (comptime std.mem.eql(u8, @import("attyx").env, "production")) "" else "-dev";
     if (comptime is_windows) {
         return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
     }
