@@ -783,10 +783,10 @@ pub const DaemonClient = struct {
     /// Propagates engine.state.agent_status (OSC 7337;agent-status) to the
     /// client so the tab status dot refreshes — the client's engine is
     /// passive in grid-sync and never sees the OSC bytes directly.
-    pub fn sendPaneAgentStatus(self: *DaemonClient, pane_id: u32, status: u8) void {
-        var buf: [protocol.header_size + 5]u8 = undefined;
-        var payload: [5]u8 = undefined;
-        const p = protocol.encodePaneAgentStatus(&payload, pane_id, status) catch return;
+    pub fn sendPaneAgentStatus(self: *DaemonClient, pane_id: u32, status: u8, msg: []const u8) void {
+        var buf: [protocol.header_size + 7 + 256]u8 = undefined;
+        var payload: [7 + 256]u8 = undefined;
+        const p = protocol.encodePaneAgentStatus(&payload, pane_id, status, msg) catch return;
         const m = protocol.encodeMessage(&buf, .pane_agent_status, p) catch return;
         self.sendRaw(m);
     }

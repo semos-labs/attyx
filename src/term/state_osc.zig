@@ -58,14 +58,22 @@ pub fn setShellPath(self: *TerminalState, path: []const u8) void {
     self.shell_path = alloc.dupe(u8, path) catch null;
 }
 
-/// OSC 7337;agent-status — record the agent's reported run state.
-/// Sets the dirty flag only on a real transition so the daemon/app can
-/// cheaply poll for changes (mirrors the title_changed pattern).
-pub fn setAgentStatus(self: *TerminalState, status: AgentStatus) void {
+/// OSC 7337;agent-status — record the agent's reported run state and an optional
+/// message preview. Sets the dirty flag only on a real status transition so the
+/// daemon/app can cheaply poll for changes (mirrors the title_changed pattern).
+pub fn setAgentStatus(self: *TerminalState, status: AgentStatus, message: []const u8) void {
+    const n = @min(message.len, self.agent_msg_buf.len);
+    @memcpy(self.agent_msg_buf[0..n], message[0..n]);
+    self.agent_msg_len = @intCast(n);
     if (self.agent_status != status) {
         self.agent_status = status;
         self.agent_status_changed = true;
     }
+}
+
+/// The message preview attached to the current agent status (may be empty).
+pub fn agentMsg(self: *const TerminalState) []const u8 {
+    return self.agent_msg_buf[0..self.agent_msg_len];
 }
 
 /// Handle OSC 7339;xyron:{json} event.

@@ -60,6 +60,8 @@ pub const Pane = struct {
     /// no "Tab N" fallback, no stacked duplicate content.
     needs_engine_reinit: bool = false,
     shadow_engine: ?Engine = null,
+    /// Last agent status we acted on (to detect transitions for notifications).
+    last_agent_status: attyx.actions.AgentStatus = .none,
     /// Foreground process name reported by the daemon (for title fallback).
     daemon_proc_name: [64]u8 = undefined,
     daemon_proc_name_len: u8 = 0,

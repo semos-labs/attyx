@@ -274,7 +274,7 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                                 cl.sendPaneTitle(pane.id, t);
                                             }
                                             if (agent_dirty) {
-                                                cl.sendPaneAgentStatus(pane.id, @intFromEnum(pane.engine.?.state.agent_status));
+                                                cl.sendPaneAgentStatus(pane.id, @intFromEnum(pane.engine.?.state.agent_status), pane.engine.?.state.agentMsg());
                                             }
                                         } else {
                                             cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);

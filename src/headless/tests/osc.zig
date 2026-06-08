@@ -294,7 +294,10 @@ test "parser: OSC 7337 agent-status emits set_agent_status with state" {
     }
     try std.testing.expect(action != null);
     switch (action.?) {
-        .set_agent_status => |s| try std.testing.expectEqual(AgentStatus.working, s),
+        .set_agent_status => |u| {
+            try std.testing.expectEqual(AgentStatus.working, u.status);
+            try std.testing.expectEqualStrings("", u.message);
+        },
         else => return error.TestUnexpectedResult,
     }
 }
@@ -308,7 +311,24 @@ test "parser: OSC 7337 agent-status without agent name parses state" {
     }
     try std.testing.expect(action != null);
     switch (action.?) {
-        .set_agent_status => |s| try std.testing.expectEqual(AgentStatus.input, s),
+        .set_agent_status => |u| try std.testing.expectEqual(AgentStatus.input, u.status),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parser: OSC 7337 agent-status carries a message preview" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;agent-status;claude;input;Allow Bash: ls -la?\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    try std.testing.expect(action != null);
+    switch (action.?) {
+        .set_agent_status => |u| {
+            try std.testing.expectEqual(AgentStatus.input, u.status);
+            try std.testing.expectEqualStrings("Allow Bash: ls -la?", u.message);
+        },
         else => return error.TestUnexpectedResult,
     }
 }

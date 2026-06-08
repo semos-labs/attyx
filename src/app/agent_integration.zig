@@ -301,9 +301,11 @@ const emitter_script =
     \\# Attyx agent status emitter. No-op outside attyx; never disturbs the caller.
     \\[ -n "$ATTYX_PID" ] || exit 0
     \\s="$1"
+    \\# Read the hook's JSON from stdin once (skip if stdin is a tty, to never block).
+    \\raw=""
+    \\[ -t 0 ] || raw=$(cat 2>/dev/null)
     \\if [ "$s" = "notify" ]; then
-    \\  m=$(cat 2>/dev/null)
-    \\  case "$m" in
+    \\  case "$raw" in
     \\    *permission*|*Permission*|*approve*|*Approve*|*"needs your"*) s=input ;;
     \\    *) s=idle ;;
     \\  esac
@@ -312,7 +314,16 @@ const emitter_script =
     \\  idle|working|input|none) ;;
     \\  *) exit 0 ;;
     \\esac
-    \\printf '\033]7337;agent-status;agent;%s\a' "$s" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
+    \\# A one-line message preview from the hook JSON's "message" field; strip
+    \\# control chars so it can't terminate the OSC. Passed as a printf arg (not
+    \\# the format) so a literal % in the message is harmless.
+    \\msg=$(printf '%s' "$raw" | LC_ALL=C sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 | cut -c1-160 | tr -d '\001-\037')
+    \\tty="${ATTYX_TTY:-/dev/tty}"
+    \\if [ -n "$msg" ]; then
+    \\  printf '\033]7337;agent-status;agent;%s;%s\a' "$s" "$msg" > "$tty" 2>/dev/null
+    \\else
+    \\  printf '\033]7337;agent-status;agent;%s\a' "$s" > "$tty" 2>/dev/null
+    \\fi
     \\exit 0
     \\
 ;

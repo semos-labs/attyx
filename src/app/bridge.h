@@ -574,6 +574,13 @@ void attyx_popup_toggle(int index);
 
 void attyx_platform_notify(const char* title, const char* body);
 
+// Agent-status notification carrying the pane's ipc_id (for click-to-focus).
+// `force` posts even while the app is active (used for background tabs).
+void attyx_platform_notify_agent(const char* title, const char* body, uint32_t ipc_id, int force);
+
+// Drains a pending notification-click focus request (pane ipc_id; 0 = none).
+uint32_t attyx_check_focus_request(void);
+
 // ---------------------------------------------------------------------------
 // Logging bridge (implemented in terminal.zig / main.zig stub)
 // ---------------------------------------------------------------------------

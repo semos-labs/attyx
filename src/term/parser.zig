@@ -529,18 +529,27 @@ pub const Parser = struct {
         if (rest.len >= path_prefix.len and std.mem.eql(u8, rest[0..path_prefix.len], path_prefix)) {
             return .{ .set_shell_path = rest[path_prefix.len..] };
         }
-        // Format: "agent-status;<agent>;<state>" (agent name optional).
-        // The state is the last ';'-separated token: idle | working | input | none.
+        // Format: "agent-status;<agent>;<state>[;<message>]". The agent name is
+        // optional (legacy "agent-status;<state>"); the message is an optional
+        // preview that may itself contain ';' (it's the remainder).
         const agent_prefix = "agent-status;";
         if (rest.len >= agent_prefix.len and std.mem.eql(u8, rest[0..agent_prefix.len], agent_prefix)) {
             const after = rest[agent_prefix.len..];
-            const state_tok = if (std.mem.lastIndexOfScalar(u8, after, ';')) |sep|
-                after[sep + 1 ..]
-            else
-                after;
+            var state_tok: []const u8 = after;
+            var message: []const u8 = "";
+            if (std.mem.indexOfScalar(u8, after, ';')) |s1| {
+                // "<agent>;<rest>"
+                const after_agent = after[s1 + 1 ..];
+                if (std.mem.indexOfScalar(u8, after_agent, ';')) |s2| {
+                    state_tok = after_agent[0..s2];
+                    message = after_agent[s2 + 1 ..];
+                } else {
+                    state_tok = after_agent;
+                }
+            }
             const status: ?actions_mod.AgentStatus =
                 if (std.mem.eql(u8, state_tok, "idle")) .idle else if (std.mem.eql(u8, state_tok, "working")) .working else if (std.mem.eql(u8, state_tok, "input")) .input else if (std.mem.eql(u8, state_tok, "none")) .none else null;
-            return if (status) |s| .{ .set_agent_status = s } else .nop;
+            return if (status) |s| .{ .set_agent_status = .{ .status = s, .message = message } } else .nop;
         }
         return .nop;
     }

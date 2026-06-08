@@ -72,6 +72,9 @@ pub const TerminalState = struct {
     // -- Agent status (OSC 7337;agent-status, consumed by app/daemon) --------
     agent_status: actions_mod.AgentStatus = .none,
     agent_status_changed: bool = false,
+    /// Optional message preview for the current status (notification body).
+    agent_msg_buf: [256]u8 = undefined,
+    agent_msg_len: u16 = 0,
 
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
@@ -286,7 +289,7 @@ pub const TerminalState = struct {
             .set_cwd => |u| self.setCwd(u),
             .set_shell_path => |p| self.setShellPath(p),
             .xyron_event => |json| self.handleXyronEvent(json),
-            .set_agent_status => |s| self.setAgentStatus(s),
+            .set_agent_status => |u| self.setAgentStatus(u.status, u.message),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -606,6 +609,7 @@ pub const TerminalState = struct {
     const setShellPath = @import("state_osc.zig").setShellPath;
     const handleXyronEvent = @import("state_osc.zig").handleXyronEvent;
     pub const setAgentStatus = @import("state_osc.zig").setAgentStatus;
+    pub const agentMsg = @import("state_osc.zig").agentMsg;
 
     // -- Kitty keyboard protocol ---------------------------------------------
 

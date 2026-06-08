@@ -703,20 +703,27 @@ pub fn decodePaneTitle(payload: []const u8) !PaneTitleMsg {
 
 // ── PaneAgentStatus (grid-sync OSC 7337;agent-status propagation) ──
 
-/// Encode PaneAgentStatus payload: pane_id:u32, status:u8 (AgentStatus tag).
-pub fn encodePaneAgentStatus(buf: []u8, pane_id: u32, status: u8) ![]u8 {
-    if (buf.len < 5) return error.BufferTooSmall;
+/// Encode PaneAgentStatus payload: pane_id:u32, status:u8, msg_len:u16, msg:[N].
+pub fn encodePaneAgentStatus(buf: []u8, pane_id: u32, status: u8, msg: []const u8) ![]u8 {
+    const msg_len: u16 = @intCast(@min(msg.len, 256));
+    const total: usize = 4 + 1 + 2 + msg_len;
+    if (buf.len < total) return error.BufferTooSmall;
     std.mem.writeInt(u32, buf[0..4], pane_id, .little);
     buf[4] = status;
-    return buf[0..5];
+    std.mem.writeInt(u16, buf[5..7], msg_len, .little);
+    @memcpy(buf[7 .. 7 + msg_len], msg[0..msg_len]);
+    return buf[0..total];
 }
 
-pub const PaneAgentStatusMsg = struct { pane_id: u32, status: u8 };
+pub const PaneAgentStatusMsg = struct { pane_id: u32, status: u8, message: []const u8 };
 
 pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
-    if (payload.len < 5) return error.PayloadTooShort;
+    if (payload.len < 7) return error.PayloadTooShort;
     const pane_id = std.mem.readInt(u32, payload[0..4], .little);
-    return .{ .pane_id = pane_id, .status = payload[4] };
+    const status = payload[4];
+    const msg_len = std.mem.readInt(u16, payload[5..7], .little);
+    if (payload.len < 7 + @as(usize, msg_len)) return error.PayloadTooShort;
+    return .{ .pane_id = pane_id, .status = status, .message = payload[7 .. 7 + msg_len] };
 }
 
 // ── PaneFgCwd ──
@@ -844,11 +851,12 @@ test "header round-trip" {
 }
 
 test "pane_agent_status round-trip" {
-    var buf: [16]u8 = undefined;
-    const payload = try encodePaneAgentStatus(&buf, 7, 2);
+    var buf: [64]u8 = undefined;
+    const payload = try encodePaneAgentStatus(&buf, 7, 2, "needs input");
     const msg = try decodePaneAgentStatus(payload);
     try std.testing.expectEqual(@as(u32, 7), msg.pane_id);
     try std.testing.expectEqual(@as(u8, 2), msg.status);
+    try std.testing.expectEqualStrings("needs input", msg.message);
 }
 
 test "create round-trip" {

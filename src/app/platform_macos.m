@@ -108,6 +108,10 @@ volatile uint64_t g_dirty[4] = {0,0,0,0};
 volatile int g_pending_resize_rows = 0;
 volatile int g_pending_resize_cols = 0;
 
+// Set by a notification click (main thread) to the agent pane's ipc_id; the
+// event loop polls attyx_check_focus_request() and switches to its tab.
+volatile uint32_t g_pending_focus_ipc_id = 0;
+
 CGFloat g_cell_pt_w = 0;
 CGFloat g_cell_pt_h = 0;
 
@@ -214,6 +218,15 @@ int attyx_check_resize(int* out_rows, int* out_cols) {
     g_pending_resize_rows = 0;
     g_pending_resize_cols = 0;
     return 1;
+}
+
+// Drains a pending notification-click focus request. Returns the agent pane's
+// ipc_id (0 = none) and clears it.
+uint32_t attyx_check_focus_request(void) {
+    uint32_t id = g_pending_focus_ipc_id;
+    if (id == 0) return 0;
+    g_pending_focus_ipc_id = 0;
+    return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +348,38 @@ void attyx_platform_notify(const char* title, const char* body) {
     });
 }
 
+// Agent-status notification. Carries the pane's ipc_id so a click can focus the
+// originating tab. `force` (background tab) posts even while the app is active;
+// otherwise it's suppressed when focused (the user already sees the dot).
+void attyx_platform_notify_agent(const char* title, const char* body, uint32_t ipc_id, int force) {
+    if (!body || body[0] == '\0') return;
+    if (!force && [NSApp isActive]) return;
+
+    NSString* nsTitle = title && title[0] ? [NSString stringWithUTF8String:title] : @"Attyx";
+    NSString* nsBody = [NSString stringWithUTF8String:body];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                              completionHandler:^(BOOL granted, NSError* _Nullable error) {
+            (void)error;
+            if (!granted) return;
+            UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+            content.title = nsTitle;
+            content.body = nsBody;
+            content.sound = [UNNotificationSound defaultSound];
+            content.userInfo = @{ @"attyx_ipc_id": @(ipc_id) };
+            NSString* identifier = [[NSUUID UUID] UUIDString];
+            UNNotificationRequest* request =
+                [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil];
+            [center addNotificationRequest:request withCompletionHandler:^(NSError* _Nullable err) {
+                if (err) ATTYX_LOG_WARN("notify", "agent notification failed: %s",
+                                        err.localizedDescription.UTF8String);
+            }];
+        }];
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Spawn new window (new instance via NSWorkspace)
 // ---------------------------------------------------------------------------
@@ -366,7 +411,7 @@ void attyx_spawn_new_window(void) {
 // App Delegate
 // ---------------------------------------------------------------------------
 
-@interface AttyxAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface AttyxAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate>
 @property (nonatomic, strong) NSWindow* window;
 @property (nonatomic, strong) AttyxRenderer* renderer;
 @property (nonatomic, strong) AttyxNativeTabManager* nativeTabMgr;
@@ -377,6 +422,9 @@ void attyx_spawn_new_window(void) {
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
     // Disable accent picker so holding a key sends repeats instead
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ApplePressAndHoldEnabled"];
+
+    // Receive agent-status notification clicks (and show banners while focused).
+    [UNUserNotificationCenter currentNotificationCenter].delegate = self;
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
@@ -582,6 +630,28 @@ void attyx_spawn_new_window(void) {
 - (void)applicationWillTerminate:(NSNotification*)notification {
     g_should_quit = 1;
     attyx_cleanup();
+}
+
+// Show agent-status banners even while attyx is the foreground app (the
+// notify call already suppressed the case where the tab is actually visible).
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    (void)center; (void)notification;
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+}
+
+// A notification click: bring attyx forward and hand the pane's ipc_id to the
+// event loop, which switches to its tab.
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+didReceiveNotificationResponse:(UNNotificationResponse*)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    (void)center;
+    NSNumber* idNum = response.notification.request.content.userInfo[@"attyx_ipc_id"];
+    if (idNum) g_pending_focus_ipc_id = (uint32_t)[idNum unsignedIntValue];
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.window makeKeyAndOrderFront:nil];
+    completionHandler();
 }
 
 - (void)reloadConfig:(id)sender {

@@ -174,6 +174,19 @@ pub const TabManager = struct {
         return null;
     }
 
+    /// Index of the tab containing the pane with the given IPC ID, if any.
+    pub fn tabIndexOfPane(self: *TabManager, ipc_id: u32) ?u8 {
+        for (0..self.count) |i| {
+            const layout = &(self.tabs[i] orelse continue);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.ipc_id == ipc_id) return @intCast(i);
+            }
+        }
+        return null;
+    }
+
     /// Look up a pane by IPC ID and also return its pool index within its tab's layout.
     pub fn findPaneWithLayout(self: *TabManager, ipc_id: u32) ?struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 } {
         for (0..self.count) |i| {

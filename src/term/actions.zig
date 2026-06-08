@@ -207,9 +207,12 @@ pub const Action = union(enum) {
     /// Payload is the JSON portion after "xyron:", borrowed from parser osc_buf.
     xyron_event: []const u8,
 
-    /// OSC 7337;agent-status;<agent>;<state> — an AI coding agent reports its
-    /// run state via its lifecycle hooks. Drives the per-tab status dot.
-    set_agent_status: AgentStatus,
+    /// OSC 7337;agent-status;<agent>;<state>[;<message>] — an AI coding agent
+    /// reports its run state via its lifecycle hooks. Drives the per-tab status
+    /// dot; the optional message is a preview shown in notifications. The
+    /// message slice is borrowed from the parser osc_buf, valid until the next
+    /// parser call.
+    set_agent_status: struct { status: AgentStatus, message: []const u8 },
 
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.
