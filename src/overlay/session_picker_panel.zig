@@ -21,6 +21,9 @@ pub const Icons = struct {
     active: []const u8 = "(active)",
     recent: []const u8 = "",
     folder: []const u8 = "\xe2\x96\xb8",
+    /// Leading glyph for the agent status badge — Nerd Font robot (nf-md-robot,
+    /// U+F06A9) by default; the font stack falls back (e.g. to SF Symbols).
+    agent: []const u8 = "\xf3\xb0\x9a\xa9",
 };
 
 const OverlayTheme = ui.OverlayTheme;
@@ -80,6 +83,12 @@ pub fn renderSessionPicker(
             menu_items[menu_count] = .{
                 .label = label_copy,
                 .enabled = e.alive,
+                .status = .{
+                    .ready = e.ready,
+                    .working = e.working,
+                    .attention = e.attention,
+                    .icon = icons.agent,
+                },
             };
         } else if (i < state.filtered_count +| state.fs_count) {
             // Filesystem result entry

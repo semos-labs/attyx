@@ -34,10 +34,14 @@ pub fn openSessionPicker(ctx: *WinCtx) void {
     var count: u8 = 0;
     for (0..session_win.max_sessions) |i| {
         if (smgr.sessions[i]) |*s| {
+            const sc = s.statusCounts();
             var entry = SessionEntry{
                 .id = s.id,
                 .alive = s.alive,
                 .name_len = s.name_len,
+                .ready = sc.ready,
+                .working = sc.working,
+                .attention = sc.attention,
             };
             @memcpy(entry.name[0..s.name_len], s.name[0..s.name_len]);
             entries[count] = entry;
@@ -248,10 +252,14 @@ fn refreshEntries(ctx: *WinCtx) void {
     var count: u8 = 0;
     for (0..session_win.max_sessions) |i| {
         if (smgr.sessions[i]) |*s| {
+            const sc = s.statusCounts();
             var entry = SessionEntry{
                 .id = s.id,
                 .alive = s.alive,
                 .name_len = s.name_len,
+                .ready = sc.ready,
+                .working = sc.working,
+                .attention = sc.attention,
             };
             @memcpy(entry.name[0..s.name_len], s.name[0..s.name_len]);
             entries[count] = entry;

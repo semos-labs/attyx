@@ -91,6 +91,7 @@ pub const PtyThreadCtx = struct {
     session_icon_active: []const u8 = "(active)",
     session_icon_recent: []const u8 = "",
     session_icon_folder: []const u8 = "\xe2\x96\xb8",
+    session_icon_agent: []const u8 = "\xf3\xb0\x9a\xa9",
     // Session finder config
     session_finder_root: []const u8 = "~",
     session_finder_depth: u8 = 4,
@@ -837,6 +838,7 @@ pub fn run(
         .session_icon_active = config.session_icon_active,
         .session_icon_recent = config.session_icon_recent,
         .session_icon_folder = config.session_icon_folder,
+        .session_icon_agent = config.session_icon_agent,
         .session_finder_root = config.session_finder_root,
         .session_finder_depth = config.session_finder_depth,
         .session_finder_show_hidden = config.session_finder_show_hidden,

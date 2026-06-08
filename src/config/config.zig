@@ -240,12 +240,14 @@ pub const AppConfig = struct {
     session_icon_active: []const u8 = "\xe2\x97\x8f",
     session_icon_recent: []const u8 = "\xe2\x97\x8b",
     session_icon_folder: []const u8 = "\xe2\x96\xb8",
+    session_icon_agent: []const u8 = "\xf3\xb0\x9a\xa9",
     _owned_session_icon_folder: ?[]const u8 = null,
     _owned_session_icon_filter: ?[]const u8 = null,
     _owned_session_icon_session: ?[]const u8 = null,
     _owned_session_icon_new: ?[]const u8 = null,
     _owned_session_icon_active: ?[]const u8 = null,
     _owned_session_icon_recent: ?[]const u8 = null,
+    _owned_session_icon_agent: ?[]const u8 = null,
 
     // [updates]
     check_updates: bool = true,
@@ -295,6 +297,7 @@ pub const AppConfig = struct {
         if (self._owned_session_icon_new) |s| alloc.free(s);
         if (self._owned_session_icon_active) |s| alloc.free(s);
         if (self._owned_session_icon_recent) |s| alloc.free(s);
+        if (self._owned_session_icon_agent) |s| alloc.free(s);
         if (self._owned_statusbar) {
             if (self.statusbar) |*sb| statusbar_config.deinitStatusbar(alloc, sb);
         }

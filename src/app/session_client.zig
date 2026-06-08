@@ -38,6 +38,10 @@ pub const ListEntry = struct {
     name_len: u8 = 0,
     alive: bool = false,
     pane_count: u8 = 0,
+    /// Agent status tallies across the session's panes.
+    ready: u8 = 0,
+    working: u8 = 0,
+    attention: u8 = 0,
 
     pub fn getName(self: *const ListEntry) []const u8 {
         return self.name[0..self.name_len];
@@ -681,6 +685,9 @@ pub const SessionClient = struct {
             var entry = &self.pending_list[i];
             entry.id = decoded[i].id;
             entry.alive = decoded[i].alive;
+            entry.ready = decoded[i].ready;
+            entry.working = decoded[i].working;
+            entry.attention = decoded[i].attention;
             const nlen: u8 = @intCast(@min(decoded[i].name.len, 64));
             @memcpy(entry.name[0..nlen], decoded[i].name[0..nlen]);
             entry.name_len = nlen;

@@ -185,6 +185,18 @@ pub const Element = union(enum) {
         label: []const u8,
         hint_text: []const u8 = "",
         enabled: bool = true,
+        /// Optional colored status badge rendered right-aligned as
+        /// "ready/working/attention". Zero counts are dimmed.
+        status: ?StatusBadge = null,
+    };
+
+    pub const StatusBadge = struct {
+        ready: u16 = 0,
+        working: u16 = 0,
+        attention: u16 = 0,
+        /// Optional leading glyph (e.g. a Nerd Font robot) rendered before the
+        /// counts. Empty hides it.
+        icon: []const u8 = "",
     };
 
     pub const Hint = struct {
@@ -208,6 +220,11 @@ pub const OverlayTheme = struct {
     selected_bg: Rgb = .{ .r = 60, .g = 60, .b = 100 },
     selected_fg: Rgb = .{ .r = 255, .g = 255, .b = 255 },
     hint_fg: Rgb = .{ .r = 120, .g = 120, .b = 140 },
+    // Agent status badge colors — mirror the tab-bar dots
+    // (idle=green, working=orange, waiting=purple).
+    agent_ready_fg: Rgb = .{ .r = 96, .g = 208, .b = 120 },
+    agent_working_fg: Rgb = .{ .r = 255, .g = 170, .b = 64 },
+    agent_attention_fg: Rgb = .{ .r = 176, .g = 112, .b = 255 },
 
     pub fn rootStyle(self: OverlayTheme) ResolvedStyle {
         return .{

@@ -401,10 +401,27 @@ pub const DaemonClient = struct {
         for (sessions) |*slot| {
             if (slot.*) |*s| {
                 if (count >= 32) break;
+                var ready: u8 = 0;
+                var working: u8 = 0;
+                var attention: u8 = 0;
+                for (&s.panes) |*pslot| {
+                    if (pslot.*) |*p| {
+                        const eng = p.engine orelse continue;
+                        switch (eng.state.agent_status) {
+                            .idle => ready +|= 1,
+                            .working => working +|= 1,
+                            .input => attention +|= 1,
+                            .none => {},
+                        }
+                    }
+                }
                 entries[count] = .{
                     .id = s.id,
                     .name = s.getName(),
                     .alive = s.alive,
+                    .ready = ready,
+                    .working = working,
+                    .attention = attention,
                 };
                 count += 1;
             }

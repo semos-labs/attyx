@@ -217,6 +217,10 @@
 # icon_active = "●"
 # icon_recent = "○"
 # icon_folder = "▸"
+# Leading glyph for the agent status badge shown on each session row (followed
+# by colored ready/working/attention counts). Defaults to a Nerd Font robot;
+# the font stack falls back (e.g. to SF Symbols) if the glyph is missing.
+# icon_agent = "󰚩"
 
 
 # ── Statusbar ────────────────────────────────────────────────────────

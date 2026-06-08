@@ -44,6 +44,9 @@ pub fn openSessionPicker(ctx: *PtyThreadCtx) void {
             .id = le.id,
             .name_len = le.name_len,
             .alive = le.alive,
+            .ready = le.ready,
+            .working = le.working,
+            .attention = le.attention,
         };
         @memcpy(state.entries[i].name[0..le.name_len], le.name[0..le.name_len]);
     }
@@ -91,6 +94,9 @@ pub fn openSessionPickerMove(ctx: *PtyThreadCtx) void {
             .id = le.id,
             .name_len = le.name_len,
             .alive = le.alive,
+            .ready = le.ready,
+            .working = le.working,
+            .attention = le.attention,
         };
         @memcpy(state.entries[count].name[0..le.name_len], le.name[0..le.name_len]);
         count += 1;
@@ -312,6 +318,9 @@ fn refreshList(ctx: *PtyThreadCtx, state: *SessionPickerState) void {
             .id = le.id,
             .name_len = le.name_len,
             .alive = le.alive,
+            .ready = le.ready,
+            .working = le.working,
+            .attention = le.attention,
         };
         @memcpy(state.entries[i].name[0..le.name_len], le.name[0..le.name_len]);
     }
@@ -359,6 +368,7 @@ pub fn relayout(ctx: *PtyThreadCtx) void {
         .active = ctx.session_icon_active,
         .recent = ctx.session_icon_recent,
         .folder = ctx.session_icon_folder,
+        .agent = ctx.session_icon_agent,
     };
 
     const result = picker_panel.renderSessionPicker(
@@ -416,6 +426,7 @@ fn renderAndPublish(ctx: *PtyThreadCtx) void {
         .active = ctx.session_icon_active,
         .recent = ctx.session_icon_recent,
         .folder = ctx.session_icon_folder,
+        .agent = ctx.session_icon_agent,
     };
 
     const result = picker_panel.renderSessionPicker(
