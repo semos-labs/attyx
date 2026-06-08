@@ -2025,11 +2025,16 @@ fn maybeNotifyAgent(ctx: *PtyThreadCtx, pane: *@import("../pane.zig").Pane, tab_
     // platform layer while the app is focused (the user can see the dot).
     const force: c_int = if (tab_idx == ctx.tab_mgr.active) 0 else 1;
 
+    // Title: "<session> · <tab>" so the banner names the originating tab.
+    // Falls back to just the tab title when there's no named session.
     var title_buf: [256]u8 = undefined;
-    const title = pane.engine.state.title orelse pane.getDaemonProcName() orelse "Agent";
-    const tlen = @min(title.len, title_buf.len - 1);
-    @memcpy(title_buf[0..tlen], title[0..tlen]);
-    title_buf[tlen] = 0;
+    const tab_title = resolveTabTitle(ctx, tab_idx, pane);
+    if (currentSessionName()) |sess| {
+        _ = std.fmt.bufPrintZ(&title_buf, "{s} · {s}", .{ sess, tab_title }) catch
+            writeTruncZ(&title_buf, tab_title);
+    } else {
+        writeTruncZ(&title_buf, tab_title);
+    }
 
     var body_buf: [257]u8 = undefined;
     const blen = @min(body.len, body_buf.len - 1);
@@ -2037,6 +2042,32 @@ fn maybeNotifyAgent(ctx: *PtyThreadCtx, pane: *@import("../pane.zig").Pane, tab_
     body_buf[blen] = 0;
 
     c.attyx_platform_notify_agent(&title_buf, &body_buf, pane.ipc_id, force);
+}
+
+/// User-facing tab title for a notification: the tab's custom title if set,
+/// else the pane's program title / process name.
+fn resolveTabTitle(ctx: *PtyThreadCtx, tab_idx: usize, pane: *@import("../pane.zig").Pane) []const u8 {
+    if (ctx.tab_mgr.tabs[tab_idx]) |*lay| {
+        if (lay.getTitle()) |t| if (t.len > 0) return t;
+    }
+    return pane.engine.state.title orelse pane.getDaemonProcName() orelse "Agent";
+}
+
+/// Name of the session this app instance is attached to, or null when it's the
+/// unnamed "default" session. Reads the same globals the tab-bar dropdown uses;
+/// only touched from the PTY thread that also publishes them.
+fn currentSessionName() ?[]const u8 {
+    const idx = @atomicLoad(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_active_session_idx))), .seq_cst);
+    if (idx < 0 or idx >= 32) return null;
+    const name = std.mem.sliceTo(&c.g_session_names[@intCast(idx)], 0);
+    return if (name.len > 0) name else null;
+}
+
+/// Copy `s` into a NUL-terminated title buffer, truncating to fit.
+fn writeTruncZ(buf: *[256]u8, s: []const u8) void {
+    const n = @min(s.len, buf.len - 1);
+    @memcpy(buf[0..n], s[0..n]);
+    buf[n] = 0;
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {
