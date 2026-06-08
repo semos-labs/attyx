@@ -2057,7 +2057,7 @@ fn resolveTabTitle(ctx: *PtyThreadCtx, tab_idx: usize, pane: *@import("../pane.z
 /// unnamed "default" session. Reads the same globals the tab-bar dropdown uses;
 /// only touched from the PTY thread that also publishes them.
 fn currentSessionName() ?[]const u8 {
-    const idx = @atomicLoad(i32, @as(*i32, @ptrCast(@volatileCast(&c.g_active_session_idx))), .seq_cst);
+    const idx = (@as(*const i32, @ptrCast(@volatileCast(&c.g_active_session_idx)))).*;
     if (idx < 0 or idx >= 32) return null;
     const name = std.mem.sliceTo(&c.g_session_names[@intCast(idx)], 0);
     return if (name.len > 0) name else null;
