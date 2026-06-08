@@ -13,6 +13,11 @@ pub const SessionEntry = struct {
     name: [64]u8 = undefined,
     name_len: u8 = 0,
     alive: bool = false,
+    /// Agent status tallies across the session's panes. Rendered as a
+    /// colored "ready/working/attention" badge on the right of each row.
+    ready: u8 = 0,
+    working: u8 = 0,
+    attention: u8 = 0,
 
     pub fn getName(self: *const SessionEntry) []const u8 {
         return self.name[0..self.name_len];

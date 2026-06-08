@@ -9,6 +9,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const TabManager = @import("tab_manager.zig").TabManager;
+const split_layout_mod = @import("split_layout.zig");
 const Pane = @import("pane.zig").Pane;
 const publish = @import("ui/publish.zig");
 const theme_registry_mod = @import("../theme/registry.zig");
@@ -44,6 +45,27 @@ pub const WinSession = struct {
             }
         }
         return total;
+    }
+
+    pub const StatusCounts = struct { ready: u8 = 0, working: u8 = 0, attention: u8 = 0 };
+
+    /// Tally agent status across all panes in all tabs of the session.
+    pub fn statusCounts(self: *const WinSession) StatusCounts {
+        var counts: StatusCounts = .{};
+        for (0..self.tab_mgr.count) |i| {
+            const layout = &(self.tab_mgr.tabs[i] orelse continue);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                switch (leaf.pane.engine.state.agent_status) {
+                    .idle => counts.ready +|= 1,
+                    .working => counts.working +|= 1,
+                    .input => counts.attention +|= 1,
+                    .none => {},
+                }
+            }
+        }
+        return counts;
     }
 };
 

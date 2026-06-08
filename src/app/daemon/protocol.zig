@@ -248,9 +248,16 @@ pub const SessionEntry = struct {
     id: u32,
     name: []const u8,
     alive: bool,
+    /// Agent status tallies across the session's panes (idle/working/input).
+    ready: u8 = 0,
+    working: u8 = 0,
+    attention: u8 = 0,
 };
 
-/// Encode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}]
+/// Encode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}],
+/// then a trailing block of per-entry status tallies [{ready:u8, working:u8, attention:u8}].
+/// The trailing block is appended after all entries so older decoders (which stop
+/// after `count` entries) ignore it; newer decoders detect it by payload length.
 pub fn encodeSessionList(buf: []u8, entries: []const SessionEntry) ![]u8 {
     var pos: usize = 0;
     if (buf.len < 2) return error.BufferTooSmall;
@@ -269,6 +276,14 @@ pub fn encodeSessionList(buf: []u8, entries: []const SessionEntry) ![]u8 {
         buf[pos] = if (entry.alive) 1 else 0;
         pos += 1;
     }
+    // Trailing status block — 3 bytes per entry, same order as above.
+    if (pos + entries.len * 3 > buf.len) return error.BufferTooSmall;
+    for (entries) |entry| {
+        buf[pos] = entry.ready;
+        buf[pos + 1] = entry.working;
+        buf[pos + 2] = entry.attention;
+        pos += 3;
+    }
     return buf[0..pos];
 }
 
@@ -277,6 +292,9 @@ pub const DecodedListEntry = struct {
     id: u32,
     name: []const u8,
     alive: bool,
+    ready: u8 = 0,
+    working: u8 = 0,
+    attention: u8 = 0,
 };
 
 /// Decode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}]
@@ -300,6 +318,15 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
         pos += 1;
         out[decoded] = .{ .id = id, .name = name, .alive = alive };
         decoded += 1;
+    }
+    // Optional trailing status block: present iff exactly `count` triples remain.
+    if (decoded == count and pos + @as(usize, count) * 3 <= payload.len) {
+        for (0..decoded) |i| {
+            out[i].ready = payload[pos];
+            out[i].working = payload[pos + 1];
+            out[i].attention = payload[pos + 2];
+            pos += 3;
+        }
     }
     return decoded;
 }
@@ -915,8 +942,8 @@ test "error round-trip" {
 test "session list round-trip" {
     var buf: [256]u8 = undefined;
     const entries = [_]SessionEntry{
-        .{ .id = 1, .name = "shell", .alive = true },
-        .{ .id = 2, .name = "vim", .alive = false },
+        .{ .id = 1, .name = "shell", .alive = true, .ready = 2, .working = 1, .attention = 0 },
+        .{ .id = 2, .name = "vim", .alive = false, .ready = 0, .working = 0, .attention = 3 },
     };
     const payload = try encodeSessionList(&buf, &entries);
 
@@ -926,9 +953,38 @@ test "session list round-trip" {
     try std.testing.expectEqual(@as(u32, 1), decoded[0].id);
     try std.testing.expectEqualStrings("shell", decoded[0].name);
     try std.testing.expect(decoded[0].alive);
+    try std.testing.expectEqual(@as(u8, 2), decoded[0].ready);
+    try std.testing.expectEqual(@as(u8, 1), decoded[0].working);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
     try std.testing.expectEqual(@as(u32, 2), decoded[1].id);
     try std.testing.expectEqualStrings("vim", decoded[1].name);
     try std.testing.expect(!decoded[1].alive);
+    try std.testing.expectEqual(@as(u8, 3), decoded[1].attention);
+}
+
+test "session list: old-format payload (no status block) decodes with zero counts" {
+    // Encode entries the legacy way: count + entries, no trailing status block.
+    var buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    std.mem.writeInt(u16, buf[0..2], 1, .little);
+    pos = 2;
+    std.mem.writeInt(u32, buf[pos..][0..4], 9, .little);
+    pos += 4;
+    const name = "legacy";
+    std.mem.writeInt(u16, buf[pos..][0..2], name.len, .little);
+    pos += 2;
+    @memcpy(buf[pos .. pos + name.len], name);
+    pos += name.len;
+    buf[pos] = 1; // alive
+    pos += 1;
+
+    var decoded: [8]DecodedListEntry = undefined;
+    const count = try decodeSessionList(buf[0..pos], &decoded);
+    try std.testing.expectEqual(@as(u16, 1), count);
+    try std.testing.expectEqualStrings("legacy", decoded[0].name);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].ready);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].working);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
 }
 
 test "create_pane round-trip" {

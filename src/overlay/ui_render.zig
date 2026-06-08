@@ -130,6 +130,9 @@ fn measureMenu(m: Element.Menu, max_w: u16) Size {
         if (item.hint_text.len > 0) {
             item_w += @min(utf8Count(item.hint_text) + 2, max_w); // "  hint"
         }
+        if (item.status) |sb| {
+            item_w += @min(statusBadgeWidth(sb) + 2, max_w); // "  r/w/a"
+        }
         max_item_w = @max(max_item_w, item_w);
     }
     const item_count: u16 = @intCast(m.items.len);
@@ -403,7 +406,6 @@ fn renderMenu(
     parent_style: ResolvedStyle,
     theme: OverlayTheme,
 ) RenderResult {
-    _ = theme;
     const rs = parent_style.merge(m.style);
     const item_count: u16 = @intCast(m.items.len);
     const visible = if (m.visible_count) |vc| @min(vc, avail_h) else avail_h;
@@ -440,11 +442,72 @@ fn renderMenu(
                 item_w = avail_w;
             }
         }
+        // Write status badge right-aligned ("ready/working/attention")
+        if (item.status) |sb| {
+            const bw = statusBadgeWidth(sb);
+            if (bw + vis_label + 1 <= avail_w) {
+                const bx = x + avail_w - bw;
+                renderStatusBadge(cells, stride, buf_h, bx, y + row, sb, item_rs, theme);
+                item_w = avail_w;
+            }
+        }
         max_w = @max(max_w, item_w);
         row += 1;
     }
 
     return .{ .width = max_w, .height = row };
+}
+
+/// Column width of a "[icon ]ready/working/attention" badge.
+fn statusBadgeWidth(b: Element.StatusBadge) u16 {
+    const icon_w: u16 = if (b.icon.len > 0) utf8Count(b.icon) + 1 else 0; // glyph + space
+    return icon_w + numWidth(b.ready) + 1 + numWidth(b.working) + 1 + numWidth(b.attention);
+}
+
+fn numWidth(n: u16) u16 {
+    if (n < 10) return 1;
+    if (n < 100) return 2;
+    if (n < 1000) return 3;
+    if (n < 10000) return 4;
+    return 5;
+}
+
+/// Render "ready/working/attention" starting at (x, y). Each count is colored
+/// when non-zero, dimmed when zero; the slash separators are always dimmed.
+fn renderStatusBadge(
+    cells: []StyledCell,
+    stride: u16,
+    buf_h: u16,
+    x: u16,
+    y: u16,
+    b: Element.StatusBadge,
+    item_rs: ResolvedStyle,
+    theme: OverlayTheme,
+) void {
+    const dim = (TextFlags{ .dim = true }).toU8();
+    const normal = item_rs.text_flags.toU8();
+    var cx = x;
+    if (b.icon.len > 0) {
+        writeStr(cells, stride, buf_h, cx, y, b.icon, item_rs.fg, item_rs.bg, item_rs.bg_alpha, normal);
+        cx += utf8Count(b.icon) + 1; // glyph + space
+    }
+    cx = writeNum(cells, stride, buf_h, cx, y, b.ready, if (b.ready > 0) theme.agent_ready_fg else item_rs.fg, item_rs.bg, item_rs.bg_alpha, if (b.ready > 0) normal else dim);
+    cx = writeSep(cells, stride, buf_h, cx, y, item_rs, dim);
+    cx = writeNum(cells, stride, buf_h, cx, y, b.working, if (b.working > 0) theme.agent_working_fg else item_rs.fg, item_rs.bg, item_rs.bg_alpha, if (b.working > 0) normal else dim);
+    cx = writeSep(cells, stride, buf_h, cx, y, item_rs, dim);
+    _ = writeNum(cells, stride, buf_h, cx, y, b.attention, if (b.attention > 0) theme.agent_attention_fg else item_rs.fg, item_rs.bg, item_rs.bg_alpha, if (b.attention > 0) normal else dim);
+}
+
+fn writeNum(cells: []StyledCell, stride: u16, buf_h: u16, x: u16, y: u16, n: u16, fg: Rgb, bg: Rgb, bg_alpha: u8, flags: u8) u16 {
+    var buf: [8]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return x;
+    writeStr(cells, stride, buf_h, x, y, s, fg, bg, bg_alpha, flags);
+    return x + @as(u16, @intCast(s.len));
+}
+
+fn writeSep(cells: []StyledCell, stride: u16, buf_h: u16, x: u16, y: u16, item_rs: ResolvedStyle, dim: u8) u16 {
+    writeStr(cells, stride, buf_h, x, y, "/", item_rs.fg, item_rs.bg, item_rs.bg_alpha, dim);
+    return x + 1;
 }
 
 fn renderHint(
