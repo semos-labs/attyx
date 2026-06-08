@@ -14,6 +14,19 @@ pub const AgentStatus = enum(u3) {
 
 pub const AgentStatuses = [tab_manager.max_tabs]AgentStatus;
 
+/// Map a hook-reported (term-layer) status to the tab-bar status enum.
+/// Phase 0 bridge: the term states map onto the renderer's existing colors
+/// (idle=green, working→running=orange, input→waiting=purple). A later phase
+/// collapses these two enums once the screen-scraping path is removed.
+pub fn fromHookStatus(s: attyx.actions.AgentStatus) AgentStatus {
+    return switch (s) {
+        .none => .none,
+        .idle => .idle,
+        .working => .running,
+        .input => .waiting,
+    };
+}
+
 pub fn shouldQueryProcessName(display_title: ?[]const u8, osc_title: ?[]const u8, daemon_name: ?[]const u8) bool {
     return display_title == null and osc_title == null and daemon_name == null;
 }

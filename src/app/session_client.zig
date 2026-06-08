@@ -64,6 +64,8 @@ pub const DaemonMessage = union(enum) {
     grid_snapshot: []const u8,
     /// Grid-sync: daemon-pushed OSC 0/2 title for a pane.
     pane_title: struct { pane_id: u32, title: []const u8 },
+    /// Grid-sync: daemon-pushed OSC 7337;agent-status for a pane.
+    pane_agent_status: struct { pane_id: u32, status: u8 },
     /// Grid-sync: scrollback chunk. Payload is the full message payload
     /// (ScrollbackHeader + cells), decoded by the consumer.
     scrollback_chunk: []const u8,
@@ -941,6 +943,14 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..tlen], msg.title[0..tlen]);
                 self.consumeBytes(total);
                 return .{ .pane_title = .{ .pane_id = msg.pane_id, .title = self.output_buf[0..tlen] } };
+            },
+            .pane_agent_status => {
+                const msg = protocol.decodePaneAgentStatus(payload) catch {
+                    self.consumeBytes(total);
+                    continue;
+                };
+                self.consumeBytes(total);
+                return .{ .pane_agent_status = .{ .pane_id = msg.pane_id, .status = msg.status } };
             },
             .scrollback_chunk => {
                 if (payload.len > self.output_buf.len) {

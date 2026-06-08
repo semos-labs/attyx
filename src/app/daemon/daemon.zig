@@ -258,6 +258,12 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                             if (title_dirty) {
                                 if (pane.engine) |eng_ptr| eng_ptr.state.title_changed = false;
                             }
+                            // Same story for agent status (OSC 7337;agent-status):
+                            // passive client engine needs it shipped explicitly.
+                            const agent_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed else false;
+                            if (agent_dirty) {
+                                if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed = false;
+                            }
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
@@ -266,6 +272,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                             if (title_dirty) {
                                                 const t = pane.engine.?.state.title orelse "";
                                                 cl.sendPaneTitle(pane.id, t);
+                                            }
+                                            if (agent_dirty) {
+                                                cl.sendPaneAgentStatus(pane.id, @intFromEnum(pane.engine.?.state.agent_status));
                                             }
                                         } else {
                                             cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);

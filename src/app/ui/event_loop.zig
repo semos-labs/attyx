@@ -18,6 +18,7 @@ const input = @import("input.zig");
 const search = @import("search.zig");
 const ai = @import("ai.zig");
 const actions = @import("actions.zig");
+const AgentStatus = attyx.actions.AgentStatus;
 const session_actions = @import("session_actions.zig");
 const resize_mod = @import("resize.zig");
 const hup_mod = @import("hup.zig");
@@ -1031,6 +1032,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                         }
                     },
+                    .pane_agent_status => |pas| {
+                        if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                            result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status));
+                            got_data = true;
+                        }
+                    },
                     .scrollback_chunk => |payload| {
                         const n = applyScrollbackChunk(ctx, payload);
                         logging.debug("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
@@ -1182,6 +1189,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 for (leaves[0..lc]) |leaf| {
                     if (leaf.pane.engine.state.title_changed) {
                         leaf.pane.engine.state.title_changed = false;
+                        title_changed = true;
+                    }
+                    // Local mode: the pane's own engine parses the agent-status
+                    // OSC; a transition must repaint the tab strip even if no
+                    // other output arrived this cycle.
+                    if (leaf.pane.engine.state.agent_status_changed) {
+                        leaf.pane.engine.state.agent_status_changed = false;
                         title_changed = true;
                     }
                 }
@@ -1954,6 +1968,12 @@ fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client
         .pane_title => |pt| {
             if (findPaneByDaemonId(ctx, pt.pane_id)) |result| {
                 result.pane.engine.state.setTitle(pt.title);
+            }
+            return true;
+        },
+        .pane_agent_status => |pas| {
+            if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status));
             }
             return true;
         },

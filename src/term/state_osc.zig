@@ -1,5 +1,6 @@
 const std = @import("std");
 const TerminalState = @import("state.zig").TerminalState;
+const AgentStatus = @import("actions.zig").AgentStatus;
 
 pub fn startHyperlink(self: *TerminalState, uri: []const u8) void {
     if (uri.len == 0) {
@@ -55,6 +56,16 @@ pub fn setShellPath(self: *TerminalState, path: []const u8) void {
         return;
     }
     self.shell_path = alloc.dupe(u8, path) catch null;
+}
+
+/// OSC 7337;agent-status — record the agent's reported run state.
+/// Sets the dirty flag only on a real transition so the daemon/app can
+/// cheaply poll for changes (mirrors the title_changed pattern).
+pub fn setAgentStatus(self: *TerminalState, status: AgentStatus) void {
+    if (self.agent_status != status) {
+        self.agent_status = status;
+        self.agent_status_changed = true;
+    }
 }
 
 /// Handle OSC 7339;xyron:{json} event.

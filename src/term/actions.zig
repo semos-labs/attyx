@@ -14,6 +14,31 @@ pub const Direction = enum {
     left,
 };
 
+/// Agent run status reported by an AI coding agent via
+/// OSC 7337;agent-status. Carried by the `set_agent_status` action and
+/// stored on TerminalState. Pure signal — no heuristics.
+pub const AgentStatus = enum(u2) {
+    /// Not running an agent (or the agent ended its session).
+    none,
+    /// Agent is parked, waiting for the next prompt — green.
+    idle,
+    /// Agent is actively working on the user's request — orange.
+    working,
+    /// Agent is blocked on the user (permission / question) — purple.
+    input,
+
+    /// Decode a wire byte (daemon protocol) into a status, mapping any
+    /// out-of-range value to `.none` so a malformed message can't panic.
+    pub fn fromU8(v: u8) AgentStatus {
+        return switch (v) {
+            @intFromEnum(AgentStatus.idle) => .idle,
+            @intFromEnum(AgentStatus.working) => .working,
+            @intFromEnum(AgentStatus.input) => .input,
+            else => .none,
+        };
+    }
+};
+
 /// Mode argument for erase operations (ED / EL).
 pub const EraseMode = enum(u3) {
     to_end = 0,
@@ -181,6 +206,10 @@ pub const Action = union(enum) {
     /// OSC 7339;xyron:{json} — xyron shell event.
     /// Payload is the JSON portion after "xyron:", borrowed from parser osc_buf.
     xyron_event: []const u8,
+
+    /// OSC 7337;agent-status;<agent>;<state> — an AI coding agent reports its
+    /// run state via its lifecycle hooks. Drives the per-tab status dot.
+    set_agent_status: AgentStatus,
 
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.

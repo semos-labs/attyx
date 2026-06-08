@@ -84,6 +84,18 @@
 # enabled = true
 
 
+# ── Agent status ─────────────────────────────────────────────────────
+
+[agent]
+
+# Detect AI coding agents (e.g. Claude Code) and show a colored status
+# dot on the left of the tab: green = idle, orange = working,
+# purple = needs your input. This installs a thin `claude` shim on PATH
+# (only inside attyx) that wires the agent's own lifecycle hooks; the
+# real `claude` still runs unchanged. Set to false to disable entirely.
+# status = true
+
+
 # ── Background ───────────────────────────────────────────────────────
 
 [background]

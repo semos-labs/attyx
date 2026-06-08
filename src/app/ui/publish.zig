@@ -820,11 +820,20 @@ fn resolveTabTitlesInternal(
             titles[i] = layout.getHintTitle();
         }
 
-        if (statuses != null and proc_name == null and agent_status_mod.shouldQueryProcessName(titles[i], pane.engine.state.title, daemon_name)) {
+        // Hook-driven status (OSC 7337;agent-status) is authoritative when
+        // present. Only fall back to the screen-scraping heuristics for panes
+        // an agent hasn't reported for. (Phase 3 drops the fallback entirely.)
+        const hook_status = pane.engine.state.agent_status;
+        if (statuses != null and hook_status == .none and proc_name == null and
+            agent_status_mod.shouldQueryProcessName(titles[i], pane.engine.state.title, daemon_name))
+        {
             proc_name = platform.getForegroundProcessName(pane.pty.master, &name_bufs[i]);
         }
         if (statuses) |status_buf| {
-            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
+            status_buf[i] = if (hook_status != .none)
+                agent_status_mod.fromHookStatus(hook_status)
+            else
+                agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
         }
     }
 }

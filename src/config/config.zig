@@ -167,6 +167,12 @@ pub const AppConfig = struct {
     // [reflow]
     reflow_enabled: bool = true,
 
+    // [agent]
+    // Detect AI coding agents (Claude Code, …) and show a per-tab status dot.
+    // Installs a thin `claude` shim on PATH that wires the agent's lifecycle
+    // hooks; disable to leave the agent's invocation untouched.
+    agent_status: bool = true,
+
     // [cursor]
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,

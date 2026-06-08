@@ -278,3 +278,77 @@ test "integration: OSC 7337 through engine produces drainMainInject payload" {
     try std.testing.expect(inject != null);
     try std.testing.expectEqualStrings("tmux attach -t 0\n", inject.?);
 }
+
+// ===========================================================================
+// OSC 7337 — agent status
+// ===========================================================================
+
+const AgentStatus = @import("../../term/actions.zig").AgentStatus;
+
+test "parser: OSC 7337 agent-status emits set_agent_status with state" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;agent-status;claude;working\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    try std.testing.expect(action != null);
+    switch (action.?) {
+        .set_agent_status => |s| try std.testing.expectEqual(AgentStatus.working, s),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parser: OSC 7337 agent-status without agent name parses state" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;agent-status;input\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    try std.testing.expect(action != null);
+    switch (action.?) {
+        .set_agent_status => |s| try std.testing.expectEqual(AgentStatus.input, s),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parser: OSC 7337 agent-status with unknown state returns nop" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;agent-status;claude;bogus\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    try std.testing.expect(action != null);
+    try std.testing.expect(action.? == .nop);
+}
+
+test "integration: agent-status transitions drive state.agent_status + changed flag" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 20, 100);
+    defer engine.deinit();
+
+    try std.testing.expectEqual(AgentStatus.none, engine.state.agent_status);
+
+    engine.feed("\x1b]7337;agent-status;claude;working\x07");
+    try std.testing.expectEqual(AgentStatus.working, engine.state.agent_status);
+    try std.testing.expect(engine.state.agent_status_changed);
+
+    // Consumer clears the flag; an identical status must not re-raise it.
+    engine.state.agent_status_changed = false;
+    engine.feed("\x1b]7337;agent-status;claude;working\x07");
+    try std.testing.expect(!engine.state.agent_status_changed);
+
+    // A real transition raises it again.
+    engine.feed("\x1b]7337;agent-status;claude;input\x07");
+    try std.testing.expectEqual(AgentStatus.input, engine.state.agent_status);
+    try std.testing.expect(engine.state.agent_status_changed);
+
+    engine.state.agent_status_changed = false;
+    engine.feed("\x1b]7337;agent-status;claude;idle\x07");
+    try std.testing.expectEqual(AgentStatus.idle, engine.state.agent_status);
+
+    engine.feed("\x1b]7337;agent-status;claude;none\x07");
+    try std.testing.expectEqual(AgentStatus.none, engine.state.agent_status);
+}

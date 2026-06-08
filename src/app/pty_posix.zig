@@ -25,6 +25,7 @@ extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
 extern "c" fn chdir(path: [*:0]const u8) c_int;
+extern "c" fn ttyname(fd: c_int) ?[*:0]const u8;
 extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
 extern "c" fn kill(pid: c_int, sig: c_int) c_int;
 extern "c" fn tcgetpgrp(fd: c_int) posix.pid_t;
@@ -129,6 +130,13 @@ pub const Pty = struct {
             _ = setenv("TERM_PROGRAM", "attyx", 1);
             _ = setenv("ATTYX", "1", 1);
             _ = setenv("ATTYX_PID", attyx_pid, 1);
+            // Export the pane's tty path so agent hooks can write the status
+            // OSC to it explicitly — robust even if a hook subprocess has no
+            // controlling terminal (where /dev/tty would fail). fd 0 is the
+            // slave after the dup2 above.
+            if (ttyname(0)) |tty_path| {
+                _ = setenv("ATTYX_TTY", tty_path, 1);
+            }
             // Signal OSC 8 hyperlink support to apps that gate emission on a
             // terminal whitelist (npm `supports-hyperlinks`, etc.). They check
             // FORCE_HYPERLINK first, so this opts us in without lying about
