@@ -6,6 +6,7 @@ const config_mod = @import("config/config.zig");
 const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
 const session_connect = @import("app/session_connect.zig");
+const agent_integration = @import("app/agent_integration.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -280,6 +281,12 @@ pub fn main() !void {
         logging.Level.info;
     logging.init(log_level, merged.log_file);
     defer logging.deinit();
+
+    // Install AI-agent status hooks (Claude Code) once, before any pane runs.
+    // Self-gated: the emitter only fires inside attyx (ATTYX_PID set).
+    if (!is_windows and merged.agent_status) {
+        agent_integration.install(allocator, std.posix.getenv("HOME") orelse "");
+    }
 
     terminal.run(merged, result.no_config, result.config_path, args, result.headless) catch |err| {
         var buf: [256]u8 = undefined;

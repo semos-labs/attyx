@@ -21,7 +21,6 @@ pub const Style = struct {
     active_fg: ?Rgb = null, // null = same as fg
     num_highlight_bg: Rgb = .{ .r = 90, .g = 90, .b = 100 },
     num_highlight_fg: Rgb = .{ .r = 230, .g = 230, .b = 240 },
-    agent_fg: Rgb = .{ .r = 96, .g = 160, .b = 255 },
     agent_idle_fg: Rgb = .{ .r = 96, .g = 208, .b = 120 },
     agent_running_fg: Rgb = .{ .r = 255, .g = 170, .b = 64 },
     agent_waiting_fg: Rgb = .{ .r = 176, .g = 112, .b = 255 },
@@ -89,33 +88,6 @@ fn displayWidth(s: []const u8) u16 {
 /// Number of digits in a 1-indexed tab number.
 fn numLen(n: u8) u16 {
     return if (n >= 10) 2 else 1;
-}
-
-const ParsedTitle = struct {
-    title: []const u8,
-    agent_status: AgentStatus = .none,
-};
-
-fn parseAgentTitle(title: []const u8) ParsedTitle {
-    var i: usize = 0;
-    const marker = nextCodepoint(title, &i) orelse return .{ .title = title };
-    const status: AgentStatus = switch (marker) {
-        0x25CB => .idle, // white circle
-        0x273B => .running, // teardrop-spoked asterisk
-        0x25CF => .waiting, // black circle
-        else => {
-            if (agent_status_mod.looksLikeAgentText(title)) {
-                return .{ .title = title, .agent_status = .generic };
-            }
-            return .{ .title = title };
-        },
-    };
-
-    if (i < title.len and title[i] == ' ') {
-        i += 1;
-        return .{ .title = title[i..], .agent_status = status };
-    }
-    return .{ .title = title, .agent_status = .none };
 }
 
 /// Compute the natural width for a tab: " title " + " N " = (1+title+1) + (1+numlen+1).
@@ -234,13 +206,12 @@ pub fn generate(
 
     // Compute content-based widths and cache them for tabIndexAtCol().
     var fallback_bufs: [max_tabs][20]u8 = undefined;
-    var resolved: [max_tabs]ParsedTitle = undefined;
+    var resolved: [max_tabs][]const u8 = undefined;
     var widths: [max_tabs]u16 = undefined;
     for (0..tab_count) |i| {
-        resolved[i] = parseAgentTitle(resolveTitle(titles, i, &fallback_bufs[i]));
+        resolved[i] = resolveTitle(titles, i, &fallback_bufs[i]);
         const is_zoomed = (zoomed_tabs & (@as(u16, 1) << @intCast(i))) != 0;
-        const merged_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
-        widths[i] = tabWidth(displayWidth(resolved[i].title), @intCast(i + 1), is_zoomed, merged_status);
+        widths[i] = tabWidth(displayWidth(resolved[i]), @intCast(i + 1), is_zoomed, statuses[i]);
     }
 
     // Reset scroll on tab count change
@@ -307,8 +278,8 @@ pub fn generate(
 
         const is_active = (i == active);
         const natural_width = widths[i];
-        const title = resolved[i].title;
-        const agent_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
+        const title = resolved[i];
+        const agent_status = statuses[i];
         const num = num_slices[i];
 
         // Resolve per-tab colors: active tab can have distinct bg/fg
@@ -342,7 +313,6 @@ pub fn generate(
         }
         if (agent_status != .none) {
             const dot_fg = switch (agent_status) {
-                .generic => style.agent_fg,
                 .idle => style.agent_idle_fg,
                 .running => style.agent_running_fg,
                 .waiting => style.agent_waiting_fg,
@@ -514,9 +484,9 @@ pub fn generateVertical(
     }
 
     var fallback_bufs: [max_tabs][20]u8 = undefined;
-    var resolved: [max_tabs]ParsedTitle = undefined;
+    var resolved: [max_tabs][]const u8 = undefined;
     for (0..tab_count) |i| {
-        resolved[i] = parseAgentTitle(resolveTitle(titles, i, &fallback_bufs[i]));
+        resolved[i] = resolveTitle(titles, i, &fallback_bufs[i]);
     }
 
     const writeCell = struct {
@@ -538,7 +508,7 @@ pub fn generateVertical(
 
         const is_active = (i == active);
         const t_fg = if (is_active) (style.active_fg orelse style.fg) else style.fg;
-        const merged_status = if (statuses[i] != .none) statuses[i] else resolved[i].agent_status;
+        const merged_status = statuses[i];
         const row_base = @as(usize, row) * width;
 
         if (text_end <= text_start) {
@@ -565,7 +535,6 @@ pub fn generateVertical(
         }
         if (merged_status != .none) {
             const dot_fg = switch (merged_status) {
-                .generic => style.agent_fg,
                 .idle => style.agent_idle_fg,
                 .running => style.agent_running_fg,
                 .waiting => style.agent_waiting_fg,
@@ -584,7 +553,7 @@ pub fn generateVertical(
 
         // Title characters fill [col, title_end).
         var title_col: u16 = col;
-        const title = resolved[i].title;
+        const title = resolved[i];
         var ti: usize = 0;
         while (nextCodepoint(title, &ti)) |cp| {
             if (title_col >= title_end) break;
@@ -749,44 +718,19 @@ test "generate: two-digit tab numbers" {
     try std.testing.expectEqual(@as(u16, 6), tabWidth(1, 1, false, .none));
 }
 
-test "parseAgentTitle extracts prefixed status marker" {
-    const idle = parseAgentTitle("○ OpenCode");
-    try std.testing.expectEqual(AgentStatus.idle, idle.agent_status);
-    try std.testing.expectEqualStrings("OpenCode", idle.title);
-
-    const running = parseAgentTitle("✻ Claude Code");
-    try std.testing.expectEqual(AgentStatus.running, running.agent_status);
-    try std.testing.expectEqualStrings("Claude Code", running.title);
-
-    const waiting = parseAgentTitle("● OpenCode");
-    try std.testing.expectEqual(AgentStatus.waiting, waiting.agent_status);
-    try std.testing.expectEqualStrings("OpenCode", waiting.title);
-}
-
-test "parseAgentTitle detects generic agent titles" {
-    const open_code = parseAgentTitle("OC | project review");
-    try std.testing.expectEqual(AgentStatus.generic, open_code.agent_status);
-    try std.testing.expectEqualStrings("OC | project review", open_code.title);
-
-    const claude = parseAgentTitle("claude");
-    try std.testing.expectEqual(AgentStatus.generic, claude.agent_status);
-    try std.testing.expectEqualStrings("claude", claude.title);
-}
-
-test "generate: agent status renders colored dot and strips raw prefix" {
+test "generate: hook status renders a colored dot before the title" {
     var buf: [80]StyledCell = undefined;
     const style = Style{};
     var titles: TabTitles = .{null} ** max_tabs;
-    titles[0] = "✻ OpenCode";
+    titles[0] = "claude";
+    var statuses: AgentStatuses = .{.none} ** max_tabs;
+    statuses[0] = .running;
 
-    const result = generate(&buf, 1, 0, 80, style, &titles, 0, &no_statuses) orelse return error.TestUnexpectedResult;
+    const result = generate(&buf, 1, 0, 80, style, &titles, 0, &statuses) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u21, ' '), result.cells[0].char);
-    try std.testing.expectEqual(@as(u21, 0x25CF), result.cells[1].char);
-    try std.testing.expectEqual(style.agent_running_fg, result.cells[1].fg);
-    try std.testing.expectEqual(@as(u21, 'O'), result.cells[3].char);
-    try std.testing.expectEqual(@as(u21, 'p'), result.cells[4].char);
-    try std.testing.expectEqual(@as(u21, 'e'), result.cells[5].char);
-    try std.testing.expectEqual(@as(u21, 'n'), result.cells[6].char);
+    try std.testing.expectEqual(@as(u21, 0x25CF), result.cells[1].char); // dot
+    try std.testing.expectEqual(style.agent_running_fg, result.cells[1].fg); // orange
+    try std.testing.expectEqual(@as(u21, 'c'), result.cells[3].char); // title unchanged
 }
 
 test "generate: gap between tabs is transparent" {

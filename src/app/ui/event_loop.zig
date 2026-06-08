@@ -18,6 +18,7 @@ const input = @import("input.zig");
 const search = @import("search.zig");
 const ai = @import("ai.zig");
 const actions = @import("actions.zig");
+const AgentStatus = attyx.actions.AgentStatus;
 const session_actions = @import("session_actions.zig");
 const resize_mod = @import("resize.zig");
 const hup_mod = @import("hup.zig");
@@ -554,6 +555,19 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Agent-status notification click → focus the originating tab.
+        {
+            const focus_id = c.attyx_check_focus_request();
+            if (focus_id != 0) {
+                if (ctx.tab_mgr.tabIndexOfPane(focus_id)) |ti| {
+                    if (ti != ctx.tab_mgr.active) {
+                        ctx.tab_mgr.switchTo(ti);
+                        actions.switchActiveTab(ctx);
+                    }
+                }
+            }
+        }
+
         // Sidebar drag-resize: apply any pending width and persist on release.
         if (terminal.g_tab_side != 0) {
             const dragging = @atomicLoad(i32, &input.g_sidebar_drag_active, .seq_cst) != 0;
@@ -1031,6 +1045,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             if (result.tab_idx == ctx.tab_mgr.active) got_data = true;
                         }
                     },
+                    .pane_agent_status => |pas| {
+                        if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                            result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status), pas.message);
+                            got_data = true;
+                        }
+                    },
                     .scrollback_chunk => |payload| {
                         const n = applyScrollbackChunk(ctx, payload);
                         logging.debug("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
@@ -1175,7 +1195,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // This ensures tab bar / statusbar update even when the active tab
         // is idle but a background tab's process sends an OSC title.
         var title_changed = false;
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, ti| {
             if (maybe_layout.*) |*lay| {
                 var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
                 const lc = lay.collectLeaves(&leaves);
@@ -1183,6 +1203,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     if (leaf.pane.engine.state.title_changed) {
                         leaf.pane.engine.state.title_changed = false;
                         title_changed = true;
+                    }
+                    // Local mode: the pane's own engine parses the agent-status
+                    // OSC; a transition must repaint the tab strip even if no
+                    // other output arrived this cycle.
+                    if (leaf.pane.engine.state.agent_status_changed) {
+                        leaf.pane.engine.state.agent_status_changed = false;
+                        title_changed = true;
+                        maybeNotifyAgent(ctx, leaf.pane, ti);
                     }
                 }
             }
@@ -1957,6 +1985,12 @@ fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client
             }
             return true;
         },
+        .pane_agent_status => |pas| {
+            if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status), pas.message);
+            }
+            return true;
+        },
         .pane_proc_name => |pn| {
             if (findPaneByDaemonId(ctx, pn.pane_id)) |result| {
                 const len: u8 = @intCast(@min(pn.name.len, 64));
@@ -1967,6 +2001,73 @@ fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client
         },
         else => return false,
     }
+}
+
+/// Fire a native notification when a pane's agent transitions to a state worth
+/// surfacing — finished (working→idle) or blocked on the user (→input) — unless
+/// the user is currently viewing that tab.
+fn maybeNotifyAgent(ctx: *PtyThreadCtx, pane: *@import("../pane.zig").Pane, tab_idx: usize) void {
+    const new_status = pane.engine.state.agent_status;
+    const old_status = pane.last_agent_status;
+    pane.last_agent_status = new_status;
+    if (new_status == old_status) return;
+
+    const label: []const u8 = switch (new_status) {
+        .input => "Needs your input",
+        .idle => if (old_status == .working) "Done" else return,
+        else => return,
+    };
+    // Prefer the agent's own message preview; fall back to the state label.
+    const msg = pane.engine.state.agentMsg();
+    const body = if (msg.len > 0) msg else label;
+
+    // Background tabs always notify; the active tab is suppressed by the
+    // platform layer while the app is focused (the user can see the dot).
+    const force: c_int = if (tab_idx == ctx.tab_mgr.active) 0 else 1;
+
+    // Title: "<session> · <tab>" so the banner names the originating tab.
+    // Falls back to just the tab title when there's no named session.
+    var title_buf: [256]u8 = undefined;
+    const tab_title = resolveTabTitle(ctx, tab_idx, pane);
+    if (currentSessionName()) |sess| {
+        _ = std.fmt.bufPrintZ(&title_buf, "{s} · {s}", .{ sess, tab_title }) catch
+            writeTruncZ(&title_buf, tab_title);
+    } else {
+        writeTruncZ(&title_buf, tab_title);
+    }
+
+    var body_buf: [257]u8 = undefined;
+    const blen = @min(body.len, body_buf.len - 1);
+    @memcpy(body_buf[0..blen], body[0..blen]);
+    body_buf[blen] = 0;
+
+    c.attyx_platform_notify_agent(&title_buf, &body_buf, pane.ipc_id, force);
+}
+
+/// User-facing tab title for a notification: the tab's custom title if set,
+/// else the pane's program title / process name.
+fn resolveTabTitle(ctx: *PtyThreadCtx, tab_idx: usize, pane: *@import("../pane.zig").Pane) []const u8 {
+    if (ctx.tab_mgr.tabs[tab_idx]) |*lay| {
+        if (lay.getTitle()) |t| if (t.len > 0) return t;
+    }
+    return pane.engine.state.title orelse pane.getDaemonProcName() orelse "Agent";
+}
+
+/// Name of the session this app instance is attached to, or null when it's the
+/// unnamed "default" session. Reads the same globals the tab-bar dropdown uses;
+/// only touched from the PTY thread that also publishes them.
+fn currentSessionName() ?[]const u8 {
+    const idx = (@as(*const i32, @ptrCast(@volatileCast(&c.g_active_session_idx)))).*;
+    if (idx < 0 or idx >= 32) return null;
+    const name = std.mem.sliceTo(&c.g_session_names[@intCast(idx)], 0);
+    return if (name.len > 0) name else null;
+}
+
+/// Copy `s` into a NUL-terminated title buffer, truncating to fit.
+fn writeTruncZ(buf: *[256]u8, s: []const u8) void {
+    const n = @min(s.len, buf.len - 1);
+    @memcpy(buf[0..n], s[0..n]);
+    buf[n] = 0;
 }
 
 fn findPaneByDaemonId(ctx: *PtyThreadCtx, pane_id: u32) ?struct { pane: *@import("../pane.zig").Pane, tab_idx: u8, pool_idx: u8 } {

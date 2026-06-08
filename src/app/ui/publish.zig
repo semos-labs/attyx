@@ -806,7 +806,6 @@ fn resolveTabTitlesInternal(
         const layout = &(ctx.tab_mgr.tabs[i] orelse continue);
         const pane = layout.focusedPane();
         const daemon_name = pane.getDaemonProcName();
-        var proc_name: ?[]const u8 = null;
         if (layout.getTitle()) |title| {
             titles[i] = title;
         } else if (pane.engine.state.title) |t| {
@@ -815,16 +814,13 @@ fn resolveTabTitlesInternal(
             titles[i] = name;
         } else if (platform.getForegroundProcessName(pane.pty.master, &name_bufs[i])) |name| {
             titles[i] = name;
-            proc_name = name;
         } else {
             titles[i] = layout.getHintTitle();
         }
 
-        if (statuses != null and proc_name == null and agent_status_mod.shouldQueryProcessName(titles[i], pane.engine.state.title, daemon_name)) {
-            proc_name = platform.getForegroundProcessName(pane.pty.master, &name_bufs[i]);
-        }
+        // Status comes solely from the agent's own hooks (OSC 7337;agent-status).
         if (statuses) |status_buf| {
-            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], proc_name);
+            status_buf[i] = agent_status_mod.fromHookStatus(pane.engine.state.agent_status);
         }
     }
 }

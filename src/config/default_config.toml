@@ -84,6 +84,19 @@
 # enabled = true
 
 
+# ── Agent status ─────────────────────────────────────────────────────
+
+[agent]
+
+# Detect AI coding agents (Claude Code, Codex, opencode) and show a
+# colored status dot on the left of the tab: green = idle,
+# orange = working, purple = needs your input. Wires each agent's own
+# lifecycle hooks via its settings/plugin config; the status OSC is only
+# emitted inside attyx, so the hooks are a no-op elsewhere. Set to false
+# to disable entirely.
+# status = true
+
+
 # ── Background ───────────────────────────────────────────────────────
 
 [background]

@@ -167,6 +167,13 @@ pub const AppConfig = struct {
     // [reflow]
     reflow_enabled: bool = true,
 
+    // [agent]
+    // Detect AI coding agents (Claude Code, Codex, opencode) and show a per-tab
+    // status dot. Wires the agents' own lifecycle hooks (via their settings /
+    // plugin configs) to report idle/working/needs-input; disable to leave the
+    // agents' configs untouched.
+    agent_status: bool = true,
+
     // [cursor]
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,

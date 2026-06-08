@@ -359,6 +359,21 @@ void attyx_platform_notify(const char* title, const char* body) {
     else free(buf);
 }
 
+// Agent-status notification. Native click-to-focus is macOS-only; on Windows the
+// per-tab status dot is the indicator, so this is a no-op (the modal-box notify
+// path would be too intrusive to fire on every status change).
+void attyx_platform_notify_agent(const char* title, const char* body,
+                                 uint32_t ipc_id, int force) {
+    (void)title;
+    (void)body;
+    (void)ipc_id;
+    (void)force;
+}
+
+uint32_t attyx_check_focus_request(void) {
+    return 0;
+}
+
 void attyx_apply_window_update(void) {
     if (!g_hwnd) return;
 

@@ -69,6 +69,10 @@ pub const MessageType = enum(u8) {
     /// so the client's engine ring can be hydrated and normal scrollback
     /// rendering works. Sent on focus; one or more messages per pane.
     scrollback_chunk = 0x96,
+    /// Grid-sync: daemon pushes engine.state.agent_status updates
+    /// (OSC 7337;agent-status). Client's engine is passive in grid-sync, so
+    /// the status has to be propagated explicitly — same as pane_title.
+    pane_agent_status = 0x97,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -697,6 +701,31 @@ pub fn decodePaneTitle(payload: []const u8) !PaneTitleMsg {
     return .{ .pane_id = pane_id, .title = payload[6 .. 6 + title_len] };
 }
 
+// ── PaneAgentStatus (grid-sync OSC 7337;agent-status propagation) ──
+
+/// Encode PaneAgentStatus payload: pane_id:u32, status:u8, msg_len:u16, msg:[N].
+pub fn encodePaneAgentStatus(buf: []u8, pane_id: u32, status: u8, msg: []const u8) ![]u8 {
+    const msg_len: u16 = @intCast(@min(msg.len, 256));
+    const total: usize = 4 + 1 + 2 + msg_len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    buf[4] = status;
+    std.mem.writeInt(u16, buf[5..7], msg_len, .little);
+    @memcpy(buf[7 .. 7 + msg_len], msg[0..msg_len]);
+    return buf[0..total];
+}
+
+pub const PaneAgentStatusMsg = struct { pane_id: u32, status: u8, message: []const u8 };
+
+pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
+    if (payload.len < 7) return error.PayloadTooShort;
+    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+    const status = payload[4];
+    const msg_len = std.mem.readInt(u16, payload[5..7], .little);
+    if (payload.len < 7 + @as(usize, msg_len)) return error.PayloadTooShort;
+    return .{ .pane_id = pane_id, .status = status, .message = payload[7 .. 7 + msg_len] };
+}
+
 // ── PaneFgCwd ──
 
 /// Encode PaneFgCwd payload: pane_id:u32, cwd_len:u16, cwd:[N]u8
@@ -819,6 +848,15 @@ test "header round-trip" {
     const h = try decodeHeader(&buf);
     try std.testing.expectEqual(MessageType.create, h.msg_type);
     try std.testing.expectEqual(@as(u32, 42), h.payload_len);
+}
+
+test "pane_agent_status round-trip" {
+    var buf: [64]u8 = undefined;
+    const payload = try encodePaneAgentStatus(&buf, 7, 2, "needs input");
+    const msg = try decodePaneAgentStatus(payload);
+    try std.testing.expectEqual(@as(u32, 7), msg.pane_id);
+    try std.testing.expectEqual(@as(u8, 2), msg.status);
+    try std.testing.expectEqualStrings("needs input", msg.message);
 }
 
 test "create round-trip" {

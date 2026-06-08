@@ -179,6 +179,16 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    // [agent]
+    if (Lookup.get(root, "agent", "status")) |v| {
+        if (v == .bool) {
+            config.agent_status = v.bool;
+        } else {
+            std.debug.print("error: {s}: agent.status must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [cursor]
     if (Lookup.get(root, "cursor", "shape")) |v| {
         if (v == .string) {

@@ -52,6 +52,13 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
                     result.pane.daemon_fg_cwd_len = len;
                 }
             },
+            .pane_agent_status => |pas| {
+                if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                    const AgentStatus = @import("attyx").actions.AgentStatus;
+                    result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status), pas.message);
+                    got_output = true; // refresh the tab-bar status dot
+                }
+            },
             .replay_end => |pane_id| {
                 if (findPaneByDaemonId(ctx, pane_id)) |result| {
                     const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);

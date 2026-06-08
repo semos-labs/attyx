@@ -474,7 +474,7 @@ fn resolveTabTitlesInternal(
             titles[i] = "cmd";
         }
         if (statuses) |status_buf| {
-            status_buf[i] = agent_status_mod.detectPaneStatus(pane, titles[i], pane.getDaemonProcName());
+            status_buf[i] = agent_status_mod.fromHookStatus(pane.engine.state.agent_status);
         }
     }
 }

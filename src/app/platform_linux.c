@@ -286,6 +286,20 @@ void attyx_platform_notify(const char* title, const char* body) {
     }
 }
 
+// Agent-status notification. The macOS build carries an ipc_id for
+// click-to-focus; Linux has no equivalent, so we just post a plain toast.
+void attyx_platform_notify_agent(const char* title, const char* body,
+                                 uint32_t ipc_id, int force) {
+    (void)ipc_id;
+    (void)force;
+    attyx_platform_notify(title, body);
+}
+
+// Click-to-focus is a macOS-only notification feature; nothing to poll here.
+uint32_t attyx_check_focus_request(void) {
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Spawn new window (new process)
 // ---------------------------------------------------------------------------
