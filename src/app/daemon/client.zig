@@ -397,6 +397,7 @@ pub const DaemonClient = struct {
     /// Send session list directly from session slots (avoids copying large structs).
     pub fn sendSessionListFromSlots(self: *DaemonClient, sessions: *[32]?DaemonSession) void {
         var entries: [32]protocol.SessionEntry = undefined;
+        var access: [32]i128 = undefined;
         var count: usize = 0;
         for (sessions) |*slot| {
             if (slot.*) |*s| {
@@ -423,9 +424,13 @@ pub const DaemonClient = struct {
                     .working = working,
                     .attention = attention,
                 };
+                access[count] = s.last_accessed;
                 count += 1;
             }
         }
+
+        // Order by recency of access so the client renders most-recent first.
+        protocol.orderEntriesByAccess(entries[0..count], access[0..count]);
 
         var payload_buf: [4096]u8 = undefined;
         const payload = protocol.encodeSessionList(&payload_buf, entries[0..count]) catch return;

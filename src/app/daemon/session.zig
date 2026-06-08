@@ -18,6 +18,10 @@ pub const DaemonSession = struct {
     layout_len: u16 = 0,
     alive: bool = true,
 
+    /// Wall-clock nanoseconds of the last attach. Used to order the session
+    /// list by recency of access (most recently attached first).
+    last_accessed: i128 = 0,
+
     /// Session working directory — used as default CWD for new panes.
     cwd: [1024]u8 = .{0} ** 1024,
     cwd_len: u16 = 0,
@@ -47,6 +51,7 @@ pub const DaemonSession = struct {
             .id = id,
             .rows = rows,
             .cols = cols,
+            .last_accessed = std.time.nanoTimestamp(),
         };
         const nlen = @min(name.len, 64);
         @memcpy(session.name[0..nlen], name[0..nlen]);

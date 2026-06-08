@@ -51,8 +51,9 @@ test "list sessions returns created sessions" {
     var entries: [32]protocol.DecodedListEntry = undefined;
     const count = try protocol.decodeSessionList(list_payload, &entries);
     try testing.expectEqual(@as(u16, 2), count);
-    try testing.expectEqualStrings("alpha", entries[0].name);
-    try testing.expectEqualStrings("beta", entries[1].name);
+    // Listed most-recently-accessed first: beta was created after alpha.
+    try testing.expectEqualStrings("beta", entries[0].name);
+    try testing.expectEqualStrings("alpha", entries[1].name);
     try testing.expect(entries[0].alive);
     try testing.expect(entries[1].alive);
 }

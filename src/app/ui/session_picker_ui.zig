@@ -285,6 +285,40 @@ fn processAction(ctx: *PtyThreadCtx, state: *SessionPickerState, action: picker_
             ctx.allocator.free(path_copy);
             return true;
         },
+        .create_session_named => |name| {
+            // Copy the name out before tearing down picker state.
+            var name_buf: [64]u8 = undefined;
+            const nlen = @min(name.len, name_buf.len);
+            @memcpy(name_buf[0..nlen], name[0..nlen]);
+
+            const finder = &(g_finder_state orelse {
+                closeSessionPicker(ctx);
+                return true;
+            });
+            const root = finder.getRootPath();
+            var abs_buf: [512]u8 = undefined;
+            const abs_path = std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ root, name_buf[0..nlen] }) catch {
+                closeSessionPicker(ctx);
+                return true;
+            };
+            // Create the new session directory (ok if it already exists).
+            std.fs.makeDirAbsolute(abs_path) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => {
+                    logging.warn("session-picker", "failed to create dir {s}: {s}", .{ abs_path, @errorName(err) });
+                    closeSessionPicker(ctx);
+                    return true;
+                },
+            };
+            const path_copy = ctx.allocator.dupe(u8, abs_path) catch {
+                closeSessionPicker(ctx);
+                return true;
+            };
+            closeSessionPicker(ctx);
+            session_actions.doSessionCreate(ctx, path_copy);
+            ctx.allocator.free(path_copy);
+            return true;
+        },
         .kill_session => |id| {
             const sc = ctx.session_client orelse return false;
             sc.killSession(id) catch {};

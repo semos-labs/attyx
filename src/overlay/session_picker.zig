@@ -42,6 +42,9 @@ pub const PickerAction = union(enum) {
     switch_to_default: void,
     create_session: void,
     create_session_at: []const u8,
+    /// Create a brand-new session directory named after the typed filter text
+    /// (under the configured sessions root), then switch to it.
+    create_session_named: []const u8,
     kill_session: u32,
     rename_session: struct { id: u32, name: []const u8 },
     /// "Move tab to session" mode: the user picked the destination session.
@@ -205,12 +208,15 @@ pub const SessionPickerState = struct {
                     }
                     return .none;
                 }
+                const fs_end = self.filtered_count +| self.fs_count;
                 if (self.selected < self.filtered_count) {
                     const e = &self.entries[self.filtered_indices[self.selected]];
                     return .{ .switch_session = e.id };
-                } else if (self.selected < self.filtered_count +| self.fs_count) {
+                } else if (self.selected < fs_end) {
                     const fs_idx = self.selected - self.filtered_count;
                     return .{ .create_session_at = self.fs_results[fs_idx].getPath() };
+                } else if (self.createRowVisible() and self.selected == fs_end) {
+                    return .{ .create_session_named = self.filter_buf[0..self.filter_len] };
                 } else {
                     return .create_session;
                 }
@@ -275,11 +281,37 @@ pub const SessionPickerState = struct {
         }
     }
 
-    /// Total items = filtered sessions + fs results + 1 ("New session" entry).
-    /// In move mode only existing sessions are selectable.
+    /// Total items = filtered sessions + fs results + optional "Create <name>"
+    /// row + 1 ("New session" entry). In move mode only existing sessions are
+    /// selectable.
     pub fn totalCount(self: *const SessionPickerState) u8 {
         if (self.move_mode) return self.filtered_count;
-        return self.filtered_count +| self.fs_count +| 1;
+        const create: u8 = if (self.createRowVisible()) 1 else 0;
+        return self.filtered_count +| self.fs_count +| create +| 1;
+    }
+
+    /// Whether to offer "Create <typed-name>" — a new session directory.
+    /// Shown when the filter text is a valid directory name that doesn't
+    /// already exist as a session or as a folder result.
+    pub fn createRowVisible(self: *const SessionPickerState) bool {
+        if (self.move_mode) return false;
+        const name = self.filter_buf[0..self.filter_len];
+        if (!isValidDirName(name)) return false;
+        // Suppress if an existing session matches the name exactly.
+        for (0..self.filtered_count) |i| {
+            const e = &self.entries[self.filtered_indices[i]];
+            if (std.mem.eql(u8, e.getName(), name)) return false;
+        }
+        // Suppress if a folder result's basename matches the name exactly.
+        for (0..self.fs_count) |i| {
+            const path = self.fs_results[i].getPath();
+            const base = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep|
+                path[sep + 1 ..]
+            else
+                path;
+            if (std.mem.eql(u8, base, name)) return false;
+        }
+        return true;
     }
 
     /// Update filesystem results from the finder.
@@ -348,6 +380,23 @@ pub fn entryPriority(e: SessionEntry, current_id: ?u32) u8 {
         if (e.id == cid) return 0;
     }
     return if (e.alive) 1 else 2;
+}
+
+/// Validate a name for use as a new session directory. Cross-platform safe:
+/// rejects empty/over-long names, path separators, control characters, the
+/// Windows-reserved set, "."/".." and leading/trailing spaces.
+pub fn isValidDirName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    if (name[0] == ' ' or name[name.len - 1] == ' ') return false;
+    for (name) |ch| {
+        if (ch < 0x20) return false;
+        switch (ch) {
+            '/', '\\', ':', '*', '?', '"', '<', '>', '|' => return false,
+            else => {},
+        }
+    }
+    return true;
 }
 
 fn fuzzyMatch(name: []const u8, query: []const u8) bool {
@@ -504,6 +553,74 @@ test "handleCmd: enter on 'New session' returns create_session" {
     state.selected = 1; // "New session" entry
     const action = state.handleCmd(8); // Enter
     switch (action) {
+        .create_session => {},
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "isValidDirName: accepts and rejects" {
+    try std.testing.expect(isValidDirName("my-project"));
+    try std.testing.expect(isValidDirName("proj_2.0"));
+    try std.testing.expect(isValidDirName("a b c"));
+    try std.testing.expect(!isValidDirName(""));
+    try std.testing.expect(!isValidDirName("."));
+    try std.testing.expect(!isValidDirName(".."));
+    try std.testing.expect(!isValidDirName("foo/bar"));
+    try std.testing.expect(!isValidDirName("foo\\bar"));
+    try std.testing.expect(!isValidDirName("a:b"));
+    try std.testing.expect(!isValidDirName(" leading"));
+    try std.testing.expect(!isValidDirName("trailing "));
+}
+
+test "createRowVisible: shown for new valid name, hidden for exact match" {
+    var state = SessionPickerState{};
+    state.entries[0] = .{ .id = 1, .name_len = 3, .alive = true };
+    @memcpy(state.entries[0].name[0..3], "one");
+    state.entry_count = 1;
+
+    // No filter → no create row.
+    state.applyFilter();
+    try std.testing.expect(!state.createRowVisible());
+
+    // Typed a fresh, valid name → create row visible.
+    @memcpy(state.filter_buf[0..3], "two");
+    state.filter_len = 3;
+    state.applyFilter();
+    try std.testing.expect(state.createRowVisible());
+
+    // Typed an exact existing session name → suppressed.
+    @memcpy(state.filter_buf[0..3], "one");
+    state.filter_len = 3;
+    state.applyFilter();
+    try std.testing.expect(!state.createRowVisible());
+
+    // Invalid name → suppressed.
+    @memcpy(state.filter_buf[0..3], "a/b");
+    state.filter_len = 3;
+    state.applyFilter();
+    try std.testing.expect(!state.createRowVisible());
+}
+
+test "handleCmd: enter on 'Create' row returns create_session_named" {
+    var state = SessionPickerState{};
+    state.entries[0] = .{ .id = 1, .name_len = 3, .alive = true };
+    @memcpy(state.entries[0].name[0..3], "one");
+    state.entry_count = 1;
+    @memcpy(state.filter_buf[0..3], "two"); // doesn't match "one"
+    state.filter_len = 3;
+    state.applyFilter();
+
+    // Rows: [create "two"], [New session]. Create is first.
+    try std.testing.expectEqual(@as(u8, 0), state.filtered_count);
+    state.selected = 0;
+    switch (state.handleCmd(8)) {
+        .create_session_named => |name| try std.testing.expectEqualStrings("two", name),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Last row is still plain "New session".
+    state.selected = 1;
+    switch (state.handleCmd(8)) {
         .create_session => {},
         else => return error.TestUnexpectedResult,
     }
