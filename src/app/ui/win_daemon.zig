@@ -2,6 +2,8 @@
 // Reads messages from the session daemon and routes output to panes.
 
 const std = @import("std");
+const attyx = @import("attyx");
+const AgentStatus = attyx.actions.AgentStatus;
 const logging = @import("../../logging/log.zig");
 const ws = @import("../windows_stubs.zig");
 const SessionClient = @import("../session_client.zig").SessionClient;
@@ -50,6 +52,12 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
                     const len: u16 = @intCast(@min(fc.cwd.len, 512));
                     @memcpy(result.pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
                     result.pane.daemon_fg_cwd_len = len;
+                }
+            },
+            .pane_agent_status => |pas| {
+                if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
+                    result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status), pas.message);
+                    got_output = true; // refresh the tab-bar status dot
                 }
             },
             .replay_end => |pane_id| {
