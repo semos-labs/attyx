@@ -147,55 +147,71 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     var target_pid: ?u32 = null;
     var json_output: bool = false;
     var target_session: u32 = 0;
-    var start: usize = 1;
 
-    // Parse global flags (--target, --json, --session) before subcommand
-    while (start < args.len) {
-        if (std.mem.eql(u8, args[start], "--target")) {
-            if (start + 1 >= args.len) fatal("--target requires a PID value");
-            target_pid = std.fmt.parseInt(u32, args[start + 1], 10) catch fatal("invalid --target PID");
-            start += 2;
-        } else if (std.mem.eql(u8, args[start], "--session") or std.mem.eql(u8, args[start], "-s")) {
-            if (start + 1 >= args.len) fatal("--session requires a session ID");
-            target_session = std.fmt.parseInt(u32, args[start + 1], 10) catch fatal("invalid --session ID");
-            start += 2;
-        } else if (std.mem.eql(u8, args[start], "--json")) {
+    // Global flags (--target, --json, -s/--session) are position-independent:
+    // strip them from argv wherever they appear, capturing their values, then
+    // dispatch on what's left. This lets `attyx send-text "hi" -s 3` and
+    // `attyx -s 3 send-text "hi"` behave identically.
+    var fbuf: [128][:0]const u8 = undefined;
+    var flen: usize = 0;
+    fbuf[flen] = args[0]; // keep argv[0] (program name)
+    flen += 1;
+    var fi: usize = 1;
+    while (fi < args.len) {
+        const a = args[fi];
+        if (std.mem.eql(u8, a, "--target")) {
+            if (fi + 1 >= args.len) fatal("--target requires a PID value");
+            target_pid = std.fmt.parseInt(u32, args[fi + 1], 10) catch fatal("invalid --target PID");
+            fi += 2;
+        } else if (std.mem.eql(u8, a, "--session") or std.mem.eql(u8, a, "-s")) {
+            if (fi + 1 >= args.len) fatal("--session requires a session ID");
+            target_session = std.fmt.parseInt(u32, args[fi + 1], 10) catch fatal("invalid --session ID");
+            fi += 2;
+        } else if (std.mem.eql(u8, a, "--json")) {
             json_output = true;
-            start += 1;
-        } else break;
+            fi += 1;
+        } else {
+            if (flen < fbuf.len) {
+                fbuf[flen] = a;
+                flen += 1;
+            }
+            fi += 1;
+        }
     }
+    const fargs = fbuf[0..flen];
 
-    if (start >= args.len) {
+    if (fargs.len < 2) {
         printUsage();
         return null;
     }
 
-    const sub = args[start];
+    const start: usize = 1;
+    const sub = fargs[start];
 
     if (isHelp(sub)) showHelp(help.top_level);
 
     const result: ?IpcRequest = blk: {
-        if (std.mem.eql(u8, sub, "tab")) break :blk parseTab(args, start, target_pid, json_output);
-        if (std.mem.eql(u8, sub, "split")) break :blk parseSplit(args, start, target_pid, json_output);
-        if (std.mem.eql(u8, sub, "focus")) break :blk parseFocus(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "tab")) break :blk parseTab(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "split")) break :blk parseSplit(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "focus")) break :blk parseFocus(fargs, start, target_pid, json_output);
 
         if (std.mem.eql(u8, sub, "send-keys") or std.mem.eql(u8, sub, "send-text")) {
-            if (hasHelp(args, start)) showHelp(help.send_keys);
-            break :blk parseSendText(args, start, target_pid, json_output);
+            if (hasHelp(fargs, start)) showHelp(help.send_keys);
+            break :blk parseSendText(fargs, start, target_pid, json_output);
         }
         if (std.mem.eql(u8, sub, "get-text")) {
-            if (hasHelp(args, start)) showHelp(help.get_text);
+            if (hasHelp(fargs, start)) showHelp(help.get_text);
             var gt_result = IpcRequest{ .command = .get_text, .target_pid = target_pid, .json_output = json_output };
             var gi = start + 1;
-            while (gi < args.len) {
-                if (std.mem.eql(u8, args[gi], "--pane") or std.mem.eql(u8, args[gi], "-p")) {
-                    if (gi + 1 >= args.len) fatal("--pane requires a pane ID");
+            while (gi < fargs.len) {
+                if (std.mem.eql(u8, fargs[gi], "--pane") or std.mem.eql(u8, fargs[gi], "-p")) {
+                    if (gi + 1 >= fargs.len) fatal("--pane requires a pane ID");
                     gi += 1;
-                    parsePaneArg(args[gi], &gt_result);
-                } else if (std.mem.eql(u8, args[gi], "--lines") or std.mem.eql(u8, args[gi], "-n")) {
-                    if (gi + 1 >= args.len) fatal("--lines requires a count");
+                    parsePaneArg(fargs[gi], &gt_result);
+                } else if (std.mem.eql(u8, fargs[gi], "--lines") or std.mem.eql(u8, fargs[gi], "-n")) {
+                    if (gi + 1 >= fargs.len) fatal("--lines requires a count");
                     gi += 1;
-                    const n = std.fmt.parseInt(u32, args[gi], 10) catch fatal("--lines: invalid count");
+                    const n = std.fmt.parseInt(u32, fargs[gi], 10) catch fatal("--lines: invalid count");
                     if (n == 0) fatal("--lines: count must be >= 1");
                     gt_result.lines = n;
                 }
@@ -204,35 +220,35 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
             break :blk gt_result;
         }
         if (std.mem.eql(u8, sub, "reload")) {
-            if (hasHelp(args, start)) showHelp(help.reload);
+            if (hasHelp(fargs, start)) showHelp(help.reload);
             break :blk .{ .command = .config_reload, .target_pid = target_pid, .json_output = json_output };
         }
         if (std.mem.eql(u8, sub, "theme")) {
-            if (hasHelp(args, start)) showHelp(help.theme);
-            if (start + 1 >= args.len) {
+            if (hasHelp(fargs, start)) showHelp(help.theme);
+            if (start + 1 >= fargs.len) {
                 printHelp(help.theme);
                 break :blk null;
             }
-            break :blk .{ .command = .theme_set, .text_arg = args[start + 1], .target_pid = target_pid, .json_output = json_output };
+            break :blk .{ .command = .theme_set, .text_arg = fargs[start + 1], .target_pid = target_pid, .json_output = json_output };
         }
-        if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(args, start, target_pid, json_output);
-        if (std.mem.eql(u8, sub, "popup")) break :blk parsePopup(args, start, target_pid, json_output);
-        if (std.mem.eql(u8, sub, "list")) break :blk parseList(args, start, target_pid, json_output);
-        if (std.mem.eql(u8, sub, "session")) break :blk parseSession(args, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "popup")) break :blk parsePopup(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "list")) break :blk parseList(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "session")) break :blk parseSession(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "run")) {
-            if (hasHelp(args, start)) showHelp(help.run);
-            if (start + 1 >= args.len) {
+            if (hasHelp(fargs, start)) showHelp(help.run);
+            if (start + 1 >= fargs.len) {
                 printHelp(help.run);
                 break :blk null;
             }
             var run_cmd: []const u8 = "";
             var run_wait = false;
             var ri = start + 1;
-            while (ri < args.len) {
-                if (std.mem.eql(u8, args[ri], "--wait") or std.mem.eql(u8, args[ri], "-w")) {
+            while (ri < fargs.len) {
+                if (std.mem.eql(u8, fargs[ri], "--wait") or std.mem.eql(u8, fargs[ri], "-w")) {
                     run_wait = true;
                 } else if (run_cmd.len == 0) {
-                    run_cmd = args[ri];
+                    run_cmd = fargs[ri];
                 }
                 ri += 1;
             }

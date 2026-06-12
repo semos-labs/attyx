@@ -118,7 +118,7 @@ pub fn sendCommand(
     };
 }
 
-fn connectToSocket(path: []const u8) !posix.fd_t {
+pub fn connectToSocket(path: []const u8) !posix.fd_t {
     if (comptime is_windows) {
         return client_win.connectPipe(path);
     } else {
@@ -149,6 +149,16 @@ pub fn run(args: []const [:0]const u8) void {
         // parse() already printed usage/error
         std.process.exit(1);
     };
+
+    // Headless session routing: when -s/--session targets a session, a few
+    // commands run directly against that session in the daemon, regardless of
+    // which window (if any) is attached. This lets background agents drive
+    // their own session without switching what any window shows.
+    const client_daemon = @import("client_daemon.zig");
+    if (parsed.target_session != 0 and client_daemon.isRoutable(parsed.command)) {
+        client_daemon.run(parsed);
+        return;
+    }
 
     // Discover socket early — needed for both paths
     var sock_buf: [256]u8 = undefined;

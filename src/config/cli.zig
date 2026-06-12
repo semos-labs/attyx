@@ -388,6 +388,7 @@ fn isIpcSubcommand(arg: []const u8) bool {
         "scroll-to", "list",      "session",    "popup",  "run",
         "--target", // --target <pid> before subcommand
         "--json", // --json before subcommand
+        "-s",      "--session", // -s/--session <id> before subcommand
     };
     for (ipc_subs) |s| {
         if (std.mem.eql(u8, arg, s)) return true;

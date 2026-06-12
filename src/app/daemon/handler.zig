@@ -10,6 +10,7 @@ const DaemonPane = @import("pane.zig").DaemonPane;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
+const handler_ctl = @import("handler_ctl.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -48,6 +49,10 @@ pub fn handleMessage(
         .move_panes => handleMovePanes(cl, msg.payload, sessions, clients),
         .set_theme_colors => handleSetThemeColors(cl, msg.payload, sessions),
         .get_scrollback_range => handleGetScrollbackRange(cl, msg.payload, sessions),
+
+        // Headless control channel: operate on a target session directly,
+        // independent of attachment (background agents drive their own session).
+        .ctl_request => handler_ctl.handle(cl, msg.payload, sessions, next_pane_id, allocator, clients),
 
         // Ignore server→client messages
         else => {},

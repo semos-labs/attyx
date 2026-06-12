@@ -274,8 +274,11 @@ pub fn doSessionCreate(ctx: *PtyThreadCtx, cwd: []const u8) void {
         logging.err("session-picker", "create failed: {}", .{err});
         return;
     };
-    doSessionSwitch(ctx, new_id);
+    // Log before switching: doSessionSwitch re-attaches and can invalidate the
+    // buffer `cwd` aliases (e.g. a pane's daemon fg_cwd), so reading it after
+    // the switch is a use-after-free.
     logging.info("session-picker", "created session {d} in {s}", .{ new_id, cwd });
+    doSessionSwitch(ctx, new_id);
 }
 
 /// Create a new session directly (from keybind, without picker).

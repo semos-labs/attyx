@@ -39,6 +39,11 @@ pub const MessageType = enum(u8) {
     get_scrollback_range = 0x13,
     search_pane = 0x14,
 
+    /// Headless control channel: the CLI drives a specific session directly
+    /// in the daemon, with no window attached. Carries an inner op + target
+    /// session. See CtlOp / encodeCtlRequest.
+    ctl_request = 0x15,
+
     // Daemon → Client
     created = 0x81,
     session_list = 0x82,
@@ -73,6 +78,9 @@ pub const MessageType = enum(u8) {
     /// (OSC 7337;agent-status). Client's engine is passive in grid-sync, so
     /// the status has to be propagated explicitly — same as pane_title.
     pane_agent_status = 0x97,
+
+    /// Reply to a ctl_request: [status:u8 (0=ok, 1=err)][body...].
+    ctl_response = 0x98,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -166,6 +174,74 @@ pub fn encodeError(buf: []u8, code: u8, msg: []const u8) ![]u8 {
     std.mem.writeInt(u16, buf[1..3], msg_len, .little);
     @memcpy(buf[3 .. 3 + msg_len], msg[0..msg_len]);
     return buf[0..total];
+}
+
+// ── Headless control channel (ctl_request / ctl_response) ──
+//
+// Lets the CLI drive one session directly in the daemon with no window
+// attached, so background agents can read/write their own session
+// independently. Request payload:
+//   [target_session:u32 LE][op:u8][op_body...]
+// Response payload (ctl_response):
+//   [status:u8 (0=ok, 1=err)][body...]
+
+/// Control ops carried inside a ctl_request.
+pub const CtlOp = enum(u8) {
+    /// op_body: [pane_id:u32 LE (0 = first pane)][bytes...] — written to the
+    /// pane's PTY input.
+    write_input = 0x01,
+    /// op_body: [pane_id:u32 LE (0 = first pane)][lines:u32 LE (0 = visible
+    /// screen)] — replies with the rendered screen/scrollback text.
+    get_text = 0x02,
+    /// op_body: [kind:u8] — 0 = tabs+panes, 1 = tabs only, 2 = panes only.
+    /// Replies with a tab/pane listing built from the session's layout.
+    list = 0x03,
+    /// op_body: [cmd...] (optional) — spawns a new pane as a new tab. With a
+    /// command, runs it like `attyx run`; otherwise a plain shell. Replies with
+    /// the new pane's id as decimal text.
+    tab_create = 0x04,
+    /// op_body: [index:u8] (1-based) — make that tab active.
+    tab_select = 0x05,
+    /// op_body: none — activate the next tab (wraps).
+    tab_next = 0x06,
+    /// op_body: none — activate the previous tab (wraps).
+    tab_prev = 0x07,
+    /// op_body: [dir:u8 (0=vertical, 1=horizontal)][cmd...] — split the active
+    /// tab's focused pane, spawning a new pane. Replies with the new pane id.
+    split = 0x08,
+    /// op_body: [pane_id:u32] (0 = focused pane) — close that pane.
+    pane_close = 0x09,
+    /// op_body: none — rotate the active tab's panes by one position.
+    pane_rotate = 0x0A,
+    /// op_body: [tab_idx:u8] (0xFF = active, else 0-based) — close that tab.
+    tab_close = 0x0B,
+    /// op_body: [dir:u8 (0=left, 1=right)] — move the active tab one slot.
+    tab_move = 0x0C,
+    /// op_body: [tab_idx:u8 (0xFF = active)][name...] — rename that tab.
+    tab_rename = 0x0D,
+};
+
+/// `list` ctl op kinds (first byte of op_body).
+pub const CtlListKind = enum(u8) { all = 0, tabs = 1, panes = 2 };
+
+pub const CtlRequest = struct { target_session: u32, op: u8, body: []const u8 };
+
+pub fn encodeCtlRequest(buf: []u8, target_session: u32, op: u8, body: []const u8) ![]u8 {
+    const total = 5 + body.len;
+    if (buf.len < total) return error.BufferTooSmall;
+    std.mem.writeInt(u32, buf[0..4], target_session, .little);
+    buf[4] = op;
+    @memcpy(buf[5 .. 5 + body.len], body);
+    return buf[0..total];
+}
+
+pub fn decodeCtlRequest(payload: []const u8) !CtlRequest {
+    if (payload.len < 5) return error.PayloadTooShort;
+    return .{
+        .target_session = std.mem.readInt(u32, payload[0..4], .little),
+        .op = payload[4],
+        .body = payload[5..],
+    };
 }
 
 // ── Decode helpers ──
@@ -1126,4 +1202,18 @@ test "hello decode accepts legacy payload without caps" {
     const msg = try decodeHello(buf[0 .. 1 + v.len]);
     try std.testing.expectEqualStrings("legacy", msg.version);
     try std.testing.expectEqual(@as(u32, 0), msg.caps);
+}
+
+test "ctl_request round-trip" {
+    var buf: [64]u8 = undefined;
+    const body = [_]u8{ 7, 0, 0, 0, 'h', 'i' }; // pane_id=7, bytes="hi"
+    const payload = try encodeCtlRequest(&buf, 42, @intFromEnum(CtlOp.write_input), &body);
+    const req = try decodeCtlRequest(payload);
+    try std.testing.expectEqual(@as(u32, 42), req.target_session);
+    try std.testing.expectEqual(@intFromEnum(CtlOp.write_input), req.op);
+    try std.testing.expectEqualSlices(u8, &body, req.body);
+}
+
+test "decodeCtlRequest rejects short payload" {
+    try std.testing.expectError(error.PayloadTooShort, decodeCtlRequest(&[_]u8{ 1, 2, 3 }));
 }

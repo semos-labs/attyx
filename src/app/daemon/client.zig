@@ -222,6 +222,19 @@ pub const DaemonClient = struct {
         self.sendRaw(m);
     }
 
+    /// Reply to a headless ctl_request. Framed as a separate header + status
+    /// byte + body so large get_text bodies don't need a contiguous buffer.
+    pub fn sendCtlResponse(self: *DaemonClient, status: u8, body: []const u8) void {
+        const payload_len: u32 = @intCast(1 + body.len);
+        var hdr: [protocol.header_size]u8 = undefined;
+        protocol.encodeHeader(&hdr, .ctl_response, payload_len);
+        self.sendRaw(&hdr);
+        if (self.dead) return;
+        self.sendRaw(&[_]u8{status});
+        if (self.dead) return;
+        if (body.len > 0) self.sendRaw(body);
+    }
+
     // sendSessionList removed — use sendSessionListFromSlots instead.
 
     /// Send replay data from a pane's ring buffer as pane_output messages.
