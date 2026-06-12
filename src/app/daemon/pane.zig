@@ -91,6 +91,12 @@ pub const DaemonPane = struct {
     /// Monotonic counter bumped when engine.feed dirties any row.
     engine_generation: u64 = 0,
 
+    /// Scrollback position for the headless IPC view, in rows back from the
+    /// live bottom (0 = live tail). Driven only by `attyx scroll-to -s N` and
+    /// read only by headless `get-text`; completely separate from any window's
+    /// viewport, so an agent scrolling never disturbs the user's view.
+    ipc_viewport_offset: usize = 0,
+
     /// Pending spawn params. When set, the PTY is inactive and the engine
     /// is null — the actual fork/exec runs on the first `resize()` call,
     /// using the resize dims so the shell's first prompt renders at the

@@ -219,10 +219,17 @@ pub const CtlOp = enum(u8) {
     tab_move = 0x0C,
     /// op_body: [tab_idx:u8 (0xFF = active)][name...] — rename that tab.
     tab_rename = 0x0D,
+    /// op_body: [pane_id:u32 (0 = first)][kind:u8] — move the IPC-private
+    /// scroll cursor for that pane. See CtlScrollKind. Does not touch any
+    /// window's viewport.
+    scroll = 0x0E,
 };
 
 /// `list` ctl op kinds (first byte of op_body).
 pub const CtlListKind = enum(u8) { all = 0, tabs = 1, panes = 2 };
+
+/// `scroll` ctl op kinds.
+pub const CtlScrollKind = enum(u8) { top = 0, bottom = 1, page_up = 2, page_down = 3 };
 
 pub const CtlRequest = struct { target_session: u32, op: u8, body: []const u8 };
 
