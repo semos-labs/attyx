@@ -169,22 +169,29 @@ fn ctl(
     return .{ .status = resp_buf[0], .body = resp_buf[1..plen] };
 }
 
+const ReadTimeoutError = error{ Timeout, ReadFailed };
+
 /// Like protocol.readExact but bounded: poll for readability before each read
 /// so an unresponsive (or outdated) daemon yields error.Timeout rather than
-/// blocking forever. Falls back to the blocking read on Windows named pipes.
-fn readExactTimeout(fd: std.posix.fd_t, out: []u8, timeout_ms: i32) !void {
-    if (comptime builtin.os.tag == .windows) return io.readExact(fd, out);
+/// blocking forever. Falls back to a blocking read on Windows named pipes (the
+/// explicit error set keeps Timeout in `ctl`'s signature on every platform so
+/// ctlOrExit's switch compiles).
+fn readExactTimeout(fd: std.posix.fd_t, out: []u8, timeout_ms: i32) ReadTimeoutError!void {
+    if (comptime builtin.os.tag == .windows) {
+        io.readExact(fd, out) catch return error.ReadFailed;
+        return;
+    }
     const POLLIN: i16 = 0x0001;
     var total: usize = 0;
     while (total < out.len) {
         var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = POLLIN, .revents = 0 }};
-        const ready = std.posix.poll(&fds, timeout_ms) catch return error.SocketError;
+        const ready = std.posix.poll(&fds, timeout_ms) catch return error.ReadFailed;
         if (ready == 0) return error.Timeout;
         const n = std.posix.read(fd, out[total..]) catch |err| switch (err) {
             error.WouldBlock => continue,
-            else => return err,
+            else => return error.ReadFailed,
         };
-        if (n == 0) return error.ConnectionClosed;
+        if (n == 0) return error.ReadFailed;
         total += n;
     }
 }
