@@ -515,6 +515,8 @@ fn parseScrollTo(args: []const [:0]const u8, start: usize, target_pid: ?u32, jso
     const pos = args[start + 1];
     if (std.mem.eql(u8, pos, "top")) return .{ .command = .scroll_to_top, .target_pid = target_pid, .json_output = json_output };
     if (std.mem.eql(u8, pos, "bottom")) return .{ .command = .scroll_to_bottom, .target_pid = target_pid, .json_output = json_output };
+    if (std.mem.eql(u8, pos, "page-up")) return .{ .command = .scroll_page_up, .target_pid = target_pid, .json_output = json_output };
+    if (std.mem.eql(u8, pos, "page-down")) return .{ .command = .scroll_page_down, .target_pid = target_pid, .json_output = json_output };
     std.debug.print("error: unknown position '{s}'\n\n", .{pos});
     printHelp(help.scroll_to);
     return null;

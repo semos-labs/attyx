@@ -59,6 +59,7 @@ pub fn handle(
         .tab_close => handler_ctl_layout.tabClose(cl, session, req.body, clients),
         .tab_move => handler_ctl_layout.tabMove(cl, session, req.body, clients),
         .tab_rename => handler_ctl_layout.tabRename(cl, session, req.body, clients),
+        .scroll => handleScroll(cl, session, req.body),
     }
 }
 
@@ -79,6 +80,49 @@ fn handleWriteInput(cl: *DaemonClient, session: *DaemonSession, body: []const u8
         return;
     };
     cl.sendCtlResponse(0, "");
+}
+
+/// Move a pane's IPC-private scroll cursor. body = [pane_id:u32][kind:u8].
+/// This only affects what headless get-text returns — never a window's view.
+fn handleScroll(cl: *DaemonClient, session: *DaemonSession, body: []const u8) void {
+    if (body.len < 5) {
+        cl.sendCtlResponse(1, "invalid scroll request");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, body[0..4], .little);
+    const kind = std.meta.intToEnum(protocol.CtlScrollKind, body[4]) catch {
+        cl.sendCtlResponse(1, "invalid scroll kind");
+        return;
+    };
+    const pane = selectPane(session, pane_id) orelse {
+        cl.sendCtlResponse(1, "pane not found");
+        return;
+    };
+    ensureActive(pane, session);
+    const eng = pane.engine orelse {
+        cl.sendCtlResponse(1, "pane has no screen yet");
+        return;
+    };
+    const sb = eng.state.ring.scrollbackCount();
+    const page = eng.state.ring.screen_rows;
+    const off = computeScrollOffset(kind, pane.ipc_viewport_offset, sb, page);
+    pane.ipc_viewport_offset = off;
+
+    var reply_buf: [16]u8 = undefined;
+    const reply = std.fmt.bufPrint(&reply_buf, "{d}", .{off}) catch "";
+    cl.sendCtlResponse(0, reply);
+}
+
+/// Pure scroll-offset transition (rows back from the live bottom), clamped to
+/// the available scrollback. `page` is the screen height.
+fn computeScrollOffset(kind: protocol.CtlScrollKind, cur: usize, sb: usize, page: usize) usize {
+    const off = @min(cur, sb);
+    return switch (kind) {
+        .top => sb,
+        .bottom => 0,
+        .page_up => @min(off + page, sb),
+        .page_down => if (off >= page) off - page else 0,
+    };
 }
 
 fn handleGetText(
@@ -105,11 +149,13 @@ fn handleGetText(
 
     // Same row selection + trailing-whitespace trim as the window-side
     // get-text (handler_query.writeScreenText), but against the daemon's
-    // own engine grid.
+    // own engine grid. The visible-screen view (lines == 0) follows the
+    // IPC scroll cursor; an explicit --lines range is always tail-relative.
     const ring = &eng.state.ring;
     const cols = ring.cols;
     const total_rows: usize = if (lines == 0) ring.screen_rows else @min(@as(usize, lines), ring.count);
-    const start_abs: usize = if (lines == 0) ring.scrollbackCount() else ring.count - total_rows;
+    const scroll_off = @min(pane.ipc_viewport_offset, ring.scrollbackCount());
+    const start_abs: usize = if (lines == 0) ring.scrollbackCount() - scroll_off else ring.count - total_rows;
 
     const max_row_bytes = cols * 4 + 1;
     const buf_size = total_rows * max_row_bytes + 64;
@@ -287,4 +333,22 @@ fn setNonBlocking(fd: std.posix.fd_t) void {
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;
     _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
+}
+
+test "computeScrollOffset transitions and clamps" {
+    const sb: usize = 100;
+    const page: usize = 24;
+    // page-up accumulates and clamps at sb
+    try std.testing.expectEqual(@as(usize, 24), computeScrollOffset(.page_up, 0, sb, page));
+    try std.testing.expectEqual(@as(usize, 48), computeScrollOffset(.page_up, 24, sb, page));
+    try std.testing.expectEqual(sb, computeScrollOffset(.page_up, 90, sb, page));
+    // page-down decrements and floors at 0
+    try std.testing.expectEqual(@as(usize, 0), computeScrollOffset(.page_down, 24, sb, page));
+    try std.testing.expectEqual(@as(usize, 0), computeScrollOffset(.page_down, 10, sb, page));
+    try std.testing.expectEqual(@as(usize, 76), computeScrollOffset(.page_down, 100, sb, page));
+    // top / bottom are absolute
+    try std.testing.expectEqual(sb, computeScrollOffset(.top, 0, sb, page));
+    try std.testing.expectEqual(@as(usize, 0), computeScrollOffset(.bottom, sb, sb, page));
+    // a stale offset beyond sb is clamped to sb before stepping
+    try std.testing.expectEqual(sb, computeScrollOffset(.page_up, 999, sb, page));
 }

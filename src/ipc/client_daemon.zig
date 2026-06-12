@@ -32,6 +32,7 @@ pub fn isRoutable(cmd: IpcCommand) bool {
         .tab_create, .tab_select, .tab_next, .tab_prev => true,
         .tab_close, .tab_move_left, .tab_move_right, .tab_rename => true,
         .split_vertical, .split_horizontal, .split_close, .split_rotate => true,
+        .scroll_to_top, .scroll_to_bottom, .scroll_page_up, .scroll_page_down => true,
         // Routed only to emit a clear "not headless" message (see run()).
         .split_zoom => true,
         else => false,
@@ -62,6 +63,10 @@ pub fn run(parsed: IpcRequest) void {
         .tab_move_left => simpleOk(sock, parsed, .tab_move, &[_]u8{0}),
         .tab_move_right => simpleOk(sock, parsed, .tab_move, &[_]u8{1}),
         .tab_rename => tabRename(sock, parsed),
+        .scroll_to_top => scroll(sock, parsed, 0),
+        .scroll_to_bottom => scroll(sock, parsed, 1),
+        .scroll_page_up => scroll(sock, parsed, 2),
+        .scroll_page_down => scroll(sock, parsed, 3),
         // Zoom is a per-window view state (not part of the session's layout),
         // so it has no headless meaning.
         .split_zoom => {
@@ -70,6 +75,15 @@ pub fn run(parsed: IpcRequest) void {
         },
         else => unreachable, // guarded by isRoutable
     }
+}
+
+/// Move the session's IPC-private scroll cursor (kind: 0=top, 1=bottom,
+/// 2=page-up, 3=page-down). Silent on success, like the window-side scroll-to.
+fn scroll(sock: []const u8, parsed: IpcRequest, kind: u8) void {
+    var body: [5]u8 = undefined;
+    std.mem.writeInt(u32, body[0..4], parsed.pane_id, .little); // 0 = first pane
+    body[4] = kind;
+    simpleOk(sock, parsed, .scroll, &body);
 }
 
 fn tabRename(sock: []const u8, parsed: IpcRequest) void {
