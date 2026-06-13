@@ -381,6 +381,13 @@ fn handleFocusPanes(
                     if (pane.engine.?.state.title) |t| {
                         cl.sendPaneTitle(pane.id, t);
                     }
+                    // Ship the current agent status too. The engine is
+                    // passive in grid-sync mode and won't see the OSC 7337
+                    // bytes, so without this the indicator is missing after
+                    // a session switch or on first focus of a busy pane.
+                    if (pane.engine.?.state.agent_status != .none) {
+                        cl.sendPaneAgentStatus(pane.id, @intFromEnum(pane.engine.?.state.agent_status), pane.engine.?.state.agentMsg());
+                    }
                     // And the current OSC 7 cwd so actions like "new tab
                     // from this pane's cwd" work immediately. Prefer the
                     // cached fg_cwd (populated by the periodic tick — which
