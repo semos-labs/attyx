@@ -9,6 +9,9 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
+const event_loop = @import("event_loop.zig");
+const session_actions = @import("session_actions.zig");
+const SessionClient = @import("../session_client.zig").SessionClient;
 const ai = @import("ai.zig");
 const toast = attyx.overlay_toast;
 const session_picker_ui = @import("session_picker_ui.zig");
@@ -39,26 +42,12 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     const pty_cols: u16 = @intCast(pty_cols_i);
     const left_off_u16: u16 = @intCast(@max(0, terminal.g_grid_left_offset));
 
-    // Drain in-flight daemon data at the OLD grid size for the active
-    // pane BEFORE resizing.  Old-size output must be processed
-    // against old dimensions to avoid cursor/wrapping corruption.
+    // Drain in-flight daemon data at the OLD grid size BEFORE resizing.
+    // Old-size output must be processed against old dimensions to avoid
+    // cursor/wrapping corruption.
     if (ctx.session_client) |sc| {
         _ = sc.recvData();
-        while (sc.readMessage()) |msg| {
-            switch (msg) {
-                .pane_output => |out| {
-                    const rpane = ctx.tab_mgr.activePane();
-                    if (rpane.daemon_pane_id) |dpid| {
-                        if (dpid == out.pane_id) {
-                            ctx.session.appendOutput(out.data);
-                            rpane.engine.feed(out.data);
-                            _ = rpane.engine.state.drainResponse();
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
+        drainPreResize(ctx, sc);
     }
 
     ctx.tab_mgr.resizeAll(pty_rows, pty_cols);
@@ -161,3 +150,33 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
     publish.publishState(ctx);
     c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
 }
+
+/// Drain all buffered daemon messages before a resize, routing each through the
+/// same handling as the main event loop.
+///
+/// Every message in the socket buffer is consumed (`readMessage` is
+/// destructive), so anything not handled here is lost.  The previous version
+/// only acted on `pane_output` and dropped the rest — a focus-reply
+/// `grid_snapshot` (the only thing that fills a freshly-switched session's
+/// empty engine) or a `replay_end` (which swaps the shadow engine in and
+/// clears `needs_engine_reinit`) that happened to land during a resize was
+/// silently discarded, stranding the pane blank.  Resizes fire constantly
+/// during a session switch (WM retile, the switch nudging geometry), so this
+/// was the cause of the "switch + resize → blank screen" bug.
+pub fn drainPreResize(ctx: *PtyThreadCtx, sc: *SessionClient) void {
+    while (sc.readMessage()) |msg| {
+        // Content messages (pane_output → shadow when reinitializing,
+        // grid_snapshot, scrollback, title/cwd/etc.) apply to the pane.
+        if (event_loop.applyDaemonContentMessage(ctx, msg)) continue;
+        // Loop-control messages the helper doesn't own.
+        switch (msg) {
+            .replay_end => |pane_id| _ = event_loop.handleReplayEnd(ctx, pane_id),
+            .layout_sync => |sync| session_actions.handleLayoutSync(ctx, sync.layout),
+            else => {},
+        }
+    }
+}
+
+// Tests live in resize_test.zig. The resize↔event_loop import cycle keeps the
+// usual in-file `test { _ = @import(...) }` from being collected, so the test
+// file is aggregated from main.zig's test block instead.
