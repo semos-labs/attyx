@@ -339,6 +339,9 @@ test {
     _ = @import("ipc/client.zig");
     if (!is_windows) {
         _ = @import("app/daemon/session_test.zig");
+        // resize.zig forms an import cycle with event_loop.zig, which keeps its
+        // in-file `test {}` from being collected; aggregate it here instead.
+        _ = @import("app/ui/resize_test.zig");
     }
 }
 

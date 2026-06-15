@@ -996,35 +996,9 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         }
                     },
                     .replay_end => |pane_id| {
-                        if (findPaneByDaemonId(ctx, pane_id)) |result| {
-                            // Atomic swap: shadow engine (with fully
-                            // replayed state) replaces the live engine in
-                            // one step.  Mark all rows dirty and force a
-                            // full redraw so the renderer lands on the new
-                            // frame on its very next tick — single clean
-                            // transition, no intermediate states visible.
-                            if (result.pane.shadow_engine) |shadow| {
-                                var old_engine = result.pane.engine;
-                                result.pane.engine = shadow;
-                                result.pane.shadow_engine = null;
-                                old_engine.deinit();
-                                result.pane.needs_engine_reinit = false;
-                                result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
-                                if (result.tab_idx == ctx.tab_mgr.active) {
-                                    got_data = true;
-                                    actions.g_force_full_redraw = true;
-                                }
-                            }
-                            // Windows still col-nudges to force repaint;
-                            // restore dims here.  POSIX uses SIGWINCH at
-                            // current dims so no restore needed.
-                            if (@import("builtin").os.tag == .windows) {
-                                const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
-                                const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
-                                if (ctx.session_client) |scc| {
-                                    scc.sendPaneResize(pane_id, rows, cols) catch {};
-                                }
-                            }
+                        if (handleReplayEnd(ctx, pane_id)) {
+                            got_data = true;
+                            actions.g_force_full_redraw = true;
                         }
                     },
                     .layout_sync => |sync| {
@@ -1922,15 +1896,47 @@ fn applyScrollbackChunk(ctx: *PtyThreadCtx, payload: []const u8) u16 {
     return applied;
 }
 
+/// Finalize a scrollback replay for `pane_id`: atomically swap the fully
+/// replayed shadow engine into the live slot, clear the reinit flag, and mark
+/// the new frame dirty.  Returns true when the swapped pane is on the active
+/// tab (caller should force a redraw).  Shared by the main event loop and the
+/// pre-resize drain so a `replay_end` that lands during a resize isn't lost —
+/// dropping it would strand the pane in `needs_engine_reinit`, routing all
+/// future output into the shadow engine and leaving the live pane blank.
+pub fn handleReplayEnd(ctx: *PtyThreadCtx, pane_id: u32) bool {
+    const result = findPaneByDaemonId(ctx, pane_id) orelse return false;
+    var on_active = false;
+    if (result.pane.shadow_engine) |shadow| {
+        var old_engine = result.pane.engine;
+        result.pane.engine = shadow;
+        result.pane.shadow_engine = null;
+        old_engine.deinit();
+        result.pane.needs_engine_reinit = false;
+        result.pane.engine.state.dirty.markAll(result.pane.engine.state.ring.screen_rows);
+        on_active = (result.tab_idx == ctx.tab_mgr.active);
+    }
+    // Windows still col-nudges to force repaint; restore dims here.  POSIX
+    // uses SIGWINCH at current dims so no restore needed.
+    if (@import("builtin").os.tag == .windows) {
+        const rows: u16 = @intCast(result.pane.engine.state.ring.screen_rows);
+        const cols: u16 = @intCast(result.pane.engine.state.ring.cols);
+        if (ctx.session_client) |scc| {
+            scc.sendPaneResize(pane_id, rows, cols) catch {};
+        }
+    }
+    return on_active;
+}
+
 /// Apply a daemon → client "content" message (cells, scrollback, title,
 /// cwd, proc name, byte-stream output) to the appropriate pane. Returns
 /// true if the message was a content message (handled) — false for
 /// loop-control messages (pane_died, replay_end, layout_sync) which
 /// the caller must handle itself.
 ///
-/// Shared between the startup drain loop and the main event loop so
-/// metadata messages that arrive during startup don't get dropped.
-fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client.zig").DaemonMessage) bool {
+/// Shared between the startup drain loop, the main event loop, and the
+/// pre-resize drain so metadata messages that arrive during those windows
+/// don't get dropped.
+pub fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_client.zig").DaemonMessage) bool {
     switch (msg) {
         .pane_output => |out| {
             if (findPaneByDaemonId(ctx, out.pane_id)) |result| {
