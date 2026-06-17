@@ -327,10 +327,8 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
         return YES;
     }
 
-    // Ctrl+key or Alt+key with a character. When Option does NOT act as Alt
-    // (the default), let the key fall through to interpretKeyEvents so macOS
-    // composes the layout's character (e.g. Option+ñ → ~) instead of emitting
-    // an ESC-prefixed Meta sequence.
+    // Ctrl+key or Alt+key with a character: emit the base character so the
+    // encoder can control-map it or prefix it with ESC (Meta).
     if (ctrl || optionActsAsAlt(flags)) {
         NSString* chars = event.charactersIgnoringModifiers;
         if (chars.length > 0) {
@@ -339,6 +337,32 @@ static void eventToKeyCombo(NSEvent* event, uint16_t* outKey, uint32_t* outCp) {
             return YES;
         }
         if (ctrl) return YES;
+    }
+
+    // Option held but NOT acting as Alt: macOS has already composed the layout
+    // character (Option+2 → @, Option+ç → }, … on a Spanish layout). Send the
+    // composed `characters` straight to the PTY. Relying on interpretKeyEvents
+    // here proved unreliable — Option-modified keys produced no insertText: at
+    // all, so nothing reached the terminal. Dead keys (e.g. the tilde on
+    // Option+ñ) report empty `characters`; fall through to interpretKeyEvents so
+    // their marked-text composition still works. Skip when an overlay consumer
+    // (search bar, AI prompt, pickers) is active — those receive text via
+    // insertText: and must not have it diverted to the PTY.
+    if ((flags & NSEventModifierFlagOption) && !cmd && !optionActsAsAlt(flags) &&
+        !g_search_active && !g_ai_prompt_active &&
+        !g_session_picker_active && !g_command_palette_active &&
+        !g_theme_picker_active && !g_tab_picker_active) {
+        NSString* composed = event.characters;
+        NSUInteger blen = [composed lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        if (blen > 0) {
+            const char* utf8 = [composed UTF8String];
+            if (utf8) {
+                void (*send_fn)(const uint8_t*, int) =
+                    g_popup_active ? attyx_popup_send_input : attyx_send_input;
+                send_fn((const uint8_t*)utf8, (int)blen);
+                return YES;
+            }
+        }
     }
 
     return NO;

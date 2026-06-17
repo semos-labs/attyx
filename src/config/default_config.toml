@@ -147,7 +147,8 @@
 #           accented characters aren't typing correctly.
 # - "left"  Only the left Option key acts as Alt; the right one composes.
 # - "right" Only the right Option key acts as Alt; the left one composes.
-# Arrow-key word navigation (Option+←/→) works regardless of this setting.
+# Arrow-key word navigation (Option+←/→) and `alt+…` keybindings work
+# regardless of this setting, so you can keep your Alt hotkeys with false.
 # option_as_alt = true
 
 

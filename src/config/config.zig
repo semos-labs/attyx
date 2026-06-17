@@ -121,6 +121,16 @@ pub const OptionAsAlt = enum {
             .right => 3,
         };
     }
+
+    /// Render as the canonical config value (for --print-config).
+    pub fn toString(self: OptionAsAlt) []const u8 {
+        return switch (self) {
+            .none => "false",
+            .both => "true",
+            .left => "\"left\"",
+            .right => "\"right\"",
+        };
+    }
 };
 
 const keybinds = @import("keybinds.zig");
@@ -378,6 +388,9 @@ pub const AppConfig = struct {
             \\shape = "{s}"
             \\blink = {s}
             \\
+            \\[keyboard]
+            \\option_as_alt = {s}
+            \\
             \\[program]
             \\shell = "{s}"
             \\
@@ -392,6 +405,7 @@ pub const AppConfig = struct {
             if (self.reflow_enabled) "true" else "false",
             self.cursor_shape.toString(),
             if (self.cursor_blink) "true" else "false",
+            self.option_as_alt.toString(),
             self.program orelse if (comptime @import("builtin").os.tag == .windows) "cmd.exe" else (std.posix.getenv("SHELL") orelse "/bin/sh"),
         });
     }
