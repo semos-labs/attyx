@@ -11,6 +11,7 @@
 // with a watch_session, so no separate parking structure is needed.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const session_mod = @import("session.zig");
 const DaemonSession = session_mod.DaemonSession;
 const DaemonClient = @import("client.zig").DaemonClient;
@@ -56,12 +57,14 @@ fn sendOne(cl: *DaemonClient, session: *DaemonSession, pane: anytype, pane_id: u
     const eng = pane.engine orelse return;
     var json_buf: [1024]u8 = undefined;
     var stream = std.io.fixedBufferStream(&json_buf);
+    // No POSIX pty master fd on Windows → PID is unavailable (0 = unknown).
+    const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
     agents.writeAgentJson(
         stream.writer(),
         pane_id,
         tabIdForPane(session, pane_id),
         session.id,
-        agents.panePid(pane.pty.master),
+        pid,
         eng.state.agent_status,
         eng.state.agentMsg(),
     ) catch return;

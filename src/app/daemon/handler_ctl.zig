@@ -132,7 +132,8 @@ fn writeAgentRow(
     const eng = pane.engine orelse return;
     const status = eng.state.agent_status;
     if (status == .none) return;
-    const pid = agents.panePid(pane.pty.master);
+    // No POSIX pty master fd on Windows → PID is unavailable (0 = unknown).
+    const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
     if (as_json) {
         if (!first.*) w.writeAll(",") catch return;
         agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg()) catch return;
