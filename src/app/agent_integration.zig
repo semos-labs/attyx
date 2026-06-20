@@ -35,6 +35,10 @@ const EventSpec = struct { name: []const u8, matcher: ?[]const u8, state: []cons
 /// prompt shows normally. Notification's `notify` branch classifies the message
 /// into input vs idle.
 const claude_events = [_]EventSpec{
+    // Fires the instant Claude launches (and on resume/clear/compact), so the
+    // agent registers as idle immediately instead of staying invisible until the
+    // first prompt. Without this, no OSC is emitted until UserPromptSubmit/Stop.
+    .{ .name = "SessionStart", .matcher = null, .state = "idle" },
     .{ .name = "UserPromptSubmit", .matcher = null, .state = "working" },
     .{ .name = "PreToolUse", .matcher = "*", .state = "working" },
     .{ .name = "PermissionRequest", .matcher = null, .state = "input" },
@@ -226,13 +230,40 @@ fn groupIsAttyx(group: std.json.Value) bool {
     return false;
 }
 
-/// True when the file already contains every command we'd inject.
+/// True when the file already has our exact command under EVERY event.
+///
+/// This must check per-event, not via a global substring scan: several events
+/// share a command string (SessionStart and Stop both emit `… idle`), so a
+/// plain `indexOf` would report SessionStart as already present whenever Stop is
+/// — and a newly-added event would never be injected on upgrade. We parse and
+/// verify each event's array actually contains the command.
 fn hasAllCommands(a: std.mem.Allocator, content: []const u8, emitter_path: []const u8, events: []const EventSpec) bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, a, content, .{}) catch return false;
+    if (parsed.value != .object) return false;
+    const hooks_v = parsed.value.object.get("hooks") orelse return false;
+    if (hooks_v != .object) return false;
     for (events) |ev| {
+        const arr_v = hooks_v.object.get(ev.name) orelse return false;
+        if (arr_v != .array) return false;
         const command = std.fmt.allocPrint(a, "{s} {s}", .{ emitter_path, ev.state }) catch return false;
-        if (std.mem.indexOf(u8, content, command) == null) return false;
+        if (!eventHasCommand(arr_v.array, command)) return false;
     }
     return true;
+}
+
+/// True when any hook group in `groups` carries the exact command string.
+fn eventHasCommand(groups: std.json.Array, command: []const u8) bool {
+    for (groups.items) |group| {
+        if (group != .object) continue;
+        const ghooks = group.object.get("hooks") orelse continue;
+        if (ghooks != .array) continue;
+        for (ghooks.array.items) |h| {
+            if (h != .object) continue;
+            const cmd = h.object.get("command") orelse continue;
+            if (cmd == .string and std.mem.eql(u8, cmd.string, command)) return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,16 +419,17 @@ fn mergeToString(a: std.mem.Allocator, input: []const u8, emitter: []const u8) !
     return std.json.Stringify.valueAlloc(a, root.*, .{ .whitespace = .indent_2 });
 }
 
-test "merge into empty settings injects all five hooks" {
+test "merge into empty settings injects all lifecycle hooks" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const out = try mergeToString(a, "{}", "/E/attyx-agent-status");
-    for ([_][]const u8{ "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Notification", "Stop", "SessionEnd" }) |ev|
+    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Notification", "Stop", "SessionEnd" }) |ev|
         try testing.expect(std.mem.indexOf(u8, out, ev) != null);
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status working") != null);
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status notify") != null);
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status input") != null); // PermissionRequest
+    try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status idle") != null); // SessionStart/Stop
 }
 
 test "merge preserves unrelated settings and existing user hooks" {
@@ -447,6 +479,25 @@ test "hasAllCommands detects a fully-injected file" {
     const out = try mergeToString(a, "{}", "/E/attyx-agent-status");
     try testing.expect(hasAllCommands(a, out, "/E/attyx-agent-status", &claude_events));
     try testing.expect(!hasAllCommands(a, "{}", "/E/attyx-agent-status", &claude_events));
+}
+
+test "hasAllCommands requires the SessionStart event, not just the shared idle command" {
+    // Pre-upgrade file: has Stop (which emits the same `… idle` command) but no
+    // SessionStart. A substring scan would wrongly call this fully-injected and
+    // skip the merge, so SessionStart would never appear — the launch-detection
+    // regression. hasAllCommands must return false here.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pre_upgrade =
+        \\{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "/E/attyx-agent-status idle" } ] } ] } }
+    ;
+    try testing.expect(!hasAllCommands(a, pre_upgrade, "/E/attyx-agent-status", &claude_events));
+
+    // After a merge, the SessionStart event is present and the check passes.
+    const merged = try mergeToString(a, pre_upgrade, "/E/attyx-agent-status");
+    try testing.expect(hasAllCommands(a, merged, "/E/attyx-agent-status", &claude_events));
+    try testing.expect(std.mem.indexOf(u8, merged, "SessionStart") != null);
 }
 
 test "emitter script self-gates on ATTYX_PID and emits the OSC" {

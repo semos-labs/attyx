@@ -1,6 +1,6 @@
 ---
 name: attyx
-description: Control the Attyx terminal via IPC — manage splits, send input, read output, orchestrate panes. Use when the user asks to interact with terminal panes, run commands in splits, or coordinate multi-pane workflows.
+description: Control the Attyx terminal via IPC — manage splits, send input, read output, track and watch agent status, orchestrate panes. Use when the user asks to interact with terminal panes, run commands in splits, monitor AI agents running in panes, or coordinate multi-pane workflows.
 allowed-tools: Bash
 argument-hint: [action] [args...]
 ---
@@ -269,6 +269,72 @@ Without `--pane`, `send-keys` and `get-text` operate on the focused pane:
 2. Do your `send-keys` / `get-text`
 3. Focus back if needed
 
+## Tracking Agents — Status & Watching
+
+Attyx tracks the run state of AI agents (Claude Code, Codex, etc.) running inside panes. An agent reports one of four states:
+
+| State | Meaning |
+|-------|---------|
+| `idle` | Parked, waiting for the next prompt |
+| `working` | Actively processing a request |
+| `input` | Blocked on you (a permission prompt or question) |
+| `none` | No agent running, or the agent's session ended |
+
+### Listing active agents — `list agents`
+`attyx list agents` lists every pane currently running an agent (any state except `none`). Use `--json` for a machine-readable array:
+
+```bash
+attyx list agents
+# pane_id  tab_id  session  pid    state    message
+# 3        3       1        48213  working  Editing parser.zig
+# 8        7       1        48455  input    Approve running tests?
+
+attyx list agents --json
+# [{"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"Editing parser.zig"},
+#  {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"input","message":"Approve running tests?"}]
+```
+
+Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, and `message` (the agent's latest status preview, may be empty). Scope is the current instance's panes. For per-session counts across **all** daemon sessions, use `attyx list sessions`.
+
+### Watching for changes — `watch agents`
+`attyx watch agents` opens a long-lived stream and prints one JSON object per line (NDJSON) every time an agent's status changes. On connect it first emits a snapshot of the current active agents, then live changes. It blocks until interrupted — pipe it or run it in the background:
+
+```bash
+attyx watch agents
+# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"..."}
+# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"input","message":"Needs your input"}
+# {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"idle","message":""}
+
+# React to agents that need attention
+attyx watch agents | while read -r line; do
+  echo "$line" | grep -q '"state":"input"' && notify-send "Agent needs input"
+done
+```
+
+Unlike `list agents`, the watch stream **includes** transitions to `state:"none"` so you can tell when an agent's session ends. Use `watch agents` instead of polling `list agents` in a loop — it's push-based and won't miss fast transitions.
+
+### Watching a single agent — `--pane` / `-p`
+To follow just one agent instead of all of them, pass its stable pane ID with `-p`. The snapshot and the live stream are both filtered to that pane:
+```bash
+attyx watch agents -p 3             # only pane 3's agent
+# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"..."}
+# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"idle","message":""}
+
+# Block until a specific agent finishes its current turn
+attyx watch agents -p 3 | while read -r line; do
+  echo "$line" | grep -q '"state":"idle"' && break
+done
+```
+The pane ID is the `pane_id` from `attyx list agents` (or the ID returned when you created the pane). `0`/omitted means all agents.
+
+### Checking a single agent
+To check one pane's agent without streaming, pass its stable pane ID:
+```bash
+attyx list agents -p 3              # just pane 3's agent (one line, or empty if none)
+attyx list agents -p 3 --json      # same, as a JSON array
+```
+`-p`/`--pane` works on both `list agents` and `watch agents`; omit it for all agents.
+
 ## Argument Handling
 
 If the user provides arguments, interpret them as a natural language instruction. Remember to always use `-s <session_id>` (discovered via `attyx list` at start):
@@ -279,5 +345,8 @@ If the user provides arguments, interpret them as a natural language instruction
 - `/attyx create a background session for ~/Projects/api` → `attyx session create ~/Projects/api -b`
 - `/attyx list sessions` → `attyx session list`
 - `/attyx create a tab in session 5` → `attyx -s 5 tab create`
+- `/attyx which agents are running` → `attyx list agents`
+- `/attyx tell me when an agent needs input` → `attyx watch agents` (filter for `"state":"input"`)
+- `/attyx watch the agent in pane 3` → `attyx watch agents -p 3`
 
 If no arguments, ask the user what they'd like to do with the terminal.

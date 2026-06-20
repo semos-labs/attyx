@@ -43,6 +43,8 @@ pub const IpcCommand = enum {
     list,
     list_tabs,
     list_splits,
+    list_agents,
+    watch_agents,
     popup,
     session_list,
     session_create,
@@ -234,6 +236,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "popup")) break :blk parsePopup(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "list")) break :blk parseList(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "watch")) break :blk parseWatch(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "session")) break :blk parseSession(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "run")) {
             if (hasHelp(fargs, start)) showHelp(help.run);
@@ -606,9 +609,52 @@ fn parseList(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_ou
         return .{ .command = .list_tabs, .target_pid = target_pid, .json_output = json_output };
     } else if (std.mem.eql(u8, sub, "splits") or std.mem.eql(u8, sub, "panes")) {
         return .{ .command = .list_splits, .target_pid = target_pid, .json_output = json_output };
+    } else if (std.mem.eql(u8, sub, "agents")) {
+        // Optional --pane/-p <id> restricts the list to one agent's pane.
+        var result = IpcRequest{ .command = .list_agents, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--pane") or std.mem.eql(u8, args[i], "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &result);
+            }
+            i += 1;
+        }
+        return result;
     }
     std.debug.print("error: unknown list target '{s}'\n\n", .{sub});
     printHelp(help.list);
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Watch
+// ---------------------------------------------------------------------------
+
+fn parseWatch(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
+    if (start + 1 >= args.len or isHelp(args[start + 1])) {
+        if (start + 1 < args.len and isHelp(args[start + 1])) showHelp(help.watch);
+        printHelp(help.watch);
+        return null;
+    }
+    const target = args[start + 1];
+    if (std.mem.eql(u8, target, "agents")) {
+        // Optional --pane/-p <id> restricts the stream to one agent's pane.
+        var result = IpcRequest{ .command = .watch_agents, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--pane") or std.mem.eql(u8, args[i], "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &result);
+            }
+            i += 1;
+        }
+        return result;
+    }
+    std.debug.print("error: unknown watch target '{s}'\n\n", .{target});
+    printHelp(help.watch);
     return null;
 }
 
@@ -703,4 +749,31 @@ test "tab close parses user numbering to zero-based tab index" {
 
     try std.testing.expectEqual(IpcCommand.tab_close, parsed.command);
     try std.testing.expectEqual(@as(u8, 2), parsed.tab_idx);
+}
+
+test "list agents maps to list_agents and carries --json" {
+    const args = [_][:0]const u8{ "attyx", "list", "agents", "--json" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.list_agents, parsed.command);
+    try std.testing.expect(parsed.json_output);
+}
+
+test "watch agents maps to watch_agents" {
+    const args = [_][:0]const u8{ "attyx", "watch", "agents" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
+}
+
+test "list agents -p sets pane filter" {
+    const args = [_][:0]const u8{ "attyx", "list", "agents", "-p", "3" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.list_agents, parsed.command);
+    try std.testing.expectEqual(@as(u32, 3), parsed.pane_id);
+}
+
+test "watch agents -p sets pane filter" {
+    const args = [_][:0]const u8{ "attyx", "watch", "agents", "-p", "7" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
+    try std.testing.expectEqual(@as(u32, 7), parsed.pane_id);
 }

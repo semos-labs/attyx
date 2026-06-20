@@ -32,6 +32,7 @@ const selection = @import("selection.zig");
 const toast = attyx.overlay_toast;
 const ipc_queue = @import("../../ipc/queue.zig");
 const ipc_handler = @import("../../ipc/handler.zig");
+const ipc_watch = @import("../../ipc/watch.zig");
 const grid_sync = @import("../daemon/grid_sync.zig");
 
 /// Re-export from actions module for external access.
@@ -1185,6 +1186,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         leaf.pane.engine.state.agent_status_changed = false;
                         title_changed = true;
                         maybeNotifyAgent(ctx, leaf.pane, ti);
+                        ipc_watch.broadcastAgent(ctx, leaf.pane, lay.focusedPane().ipc_id);
                     }
                 }
             }

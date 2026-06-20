@@ -54,6 +54,9 @@ pub const MessageType = enum(u8) {
     list = 0x3A,
     list_tabs = 0x40,
     list_splits = 0x41,
+    list_agents = 0x4E,
+    // Long-lived: response fd is parked and streamed NDJSON frames over time.
+    watch_agents = 0x4F,
 
     // ── Popup ──
     popup = 0x42,

@@ -186,6 +186,7 @@ fn handleClient(fd: posix.fd_t) void {
 /// Shutdown: signal the listener thread, close fd, unlink socket.
 pub fn shutdown() void {
     @atomicStore(i32, &g_ipc_shutdown, 1, .seq_cst);
+    @import("watch.zig").closeAll();
     if (listener_fd != -1) {
         posix.close(listener_fd);
         listener_fd = -1;

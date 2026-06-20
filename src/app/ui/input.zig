@@ -575,12 +575,17 @@ pub fn handleKey(key_raw: u16, mods_raw: u8, event_type_raw: u8, codepoint_raw: 
     );
 
     if (encoded.len > 0) {
-        // Session mode: route through daemon to active pane
+        // Session mode: route through daemon to active pane. The daemon owns the
+        // authoritative engine, so interrupt→idle is handled daemon-side (it also
+        // broadcasts the change to every attached client).
         if (terminal.g_session_client) |sc| {
             sc.sendPaneInput(terminal.g_active_daemon_pane_id, encoded) catch {};
             return;
         }
         if (terminal.g_pty_master >= 0) {
+            // Agent harnesses emit no hook on interrupt or when an input prompt
+            // is answered, so infer those status transitions from the keystroke.
+            eng.state.applyAgentInputTransition(encoded);
             _ = posix.write(terminal.g_pty_master, encoded) catch {};
         }
     }
