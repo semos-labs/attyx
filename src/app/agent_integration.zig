@@ -366,7 +366,9 @@ const emitter_script =
 /// inherited), so we emit idle there to register the agent on launch — the
 /// reliable startup signal, since session.created delivery to plugins is racy.
 /// Thereafter: working is derived from tool.execute.before and assistant
-/// message updates; session.idle → idle; permission.asked → input. Runs the
+/// message updates; session.idle → idle; permission.asked → input and
+/// permission.replied → working (the native resolution signal, so the prompt
+/// state clears even without a keystroke for attyx to infer from). Runs the
 /// emitter via Node's child_process so the emitter self-gates and targets the
 /// pane tty.
 const opencode_plugin_fmt =
@@ -396,6 +398,9 @@ const opencode_plugin_fmt =
     \\          break;
     \\        case "permission.asked":
     \\          emit("input");
+    \\          break;
+    \\        case "permission.replied":
+    \\          emit("working");
     \\          break;
     \\        case "session.idle":
     \\          emit("idle");
@@ -537,6 +542,7 @@ test "opencode plugin embeds the emitter path and maps key events" {
     const plugin = try std.fmt.allocPrint(a, opencode_plugin_fmt, .{"/E/attyx-agent-status"});
     try testing.expect(std.mem.indexOf(u8, plugin, "const EMIT = \"/E/attyx-agent-status\"") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "permission.asked") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "permission.replied") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "session.idle") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
     // Launch detection: emit idle from the init body and on session.created.
