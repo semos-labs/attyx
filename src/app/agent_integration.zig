@@ -47,10 +47,12 @@ const claude_events = [_]EventSpec{
     .{ .name = "SessionEnd", .matcher = null, .state = "none" },
 };
 
-/// Codex hooks (~/.codex/hooks.json) — same JSON shape as Claude. Codex has no
+/// Codex hooks (~/.codex/hooks.json) — same JSON shape and event names as
+/// Claude (SessionStart fires on launch/resume/clear/compact). Codex has no
 /// Notification or SessionEnd events, so there's no idle-prompt or clear-on-exit
-/// signal; the dot rests at idle after a turn.
+/// signal; the dot registers idle on launch and rests at idle after a turn.
 const codex_events = [_]EventSpec{
+    .{ .name = "SessionStart", .matcher = null, .state = "idle" },
     .{ .name = "UserPromptSubmit", .matcher = null, .state = "working" },
     .{ .name = "PreToolUse", .matcher = null, .state = "working" },
     .{ .name = "PermissionRequest", .matcher = null, .state = "input" },
@@ -359,11 +361,14 @@ const emitter_script =
     \\
 ;
 
-/// opencode plugin. `{s}` is the absolute emitter path. opencode has no clean
-/// "turn started" event, so working is derived from tool.execute.before and
-/// assistant message updates; session.idle → idle; permission.asked → input.
-/// Runs the emitter via Node's child_process (env, incl. ATTYX_PID/ATTYX_TTY,
-/// is inherited, so the emitter self-gates and targets the pane tty).
+/// opencode plugin. `{s}` is the absolute emitter path. The plugin-init body
+/// runs once when opencode launches (env, incl. ATTYX_PID/ATTYX_TTY, is
+/// inherited), so we emit idle there to register the agent on launch — the
+/// reliable startup signal, since session.created delivery to plugins is racy.
+/// Thereafter: working is derived from tool.execute.before and assistant
+/// message updates; session.idle → idle; permission.asked → input. Runs the
+/// emitter via Node's child_process so the emitter self-gates and targets the
+/// pane tty.
 const opencode_plugin_fmt =
     \\// Attyx agent status plugin — reports opencode's run state to the
     \\// terminal via the attyx emitter. No-op outside attyx (emitter self-gates).
@@ -373,10 +378,16 @@ const opencode_plugin_fmt =
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\const AttyxStatus = async (ctx) => {{
+    \\  // Runs once at opencode launch — register the agent as present-and-idle
+    \\  // immediately, instead of waiting for the first activity event.
+    \\  emit("idle");
     \\  return {{
     \\    event: async ({{ event }}) => {{
     \\      const props = (event && event.properties) || {{}};
     \\      switch (event && event.type) {{
+    \\        case "session.created":
+    \\          emit("idle");
+    \\          break;
     \\        case "tool.execute.before":
     \\          emit("working");
     \\          break;
@@ -512,10 +523,11 @@ test "codex events cover working, input, and idle" {
     var parsed = try std.json.parseFromSlice(std.json.Value, a, "{}", .{});
     try mergeHooks(a, &parsed.value.object, "/E/attyx-agent-status", &codex_events);
     const out = try std.json.Stringify.valueAlloc(a, parsed.value, .{ .whitespace = .indent_2 });
-    for ([_][]const u8{ "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop" }) |ev|
+    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop" }) |ev|
         try testing.expect(std.mem.indexOf(u8, out, ev) != null);
     try testing.expect(std.mem.indexOf(u8, out, "Notification") == null); // codex has none
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status input") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status idle") != null); // SessionStart/Stop
 }
 
 test "opencode plugin embeds the emitter path and maps key events" {
@@ -527,6 +539,9 @@ test "opencode plugin embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, plugin, "permission.asked") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "session.idle") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
+    // Launch detection: emit idle from the init body and on session.created.
+    try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"idle\")") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "session.created") != null);
 }
 
 test "install generates the emitter and injects hooks into ~/.claude" {
