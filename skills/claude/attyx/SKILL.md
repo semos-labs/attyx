@@ -294,7 +294,14 @@ attyx list agents --json
 #  {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"input","message":"Approve running tests?"}]
 ```
 
-Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, and `message` (the agent's latest status preview, may be empty). Scope is the current instance's panes. For per-session counts across **all** daemon sessions, use `attyx list sessions`.
+Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, and `message` (the agent's latest status preview, may be empty). Default scope is the attached/local session. Add `-s <id>` to list any session's agents directly from the daemon — it works even when no window is attached to that session:
+
+```bash
+attyx -s 2 list agents             # agents in session 2
+attyx -s 2 list agents --json
+```
+
+For per-session counts across **all** daemon sessions, use `attyx list sessions`.
 
 ### Watching for changes — `watch agents`
 `attyx watch agents` opens a long-lived stream and prints one JSON object per line (NDJSON) every time an agent's status changes. On connect it first emits a snapshot of the current active agents, then live changes. It blocks until interrupted — pipe it or run it in the background:
@@ -312,6 +319,12 @@ done
 ```
 
 Unlike `list agents`, the watch stream **includes** transitions to `state:"none"` so you can tell when an agent's session ends. Use `watch agents` instead of polling `list agents` in a loop — it's push-based and won't miss fast transitions.
+
+Like `list agents`, the stream defaults to the attached/local session. Add `-s <id>` to watch a specific session straight from the daemon, regardless of which session a window is showing (or whether any window is attached):
+
+```bash
+attyx -s 2 watch agents            # stream session 2's agents
+```
 
 ### Watching a single agent — `--pane` / `-p`
 To follow just one agent instead of all of them, pass its stable pane ID with `-p`. The snapshot and the live stream are both filtered to that pane:

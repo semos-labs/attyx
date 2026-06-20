@@ -549,4 +549,5 @@ comptime {
     _ = @import("migration_stress_test.zig");
     _ = @import("cwd_test.zig");
     _ = @import("agent_status_test.zig");
+    _ = @import("agent_headless_test.zig");
 }

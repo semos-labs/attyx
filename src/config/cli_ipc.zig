@@ -777,3 +777,18 @@ test "watch agents -p sets pane filter" {
     try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
     try std.testing.expectEqual(@as(u32, 7), parsed.pane_id);
 }
+
+test "list agents -s carries target session and pane filter" {
+    const args = [_][:0]const u8{ "attyx", "-s", "3", "list", "agents", "-p", "5" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.list_agents, parsed.command);
+    try std.testing.expectEqual(@as(u32, 3), parsed.target_session);
+    try std.testing.expectEqual(@as(u32, 5), parsed.pane_id);
+}
+
+test "watch agents -s carries target session" {
+    const args = [_][:0]const u8{ "attyx", "watch", "agents", "-s", "4" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
+    try std.testing.expectEqual(@as(u32, 4), parsed.target_session);
+}

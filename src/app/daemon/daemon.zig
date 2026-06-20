@@ -8,6 +8,7 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const platform = @import("../../platform/platform.zig");
 const handler = @import("handler.zig");
+const agent_watch = @import("agent_watch.zig");
 const session_connect = @import("../session_connect.zig");
 const state_persist = @import("state_persist.zig");
 const upgrade = @import("upgrade.zig");
@@ -263,6 +264,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                             const agent_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed else false;
                             if (agent_dirty) {
                                 if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed = false;
+                                // Stream to headless `watch agents -s` watchers,
+                                // independent of any attached/grid-sync client.
+                                agent_watch.broadcast(&clients, s, pane);
                             }
                             for (&clients) |*cslot| {
                                 if (cslot.*) |*cl| {

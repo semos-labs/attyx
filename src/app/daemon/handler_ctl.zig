@@ -16,6 +16,7 @@ const DaemonClient = @import("client.zig").DaemonClient;
 const platform = @import("../../platform/platform.zig");
 const layout_codec = @import("../layout_codec.zig");
 const handler_ctl_layout = @import("handler_ctl_layout.zig");
+const agents = @import("../../ipc/agents.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -60,7 +61,86 @@ pub fn handle(
         .tab_move => handler_ctl_layout.tabMove(cl, session, req.body, clients),
         .tab_rename => handler_ctl_layout.tabRename(cl, session, req.body, clients),
         .scroll => handleScroll(cl, session, req.body),
+        .list_agents => handleListAgents(cl, session, req.body),
     }
+}
+
+/// List the session's panes running an agent (status != none), built from the
+/// daemon's own live engines. body = [format:u8][pane_filter:u32 LE]; format 1
+/// = JSON array, else TSV rows; pane_filter != 0 restricts output to that pane.
+/// Mirrors the window-side handler_query.buildAgentList so the two surfaces
+/// produce identical records.
+fn handleListAgents(cl: *DaemonClient, session: *DaemonSession, body: []const u8) void {
+    const as_json = body.len >= 1 and body[0] == 1;
+    const pane_filter: u32 = if (body.len >= 5)
+        std.mem.readInt(u32, body[1..5], .little)
+    else
+        0;
+
+    var buf: [8192]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+
+    if (as_json) w.writeAll("[") catch {};
+    var first = true;
+
+    // Walk the stored layout so each agent's tab_id matches `list`'s tab handle
+    // (the tab's focused pane id). Fall back to a flat scan for sessions created
+    // but never viewed, where tab 1 groups every pane.
+    var used_layout = false;
+    if (session.layout_len > 0) {
+        if (layout_codec.deserialize(session.layout_data[0..session.layout_len])) |info_const| {
+            var info = info_const;
+            for (0..info.tab_count) |ti| {
+                const tab = &info.tabs[ti];
+                const tab_id = tabFocusedPane(tab);
+                var leaf_ids: [layout_codec.max_nodes_per_tab]u32 = undefined;
+                const lc = tabLeaves(tab, &leaf_ids);
+                for (leaf_ids[0..lc]) |pid| {
+                    writeAgentRow(w, session, pid, tab_id, as_json, pane_filter, &first);
+                }
+            }
+            used_layout = true;
+        } else |_| {}
+    }
+    if (!used_layout) {
+        var ids: [session_mod.max_panes_per_session]u32 = undefined;
+        const n = session.collectPaneIds(&ids);
+        const tab_id: u32 = if (n > 0) ids[0] else 0;
+        for (ids[0..n]) |pid| {
+            writeAgentRow(w, session, pid, tab_id, as_json, pane_filter, &first);
+        }
+    }
+
+    if (as_json) w.writeAll("]") catch {};
+    cl.sendCtlResponse(0, stream.getWritten());
+}
+
+/// Emit one agent record for `pane_id` if it's running an agent and passes the
+/// pane filter. `first` tracks JSON comma placement across calls.
+fn writeAgentRow(
+    w: anytype,
+    session: *DaemonSession,
+    pane_id: u32,
+    tab_id: u32,
+    as_json: bool,
+    pane_filter: u32,
+    first: *bool,
+) void {
+    if (pane_filter != 0 and pane_filter != pane_id) return;
+    const pane = session.findPane(pane_id) orelse return;
+    const eng = pane.engine orelse return;
+    const status = eng.state.agent_status;
+    if (status == .none) return;
+    // No POSIX pty master fd on Windows → PID is unavailable (0 = unknown).
+    const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
+    if (as_json) {
+        if (!first.*) w.writeAll(",") catch return;
+        agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg()) catch return;
+    } else {
+        agents.writeAgentTsv(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg()) catch return;
+    }
+    first.* = false;
 }
 
 fn handleWriteInput(cl: *DaemonClient, session: *DaemonSession, body: []const u8) void {

@@ -11,6 +11,7 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const layout_codec = @import("../layout_codec.zig");
 const state_persist = @import("state_persist.zig");
 const handler_ctl = @import("handler_ctl.zig");
+const agent_watch = @import("agent_watch.zig");
 
 const max_sessions: usize = 32;
 const max_clients: usize = 16;
@@ -54,9 +55,39 @@ pub fn handleMessage(
         // independent of attachment (background agents drive their own session).
         .ctl_request => handler_ctl.handle(cl, msg.payload, sessions, next_pane_id, allocator, clients),
 
+        // Park this connection as an agent-status watcher for a target session.
+        .watch_agents => handleWatchAgents(cl, msg.payload, sessions),
+
         // Ignore server→client messages
         else => {},
     }
+}
+
+/// Park a connection as an agent-status watcher. payload =
+/// [target_session:u32 LE][pane_filter:u32 LE] (filter 0 = all panes). On
+/// success the client is flagged (watch_session) and gets an initial snapshot;
+/// thereafter the event loop streams agent_event frames to it. On a missing
+/// session the connection is closed with an error.
+fn handleWatchAgents(
+    cl: *DaemonClient,
+    payload: []const u8,
+    sessions: *[max_sessions]?DaemonSession,
+) void {
+    if (payload.len < 8) {
+        cl.sendError(1, "invalid watch request");
+        cl.dead = true;
+        return;
+    }
+    const target_session = std.mem.readInt(u32, payload[0..4], .little);
+    const pane_filter = std.mem.readInt(u32, payload[4..8], .little);
+    const session = findSession(sessions, target_session) orelse {
+        cl.sendError(1, "session not found");
+        cl.dead = true;
+        return;
+    };
+    cl.watch_session = target_session;
+    cl.watch_pane_filter = pane_filter;
+    agent_watch.sendSnapshot(cl, session);
 }
 
 fn handleCreate(

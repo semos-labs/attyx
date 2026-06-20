@@ -44,6 +44,11 @@ pub const MessageType = enum(u8) {
     /// session. See CtlOp / encodeCtlRequest.
     ctl_request = 0x15,
 
+    /// Headless agent-status watch: park this connection as a watcher for a
+    /// session and stream `agent_event` frames on every status transition.
+    /// Payload: [target_session:u32 LE][pane_filter:u32 LE] (filter 0 = all).
+    watch_agents = 0x16,
+
     // Daemon → Client
     created = 0x81,
     session_list = 0x82,
@@ -81,6 +86,9 @@ pub const MessageType = enum(u8) {
 
     /// Reply to a ctl_request: [status:u8 (0=ok, 1=err)][body...].
     ctl_response = 0x98,
+    /// One agent status record (NDJSON line) for a parked `watch_agents`
+    /// connection. Payload is the JSON object; the CLI streams it as a line.
+    agent_event = 0x99,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -223,6 +231,11 @@ pub const CtlOp = enum(u8) {
     /// scroll cursor for that pane. See CtlScrollKind. Does not touch any
     /// window's viewport.
     scroll = 0x0E,
+    /// op_body: [format:u8][pane_filter:u32 LE] — list the session's panes that
+    /// are running an agent (status != none). format 1 = JSON array, else TSV
+    /// rows. pane_filter != 0 restricts output to that pane. Replies with the
+    /// listing built from the session's live engines.
+    list_agents = 0x0F,
 };
 
 /// `list` ctl op kinds (first byte of op_body).

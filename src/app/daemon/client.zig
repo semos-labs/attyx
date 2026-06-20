@@ -46,6 +46,12 @@ pub const DaemonClient = struct {
     /// decide whether it can ship grid_snapshot/grid_delta or must fall
     /// back to the legacy byte-stream (pane_output) path.
     peer_caps: u32 = 0,
+    /// Agent-status watcher (`attyx watch agents -s N`). When set, the
+    /// connection is parked: instead of attaching, it receives an `agent_event`
+    /// frame on every status transition in `watch_session`. 0 = not a watcher.
+    watch_session: u32 = 0,
+    /// Restrict the watch stream to a single pane; 0 = all panes in the session.
+    watch_pane_filter: u32 = 0,
 
     pub fn init(fd: std.posix.fd_t) DaemonClient {
         return .{ .socket_fd = fd };
@@ -841,6 +847,14 @@ pub const DaemonClient = struct {
         const p = protocol.encodeHello(&payload, version, caps) catch return;
         var buf: [protocol.header_size + 256]u8 = undefined;
         const m = protocol.encodeMessage(&buf, .hello_ack, p) catch return;
+        self.sendRaw(m);
+    }
+
+    /// Send one agent record as an `agent_event` frame (NDJSON line, no
+    /// trailing newline — the CLI adds it). Used to stream `watch agents -s N`.
+    pub fn sendAgentEvent(self: *DaemonClient, json: []const u8) void {
+        var buf: [protocol.header_size + 1024]u8 = undefined;
+        const m = protocol.encodeMessage(&buf, .agent_event, json) catch return;
         self.sendRaw(m);
     }
 
