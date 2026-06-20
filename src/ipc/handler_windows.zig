@@ -9,6 +9,7 @@ const queue = @import("queue.zig");
 const keybinds = @import("../config/keybinds.zig");
 const Action = keybinds.Action;
 const split_layout_mod = @import("../app/split_layout.zig");
+const agents = @import("agents.zig");
 const event_loop = @import("../app/ui/event_loop_windows.zig");
 const WinCtx = event_loop.WinCtx;
 const Pane = @import("../app/pane.zig").Pane;
@@ -176,6 +177,9 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         .list => buildList(cmd, ctx),
         .list_tabs => buildTabList(cmd, ctx),
         .list_splits => buildSplitList(cmd, ctx),
+        .list_agents => buildAgentList(cmd, ctx),
+        // Streaming watch needs the POSIX fd model; not supported on Windows pipes.
+        .watch_agents => sendError(cmd, "watch is not supported on this platform"),
 
         // ── Wait variants (hold response until process exits) ──
         .tab_create_wait => {
@@ -452,6 +456,49 @@ fn buildTabList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
         if (layout.isZoomed()) w.writeAll("\tzoomed") catch break;
         w.writeAll("\n") catch break;
     }
+    sendOk(cmd, stream.getWritten());
+}
+
+/// List panes running an agent. Payload: [format:u8][pane_filter:u32 LE].
+/// Mirrors the POSIX buildAgentList; pid is always 0 on Windows (no foreground
+/// PID support), and session is the active session id.
+fn buildAgentList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
+    const as_json = cmd.payload_len >= 1 and cmd.payload[0] == 1;
+    const pane_filter: u32 = if (cmd.payload_len >= 5)
+        std.mem.readInt(u32, cmd.payload[1..5], .little)
+    else
+        0;
+
+    var buf: [8192]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+
+    const session_id: u32 = if (ctx.session_mgr) |smgr| smgr.activeSession().id else 0;
+
+    if (as_json) w.writeAll("[") catch {};
+    var first = true;
+    const mgr = ctx.tab_mgr;
+    for (0..mgr.count) |i| {
+        const layout = &(mgr.tabs[i] orelse continue);
+        const tab_id = layout.focusedPane().ipc_id;
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = layout.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            const status = leaf.pane.engine.state.agent_status;
+            if (status == .none) continue;
+            if (pane_filter != 0 and pane_filter != leaf.pane.ipc_id) continue;
+            const msg = leaf.pane.engine.state.agentMsg();
+            if (as_json) {
+                if (!first) w.writeAll(",") catch break;
+                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg) catch break;
+            } else {
+                agents.writeAgentTsv(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg) catch break;
+            }
+            first = false;
+        }
+    }
+    if (as_json) w.writeAll("]") catch {};
+
     sendOk(cmd, stream.getWritten());
 }
 
