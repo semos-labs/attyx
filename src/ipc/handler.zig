@@ -16,6 +16,7 @@ const actions = @import("../app/ui/actions.zig");
 
 const handler_cmd = @import("handler_cmd.zig");
 const handler_query = @import("handler_query.zig");
+const watch = @import("watch.zig");
 const tab_rename = @import("tab_rename.zig");
 
 /// Process one IPC command. Writes response to cmd.response_fd, then
@@ -220,6 +221,9 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .list => handler_query.buildList(cmd, ctx),
         .list_tabs => handler_query.buildTabList(cmd, ctx),
         .list_splits => handler_query.buildSplitList(cmd, ctx),
+        .list_agents => handler_query.buildAgentList(cmd, ctx),
+        // watch_agents parks the fd instead of closing it — see watch.zig.
+        .watch_agents => watch.handleWatchAgents(cmd, ctx),
 
         // ── Session commands ──
         .session_list => handler_query.handleSessionList(cmd, ctx),

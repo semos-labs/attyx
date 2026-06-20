@@ -24,7 +24,8 @@ pub const top_level =
     \\  reload       Reload configuration from disk
     \\  theme        Switch to a named theme
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
-    \\  list         Query tabs, panes, and sessions (supports --json)
+    \\  list         Query tabs, panes, sessions, and agents (supports --json)
+    \\  watch        Stream agent status changes as they happen (NDJSON)
     \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
@@ -45,6 +46,8 @@ pub const top_level =
     \\  attyx get-text                    Read what's on screen
     \\  attyx get-text --pane 5           Read from pane 5
     \\  attyx list --json                 Get structured tab/pane info
+    \\  attyx list agents --json          List panes running an agent
+    \\  attyx watch agents                Stream agent status changes
     \\  attyx reload                      Hot-reload config from disk
     \\
     \\Pane targeting:
@@ -472,6 +475,7 @@ pub const list =
     \\  tabs       List tabs only
     \\  splits     List panes in the active tab
     \\  sessions   List daemon sessions
+    \\  agents     List panes currently running an agent
     \\
     \\Aliases:
     \\  panes      Same as splits
@@ -480,13 +484,56 @@ pub const list =
     \\Active items are marked with * in the third column.
     \\Use --json for structured output that's easier to parse.
     \\
+    \\The 'agents' target lists panes running an agent (state idle/working/
+    \\input). Fields: pane_id, tab_id, session, pid, state, message. tab_id is
+    \\the agent's tab's stable handle (its focused pane's id, the same pane:N
+    \\shown by 'attyx list'); for a single-pane tab it equals pane_id. pid is the
+    \\agent's foreground process id (0 = unknown, e.g. daemon-backed panes). Pass
+    \\--pane/-p <id> to list just one agent's pane. With --json it returns a JSON
+    \\array; otherwise tab-separated rows. Scope is this instance's panes — use
+    \\'list sessions' for per-session counts across all daemon sessions, or
+    \\'watch agents' to stream changes.
+    \\
     \\Examples:
     \\  attyx list                   Full tab/pane tree
     \\  attyx list tabs              Just tab names and IDs
     \\  attyx list splits            Panes in the active tab
     \\  attyx list sessions          All daemon sessions
+    \\  attyx list agents            Panes running an agent
+    \\  attyx list agents -p 3       Just pane 3's agent
+    \\  attyx list agents --json     Agents as a JSON array
     \\  attyx list --json            Full tree as JSON
     \\  attyx list tabs --json       Tabs as JSON
+    \\
+;
+
+pub const watch =
+    \\Stream agent status changes from a running Attyx instance.
+    \\
+    \\Usage: attyx watch agents [--pane <id>]
+    \\
+    \\Opens a long-lived connection and prints one JSON object per line
+    \\(NDJSON) every time a pane's agent status changes. On connect, the
+    \\current set of active agents is emitted first as a snapshot, then live
+    \\changes follow. Blocks until interrupted (Ctrl-C) or the instance exits.
+    \\
+    \\Each line: {"pane_id":N,"tab_id":N,"session":N,"pid":N,"state":"...","message":"..."}
+    \\  tab_id   the tab's stable handle (its focused pane's id)
+    \\  pid      the agent's foreground process id (0 = unknown)
+    \\  state    one of: idle, working, input, none ("none" = agent ended)
+    \\  message  the agent's latest status preview (may be empty)
+    \\
+    \\Options:
+    \\  --pane, -p <id>   Watch only the agent in this pane (by stable pane ID
+    \\                    from 'attyx list agents'). Default: all agents.
+    \\
+    \\Scope is this instance's panes (the attached or local session). Frames
+    \\for a slow/stuck reader are dropped rather than stalling the terminal.
+    \\
+    \\Examples:
+    \\  attyx watch agents                 Stream changes for every agent
+    \\  attyx watch agents -p 3            Stream only pane 3's agent
+    \\  attyx watch agents | while read l; do notify-send "$l"; done
     \\
 ;
 

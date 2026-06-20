@@ -114,6 +114,15 @@ pub fn encodeKey(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []cons
     return encodeXterm(event, enc_state, out);
 }
 
+/// True when `bytes` is a user interrupt — a lone ESC (the agent interrupt key)
+/// or Ctrl-C (ETX). No agent harness emits a hook on interrupt, so callers use
+/// this to reset a working agent's status back to idle when the user aborts.
+/// Matches a single byte only, so multi-byte escape sequences (arrow keys etc.,
+/// which also start with ESC) are not mistaken for an interrupt.
+pub fn isInterruptSequence(bytes: []const u8) bool {
+    return bytes.len == 1 and (bytes[0] == 0x1b or bytes[0] == 0x03);
+}
+
 // ---------------------------------------------------------------------------
 // xterm encoding (kitty_flags == 0)
 // ---------------------------------------------------------------------------

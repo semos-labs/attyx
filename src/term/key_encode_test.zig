@@ -595,3 +595,12 @@ test "kitty all_keys: numpad uses CSI u" {
     );
     try testing.expectEqualStrings("\x1b[57404u", r);
 }
+
+test "isInterruptSequence matches lone ESC and Ctrl-C only" {
+    try testing.expect(ke.isInterruptSequence("\x1b")); // Esc
+    try testing.expect(ke.isInterruptSequence("\x03")); // Ctrl-C
+    try testing.expect(!ke.isInterruptSequence("\x1b[A")); // arrow up (ESC-prefixed)
+    try testing.expect(!ke.isInterruptSequence("\x1b[Z")); // shift-tab
+    try testing.expect(!ke.isInterruptSequence("a")); // ordinary key
+    try testing.expect(!ke.isInterruptSequence("")); // empty
+}

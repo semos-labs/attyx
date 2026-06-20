@@ -610,6 +610,7 @@ pub const TerminalState = struct {
     const handleXyronEvent = @import("state_osc.zig").handleXyronEvent;
     pub const setAgentStatus = @import("state_osc.zig").setAgentStatus;
     pub const agentMsg = @import("state_osc.zig").agentMsg;
+    pub const applyAgentInputTransition = @import("state_osc.zig").applyAgentInputTransition;
 
     // -- Kitty keyboard protocol ---------------------------------------------
 

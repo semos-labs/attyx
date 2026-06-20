@@ -173,6 +173,12 @@ pub fn run(args: []const [:0]const u8) void {
         return;
     }
 
+    // For watch: hold the connection open and stream frames until EOF.
+    if (parsed.command == .watch_agents) {
+        @import("client_watch.zig").run(socket_path, parsed);
+        return;
+    }
+
     // Build the request message
     var req_buf: [protocol.header_size + 4096]u8 = undefined;
     var request = buildRequest(&req_buf, parsed) catch {
@@ -428,6 +434,15 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
         .list => protocol.encodeMessage(buf, .list, ""),
         .list_tabs => protocol.encodeMessage(buf, .list_tabs, ""),
         .list_splits => protocol.encodeMessage(buf, .list_splits, ""),
+        // Payload: [format:u8][pane_filter:u32 LE]. format 1 = JSON, else TSV;
+        // pane_filter 0 = all agents.
+        .list_agents => blk: {
+            var payload: [5]u8 = undefined;
+            payload[0] = if (parsed.json_output) 1 else 0;
+            std.mem.writeInt(u32, payload[1..5], parsed.pane_id, .little);
+            break :blk protocol.encodeMessage(buf, .list_agents, &payload);
+        },
+        .watch_agents => protocol.encodeMessage(buf, .watch_agents, ""),
         .popup => blk: {
             // Payload: [width_pct:u8][height_pct:u8][border_style:u8][command...]
             // Clamp command to max_payload - 3 bytes for the option header
@@ -602,6 +617,21 @@ fn writeJsonEscaped(file: std.fs.File, s: []const u8) void {
             },
         }
     }
+}
+
+test "list_agents request encodes json format byte and pane filter" {
+    var buf: [64]u8 = undefined;
+    const parsed = @import("../config/cli_ipc.zig").IpcRequest{
+        .command = .list_agents,
+        .json_output = true,
+        .pane_id = 3,
+    };
+    const req = try buildRequest(&buf, parsed);
+    const header = try protocol.decodeHeader(req[0..protocol.header_size]);
+    try std.testing.expectEqual(protocol.MessageType.list_agents, header.msg_type);
+    try std.testing.expectEqual(@as(u32, 5), header.payload_len);
+    try std.testing.expectEqual(@as(u8, 1), req[protocol.header_size]);
+    try std.testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, req[protocol.header_size + 1 ..][0..4], .little));
 }
 
 test "targeted tab close request preserves zero-based index" {

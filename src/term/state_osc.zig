@@ -1,6 +1,7 @@
 const std = @import("std");
 const TerminalState = @import("state.zig").TerminalState;
 const AgentStatus = @import("actions.zig").AgentStatus;
+const key_encode = @import("key_encode.zig");
 
 pub fn startHyperlink(self: *TerminalState, uri: []const u8) void {
     if (uri.len == 0) {
@@ -76,6 +77,33 @@ pub fn agentMsg(self: *const TerminalState) []const u8 {
     return self.agent_msg_buf[0..self.agent_msg_len];
 }
 
+/// Infer an agent status transition from user input. Agent harnesses emit no
+/// hook on interrupt or when an input prompt is answered, so we derive these
+/// from the bytes the user sends to the pane:
+///   - interrupt (lone ESC / Ctrl-C) while working or waiting → idle (aborted)
+///   - any real answer while blocked on input → working (the agent resumes)
+/// Navigation keys (ESC-prefixed sequences) and input in idle/none states are
+/// left alone — the agent's own hooks drive those. Called on the pane's
+/// authoritative engine: the keyboard path (local) and the daemon's pane_input
+/// handler (grid-sync, which then broadcasts the change to clients).
+pub fn applyAgentInputTransition(self: *TerminalState, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    const interrupt = key_encode.isInterruptSequence(bytes);
+    switch (self.agent_status) {
+        .working => if (interrupt) self.setAgentStatus(.idle, ""),
+        .input => {
+            if (interrupt) {
+                self.setAgentStatus(.idle, ""); // Ctrl-C/Esc cancels the prompt
+            } else if (bytes[0] != 0x1b) {
+                // A real answer (digit, Enter, text) — not a navigation key —
+                // unblocks the agent, which is now working again.
+                self.setAgentStatus(.working, "");
+            }
+        },
+        else => {},
+    }
+}
+
 /// Handle OSC 7339;xyron:{json} event.
 /// Dispatches by event type: ipc_ready, cwd_changed, etc.
 pub fn handleXyronEvent(self: *TerminalState, json: []const u8) void {
@@ -112,4 +140,38 @@ fn extractJsonStr(json: []const u8, key: []const u8) ?[]const u8 {
     const val = json[start..][0..end];
     if (val.len == 0) return null;
     return val;
+}
+
+test "applyAgentInputTransition infers interrupt and prompt-answer transitions" {
+    const testing = std.testing;
+    var st = try TerminalState.init(testing.allocator, 24, 80, 100);
+    defer st.deinit();
+
+    // working + ordinary input (Enter) → still working
+    st.setAgentStatus(.working, "");
+    st.applyAgentInputTransition("\r");
+    try testing.expectEqual(AgentStatus.working, st.agent_status);
+
+    // working + Ctrl-C → idle (interrupt)
+    st.applyAgentInputTransition("\x03");
+    try testing.expectEqual(AgentStatus.idle, st.agent_status);
+
+    // input + a real answer (digit) → working (the reported fix)
+    st.setAgentStatus(.input, "");
+    st.applyAgentInputTransition("2");
+    try testing.expectEqual(AgentStatus.working, st.agent_status);
+
+    // input + a navigation key (arrow) → still input, not a premature flip
+    st.setAgentStatus(.input, "");
+    st.applyAgentInputTransition("\x1b[B");
+    try testing.expectEqual(AgentStatus.input, st.agent_status);
+
+    // input + Esc → idle (cancel the prompt)
+    st.applyAgentInputTransition("\x1b");
+    try testing.expectEqual(AgentStatus.idle, st.agent_status);
+
+    // idle + input → unchanged; the agent's UserPromptSubmit hook drives idle→working
+    st.setAgentStatus(.idle, "");
+    st.applyAgentInputTransition("hello");
+    try testing.expectEqual(AgentStatus.idle, st.agent_status);
 }

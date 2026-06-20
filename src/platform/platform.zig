@@ -90,6 +90,15 @@ pub fn getForegroundProcessName(master_fd: std.posix.fd_t, buf: *[256]u8) ?[]con
     return impl.getProcessName(fg_pid, buf);
 }
 
+/// Return the foreground process PID on the given PTY (the actual program
+/// running in the pane, e.g. an agent process). POSIX-only — returns null on
+/// Windows or for an inactive PTY (master_fd < 0, e.g. daemon-backed panes).
+pub fn getForegroundProcessId(master_fd: std.posix.fd_t) ?std.posix.pid_t {
+    if (!is_posix) return null;
+    if (master_fd < 0) return null;
+    return impl.getPtyForegroundPid(master_fd);
+}
+
 /// Query the foreground process's CWD. First checks if a tmux client is
 /// running inside our PTY session and resolves the active pane's CWD.
 /// Falls back to a direct pid-to-cwd lookup for plain shells.

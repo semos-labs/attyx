@@ -12,6 +12,8 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const split_layout_mod = @import("../app/split_layout.zig");
 const platform = @import("../platform/platform.zig");
 
+const agents = @import("agents.zig");
+
 const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
 const sendError = handler.sendError;
@@ -118,6 +120,55 @@ pub fn buildSplitList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
         w.writeAll("\n") catch break;
     }
+
+    sendOk(cmd, stream.getWritten());
+}
+
+/// List every pane currently running an agent (status != none).
+/// Payload: [format:u8][pane_filter:u32 LE]. format 1 = JSON array, else
+/// tab-separated rows. pane_filter != 0 restricts output to that pane.
+/// Columns/fields: pane_id, tab_id, session, pid, state, message.
+/// Scope is this instance's panes (the attached or local session); cross-
+/// session tallies remain available via `list sessions`.
+pub fn buildAgentList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    const as_json = cmd.payload_len >= 1 and cmd.payload[0] == 1;
+    const pane_filter: u32 = if (cmd.payload_len >= 5)
+        std.mem.readInt(u32, cmd.payload[1..5], .little)
+    else
+        0;
+
+    var buf: [8192]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+
+    const session_id: u32 = if (ctx.session_client) |sc| (sc.attached_session_id orelse 0) else 0;
+
+    if (as_json) w.writeAll("[") catch {};
+    var first = true;
+    const mgr = ctx.tab_mgr;
+    for (0..mgr.count) |i| {
+        const layout = &(mgr.tabs[i] orelse continue);
+        // A tab's stable handle is its focused pane's IPC id — the same `pane:N`
+        // value `attyx list` prints on each tab line.
+        const tab_id = layout.focusedPane().ipc_id;
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = layout.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            const status = leaf.pane.engine.state.agent_status;
+            if (status == .none) continue;
+            if (pane_filter != 0 and pane_filter != leaf.pane.ipc_id) continue;
+            const msg = leaf.pane.engine.state.agentMsg();
+            const pid = agents.panePid(leaf.pane.pty.master);
+            if (as_json) {
+                if (!first) w.writeAll(",") catch break;
+                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg) catch break;
+            } else {
+                agents.writeAgentTsv(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg) catch break;
+            }
+            first = false;
+        }
+    }
+    if (as_json) w.writeAll("]") catch {};
 
     sendOk(cmd, stream.getWritten());
 }

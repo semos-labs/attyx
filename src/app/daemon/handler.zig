@@ -467,6 +467,11 @@ fn handlePaneInput(
     const msg = protocol.decodePaneInput(payload) catch return;
     const session = getAttachedSession(cl, sessions) orelse return;
     if (session.findPane(msg.pane_id)) |pane| {
+        // Agent harnesses emit no hook on interrupt or when an input prompt is
+        // answered, so infer those status transitions from the input bytes. The
+        // main loop ships the change to every attached client via
+        // pane_agent_status.
+        if (pane.engine) |eng| eng.state.applyAgentInputTransition(msg.bytes);
         pane.writeInput(msg.bytes) catch {};
     }
 }
