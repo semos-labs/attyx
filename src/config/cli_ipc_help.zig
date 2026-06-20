@@ -31,7 +31,8 @@ pub const top_level =
     \\
     \\Global options:
     \\  --target <pid>       Target a specific Attyx instance by PID
-    \\  -s, --session <id>   Verify command targets the given attached session
+    \\  -s, --session <id>   Target a specific session directly via the daemon
+    \\                       (works without that session being attached)
     \\  --json               Output in JSON format (for scripts and agents)
     \\  --help, -h           Show this help (works on every subcommand)
     \\
@@ -490,9 +491,10 @@ pub const list =
     \\shown by 'attyx list'); for a single-pane tab it equals pane_id. pid is the
     \\agent's foreground process id (0 = unknown, e.g. daemon-backed panes). Pass
     \\--pane/-p <id> to list just one agent's pane. With --json it returns a JSON
-    \\array; otherwise tab-separated rows. Scope is this instance's panes — use
-    \\'list sessions' for per-session counts across all daemon sessions, or
-    \\'watch agents' to stream changes.
+    \\array; otherwise tab-separated rows. Default scope is the attached/local
+    \\session; add -s/--session <id> to list any session's agents directly from
+    \\the daemon (no window needs to be attached to it). Use 'list sessions' for
+    \\per-session counts, or 'watch agents' to stream changes.
     \\
     \\Examples:
     \\  attyx list                   Full tab/pane tree
@@ -501,6 +503,7 @@ pub const list =
     \\  attyx list sessions          All daemon sessions
     \\  attyx list agents            Panes running an agent
     \\  attyx list agents -p 3       Just pane 3's agent
+    \\  attyx list agents -s 2       Agents in session 2
     \\  attyx list agents --json     Agents as a JSON array
     \\  attyx list --json            Full tree as JSON
     \\  attyx list tabs --json       Tabs as JSON
@@ -526,13 +529,18 @@ pub const watch =
     \\Options:
     \\  --pane, -p <id>   Watch only the agent in this pane (by stable pane ID
     \\                    from 'attyx list agents'). Default: all agents.
+    \\  --session, -s <id>  Stream a specific session's agents directly from the
+    \\                    daemon, regardless of which session a window is showing
+    \\                    (or whether any window is attached). Default: the
+    \\                    attached/local session.
     \\
-    \\Scope is this instance's panes (the attached or local session). Frames
-    \\for a slow/stuck reader are dropped rather than stalling the terminal.
+    \\Frames for a slow/stuck reader are dropped rather than stalling the
+    \\terminal.
     \\
     \\Examples:
     \\  attyx watch agents                 Stream changes for every agent
     \\  attyx watch agents -p 3            Stream only pane 3's agent
+    \\  attyx watch agents -s 2            Stream session 2's agents
     \\  attyx watch agents | while read l; do notify-send "$l"; done
     \\
 ;

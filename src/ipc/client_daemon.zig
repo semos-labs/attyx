@@ -28,7 +28,7 @@ const ctl_read_timeout_ms: i32 = 4000;
 /// focus) still need a window and land in a later phase.
 pub fn isRoutable(cmd: IpcCommand) bool {
     return switch (cmd) {
-        .send_keys, .get_text, .list, .list_tabs, .list_splits => true,
+        .send_keys, .get_text, .list, .list_tabs, .list_splits, .list_agents => true,
         .tab_create, .tab_select, .tab_next, .tab_prev => true,
         .tab_close, .tab_move_left, .tab_move_right, .tab_rename => true,
         .split_vertical, .split_horizontal, .split_close, .split_rotate => true,
@@ -51,6 +51,7 @@ pub fn run(parsed: IpcRequest) void {
         .list => list(sock, parsed, .all),
         .list_tabs => list(sock, parsed, .tabs),
         .list_splits => list(sock, parsed, .panes),
+        .list_agents => listAgents(sock, parsed),
         .tab_create => tabCreate(sock, parsed),
         .tab_select => simpleOk(sock, parsed, .tab_select, &[_]u8{parsed.index_arg}),
         .tab_next => simpleOk(sock, parsed, .tab_next, ""),
@@ -152,6 +153,80 @@ fn list(sock: []const u8, parsed: IpcRequest, kind: dproto.CtlListKind) void {
         std.process.exit(1);
     }
     printBody(reply.body);
+}
+
+/// `list agents -s N`. op_body = [format:u8][pane_filter:u32 LE]; the daemon
+/// builds the same JSON/TSV records as the window-side `list agents`.
+fn listAgents(sock: []const u8, parsed: IpcRequest) void {
+    var op_body: [5]u8 = undefined;
+    op_body[0] = if (parsed.json_output) 1 else 0;
+    std.mem.writeInt(u32, op_body[1..5], parsed.pane_id, .little);
+    var resp_buf: [16384]u8 = undefined;
+    const reply = ctlOrExit(sock, parsed.target_session, .list_agents, &op_body, &resp_buf);
+    if (reply.status != 0) {
+        reportError(reply.body);
+        std.process.exit(1);
+    }
+    printBody(reply.body);
+}
+
+/// `watch agents -s N`. Connects to the daemon, parks the connection as a
+/// watcher for the target session, then streams agent_event frames as NDJSON
+/// until the daemon closes the stream (or the user Ctrl-Cs). Mirrors the
+/// window-side client_watch.run, but speaks the daemon protocol.
+pub fn watchAgents(parsed: IpcRequest) void {
+    var sock_buf: [256]u8 = undefined;
+    const sock = session_connect.getSocketPath(&sock_buf) orelse {
+        stderr("error: cannot locate attyx daemon socket\n");
+        std.process.exit(1);
+    };
+
+    // Request payload: [target_session:u32 LE][pane_filter:u32 LE].
+    var req_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, req_payload[0..4], parsed.target_session, .little);
+    std.mem.writeInt(u32, req_payload[4..8], parsed.pane_id, .little);
+    var frame_buf: [dproto.header_size + 8]u8 = undefined;
+    const frame = dproto.encodeMessage(&frame_buf, .watch_agents, &req_payload) catch {
+        stderr("error: failed to build watch request\n");
+        std.process.exit(1);
+    };
+
+    const fd = client.connectToSocket(sock) catch {
+        stderr("error: cannot reach attyx daemon\n");
+        std.process.exit(1);
+    };
+    defer io.closeFd(fd);
+    io.writeAll(fd, frame) catch {
+        stderr("error: failed to reach attyx daemon\n");
+        std.process.exit(1);
+    };
+
+    const stdout = std.fs.File.stdout();
+    var hdr: [dproto.header_size]u8 = undefined;
+    var payload_buf: [65536]u8 = undefined;
+    while (true) {
+        io.readExact(fd, &hdr) catch return; // EOF / disconnect ends the stream
+        const h = dproto.decodeHeader(&hdr) catch return;
+        if (h.payload_len > payload_buf.len) return;
+        if (h.payload_len > 0) io.readExact(fd, payload_buf[0..h.payload_len]) catch return;
+        switch (h.msg_type) {
+            .agent_event => {
+                if (h.payload_len > 0) {
+                    stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
+                    if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
+                }
+            },
+            .err => {
+                const e = dproto.decodeError(payload_buf[0..h.payload_len]) catch {
+                    stderr("error: watch failed\n");
+                    std.process.exit(1);
+                };
+                reportError(e.msg);
+                std.process.exit(1);
+            },
+            else => {},
+        }
+    }
 }
 
 const CtlReply = struct { status: u8, body: []const u8 };

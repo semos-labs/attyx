@@ -155,6 +155,12 @@ pub fn run(args: []const [:0]const u8) void {
     // which window (if any) is attached. This lets background agents drive
     // their own session without switching what any window shows.
     const client_daemon = @import("client_daemon.zig");
+    // `watch agents -s N` streams from the daemon (it holds every session's
+    // engine); without -s it still streams from the attached window below.
+    if (parsed.command == .watch_agents and parsed.target_session != 0) {
+        client_daemon.watchAgents(parsed);
+        return;
+    }
     if (parsed.target_session != 0 and client_daemon.isRoutable(parsed.command)) {
         client_daemon.run(parsed);
         return;
