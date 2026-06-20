@@ -14,3 +14,4 @@ installer/.zig-cache/
 *.app
 worktrees
 tasks
+/graphify-out
