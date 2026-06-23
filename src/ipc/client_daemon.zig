@@ -78,6 +78,159 @@ pub fn run(parsed: IpcRequest) void {
     }
 }
 
+pub const CallResult = struct { is_error: bool, text: []const u8 };
+
+/// Capture variant of run() for non-CLI callers (the MCP server): performs the
+/// same daemon ctl round-trip for a routable, session-targeted command but
+/// returns the outcome instead of printing to stdout / exiting. The result text
+/// is allocated in `a`. Callers must ensure isRoutable(parsed.command) and
+/// parsed.target_session != 0.
+pub fn call(a: std.mem.Allocator, parsed: IpcRequest) CallResult {
+    var sock_buf: [256]u8 = undefined;
+    const sock = session_connect.getSocketPath(&sock_buf) orelse
+        return .{ .is_error = true, .text = "cannot locate attyx daemon socket" };
+
+    // Mirror run()'s rejections for combos with no headless meaning.
+    switch (parsed.command) {
+        .split_zoom => return .{ .is_error = true, .text = "'split zoom' is a window-only view and isn't available with a session target" },
+        .split_vertical, .split_horizontal, .tab_create => {
+            if (parsed.wait) return .{ .is_error = true, .text = "wait is not supported with a session target yet" };
+        },
+        else => {},
+    }
+
+    if (parsed.command == .send_keys) return callSendKeys(a, sock, parsed);
+
+    var op_buf: [4 + 4096]u8 = undefined;
+    const opreq = buildOp(parsed, &op_buf) orelse
+        return .{ .is_error = true, .text = "command not routable to a session" };
+
+    // get-text --lines can return megabytes; size the response buffer to match.
+    var stack_buf: [65536]u8 = undefined;
+    var heap: ?[]u8 = null;
+    defer if (heap) |h| std.heap.page_allocator.free(h);
+    const resp_buf: []u8 = if (parsed.command == .get_text and parsed.lines > 0) blk: {
+        const b = std.heap.page_allocator.alloc(u8, 8 * 1024 * 1024) catch
+            return .{ .is_error = true, .text = "out of memory for response buffer" };
+        heap = b;
+        break :blk b;
+    } else stack_buf[0..];
+
+    const reply = ctl(sock, parsed.target_session, opreq.op, opreq.body, resp_buf) catch |err| {
+        return .{ .is_error = true, .text = switch (err) {
+            error.Timeout => "no response from attyx daemon (it may be an older version — restart Attyx)",
+            else => "failed to reach attyx daemon",
+        } };
+    };
+    if (reply.status != 0) return .{ .is_error = true, .text = a.dupe(u8, reply.body) catch "error" };
+    return .{ .is_error = false, .text = a.dupe(u8, reply.body) catch "" };
+}
+
+/// send_keys over the daemon: tokenize like the CLI path and write each token
+/// to the target pane, pausing after named keys so the target TUI can redraw.
+fn callSendKeys(a: std.mem.Allocator, sock: []const u8, parsed: IpcRequest) CallResult {
+    var iter = keys.KeyTokenIter{ .input = parsed.text_arg };
+    var tok_buf: [4096]u8 = undefined;
+    var resp_buf: [256]u8 = undefined;
+
+    while (iter.next(&tok_buf)) |token| {
+        const processed = tok_buf[0..token.len];
+        var op_body: [4 + 4096]u8 = undefined;
+        std.mem.writeInt(u32, op_body[0..4], parsed.pane_id, .little);
+        const n = @min(processed.len, op_body.len - 4);
+        @memcpy(op_body[4 .. 4 + n], processed[0..n]);
+
+        const reply = ctl(sock, parsed.target_session, .write_input, op_body[0 .. 4 + n], &resp_buf) catch
+            return .{ .is_error = true, .text = "failed to reach attyx daemon" };
+        if (reply.status != 0) return .{ .is_error = true, .text = a.dupe(u8, reply.body) catch "error" };
+        if (token.is_named_key) std.Thread.sleep(inter_key_delay_ns);
+    }
+    return .{ .is_error = false, .text = "" };
+}
+
+const OpReq = struct { op: dproto.CtlOp, body: []const u8 };
+
+/// Build the single ctl op + op_body for a routable, non-streaming command into
+/// `buf`. Encodes to the op_body formats documented on dproto.CtlOp (the same
+/// layouts run()'s CLI helpers build). Returns null for commands that aren't a
+/// single fixed op: send_keys is multi-token, split_zoom is window-only.
+fn buildOp(parsed: IpcRequest, buf: []u8) ?OpReq {
+    switch (parsed.command) {
+        .get_text => {
+            std.mem.writeInt(u32, buf[0..4], parsed.pane_id, .little);
+            std.mem.writeInt(u32, buf[4..8], parsed.lines, .little);
+            return .{ .op = .get_text, .body = buf[0..8] };
+        },
+        .list => return listOp(buf, .all),
+        .list_tabs => return listOp(buf, .tabs),
+        .list_splits => return listOp(buf, .panes),
+        .list_agents => {
+            buf[0] = if (parsed.json_output) 1 else 0;
+            std.mem.writeInt(u32, buf[1..5], parsed.pane_id, .little);
+            return .{ .op = .list_agents, .body = buf[0..5] };
+        },
+        .tab_create => {
+            const n = @min(parsed.text_arg.len, buf.len);
+            @memcpy(buf[0..n], parsed.text_arg[0..n]);
+            return .{ .op = .tab_create, .body = buf[0..n] };
+        },
+        .tab_select => {
+            buf[0] = parsed.index_arg;
+            return .{ .op = .tab_select, .body = buf[0..1] };
+        },
+        .tab_next => return .{ .op = .tab_next, .body = "" },
+        .tab_prev => return .{ .op = .tab_prev, .body = "" },
+        .tab_close => {
+            buf[0] = parsed.tab_idx;
+            return .{ .op = .tab_close, .body = buf[0..1] };
+        },
+        .tab_move_left => {
+            buf[0] = 0;
+            return .{ .op = .tab_move, .body = buf[0..1] };
+        },
+        .tab_move_right => {
+            buf[0] = 1;
+            return .{ .op = .tab_move, .body = buf[0..1] };
+        },
+        .tab_rename => {
+            buf[0] = parsed.tab_idx;
+            const n = @min(parsed.text_arg.len, buf.len - 1);
+            @memcpy(buf[1 .. 1 + n], parsed.text_arg[0..n]);
+            return .{ .op = .tab_rename, .body = buf[0 .. 1 + n] };
+        },
+        .split_vertical => return splitOp(parsed, buf, 0),
+        .split_horizontal => return splitOp(parsed, buf, 1),
+        .split_close => {
+            std.mem.writeInt(u32, buf[0..4], parsed.pane_id, .little);
+            return .{ .op = .pane_close, .body = buf[0..4] };
+        },
+        .split_rotate => return .{ .op = .pane_rotate, .body = "" },
+        .scroll_to_top => return scrollOp(parsed, buf, 0),
+        .scroll_to_bottom => return scrollOp(parsed, buf, 1),
+        .scroll_page_up => return scrollOp(parsed, buf, 2),
+        .scroll_page_down => return scrollOp(parsed, buf, 3),
+        else => return null,
+    }
+}
+
+fn listOp(buf: []u8, kind: dproto.CtlListKind) OpReq {
+    buf[0] = @intFromEnum(kind);
+    return .{ .op = .list, .body = buf[0..1] };
+}
+
+fn splitOp(parsed: IpcRequest, buf: []u8, dir: u8) OpReq {
+    buf[0] = dir;
+    const n = @min(parsed.text_arg.len, buf.len - 1);
+    @memcpy(buf[1 .. 1 + n], parsed.text_arg[0..n]);
+    return .{ .op = .split, .body = buf[0 .. 1 + n] };
+}
+
+fn scrollOp(parsed: IpcRequest, buf: []u8, kind: u8) OpReq {
+    std.mem.writeInt(u32, buf[0..4], parsed.pane_id, .little);
+    buf[4] = kind;
+    return .{ .op = .scroll, .body = buf[0..5] };
+}
+
 /// Move the session's IPC-private scroll cursor (kind: 0=top, 1=bottom,
 /// 2=page-up, 3=page-down). Silent on success, like the window-side scroll-to.
 fn scroll(sock: []const u8, parsed: IpcRequest, kind: u8) void {
@@ -415,4 +568,64 @@ fn reportError(body: []const u8) void {
 
 fn stderr(msg: []const u8) void {
     std.fs.File.stderr().writeAll(msg) catch {};
+}
+
+// ---------------------------------------------------------------------------
+// Tests — buildOp encodes each routable command to the documented op_body.
+// ---------------------------------------------------------------------------
+
+test "buildOp get_text encodes pane + lines" {
+    var buf: [4 + 4096]u8 = undefined;
+    const r = buildOp(.{ .command = .get_text, .pane_id = 3, .lines = 10 }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.get_text, r.op);
+    try std.testing.expectEqual(@as(usize, 8), r.body.len);
+    try std.testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, r.body[0..4], .little));
+    try std.testing.expectEqual(@as(u32, 10), std.mem.readInt(u32, r.body[4..8], .little));
+}
+
+test "buildOp list kinds map to the list op" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqual(@as(u8, 1), buildOp(.{ .command = .list_tabs }, &buf).?.body[0]);
+    try std.testing.expectEqual(@as(u8, 2), buildOp(.{ .command = .list_splits }, &buf).?.body[0]);
+    const all = buildOp(.{ .command = .list }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.list, all.op);
+    try std.testing.expectEqual(@as(u8, 0), all.body[0]);
+}
+
+test "buildOp list_agents encodes format + pane filter" {
+    var buf: [16]u8 = undefined;
+    const r = buildOp(.{ .command = .list_agents, .json_output = true, .pane_id = 7 }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.list_agents, r.op);
+    try std.testing.expectEqual(@as(u8, 1), r.body[0]);
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, r.body[1..5], .little));
+}
+
+test "buildOp tab_rename keeps active sentinel and name" {
+    var buf: [4 + 4096]u8 = undefined;
+    const r = buildOp(.{ .command = .tab_rename, .text_arg = "logs" }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.tab_rename, r.op);
+    try std.testing.expectEqual(@as(u8, 0xFF), r.body[0]);
+    try std.testing.expectEqualStrings("logs", r.body[1..]);
+}
+
+test "buildOp split encodes direction + command" {
+    var buf: [4 + 4096]u8 = undefined;
+    const r = buildOp(.{ .command = .split_horizontal, .text_arg = "htop" }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.split, r.op);
+    try std.testing.expectEqual(@as(u8, 1), r.body[0]);
+    try std.testing.expectEqualStrings("htop", r.body[1..]);
+}
+
+test "buildOp scroll encodes pane + kind" {
+    var buf: [16]u8 = undefined;
+    const r = buildOp(.{ .command = .scroll_page_down, .pane_id = 2 }, &buf).?;
+    try std.testing.expectEqual(dproto.CtlOp.scroll, r.op);
+    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, r.body[0..4], .little));
+    try std.testing.expectEqual(@as(u8, 3), r.body[4]);
+}
+
+test "buildOp returns null for multi-token and window-only ops" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expect(buildOp(.{ .command = .send_keys }, &buf) == null);
+    try std.testing.expect(buildOp(.{ .command = .split_zoom }, &buf) == null);
 }
