@@ -344,7 +344,7 @@ fn buildSendKeysRequest(buf: []u8, payload: []const u8, pane_id: u32, target_ses
     return buf[0..inner.len];
 }
 
-fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
+pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
     return switch (parsed.command) {
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => blk: {
@@ -500,7 +500,7 @@ fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) 
 /// Wrap an already-encoded IPC message in a session_envelope.
 /// Extracts inner msg_type + payload and re-encodes as:
 ///   session_envelope([session_id:u32 LE][inner_msg_type:u8][inner_payload...])
-fn wrapSessionEnvelope(buf: []u8, inner_msg: []const u8, session_id: u32) ![]u8 {
+pub fn wrapSessionEnvelope(buf: []u8, inner_msg: []const u8, session_id: u32) ![]u8 {
     if (inner_msg.len < protocol.header_size) return error.BufferTooSmall;
     const inner_type = inner_msg[4];
     const inner_payload = inner_msg[protocol.header_size..];

@@ -174,6 +174,16 @@ pub const AppConfig = struct {
     // agents' configs untouched.
     agent_status: bool = true,
 
+    // [mcp]
+    // Embedded MCP (Model Context Protocol) server. When enabled, Attyx runs a
+    // loopback HTTP MCP endpoint at http://<host>:<port>/mcp for as long as the
+    // UI is open, exposing terminal control to MCP clients (e.g. Claude). The
+    // `attyx mcp` stdio bridge is always available regardless of this setting.
+    mcp_enabled: bool = true,
+    mcp_host: []const u8 = "127.0.0.1",
+    _owned_mcp_host: ?[]const u8 = null,
+    mcp_port: u16 = 7333,
+
     // [cursor]
     cursor_shape: CursorShapeConfig = .block,
     cursor_blink: bool = true,
@@ -277,6 +287,7 @@ pub const AppConfig = struct {
         const alloc = self._allocator orelse return;
         if (self._owned_font_family) |s| alloc.free(s);
         if (self._owned_theme_name) |s| alloc.free(s);
+        if (self._owned_mcp_host) |s| alloc.free(s);
         if (self._owned_fallback_items) |items| {
             for (items) |item| alloc.free(item);
             alloc.free(items);

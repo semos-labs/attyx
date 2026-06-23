@@ -189,6 +189,35 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
         }
     }
 
+    // [mcp]
+    if (Lookup.get(root, "mcp", "enabled")) |v| {
+        if (v == .bool) {
+            config.mcp_enabled = v.bool;
+        } else {
+            std.debug.print("error: {s}: mcp.enabled must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "mcp", "host")) |v| {
+        if (v == .string) {
+            const dupe = try allocator.dupe(u8, v.string);
+            if (config._owned_mcp_host) |old| allocator.free(old);
+            config.mcp_host = dupe;
+            config._owned_mcp_host = dupe;
+        } else {
+            std.debug.print("error: {s}: mcp.host must be a string\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+    if (Lookup.get(root, "mcp", "port")) |v| {
+        if (v == .int and v.int >= 0 and v.int <= 65535) {
+            config.mcp_port = @intCast(v.int);
+        } else {
+            std.debug.print("error: {s}: mcp.port must be an integer 0-65535\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
+
     // [cursor]
     if (Lookup.get(root, "cursor", "shape")) |v| {
         if (v == .string) {

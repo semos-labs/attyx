@@ -870,6 +870,13 @@ pub fn run(
         if (ipc_thread) |t| t.join();
     }
 
+    // Start the embedded MCP HTTP server (loopback) for the UI's lifetime.
+    const mcp_http = @import("../ipc/mcp_http.zig");
+    if (config.mcp_enabled and config.mcp_port != 0) {
+        mcp_http.start(config.mcp_host, config.mcp_port);
+    }
+    defer mcp_http.shutdown();
+
     const thread = try std.Thread.spawn(.{}, event_loop.ptyReaderThread, .{&ctx});
     defer thread.join();
 

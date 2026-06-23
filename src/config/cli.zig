@@ -26,6 +26,7 @@ pub const Action = enum {
     kill_daemon,
     ipc_command,
     host,
+    mcp,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -75,6 +76,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;
+            return result;
+        } else if (std.mem.eql(u8, first, "mcp")) {
+            result.action = .mcp;
             return result;
         } else if (isIpcSubcommand(first)) {
             result.action = .ipc_command;
