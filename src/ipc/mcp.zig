@@ -112,6 +112,17 @@ const CallOut = struct { is_error: bool, text: []const u8 };
 /// Send one IPC request to the running instance and interpret the response.
 /// Mirrors the relevant parts of client.run (minus stdout/exit semantics).
 fn callIpc(a: std.mem.Allocator, req: @import("../config/cli_ipc.zig").IpcRequest) CallOut {
+    // Session targeting: when a specific session is requested, routable commands
+    // run directly against that session in the daemon — regardless of which
+    // window (if any) is attached. Mirrors client.run's headless routing so MCP
+    // can drive an arbitrary session, not just the attached one. Non-routable
+    // commands fall through to the attached window's control socket below.
+    const client_daemon = @import("client_daemon.zig");
+    if (req.target_session != 0 and client_daemon.isRoutable(req.command)) {
+        const r = client_daemon.call(a, req);
+        return .{ .is_error = r.is_error, .text = r.text };
+    }
+
     var sock_buf: [256]u8 = undefined;
     const socket_path = client.discoverSocket(&sock_buf, req.target_pid) orelse
         return .{ .is_error = true, .text = "no running Attyx instance found" };
