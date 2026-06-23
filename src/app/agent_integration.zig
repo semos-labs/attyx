@@ -21,6 +21,7 @@
 /// allocator and config access. POSIX-only; a no-op on Windows.
 const std = @import("std");
 const builtin = @import("builtin");
+const opencode = @import("agent_integration_opencode.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -87,8 +88,9 @@ pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
     // 3. Codex — same JSON hook shape, at ~/.codex/hooks.json.
     installCodex(a, home, emitter_path);
 
-    // 4. opencode — a JS plugin that shells out to the emitter.
-    installOpenCode(a, home, emitter_path);
+    // 4. opencode — a JS plugin that shells out to the emitter, loaded via the
+    //    plugins dir and registered in opencode.json(c). See its own module.
+    opencode.install(a, home, emitter_path);
 }
 
 /// Codex: merge hooks into ~/.codex/hooks.json and enable the hooks feature.
@@ -115,19 +117,6 @@ fn ensureCodexFeatureFlag(a: std.mem.Allocator, codex_dir: []const u8) void {
         if (existing.len > 0 and existing[existing.len - 1] != '\n') "\n" else "",
     }) catch return;
     writeAtomic(a, path, appended, 0o644);
-}
-
-/// opencode: write a plugin that maps its event bus onto the emitter.
-fn installOpenCode(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
-    const cfg = std.fmt.allocPrint(a, "{s}/.config/opencode", .{home}) catch return;
-    // Only act if opencode is configured.
-    var d = std.fs.cwd().openDir(cfg, .{}) catch return;
-    d.close();
-    const plugin_dir = std.fmt.allocPrint(a, "{s}/plugin", .{cfg}) catch return;
-    mkdirp(a, plugin_dir);
-    const plugin_path = std.fmt.allocPrint(a, "{s}/attyx-status.js", .{plugin_dir}) catch return;
-    const plugin = std.fmt.allocPrint(a, opencode_plugin_fmt, .{emitter_path}) catch return;
-    writeAtomic(a, plugin_path, plugin, 0o644);
 }
 
 /// Collect Claude config dirs to inject into: ~/.claude (the default) plus any
@@ -272,14 +261,14 @@ fn eventHasCommand(groups: std.json.Array, command: []const u8) bool {
 // File helpers
 // ---------------------------------------------------------------------------
 
-fn readFile(a: std.mem.Allocator, path: []const u8) ?[]u8 {
+pub fn readFile(a: std.mem.Allocator, path: []const u8) ?[]u8 {
     const f = std.fs.cwd().openFile(path, .{}) catch return null;
     defer f.close();
     return f.readToEndAlloc(a, 4 * 1024 * 1024) catch null;
 }
 
 /// Atomic write: full write to a per-pid temp file, then rename over the dest.
-fn writeAtomic(a: std.mem.Allocator, path: []const u8, content: []const u8, mode: std.posix.mode_t) void {
+pub fn writeAtomic(a: std.mem.Allocator, path: []const u8, content: []const u8, mode: std.posix.mode_t) void {
     const tmp = std.fmt.allocPrintSentinel(a, "{s}.{d}.tmp", .{ path, std.c.getpid() }, 0) catch return;
     const final = std.fmt.allocPrintSentinel(a, "{s}", .{path}, 0) catch return;
 
@@ -313,7 +302,7 @@ fn writeAtomic(a: std.mem.Allocator, path: []const u8, content: []const u8, mode
 }
 
 /// mkdir -p, best-effort.
-fn mkdirp(a: std.mem.Allocator, path: []const u8) void {
+pub fn mkdirp(a: std.mem.Allocator, path: []const u8) void {
     std.fs.cwd().makePath(path) catch {
         _ = a;
         return;
@@ -358,67 +347,6 @@ const emitter_script =
     \\  printf '\033]7337;agent-status;agent;%s\a' "$s" > "$tty" 2>/dev/null
     \\fi
     \\exit 0
-    \\
-;
-
-/// opencode plugin. `{s}` is the absolute emitter path. The plugin-init body
-/// runs once when opencode launches (env, incl. ATTYX_PID/ATTYX_TTY, is
-/// inherited), so we emit idle there to register the agent on launch — the
-/// reliable startup signal, since session.created delivery to plugins is racy.
-/// Thereafter: working is derived from tool.execute.before and assistant
-/// message updates; session.idle → idle; permission.asked → input and
-/// permission.replied → working (the native resolution signal, so the prompt
-/// state clears even without a keystroke for attyx to infer from). Runs the
-/// emitter via Node's child_process so the emitter self-gates and targets the
-/// pane tty.
-const opencode_plugin_fmt =
-    \\// Attyx agent status plugin — reports opencode's run state to the
-    \\// terminal via the attyx emitter. No-op outside attyx (emitter self-gates).
-    \\import {{ spawnSync }} from "node:child_process";
-    \\const EMIT = "{s}";
-    \\function emit(state) {{
-    \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
-    \\}}
-    \\const AttyxStatus = async (ctx) => {{
-    \\  // Runs once at opencode launch — register the agent as present-and-idle
-    \\  // immediately, instead of waiting for the first activity event.
-    \\  emit("idle");
-    \\  return {{
-    \\    event: async ({{ event }}) => {{
-    \\      const props = (event && event.properties) || {{}};
-    \\      switch (event && event.type) {{
-    \\        case "session.created":
-    \\          emit("idle");
-    \\          break;
-    \\        case "tool.execute.before":
-    \\          emit("working");
-    \\          break;
-    \\        case "message.part.updated":
-    \\          if (props.part && props.part.type === "text") emit("working");
-    \\          break;
-    \\        case "permission.asked":
-    \\          emit("input");
-    \\          break;
-    \\        case "permission.replied":
-    \\          emit("working");
-    \\          break;
-    \\        case "session.idle":
-    \\          emit("idle");
-    \\          break;
-    \\        case "session.status":
-    \\          if (props.status && props.status.type === "idle") emit("idle");
-    \\          break;
-    \\        case "session.deleted":
-    \\          emit("none");
-    \\          break;
-    \\        default:
-    \\          break;
-    \\      }}
-    \\    }},
-    \\  }};
-    \\}};
-    \\export {{ AttyxStatus }};
-    \\export default AttyxStatus;
     \\
 ;
 
@@ -533,21 +461,6 @@ test "codex events cover working, input, and idle" {
     try testing.expect(std.mem.indexOf(u8, out, "Notification") == null); // codex has none
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status input") != null);
     try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status idle") != null); // SessionStart/Stop
-}
-
-test "opencode plugin embeds the emitter path and maps key events" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const plugin = try std.fmt.allocPrint(a, opencode_plugin_fmt, .{"/E/attyx-agent-status"});
-    try testing.expect(std.mem.indexOf(u8, plugin, "const EMIT = \"/E/attyx-agent-status\"") != null);
-    try testing.expect(std.mem.indexOf(u8, plugin, "permission.asked") != null);
-    try testing.expect(std.mem.indexOf(u8, plugin, "permission.replied") != null);
-    try testing.expect(std.mem.indexOf(u8, plugin, "session.idle") != null);
-    try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
-    // Launch detection: emit idle from the init body and on session.created.
-    try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"idle\")") != null);
-    try testing.expect(std.mem.indexOf(u8, plugin, "session.created") != null);
 }
 
 test "install generates the emitter and injects hooks into ~/.claude" {
