@@ -97,6 +97,27 @@
 # status = true
 
 
+# ── MCP server ───────────────────────────────────────────────────────
+
+[mcp]
+
+# Embedded MCP (Model Context Protocol) server. While the UI is open, Attyx
+# serves an HTTP MCP endpoint that lets MCP clients (e.g. Claude) drive the
+# terminal: list/create panes and tabs, send keys, read pane output, manage
+# sessions, and check agent status. Connect a client to:
+#   http://127.0.0.1:7333/mcp
+# The `attyx mcp` stdio bridge works regardless of this setting.
+# enabled = true
+
+# Host to bind. Keep this on loopback (127.0.0.1) — the tools run arbitrary
+# commands in your terminal, so never expose them to the network.
+# host = "127.0.0.1"
+
+# Port to listen on. Set to 0 to disable the HTTP listener while keeping the
+# stdio bridge available.
+# port = 7333
+
+
 # ── Background ───────────────────────────────────────────────────────
 
 [background]

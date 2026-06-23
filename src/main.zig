@@ -244,6 +244,10 @@ pub fn main() !void {
             ipc_client.run(args);
             return;
         },
+        .mcp => {
+            @import("ipc/mcp.zig").run(allocator);
+            return;
+        },
         .print_config => {
             var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
             defer merged.deinit();
@@ -337,6 +341,8 @@ test {
     _ = @import("config/config.zig");
     _ = @import("config/cli_ipc.zig");
     _ = @import("ipc/client.zig");
+    _ = @import("ipc/mcp.zig");
+    if (!is_windows) _ = @import("ipc/mcp_http.zig");
     if (!is_windows) {
         _ = @import("app/daemon/session_test.zig");
         // resize.zig forms an import cycle with event_loop.zig, which keeps its
