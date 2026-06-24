@@ -139,7 +139,7 @@ jobs:
       matrix:
         include:
           - target: darwin-arm64
-            runner: macos-latest
+            runner: macos-15
             artifact: attyx-darwin-arm64.zip
             dmg: attyx-darwin-arm64.dmg
           - target: darwin-x64
