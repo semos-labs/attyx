@@ -90,6 +90,9 @@ pub const MessageType = enum(u8) {
     // ── Session-targeted envelope ──
     session_envelope = 0x50, // payload: [session_id:u32 LE][inner_msg_type:u8][inner_payload...]
 
+    // ── Image attach (drag/paste a file path into a pane) ──
+    send_image = 0x51, // payload: [pane_id:u32 LE (0=active)][utf8 file path]
+
     // ── Responses ──
     success = 0xA0,
     err = 0xA1,
@@ -303,6 +306,20 @@ test "tab_select encode" {
     const h = try decodeHeader(msg[0..header_size]);
     try std.testing.expectEqual(MessageType.tab_select, h.msg_type);
     try std.testing.expectEqual(@as(u8, 3), msg[header_size]);
+}
+
+test "send_image message round-trip carries pane id and path" {
+    var buf: [256]u8 = undefined;
+    var payload: [64]u8 = undefined;
+    std.mem.writeInt(u32, payload[0..4], 7, .little);
+    const path = "/tmp/shot.png";
+    @memcpy(payload[4 .. 4 + path.len], path);
+    const msg = try encodeMessage(&buf, .send_image, payload[0 .. 4 + path.len]);
+    const h = try decodeHeader(msg[0..header_size]);
+    try std.testing.expectEqual(MessageType.send_image, h.msg_type);
+    const body = msg[header_size..];
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, body[0..4], .little));
+    try std.testing.expectEqualStrings(path, body[4..]);
 }
 
 test "session_id encode" {

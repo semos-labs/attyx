@@ -211,6 +211,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             sendInputToPane(pane, text, ctx);
             sendOk(cmd, "");
         },
+        .send_image => handleSendImage(cmd, ctx),
         .get_text => handler_query.buildGetText(cmd, ctx),
         .get_text_pane => handler_query.buildGetTextPane(cmd, ctx),
 
@@ -299,6 +300,47 @@ fn sendInputToPane(pane: *Pane, text: []const u8, ctx: *PtyThreadCtx) void {
         };
         offset += n;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Image attach — inject a quoted file path as a (bracketed) paste, exactly as
+// a native file drag-and-drop does, so TUIs like Claude Code attach the image.
+// ---------------------------------------------------------------------------
+
+const image_paste = @import("image_paste.zig");
+
+fn handleSendImage(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing pane ID");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    const path = cmd.payload[4..cmd.payload_len];
+    if (path.len == 0) {
+        sendError(cmd, "missing image path");
+        return;
+    }
+
+    var out: [2 * std.fs.max_path_bytes + 16]u8 = undefined;
+    if (pane_id == 0) {
+        const pane = ctx.tab_mgr.activePane();
+        const bytes = image_paste.buildPaste(pane.engine.state.bracketed_paste, path, &out) catch {
+            sendError(cmd, "image path too long");
+            return;
+        };
+        sendInputToActivePty(bytes);
+    } else {
+        const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
+            sendError(cmd, "pane not found");
+            return;
+        };
+        const bytes = image_paste.buildPaste(pane.engine.state.bracketed_paste, path, &out) catch {
+            sendError(cmd, "image path too long");
+            return;
+        };
+        sendInputToPane(pane, bytes, ctx);
+    }
+    sendOk(cmd, "");
 }
 
 // ---------------------------------------------------------------------------

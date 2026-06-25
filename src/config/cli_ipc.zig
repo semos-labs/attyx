@@ -33,6 +33,7 @@ pub const IpcCommand = enum {
     focus_left,
     focus_right,
     send_keys,
+    send_image,
     get_text,
     config_reload,
     theme_set,

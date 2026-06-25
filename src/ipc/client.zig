@@ -414,6 +414,16 @@ pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcReque
 
             break :blk protocol.encodeMessage(buf, .send_keys, processed);
         },
+        // payload: [pane_id:u32 LE (0=active)][utf8 file path]. The path is
+        // sent verbatim — quoting + bracketed-paste wrapping happen in the
+        // instance handler, which knows the target pane's paste mode.
+        .send_image => blk: {
+            var payload_buf: [4 + 4080]u8 = undefined;
+            std.mem.writeInt(u32, payload_buf[0..4], parsed.pane_id, .little);
+            const plen = @min(parsed.text_arg.len, payload_buf.len - 4);
+            @memcpy(payload_buf[4 .. 4 + plen], parsed.text_arg[0..plen]);
+            break :blk protocol.encodeMessage(buf, .send_image, payload_buf[0 .. 4 + plen]);
+        },
         .get_text => blk: {
             if (parsed.pane_id != 0) {
                 var payload: [8]u8 = undefined;

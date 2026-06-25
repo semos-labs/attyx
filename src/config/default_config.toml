@@ -197,7 +197,7 @@
 
 [splits]
 
-# Pixels per step when resizing panes. Range: 1-50.  [live]
+# Cells per step when resizing panes. Range: 1-50.  [live]
 # resize_step = 4
 
 
@@ -404,7 +404,7 @@
 # [[popup]]
 # hotkey = "ctrl+shift+g"      # Key combo to toggle this popup
 # command = "lazygit"           # Command to run inside the popup
-# width = "80%"                 # Popup width (percentage or pixels)
+# width = "80%"                 # Popup width (percentage of terminal)
 # height = "80%"               # Popup height
 # border = "single"            # Border style: "single", "double", "rounded", "heavy", "none"
 # border_color = "#78829a"     # Border color, hex "#RRGGBB"

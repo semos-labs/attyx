@@ -15,6 +15,7 @@ const WinCtx = event_loop.WinCtx;
 const Pane = @import("../app/pane.zig").Pane;
 const session_win = @import("../app/session_windows.zig");
 const tab_rename = @import("tab_rename.zig");
+const image_paste = @import("image_paste.zig");
 
 extern fn attyx_dispatch_action(action_raw: u8) u8;
 extern fn attyx_send_input(bytes: [*]const u8, len: c_int) void;
@@ -147,6 +148,38 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
                 return;
             };
             _ = pane.pty.writeToPty(text) catch {};
+            sendOk(cmd, "");
+        },
+        .send_image => {
+            if (cmd.payload_len < 4) {
+                sendError(cmd, "missing pane ID");
+                return;
+            }
+            const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+            const path = cmd.payload[4..cmd.payload_len];
+            if (path.len == 0) {
+                sendError(cmd, "missing image path");
+                return;
+            }
+            var out: [2 * std.fs.max_path_bytes + 16]u8 = undefined;
+            if (pane_id == 0) {
+                const pane = ctx.tab_mgr.activePane();
+                const bytes = image_paste.buildPaste(pane.engine.state.bracketed_paste, path, &out) catch {
+                    sendError(cmd, "image path too long");
+                    return;
+                };
+                attyx_send_input(bytes.ptr, @intCast(bytes.len));
+            } else {
+                const pane = ctx.tab_mgr.findPaneById(pane_id) orelse {
+                    sendError(cmd, "pane not found");
+                    return;
+                };
+                const bytes = image_paste.buildPaste(pane.engine.state.bracketed_paste, path, &out) catch {
+                    sendError(cmd, "image path too long");
+                    return;
+                };
+                _ = pane.pty.writeToPty(bytes) catch {};
+            }
             sendOk(cmd, "");
         },
         .get_text => {
