@@ -251,7 +251,7 @@ fn materializeBase64(a: std.mem.Allocator, data: []const u8, filename: ?[]const 
     const hex = std.fmt.bytesToHex(rnd, .lower);
     const sep: []const u8 = if (builtin.os.tag == .windows) "\\" else "/";
     const path = std.fmt.allocPrint(a, "{s}{s}attyx-img-{s}{s}", .{
-        tmpDir(), sep, &hex, ext,
+        tmpDir(a), sep, &hex, ext,
     }) catch return error.WriteFailed;
 
     const file = std.fs.createFileAbsolute(path, .{}) catch return error.WriteFailed;
@@ -260,9 +260,13 @@ fn materializeBase64(a: std.mem.Allocator, data: []const u8, filename: ?[]const 
     return path;
 }
 
-fn tmpDir() []const u8 {
-    if (builtin.os.tag == .windows) return std.posix.getenv("TEMP") orelse "C:\\Windows\\Temp";
-    return std.posix.getenv("TMPDIR") orelse "/tmp";
+/// Temp dir for materialized images. Uses getEnvVarOwned (not posix.getenv,
+/// which is a compile error on Windows) — the returned slice is request-scoped,
+/// like the path it's spliced into. Falls back to the platform default.
+fn tmpDir(a: std.mem.Allocator) []const u8 {
+    if (builtin.os.tag == .windows)
+        return std.process.getEnvVarOwned(a, "TEMP") catch "C:\\Windows\\Temp";
+    return std.process.getEnvVarOwned(a, "TMPDIR") catch "/tmp";
 }
 
 /// Pick a file extension (including the dot) from the original filename, or
