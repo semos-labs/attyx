@@ -351,6 +351,7 @@ test {
         _ = @import("app/agent_integration.zig");
         _ = @import("app/agent_integration_codex.zig");
         _ = @import("app/agent_integration_opencode.zig");
+        _ = @import("app/shell_scripts_posix.zig");
     }
 }
 
