@@ -139,7 +139,7 @@ const options =
     opt("--cell-width <value>       ", "Cell width: points or percent (e.g. \"110%\")") ++
     opt("--cell-height <value>      ", "Cell height: points or percent (e.g. \"115%\")") ++
     opt("--theme <string>           ", "Theme name (default: \"default\")") ++
-    opt("--scrollback-lines <int>   ", "Scrollback buffer lines (default: 20000)") ++
+    opt("--scrollback-lines <int>   ", "Scrollback buffer lines (default: 5000)") ++
     opt("--reflow / --no-reflow     ", "Enable/disable reflow on resize") ++
     opt("--cursor-shape <shape>     ", "Cursor shape: block, beam, underline") ++
     opt("--cursor-blink             ", "Enable cursor blinking " ++ d ++ "(--no-cursor-blink to disable)" ++ r) ++

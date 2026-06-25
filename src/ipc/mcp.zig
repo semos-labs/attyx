@@ -94,8 +94,17 @@ fn handleToolCall(a: std.mem.Allocator, params_opt: ?std.json.Value, id: ?std.js
     else
         null;
 
-    const req = mcp_tools.fill(name_v.string, args) orelse
-        return respondError(a, id, -32602, "unknown tool or missing required argument");
+    // send_image may carry inline base64 → materialize a temp file first; it
+    // needs an allocator + filesystem, so it lives outside the pure fill().
+    const req: @import("../config/cli_ipc.zig").IpcRequest = if (std.mem.eql(u8, name_v.string, "send_image"))
+        mcp_tools.fillSendImage(a, args) catch |e| return respondError(a, id, -32602, switch (e) {
+            error.MissingSource => "send_image requires 'path' or 'data'",
+            error.DecodeFailed => "send_image: invalid base64 data",
+            error.WriteFailed => "send_image: failed to write temp image file",
+        })
+    else
+        mcp_tools.fill(name_v.string, args) orelse
+            return respondError(a, id, -32602, "unknown tool or missing required argument");
 
     const out = callIpc(a, req);
     const text_json = std.json.Stringify.valueAlloc(a, std.json.Value{ .string = out.text }, .{}) catch "\"\"";

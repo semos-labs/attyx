@@ -10,6 +10,7 @@
 // ponytail: poll list_agents; add MCP notifications if push latency matters.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const cli_ipc = @import("../config/cli_ipc.zig");
 const IpcRequest = cli_ipc.IpcRequest;
 
@@ -26,6 +27,7 @@ const TOOLS_RAW =
     \\{"name":"list_agents","description":"List AI agents running in panes and their status (working, input_requested, idle...). Returns JSON.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Restrict to one pane id."},"session":{"type":"integer"}}}},
     \\{"name":"get_text","description":"Capture visible screen text of a pane. With 'lines', captures that many trailing rows from scrollback.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"lines":{"type":"integer","description":"Trailing rows to capture (omit for visible screen)."},"session":{"type":"integer"}}}},
     \\{"name":"send_keys","description":"Send keystrokes/text to a pane. Supports C-style escapes (\\n, \\t, \\x03) and named keys like {Enter} {Down}.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}},"required":["text"]}},
+    \\{"name":"send_image","description":"Attach an image to a pane as if a file were dragged/pasted into the terminal (e.g. to give Claude Code a screenshot). Provide either 'path' (an image file already on disk) or 'data' (base64-encoded image bytes, materialized to a temp file). The image's file path is injected as a bracketed paste; Enter is NOT pressed.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to an image file on disk."},"data":{"type":"string","description":"Base64-encoded image bytes (used when no path is available)."},"filename":{"type":"string","description":"Optional original filename; its extension names the temp file when using 'data'."},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}}}},
     \\{"name":"focus","description":"Move keyboard focus between panes.","inputSchema":{"type":"object","properties":{"direction":{"type":"string","enum":["up","down","left","right"]},"session":{"type":"integer"}},"required":["direction"]}},
     \\{"name":"scroll","description":"Scroll the focused pane.","inputSchema":{"type":"object","properties":{"to":{"type":"string","enum":["top","bottom","page_up","page_down"]},"session":{"type":"integer"}},"required":["to"]}},
     \\{"name":"tab_create","description":"Open a new tab, optionally running a command. With wait=true, blocks until the command exits and returns its exit code + output.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"wait":{"type":"boolean"},"session":{"type":"integer"}}}},
@@ -197,6 +199,87 @@ pub fn fill(name: []const u8, args: ?std.json.ObjectMap) ?IpcRequest {
 }
 
 // ---------------------------------------------------------------------------
+// send_image: resolve a `path` or materialize base64 `data` to a temp file.
+// Kept separate from fill() because it needs an allocator + filesystem access,
+// which fill() (a pure name→request mapper) deliberately avoids.
+// ---------------------------------------------------------------------------
+
+pub const ImageError = error{ MissingSource, DecodeFailed, WriteFailed };
+
+/// Build a send_image request. With `path`, the existing file is used as-is.
+/// With base64 `data`, the bytes are decoded and written to a temp file whose
+/// path is returned. The request's text_arg (the path) is allocated in `a`.
+pub fn fillSendImage(a: std.mem.Allocator, args: ?std.json.ObjectMap) ImageError!IpcRequest {
+    var r = IpcRequest{
+        .command = .send_image,
+        .target_session = u32Of(args, "session"),
+        .pane_id = u32Of(args, "pane"),
+    };
+
+    if (getStr(args, "path")) |p| {
+        if (p.len == 0) return error.MissingSource;
+        r.text_arg = a.dupe(u8, p) catch return error.WriteFailed;
+        return r;
+    }
+
+    const data = getStr(args, "data") orelse return error.MissingSource;
+    r.text_arg = try materializeBase64(a, data, getStr(args, "filename"));
+    return r;
+}
+
+/// Decode base64 image bytes (tolerating embedded whitespace) and write them to
+/// a uniquely-named temp file, returning its absolute path (allocated in `a`).
+fn materializeBase64(a: std.mem.Allocator, data: []const u8, filename: ?[]const u8) ImageError![]const u8 {
+    // Strip whitespace some encoders insert (line-wrapped base64) before decode.
+    const clean = a.alloc(u8, data.len) catch return error.WriteFailed;
+    var cn: usize = 0;
+    for (data) |c| {
+        if (c == '\n' or c == '\r' or c == ' ' or c == '\t') continue;
+        clean[cn] = c;
+        cn += 1;
+    }
+    const src = clean[0..cn];
+
+    const decoder = std.base64.standard.Decoder;
+    const n = decoder.calcSizeForSlice(src) catch return error.DecodeFailed;
+    const bytes = a.alloc(u8, n) catch return error.WriteFailed;
+    decoder.decode(bytes, src) catch return error.DecodeFailed;
+
+    const ext = extOf(filename);
+    var rnd: [8]u8 = undefined;
+    std.crypto.random.bytes(&rnd);
+    const hex = std.fmt.bytesToHex(rnd, .lower);
+    const sep: []const u8 = if (builtin.os.tag == .windows) "\\" else "/";
+    const path = std.fmt.allocPrint(a, "{s}{s}attyx-img-{s}{s}", .{
+        tmpDir(a), sep, &hex, ext,
+    }) catch return error.WriteFailed;
+
+    const file = std.fs.createFileAbsolute(path, .{}) catch return error.WriteFailed;
+    defer file.close();
+    file.writeAll(bytes) catch return error.WriteFailed;
+    return path;
+}
+
+/// Temp dir for materialized images. Uses getEnvVarOwned (not posix.getenv,
+/// which is a compile error on Windows) — the returned slice is request-scoped,
+/// like the path it's spliced into. Falls back to the platform default.
+fn tmpDir(a: std.mem.Allocator) []const u8 {
+    if (builtin.os.tag == .windows)
+        return std.process.getEnvVarOwned(a, "TEMP") catch "C:\\Windows\\Temp";
+    return std.process.getEnvVarOwned(a, "TMPDIR") catch "/tmp";
+}
+
+/// Pick a file extension (including the dot) from the original filename, or
+/// default to .png. Claude Code keys image detection off the path's extension.
+fn extOf(filename: ?[]const u8) []const u8 {
+    const f = filename orelse return ".png";
+    const dot = std.mem.lastIndexOfScalar(u8, f, '.') orelse return ".png";
+    const ext = f[dot..];
+    if (ext.len < 2 or ext.len > 6) return ".png";
+    return ext;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -228,6 +311,46 @@ test "fill rejects send_keys without text" {
 
 test "fill rejects unknown tool" {
     try std.testing.expect(fill("nope", null) == null);
+}
+
+test "fillSendImage with path passes it through" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = argsFrom(arena.allocator(), "{\"path\":\"/tmp/shot.png\",\"pane\":4}");
+    defer p.deinit();
+    const r = try fillSendImage(arena.allocator(), p.value.object);
+    try std.testing.expectEqual(cli_ipc.IpcCommand.send_image, r.command);
+    try std.testing.expectEqualStrings("/tmp/shot.png", r.text_arg);
+    try std.testing.expectEqual(@as(u32, 4), r.pane_id);
+}
+
+test "fillSendImage decodes base64 data to a temp file" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // "hi" base64-encoded is "aGk=".
+    var p = argsFrom(arena.allocator(), "{\"data\":\"aGk=\",\"filename\":\"a.jpg\"}");
+    defer p.deinit();
+    const r = try fillSendImage(arena.allocator(), p.value.object);
+    try std.testing.expectEqual(cli_ipc.IpcCommand.send_image, r.command);
+    try std.testing.expect(std.mem.endsWith(u8, r.text_arg, ".jpg"));
+    defer std.fs.deleteFileAbsolute(r.text_arg) catch {};
+    const contents = try std.fs.cwd().readFileAlloc(arena.allocator(), r.text_arg, 64);
+    try std.testing.expectEqualStrings("hi", contents);
+}
+
+test "fillSendImage without path or data errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = argsFrom(arena.allocator(), "{}");
+    defer p.deinit();
+    try std.testing.expectError(error.MissingSource, fillSendImage(arena.allocator(), p.value.object));
+}
+
+test "extOf falls back to png" {
+    try std.testing.expectEqualStrings(".png", extOf(null));
+    try std.testing.expectEqualStrings(".png", extOf("noext"));
+    try std.testing.expectEqualStrings(".jpeg", extOf("shot.jpeg"));
 }
 
 test "fill tab_close converts 1-based to 0-based index" {

@@ -342,6 +342,7 @@ test {
     _ = @import("config/cli_ipc.zig");
     _ = @import("ipc/client.zig");
     _ = @import("ipc/mcp.zig");
+    _ = @import("ipc/image_paste.zig");
     if (!is_windows) _ = @import("ipc/mcp_http.zig");
     if (!is_windows) {
         _ = @import("app/daemon/session_test.zig");
