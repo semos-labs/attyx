@@ -348,6 +348,9 @@ test {
         // resize.zig forms an import cycle with event_loop.zig, which keeps its
         // in-file `test {}` from being collected; aggregate it here instead.
         _ = @import("app/ui/resize_test.zig");
+        _ = @import("app/agent_integration.zig");
+        _ = @import("app/agent_integration_codex.zig");
+        _ = @import("app/agent_integration_opencode.zig");
     }
 }
 

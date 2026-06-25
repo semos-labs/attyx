@@ -22,14 +22,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const opencode = @import("agent_integration_opencode.zig");
+const codex = @import("agent_integration_codex.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
 /// The emitter's filename, also used as the marker for identifying our hook
 /// entries when de-duplicating on re-injection.
-const emitter_name = "attyx-agent-status";
+pub const emitter_name = "attyx-agent-status";
 
-const EventSpec = struct { name: []const u8, matcher: ?[]const u8, state: []const u8 };
+pub const EventSpec = struct { name: []const u8, matcher: ?[]const u8, state: []const u8 };
 
 /// Claude Code hooks (settings.json). PermissionRequest is status-only — the
 /// emitter writes nothing to stdout, so it makes no allow/deny decision and the
@@ -46,18 +47,6 @@ const claude_events = [_]EventSpec{
     .{ .name = "Notification", .matcher = null, .state = "notify" },
     .{ .name = "Stop", .matcher = null, .state = "idle" },
     .{ .name = "SessionEnd", .matcher = null, .state = "none" },
-};
-
-/// Codex hooks (~/.codex/hooks.json) — same JSON shape and event names as
-/// Claude (SessionStart fires on launch/resume/clear/compact). Codex has no
-/// Notification or SessionEnd events, so there's no idle-prompt or clear-on-exit
-/// signal; the dot registers idle on launch and rests at idle after a turn.
-const codex_events = [_]EventSpec{
-    .{ .name = "SessionStart", .matcher = null, .state = "idle" },
-    .{ .name = "UserPromptSubmit", .matcher = null, .state = "working" },
-    .{ .name = "PreToolUse", .matcher = null, .state = "working" },
-    .{ .name = "PermissionRequest", .matcher = null, .state = "input" },
-    .{ .name = "Stop", .matcher = null, .state = "idle" },
 };
 
 /// Install the emitter and inject hooks into every discovered Claude config
@@ -85,38 +74,13 @@ pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
         ensureHooksFile(a, settings, emitter_path, &claude_events);
     }
 
-    // 3. Codex — same JSON hook shape, at ~/.codex/hooks.json.
-    installCodex(a, home, emitter_path);
+    // 3. Codex — same JSON hook shape (at ~/.codex/hooks.json), but Codex gates
+    //    command hooks behind a trust check, so the module also pre-trusts them.
+    codex.install(a, home, emitter_path);
 
     // 4. opencode — a JS plugin that shells out to the emitter, loaded via the
     //    plugins dir and registered in opencode.json(c). See its own module.
     opencode.install(a, home, emitter_path);
-}
-
-/// Codex: merge hooks into ~/.codex/hooks.json and enable the hooks feature.
-fn installCodex(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
-    const dir = std.fmt.allocPrint(a, "{s}/.codex", .{home}) catch return;
-    // Only act if Codex is actually set up (don't create ~/.codex speculatively).
-    var d = std.fs.cwd().openDir(dir, .{}) catch return;
-    d.close();
-    const hooks_path = std.fmt.allocPrint(a, "{s}/hooks.json", .{dir}) catch return;
-    ensureHooksFile(a, hooks_path, emitter_path, &codex_events);
-    ensureCodexFeatureFlag(a, dir);
-}
-
-/// Ensure `[features] hooks = true` in ~/.codex/config.toml. Conservative: only
-/// appends the table when the file has no `[features]` section, to avoid
-/// creating a duplicate TOML table. (Hooks are on by default in current Codex,
-/// so this is belt-and-suspenders.)
-fn ensureCodexFeatureFlag(a: std.mem.Allocator, codex_dir: []const u8) void {
-    const path = std.fmt.allocPrint(a, "{s}/config.toml", .{codex_dir}) catch return;
-    const existing = readFile(a, path) orelse "";
-    if (std.mem.indexOf(u8, existing, "[features]") != null) return; // user manages it
-    const appended = std.fmt.allocPrint(a, "{s}{s}[features]\nhooks = true\n", .{
-        existing,
-        if (existing.len > 0 and existing[existing.len - 1] != '\n') "\n" else "",
-    }) catch return;
-    writeAtomic(a, path, appended, 0o644);
 }
 
 /// Collect Claude config dirs to inject into: ~/.claude (the default) plus any
@@ -138,7 +102,7 @@ fn discoverClaudeConfigDirs(a: std.mem.Allocator, home: []const u8, out: *std.Ar
 
 /// Merge `events` hooks into a JSON hooks file (Claude settings.json or Codex
 /// hooks.json — same `{ "hooks": { ... } }` shape). No-op if already present.
-fn ensureHooksFile(a: std.mem.Allocator, path: []const u8, emitter_path: []const u8, events: []const EventSpec) void {
+pub fn ensureHooksFile(a: std.mem.Allocator, path: []const u8, emitter_path: []const u8, events: []const EventSpec) void {
     const content = readFile(a, path) orelse "{}";
 
     // Fast path: every command already present → leave the file untouched
@@ -356,6 +320,13 @@ const emitter_script =
 
 const testing = std.testing;
 
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, i, needle)) |pos| : (count += 1) i = pos + needle.len;
+    return count;
+}
+
 fn mergeToString(a: std.mem.Allocator, input: []const u8, emitter: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, a, input, .{});
     const root = &parsed.value;
@@ -395,15 +366,9 @@ test "re-merge is idempotent (no duplicate attyx groups)" {
     const a = arena.allocator();
     const once = try mergeToString(a, "{}", "/E/attyx-agent-status");
     const twice = try mergeToString(a, once, "/E/attyx-agent-status");
-    // Count occurrences of the Stop command in the twice-merged output: exactly 1.
-    var count: usize = 0;
-    var i: usize = 0;
-    const needle = "/E/attyx-agent-status idle";
-    while (std.mem.indexOfPos(u8, twice, i, needle)) |pos| {
-        count += 1;
-        i = pos + needle.len;
-    }
-    try testing.expectEqual(@as(usize, 1), count);
+    // Idempotency: re-merging adds no new groups, so the idle command (emitted by
+    // both SessionStart and Stop) occurs the same number of times either way.
+    try testing.expectEqual(countOccurrences(once, "/E/attyx-agent-status idle"), countOccurrences(twice, "/E/attyx-agent-status idle"));
 }
 
 test "re-merge with a changed emitter path drops the stale group" {
@@ -447,20 +412,6 @@ test "hasAllCommands requires the SessionStart event, not just the shared idle c
 test "emitter script self-gates on ATTYX_PID and emits the OSC" {
     try testing.expect(std.mem.indexOf(u8, emitter_script, "[ -n \"$ATTYX_PID\" ] || exit 0") != null);
     try testing.expect(std.mem.indexOf(u8, emitter_script, "]7337;agent-status;agent;%s") != null);
-}
-
-test "codex events cover working, input, and idle" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var parsed = try std.json.parseFromSlice(std.json.Value, a, "{}", .{});
-    try mergeHooks(a, &parsed.value.object, "/E/attyx-agent-status", &codex_events);
-    const out = try std.json.Stringify.valueAlloc(a, parsed.value, .{ .whitespace = .indent_2 });
-    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop" }) |ev|
-        try testing.expect(std.mem.indexOf(u8, out, ev) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Notification") == null); // codex has none
-    try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status input") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "/E/attyx-agent-status idle") != null); // SessionStart/Stop
 }
 
 test "install generates the emitter and injects hooks into ~/.claude" {
