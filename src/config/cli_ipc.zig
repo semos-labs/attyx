@@ -234,6 +234,27 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
             }
             break :blk .{ .command = .theme_set, .text_arg = fargs[start + 1], .target_pid = target_pid, .json_output = json_output };
         }
+        if (std.mem.eql(u8, sub, "send-image")) {
+            if (hasHelp(fargs, start)) showHelp(help.send_image);
+            var si = IpcRequest{ .command = .send_image, .target_pid = target_pid, .json_output = json_output };
+            var path: []const u8 = "";
+            var gi = start + 1;
+            while (gi < fargs.len) : (gi += 1) {
+                if (std.mem.eql(u8, fargs[gi], "--pane") or std.mem.eql(u8, fargs[gi], "-p")) {
+                    if (gi + 1 >= fargs.len) fatal("--pane requires a pane ID");
+                    gi += 1;
+                    parsePaneArg(fargs[gi], &si);
+                } else if (path.len == 0) {
+                    path = fargs[gi];
+                }
+            }
+            if (path.len == 0) {
+                printHelp(help.send_image);
+                break :blk null;
+            }
+            si.text_arg = path;
+            break :blk si;
+        }
         if (std.mem.eql(u8, sub, "scroll-to")) break :blk parseScrollTo(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "popup")) break :blk parsePopup(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "list")) break :blk parseList(fargs, start, target_pid, json_output);
@@ -763,6 +784,14 @@ test "watch agents maps to watch_agents" {
     const args = [_][:0]const u8{ "attyx", "watch", "agents" };
     const parsed = parse(&args).?;
     try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
+}
+
+test "send-image maps path and pane" {
+    const args = [_][:0]const u8{ "attyx", "send-image", "/tmp/a.png", "-p", "3" };
+    const parsed = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.send_image, parsed.command);
+    try std.testing.expectEqualStrings("/tmp/a.png", parsed.text_arg);
+    try std.testing.expectEqual(@as(u32, 3), parsed.pane_id);
 }
 
 test "list agents -p sets pane filter" {

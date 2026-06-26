@@ -136,6 +136,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             sendOk(cmd, "");
         },
         .pane_zoom_targeted => handler_cmd.handlePaneZoomTargeted(cmd, ctx),
+        .pane_focus_targeted => handler_cmd.handlePaneFocusTargeted(cmd, ctx),
 
         // ── Focus commands (silent success) ──
         .focus_up => {

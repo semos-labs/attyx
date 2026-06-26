@@ -12,6 +12,12 @@ pub const Key = enum {
     quit, // q / Ctrl-C
     help, // ?
     refresh, // r
+    sort, // s — cycle sort
+    filter, // f — cycle filter
+    search, // / — enter search mode
+    zoom, // z — zoom selected pane
+    close, // x — close selected pane (confirm)
+    detail, // Tab — toggle detail panel
     none,
 };
 
@@ -27,6 +33,12 @@ pub const Decoder = struct {
             0x03, 'q' => .quit,
             '?' => .help,
             'r' => .refresh,
+            's' => .sort,
+            'f' => .filter,
+            '/' => .search,
+            'z' => .zoom,
+            'x' => .close,
+            0x09 => .detail, // Tab
             '\r', '\n' => .enter,
             'j' => .down,
             'k' => .up,
@@ -83,8 +95,8 @@ fn collect(bytes: []const u8, out: []Key) usize {
 
 test "decodes letters and control keys" {
     var out: [16]Key = undefined;
-    const n = collect("jkqG g\r\x03?r", &out);
-    const want = [_]Key{ .down, .up, .quit, .bottom, .top, .enter, .quit, .help, .refresh };
+    const n = collect("jkqG g\r\x03?rsfz x/\t", &out);
+    const want = [_]Key{ .down, .up, .quit, .bottom, .top, .enter, .quit, .help, .refresh, .sort, .filter, .zoom, .close, .search, .detail };
     try testing.expectEqual(want.len, n);
     for (want, 0..) |k, i| try testing.expectEqual(k, out[i]);
 }

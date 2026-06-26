@@ -83,6 +83,7 @@ pub const MessageType = enum(u8) {
     pane_close_targeted = 0x49,
     pane_zoom_targeted = 0x4A,
     pane_rotate_targeted = 0x4B,
+    pane_focus_targeted = 0xB3, // focus a pane by id (0x4C..0x51 taken; next free)
     // Tab-targeted (payload: [tab_idx:u8][data...])
     tab_close_targeted = 0x4C,
     tab_rename_targeted = 0x4D,

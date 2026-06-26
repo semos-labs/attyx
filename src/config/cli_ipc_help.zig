@@ -21,6 +21,7 @@ pub const top_level =
     \\  send-keys    Send keystrokes to a pane (supports escape sequences)
     \\               Alias: send-text
     \\  get-text     Read visible text from a pane
+    \\  send-image   Attach an image file to a pane (e.g. a screenshot)
     \\  reload       Reload configuration from disk
     \\  theme        Switch to a named theme
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
@@ -421,6 +422,26 @@ pub const get_text =
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.
+    \\
+;
+
+pub const send_image =
+    \\Attach an image file to a pane — as if the file were dragged or pasted in
+    \\(e.g. to hand Claude Code a screenshot).
+    \\
+    \\Usage: attyx send-image <path> [--pane <target>]
+    \\
+    \\The image's file path is injected into the pane as a bracketed paste; Enter
+    \\is NOT pressed, so the agent receives the reference without submitting. The
+    \\path must already exist on disk.
+    \\
+    \\Options:
+    \\  --pane, -p <id>   Target a specific pane by its stable ID instead of the
+    \\                    focused one (IDs shown in 'attyx list').
+    \\
+    \\Examples:
+    \\  attyx send-image ~/shot.png            Attach to the focused pane
+    \\  attyx send-image /tmp/diagram.png -p 3 Attach to pane 3
     \\
 ;
 
