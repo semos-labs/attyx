@@ -23,6 +23,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const opencode = @import("agent_integration_opencode.zig");
 const codex = @import("agent_integration_codex.zig");
+const pi = @import("agent_integration_pi.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -81,6 +82,9 @@ pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
     // 4. opencode — a JS plugin that shells out to the emitter, loaded via the
     //    plugins dir and registered in opencode.json(c). See its own module.
     opencode.install(a, home, emitter_path);
+
+    // 5. Pi (pi.dev) — a TS extension auto-discovered from ~/.pi/agent/extensions.
+    pi.install(a, home, emitter_path);
 }
 
 /// Collect Claude config dirs to inject into: ~/.claude (the default) plus any
