@@ -81,7 +81,7 @@ fn handleListAgents(cl: *DaemonClient, session: *DaemonSession, body: []const u8
     var stream = std.io.fixedBufferStream(&buf);
     const w = stream.writer();
 
-    if (as_json) w.writeAll("[") catch {};
+    if (as_json) w.writeAll("[") catch {} else agents.writeAgentTableHeader(w) catch {};
     var first = true;
 
     // Walk the stored layout so each agent's tab_id matches `list`'s tab handle
@@ -138,7 +138,7 @@ fn writeAgentRow(
         if (!first.*) w.writeAll(",") catch return;
         agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
     } else {
-        agents.writeAgentTsv(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
+        agents.writeAgentRow(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
     }
     first.* = false;
 }
