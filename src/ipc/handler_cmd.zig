@@ -462,6 +462,31 @@ pub fn handlePaneZoomTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     sendOk(cmd, "");
 }
 
+/// Focus a pane by IPC id: make its tab the active tab and select it within the
+/// tab's layout. Payload: [pane_id:u32 LE]. Used by `attyx dashboard`'s jump.
+pub fn handlePaneFocusTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 4) {
+        sendError(cmd, "missing pane ID");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    const mgr = ctx.tab_mgr;
+    const found = mgr.findPaneWithLayout(pane_id) orelse {
+        sendError(cmd, "pane not found");
+        return;
+    };
+    found.layout.focused = found.pool_idx;
+    for (0..mgr.count) |i| {
+        const lp = &(mgr.tabs[i] orelse continue);
+        if (lp == found.layout) {
+            mgr.active = @intCast(i);
+            break;
+        }
+    }
+    actions.switchActiveTab(ctx);
+    sendOk(cmd, "");
+}
+
 /// Rotate panes in a tab containing the given pane. Payload: [pane_id:u32 LE]
 /// If no pane ID given (payload_len < 4), rotates the active tab.
 pub fn handlePaneRotateTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {

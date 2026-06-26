@@ -98,6 +98,7 @@ const ipc_io =
     "  " ++ d ++ "Input / Output" ++ r ++ "\n" ++
     cmd("send-keys [-p <id>] [--wait-stable] <keys>   ", "Send keystrokes to a pane") ++
     cont("                                " ++ d ++ "Named: {Enter} {Up} {Down} {Tab} {Ctrl-c} ... or \\n \\xHH" ++ r) ++
+    cmd("send-image <path> [-p <id>]   ", "Attach an image file to a pane (e.g. a screenshot)") ++
     cmd("get-text [-p <id>] [-n <N>] [--json]     ", "Read screen text (or last N rows) from a pane") ++
     "\n";
 
