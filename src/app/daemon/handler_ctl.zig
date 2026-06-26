@@ -49,6 +49,7 @@ pub fn handle(
     switch (op) {
         .write_input => handleWriteInput(cl, session, req.body),
         .get_text => handleGetText(cl, session, req.body, allocator),
+        .get_text_since => handleGetTextSince(cl, session, req.body, allocator),
         .list => handleList(cl, session, req.body),
         .tab_create => handler_ctl_layout.tabCreate(cl, session, req.body, next_pane_id, allocator, clients),
         .tab_select => handler_ctl_layout.tabSelect(cl, session, req.body, clients),
@@ -261,6 +262,85 @@ fn handleGetText(
     }
 
     cl.sendCtlResponse(0, stream.getWritten());
+}
+
+/// Emit `n` rows from the ring at abs `start`, trailing-space trimmed + UTF-8,
+/// `\n` per row — mirrors the window-side get-text formatting.
+fn emitRows(w: anytype, ring: anytype, start: usize, n: usize) void {
+    const cols = ring.cols;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const row_cells = ring.getRow(start + i);
+        var last: usize = cols;
+        while (last > 0 and row_cells[last - 1].char == ' ') last -= 1;
+        for (row_cells[0..last]) |cell| {
+            var cp: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(cell.char, &cp) catch continue;
+            w.writeAll(cp[0..len]) catch break;
+        }
+        w.writeAll("\n") catch break;
+    }
+}
+
+fn writeJsonStr(w: anytype, s: []const u8) void {
+    for (s) |ch| {
+        switch (ch) {
+            '"' => w.writeAll("\\\"") catch {},
+            '\\' => w.writeAll("\\\\") catch {},
+            '\n' => w.writeAll("\\n") catch {},
+            '\r' => w.writeAll("\\r") catch {},
+            '\t' => w.writeAll("\\t") catch {},
+            else => if (ch < 0x20) {
+                w.print("\\u{x:0>4}", .{ch}) catch {};
+            } else w.writeByte(ch) catch {},
+        }
+    }
+}
+
+/// Incremental capture for a daemon-backed session (`-s ... get-text --since`).
+/// Mirrors handler_query.buildGetTextSince against the session's own engine ring.
+fn handleGetTextSince(cl: *DaemonClient, session: *DaemonSession, body: []const u8, allocator: std.mem.Allocator) void {
+    if (body.len < 20) {
+        cl.sendCtlResponse(1, "malformed get_text_since payload");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, body[0..4], .little);
+    const gen = std.mem.readInt(u32, body[4..8], .little);
+    const line = std.mem.readInt(u64, body[8..16], .little);
+    const lines = std.mem.readInt(u32, body[16..20], .little);
+    const pane = selectPane(session, pane_id) orelse {
+        cl.sendCtlResponse(1, "pane not found");
+        return;
+    };
+    ensureActive(pane, session);
+    const eng = pane.engine orelse {
+        cl.sendCtlResponse(1, "pane has no screen yet");
+        return;
+    };
+    const ring = &eng.state.ring;
+    const res = ring.sinceRange(line != 0, gen, line, @as(usize, lines));
+
+    const max_row_bytes = ring.cols * 4 + 1;
+    const text_buf = allocator.alloc(u8, res.row_count * max_row_bytes + 64) catch {
+        cl.sendCtlResponse(1, "out of memory");
+        return;
+    };
+    defer allocator.free(text_buf);
+    var ts = std.io.fixedBufferStream(text_buf);
+    emitRows(ts.writer(), ring, res.start_abs, res.row_count);
+    const text = ts.getWritten();
+
+    const json_buf = allocator.alloc(u8, text.len * 6 + 256) catch {
+        cl.sendCtlResponse(1, "out of memory");
+        return;
+    };
+    defer allocator.free(json_buf);
+    var js = std.io.fixedBufferStream(json_buf);
+    const w = js.writer();
+    w.print("{{\"cursor\":\"g{d}.l{d}\",\"text\":\"", .{ res.gen, res.next_line }) catch {};
+    writeJsonStr(w, text);
+    w.print("\",\"truncated\":{},\"reset\":{},\"rows\":{d}}}", .{ res.truncated, res.reset, res.row_count }) catch {};
+    cl.sendCtlResponse(0, js.getWritten());
 }
 
 fn handleList(cl: *DaemonClient, session: *DaemonSession, body: []const u8) void {

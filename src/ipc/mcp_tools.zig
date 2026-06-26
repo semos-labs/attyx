@@ -25,7 +25,7 @@ const TOOLS_RAW =
     \\{"name":"list_tabs","description":"List tabs in the current (or targeted) session.","inputSchema":{"type":"object","properties":{"session":{"type":"integer"}}}},
     \\{"name":"list_panes","description":"List panes (splits) with their stable IPC ids.","inputSchema":{"type":"object","properties":{"session":{"type":"integer"}}}},
     \\{"name":"list_agents","description":"List AI agents running in panes with status and usage. Returns JSON: each agent has pane_id, tab_id, session, pid, state (idle|working|input), message, and a usage object with input_tokens, output_tokens, context_used, context_max (context window size), cost_usd, cost_is_estimate, and model. Unknown usage fields are omitted (absent = unknown, not zero).","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Restrict to one pane id."},"session":{"type":"integer"}}}},
-    \\{"name":"get_text","description":"Capture visible screen text of a pane. With 'lines', captures that many trailing rows from scrollback.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"lines":{"type":"integer","description":"Trailing rows to capture (omit for visible screen)."},"session":{"type":"integer"}}}},
+    \\{"name":"get_text","description":"Capture a pane's screen text. With 'lines', captures that many trailing rows from scrollback. Pass the 'cursor' from a previous result as 'since' to get ONLY the new output since that read (incremental tailing) — the result is {cursor,text,truncated,reset,rows}; feed 'cursor' back next time. Use since:\"\" to seed (returns the current screen + a starting cursor).","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"lines":{"type":"integer","description":"Trailing rows to capture (omit for visible screen)."},"since":{"type":"string","description":"Cursor from a previous get_text result; returns only new rows since then. Empty string seeds from the current screen."},"cursor_only":{"type":"boolean","description":"Return just the next cursor, no text."},"session":{"type":"integer"}}}},
     \\{"name":"send_keys","description":"Send keystrokes/text to a pane. Supports C-style escapes (\\n, \\t, \\x03) and named keys like {Enter} {Down}.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}},"required":["text"]}},
     \\{"name":"send_image","description":"Attach an image to a pane as if a file were dragged/pasted into the terminal (e.g. to give Claude Code a screenshot). Provide either 'path' (an image file already on disk) or 'data' (base64-encoded image bytes, materialized to a temp file). The image's file path is injected as a bracketed paste; Enter is NOT pressed.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to an image file on disk."},"data":{"type":"string","description":"Base64-encoded image bytes (used when no path is available)."},"filename":{"type":"string","description":"Optional original filename; its extension names the temp file when using 'data'."},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}}}},
     \\{"name":"focus","description":"Move keyboard focus between panes.","inputSchema":{"type":"object","properties":{"direction":{"type":"string","enum":["up","down","left","right"]},"session":{"type":"integer"}},"required":["direction"]}},
@@ -109,6 +109,15 @@ pub fn fill(name: []const u8, args: ?std.json.ObjectMap) ?IpcRequest {
     } else if (eql(u8, name, "get_text")) {
         r.command = .get_text;
         r.lines = u32Of(args, "lines");
+        if (getStr(args, "since")) |tok| {
+            r.has_since = true;
+            if (tok.len > 0) {
+                const c = @import("../config/cli_ipc.zig").Cursor.parse(tok) orelse return null;
+                r.since_gen = c.gen;
+                r.since_line = c.line;
+            }
+        }
+        r.cursor_only = getBool(args, "cursor_only");
     } else if (eql(u8, name, "send_keys")) {
         r.command = .send_keys;
         r.text_arg = getStr(args, "text") orelse return null;

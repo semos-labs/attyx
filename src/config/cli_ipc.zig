@@ -77,6 +77,35 @@ pub const IpcRequest = struct {
     /// get-text: number of trailing rows from scrollback+screen to capture.
     /// 0 = visible screen (default behavior).
     lines: u32 = 0,
+    /// get-text --since: incremental-capture cursor (opaque `g<gen>.l<line>`).
+    has_since: bool = false,
+    since_gen: u32 = 0,
+    since_line: u64 = 0,
+    /// get-text --cursor-only: print just the next cursor, no text.
+    cursor_only: bool = false,
+};
+
+/// Incremental-capture cursor: an opaque ASCII token `g<gen>.l<line>`. The client
+/// treats it as a blob; only the CLI/MCP arg parsers and the server decode it.
+pub const Cursor = struct {
+    gen: u32 = 0,
+    line: u64 = 0,
+
+    /// Format into `buf`, returns the slice. Buffer should be >= 32 bytes.
+    pub fn format(self: Cursor, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "g{d}.l{d}", .{ self.gen, self.line }) catch "g0.l0";
+    }
+
+    /// Parse `g<gen>.l<line>`. An empty token means "seed from now" → null (the
+    /// caller treats null as has_since with gen/line 0, i.e. no prior cursor).
+    pub fn parse(tok: []const u8) ?Cursor {
+        if (tok.len < 4 or tok[0] != 'g') return null;
+        const dot = std.mem.indexOfScalar(u8, tok, '.') orelse return null;
+        if (dot + 1 >= tok.len or tok[dot + 1] != 'l') return null;
+        const gen = std.fmt.parseInt(u32, tok[1..dot], 10) catch return null;
+        const line = std.fmt.parseInt(u64, tok[dot + 2 ..], 10) catch return null;
+        return .{ .gen = gen, .line = line };
+    }
 };
 
 /// Returns true if the string looks like a filesystem path rather than a plain name.
@@ -217,6 +246,18 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
                     const n = std.fmt.parseInt(u32, fargs[gi], 10) catch fatal("--lines: invalid count");
                     if (n == 0) fatal("--lines: count must be >= 1");
                     gt_result.lines = n;
+                } else if (std.mem.eql(u8, fargs[gi], "--since")) {
+                    if (gi + 1 >= fargs.len) fatal("--since requires a cursor (use \"\" to seed)");
+                    gi += 1;
+                    gt_result.has_since = true;
+                    const tok = fargs[gi];
+                    if (tok.len > 0) {
+                        const c = Cursor.parse(tok) orelse fatal("--since: malformed cursor token");
+                        gt_result.since_gen = c.gen;
+                        gt_result.since_line = c.line;
+                    }
+                } else if (std.mem.eql(u8, fargs[gi], "--cursor-only")) {
+                    gt_result.cursor_only = true;
                 }
                 gi += 1;
             }
@@ -821,4 +862,33 @@ test "watch agents -s carries target session" {
     const parsed = parse(&args).?;
     try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
     try std.testing.expectEqual(@as(u32, 4), parsed.target_session);
+}
+
+test "Cursor token round-trips and rejects malformed input" {
+    var buf: [32]u8 = undefined;
+    const tok = (Cursor{ .gen = 3, .line = 10581 }).format(&buf);
+    try std.testing.expectEqualStrings("g3.l10581", tok);
+    const c = Cursor.parse(tok).?;
+    try std.testing.expectEqual(@as(u32, 3), c.gen);
+    try std.testing.expectEqual(@as(u64, 10581), c.line);
+    try std.testing.expect(Cursor.parse("") == null);
+    try std.testing.expect(Cursor.parse("garbage") == null);
+    try std.testing.expect(Cursor.parse("g3") == null);
+    try std.testing.expect(Cursor.parse("g3.x5") == null);
+}
+
+test "get-text --since parses cursor and --cursor-only" {
+    const args = [_][:0]const u8{ "attyx", "get-text", "-p", "3", "--since", "g2.l40", "--cursor-only" };
+    const r = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.get_text, r.command);
+    try std.testing.expect(r.has_since);
+    try std.testing.expectEqual(@as(u32, 2), r.since_gen);
+    try std.testing.expectEqual(@as(u64, 40), r.since_line);
+    try std.testing.expect(r.cursor_only);
+    try std.testing.expectEqual(@as(u32, 3), r.pane_id);
+
+    // Empty token seeds (has_since true, gen/line 0).
+    const args2 = [_][:0]const u8{ "attyx", "get-text", "--since", "" };
+    const r2 = parse(&args2).?;
+    try std.testing.expect(r2.has_since and r2.since_line == 0);
 }

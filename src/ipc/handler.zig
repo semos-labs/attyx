@@ -215,6 +215,7 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .send_image => handleSendImage(cmd, ctx),
         .get_text => handler_query.buildGetText(cmd, ctx),
         .get_text_pane => handler_query.buildGetTextPane(cmd, ctx),
+        .get_text_since => handler_query.buildGetTextSince(cmd, ctx),
 
         // ── Popup ──
         .popup => handler_cmd.handlePopup(cmd, ctx),

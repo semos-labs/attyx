@@ -241,6 +241,10 @@ pub const CtlOp = enum(u8) {
     /// rows. pane_filter != 0 restricts output to that pane. Replies with the
     /// listing built from the session's live engines.
     list_agents = 0x0F,
+    /// op_body: [pane_id:u32][gen:u32][line:u64][lines:u32] — incremental capture.
+    /// Replies with the JSON {cursor,text,truncated,reset,rows} object (§ get-text
+    /// --since). `line == 0` seeds from the current screen.
+    get_text_since = 0x10,
 };
 
 /// `list` ctl op kinds (first byte of op_body).

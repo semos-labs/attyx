@@ -200,33 +200,16 @@ pub fn buildGetTextPane(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     writeScreenText(cmd, pane, lines);
 }
 
-fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype, lines: u32) void {
-    const ring = &pane.engine.state.ring;
+/// Emit `row_count` rows from the ring starting at absolute index `start_abs`,
+/// trailing-space trimmed, UTF-8 encoded, one `\n` per row. Shared by every
+/// get-text variant so `--since` output is byte-identical to a full capture.
+fn emitRows(w: anytype, ring: anytype, start_abs: usize, row_count: usize) void {
     const cols = ring.cols;
-
-    // Determine row range. lines == 0 → visible screen only.
-    // lines > 0 → last N rows from the ring (scrollback + screen).
-    const total_rows: usize = if (lines == 0) ring.screen_rows else @min(@as(usize, lines), ring.count);
-    const start_abs: usize = if (lines == 0) ring.scrollbackCount() else ring.count - total_rows;
-
-    // Allocate output buffer sized for worst-case UTF-8 output.
-    const max_row_bytes = cols * 4 + 1;
-    const buf_size = total_rows * max_row_bytes + 64;
-    const buf = pane.allocator.alloc(u8, buf_size) catch {
-        sendError(cmd, "out of memory");
-        return;
-    };
-    defer pane.allocator.free(buf);
-    var stream = std.io.fixedBufferStream(buf);
-    const w = stream.writer();
-
     var i: usize = 0;
-    while (i < total_rows) : (i += 1) {
+    while (i < row_count) : (i += 1) {
         const row_cells = ring.getRow(start_abs + i);
-        // Find last non-space cell to trim trailing whitespace
         var last: usize = cols;
         while (last > 0 and row_cells[last - 1].char == ' ') last -= 1;
-
         for (row_cells[0..last]) |cell| {
             var codepoint_buf: [4]u8 = undefined;
             const len = std.unicode.utf8Encode(cell.char, &codepoint_buf) catch continue;
@@ -234,8 +217,76 @@ fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype, lines: u32) void {
         }
         w.writeAll("\n") catch break;
     }
+}
 
+fn writeScreenText(cmd: *queue.IpcCommand, pane: anytype, lines: u32) void {
+    const ring = &pane.engine.state.ring;
+
+    // Determine row range. lines == 0 → visible screen only.
+    // lines > 0 → last N rows from the ring (scrollback + screen).
+    const total_rows: usize = if (lines == 0) ring.screen_rows else @min(@as(usize, lines), ring.count);
+    const start_abs: usize = if (lines == 0) ring.scrollbackCount() else ring.count - total_rows;
+
+    const max_row_bytes = ring.cols * 4 + 1;
+    const buf = pane.allocator.alloc(u8, total_rows * max_row_bytes + 64) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer pane.allocator.free(buf);
+    var stream = std.io.fixedBufferStream(buf);
+    emitRows(stream.writer(), ring, start_abs, total_rows);
     sendOk(cmd, stream.getWritten());
+}
+
+/// `get_text --since`: payload `[pane_id:u32][gen:u32][line:u64][lines:u32]`.
+/// `line == 0` means "seed" (no prior cursor → return the current screen). Always
+/// responds with a JSON object `{cursor,text,truncated,reset,rows}` — the cursor
+/// must travel with the text, so the CLI/MCP layer unwraps it.
+pub fn buildGetTextSince(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
+    if (cmd.payload_len < 20) {
+        sendError(cmd, "malformed get_text_since payload");
+        return;
+    }
+    const pane_id = std.mem.readInt(u32, cmd.payload[0..4], .little);
+    const gen = std.mem.readInt(u32, cmd.payload[4..8], .little);
+    const line = std.mem.readInt(u64, cmd.payload[8..16], .little);
+    const lines = std.mem.readInt(u32, cmd.payload[16..20], .little);
+
+    const pane = if (pane_id == 0)
+        ctx.tab_mgr.activePane()
+    else
+        ctx.tab_mgr.findPaneById(pane_id) orelse {
+            sendError(cmd, "pane not found");
+            return;
+        };
+
+    const ring = &pane.engine.state.ring;
+    const res = ring.sinceRange(line != 0, gen, line, @as(usize, lines));
+
+    // Render the delta rows to a temp buffer, then wrap (JSON-escaped) in the
+    // response object. Sized for worst-case UTF-8 + escape expansion.
+    const max_row_bytes = ring.cols * 4 + 1;
+    const text_cap = res.row_count * max_row_bytes + 64;
+    const text_buf = pane.allocator.alloc(u8, text_cap) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer pane.allocator.free(text_buf);
+    var text_stream = std.io.fixedBufferStream(text_buf);
+    emitRows(text_stream.writer(), ring, res.start_abs, res.row_count);
+    const text = text_stream.getWritten();
+
+    const json_buf = pane.allocator.alloc(u8, text.len * 6 + 256) catch {
+        sendError(cmd, "out of memory");
+        return;
+    };
+    defer pane.allocator.free(json_buf);
+    var json = std.io.fixedBufferStream(json_buf);
+    const w = json.writer();
+    w.print("{{\"cursor\":\"g{d}.l{d}\",\"text\":\"", .{ res.gen, res.next_line }) catch {};
+    agents.writeJsonEscaped(w, text) catch {};
+    w.print("\",\"truncated\":{},\"reset\":{},\"rows\":{d}}}", .{ res.truncated, res.reset, res.row_count }) catch {};
+    sendOk(cmd, json.getWritten());
 }
 
 pub fn handleSessionList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {

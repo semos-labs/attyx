@@ -226,6 +226,24 @@ attyx -s 1 get-text -p 5 -n 1000   # last 1000 rows from pane 5 in session 1
 
 The count is clamped to the pane's available scrollback depth. Use this when a long-running command's output has scrolled off-screen, or when you need to inspect history beyond the current viewport.
 
+### Incremental Capture — `--since <cursor>`
+When babysitting a long-running pane (a build, a test loop, another agent), don't re-read the whole screen every poll. `--since` returns **only the rows produced since your last read**, so a quiet pane returns nothing. Each read prints the next cursor (an opaque token) to stderr; pass it back next time. An empty/omitted token (`--since ""`) seeds: it returns the current screen and a starting cursor.
+
+```bash
+# Seed a cursor (printed to stderr as "cursor: g<gen>.l<line>").
+attyx get-text -p 3 --since "" 2>cur; cur=$(cut -d' ' -f2 <cur)
+# Later: only the new rows since last time. Advance the cursor each read.
+new=$(attyx get-text -p 3 --since "$cur" 2>c2); cur=$(cut -d' ' -f2 <c2)
+```
+
+The cleaner path for agents is `--json`, which returns everything in one object:
+
+```json
+{ "cursor": "g3.l10581", "text": "  CC parser.o\n", "truncated": false, "reset": false, "rows": 1 }
+```
+
+Feed `cursor` back as the next `--since`. `truncated: true` means output scrolled past the retained scrollback between reads (read more often, or raise `--scrollback-lines`). `reset: true` means the layout changed (resize, clear, or alt-screen) and `text` is a fresh baseline, not a delta. Semantics are append-only (new scrolled output) — for a full-screen TUI that redraws in place, use plain `get-text` instead. Cursors are per-pane; don't reuse one across panes.
+
 ### Reading Output — Use `--wait-stable`
 Instead of blind `sleep N && attyx get-text`, use `--wait-stable` to send keys and automatically wait for output to settle:
 
