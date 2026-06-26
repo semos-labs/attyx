@@ -29,7 +29,7 @@ pub const zsh_script =
     \\  for w in $words; do
     \\    case $w in (*=*) ;; (sudo|env|command|exec|nohup|nice|time|builtin) ;; (*) base=${w:t}; break ;; esac
     \\  done
-    \\  case $base in (codex|claude|opencode) print -r -- $base ;; esac
+    \\  case $base in (codex|claude|opencode|pi) print -r -- $base ;; esac
     \\}
     \\__attyx_preexec() {
     \\  __ATTYX_AGENT=$(__attyx_agent_name "$1")
@@ -133,13 +133,13 @@ pub const bash_script =
     \\    case $tok in *=*) ;; sudo|env|command|exec|nohup|nice|time|builtin) ;; *) first=$tok; break ;; esac
     \\  done
     \\  base=${first##*/}
-    \\  case $base in codex|claude|opencode) printf '%s' "$base" ;; esac
+    \\  case $base in codex|claude|opencode|pi) printf '%s' "$base" ;; esac
     \\}
     \\__attyx_preexec() {
     \\  [ -n "$COMP_LINE" ] && return
     \\  # The DEBUG trap fires for every command; skip our own hooks and bail before
     \\  # the agent_name subshell unless an agent name actually appears.
-    \\  case "$BASH_COMMAND" in __attyx_*) return ;; *codex*|*claude*|*opencode*) ;; *) return ;; esac
+    \\  case "$BASH_COMMAND" in __attyx_*) return ;; *codex*|*claude*|*opencode*|*pi*) ;; *) return ;; esac
     \\  local a; a=$(__attyx_agent_name "$BASH_COMMAND")
     \\  [ -n "$a" ] && { __ATTYX_AGENT=$a; printf '\e]7337;agent-status;agent;idle\a' >&2; }
     \\}
@@ -205,7 +205,7 @@ pub const fish_script =
     \\  end
     \\  test -n "$first"; or return
     \\  set -l base (string split -- / $first)[-1]
-    \\  contains -- $base codex claude opencode; and echo $base
+    \\  contains -- $base codex claude opencode pi; and echo $base
     \\end
     \\function __attyx_preexec --on-event fish_preexec
     \\  set -g __ATTYX_AGENT (__attyx_agent_name $argv[1])
@@ -250,7 +250,7 @@ pub const nushell_script =
     \\        | where {|w| $w not-in ['sudo' 'env' 'command' 'exec' 'nohup' 'nice' 'time' 'builtin'] })
     \\      let agent = (if ($words | is-empty) { '' } else {
     \\        let base = ($words | first | path basename)
-    \\        if $base in ['codex' 'claude' 'opencode'] { $base } else { '' }
+    \\        if $base in ['codex' 'claude' 'opencode' 'pi'] { $base } else { '' }
     \\      })
     \\      if ($agent | is-not-empty) {
     \\        $env.__ATTYX_AGENT = $agent
@@ -278,7 +278,7 @@ test "each posix script drives the agent-status dot for all agents" {
     for (launchers) |s| {
         try testing.expect(std.mem.indexOf(u8, s, "agent-status;agent;idle") != null);
         try testing.expect(std.mem.indexOf(u8, s, "agent-status;agent;none") != null);
-        for ([_][]const u8{ "codex", "claude", "opencode" }) |agent|
+        for ([_][]const u8{ "codex", "claude", "opencode", "pi" }) |agent|
             try testing.expect(std.mem.indexOf(u8, s, agent) != null);
     }
 }
