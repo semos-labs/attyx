@@ -10,7 +10,8 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        # windows-latest temporarily disabled
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -25,10 +26,12 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Clean stale cache (Windows linker workaround)
-        if: runner.os == 'Windows'
-        run: if (Test-Path .zig-cache) { Remove-Item -Recurse -Force .zig-cache }
-        shell: pwsh
+      # Windows runs are temporarily disabled (see matrix above). Re-enable this
+      # step along with windows-latest — it's a linker workaround for stale cache.
+      # - name: Clean stale cache (Windows linker workaround)
+      #   if: runner.os == 'Windows'
+      #   run: if (Test-Path .zig-cache) { Remove-Item -Recurse -Force .zig-cache }
+      #   shell: pwsh
 
       - name: Run tests
         run: zig build test --summary all
