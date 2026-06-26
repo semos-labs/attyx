@@ -551,6 +551,19 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, state_tok, "idle")) .idle else if (std.mem.eql(u8, state_tok, "working")) .working else if (std.mem.eql(u8, state_tok, "input")) .input else if (std.mem.eql(u8, state_tok, "none")) .none else null;
             return if (status) |s| .{ .set_agent_status = .{ .status = s, .message = message } } else .nop;
         }
+        // Format: "agent-usage;<agent>;<k=v>[;<k=v>...]". The agent name is an
+        // optional leading token with no '=' (KV pairs all contain '='); strip it.
+        const usage_prefix = "agent-usage;";
+        if (rest.len >= usage_prefix.len and std.mem.eql(u8, rest[0..usage_prefix.len], usage_prefix)) {
+            var kv = rest[usage_prefix.len..];
+            if (std.mem.indexOfScalar(u8, kv, ';')) |s1| {
+                // First token has no '=' → it's the agent name; drop it.
+                if (std.mem.indexOfScalar(u8, kv[0..s1], '=') == null) kv = kv[s1 + 1 ..];
+            } else if (std.mem.indexOfScalar(u8, kv, '=') == null) {
+                kv = ""; // a lone agent name with no KV pairs
+            }
+            return .{ .set_agent_usage = actions_mod.parseUsageKv(kv) };
+        }
         return .nop;
     }
 

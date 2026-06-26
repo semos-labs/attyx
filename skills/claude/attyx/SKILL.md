@@ -290,11 +290,17 @@ attyx list agents
 # 8        7       1        48455  input    Approve running tests?
 
 attyx list agents --json
-# [{"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"Editing parser.zig"},
-#  {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"input","message":"Approve running tests?"}]
+# [{"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"Editing parser.zig",
+#   "usage":{"input_tokens":7199162,"output_tokens":320836,"context_used":82000,"context_max":200000,
+#            "cost_usd":0.4213,"cost_is_estimate":false,"model":"claude-opus-4-8"}},
+#  {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"input","message":"Approve running tests?","usage":{}}]
 ```
 
-Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, and `message` (the agent's latest status preview, may be empty). Default scope is the attached/local session. Add `-s <id>` to list any session's agents directly from the daemon — it works even when no window is attached to that session:
+Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, `message` (the agent's latest status preview, may be empty), and `usage` (token/cost/context telemetry — see below). Default scope is the attached/local session.
+
+**`usage` object.** Present on every record (possibly `{}` before the agent reports anything). Only known fields appear — an absent field means *unknown*, never zero, so don't treat a missing `cost_usd` as free. Fields: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` (cumulative for the session), `context_used` / `context_max` (current context window), `cost_usd`, `cost_is_estimate` (`true` when attyx computed cost from a built-in price table because the agent didn't report one — Codex), and `model`. Coverage varies by agent (Claude/opencode/Pi report cost directly; Codex is estimated; Codex pre-Sep-2025 builds and some gaps report no usage at all). The TSV form (`list agents` without `--json`) appends these as fixed trailing columns after `message` — `in out cr cw rsn ctx ctxmax cost model` — empty for unknowns; the leading columns are unchanged.
+
+A live table of the same data is available in-app via the **agent dashboard** overlay (`Cmd+Shift+A` on macOS, or the `agent_dashboard` command in the palette). Add `-s <id>` to list any session's agents directly from the daemon — it works even when no window is attached to that session:
 
 ```bash
 attyx -s 2 list agents             # agents in session 2

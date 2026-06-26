@@ -76,6 +76,13 @@ pub const TerminalState = struct {
     agent_msg_buf: [256]u8 = undefined,
     agent_msg_len: u16 = 0,
 
+    // -- Agent usage (OSC 7337;agent-usage, consumed by app/daemon) ----------
+    agent_usage: actions_mod.AgentUsage = .{},
+    agent_usage_changed: bool = false,
+    /// `model` storage for agent_usage (the struct's slice points in here).
+    agent_model_buf: [64]u8 = undefined,
+    agent_model_len: u8 = 0,
+
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
 
@@ -190,7 +197,7 @@ pub const TerminalState = struct {
         }
 
         switch (action) {
-            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .xyron_event, .set_agent_status, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify, .clipboard_set => {},
+            .print, .nop, .sgr, .hyperlink_start, .hyperlink_end, .set_title, .set_cwd, .set_shell_path, .xyron_event, .set_agent_status, .set_agent_usage, .dec_private_mode, .device_status, .cursor_position_report, .device_attributes, .secondary_device_attributes, .set_cursor_shape, .query_dec_private_mode, .graphics_command, .kitty_push_flags, .kitty_pop_flags, .kitty_query_flags, .inject_into_main, .dcs_passthrough, .set_keypad_app_mode, .reset_keypad_app_mode, .query_color, .query_palette_color, .notify, .clipboard_set => {},
             else => {
                 self.wrap_next = false;
             },
@@ -290,6 +297,7 @@ pub const TerminalState = struct {
             .set_shell_path => |p| self.setShellPath(p),
             .xyron_event => |json| self.handleXyronEvent(json),
             .set_agent_status => |u| self.setAgentStatus(u.status, u.message),
+            .set_agent_usage => |u| self.setAgentUsage(u),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -610,6 +618,8 @@ pub const TerminalState = struct {
     const handleXyronEvent = @import("state_osc.zig").handleXyronEvent;
     pub const setAgentStatus = @import("state_osc.zig").setAgentStatus;
     pub const agentMsg = @import("state_osc.zig").agentMsg;
+    pub const setAgentUsage = @import("state_osc.zig").setAgentUsage;
+    pub const agentUsage = @import("state_osc.zig").agentUsage;
     pub const applyAgentInputTransition = @import("state_osc.zig").applyAgentInputTransition;
 
     // -- Kitty keyboard protocol ---------------------------------------------

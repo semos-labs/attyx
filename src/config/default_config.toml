@@ -96,6 +96,15 @@
 # to disable entirely.
 # status = true
 
+# Token / cost / context usage telemetry for those same agents: tokens burned,
+# context-window fill, and running cost, surfaced via `attyx list agents --json`,
+# `watch agents`, and the agent dashboard overlay (Cmd/Ctrl+Shift+A). Injects a
+# statusline command (Claude), enriches the opencode/Pi plugins, and tails
+# Codex's session file — all self-gated to attyx. Requires status = true. Set to
+# false to disable telemetry (status dot still works); a previously wrapped
+# Claude statusline is restored on next launch. Default true.
+# telemetry = true
+
 
 # ── MCP server ───────────────────────────────────────────────────────
 

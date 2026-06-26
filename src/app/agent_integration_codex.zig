@@ -33,18 +33,43 @@ const codex_events = [_]ai.EventSpec{
 
 /// Merge hooks into ~/.codex/hooks.json, enable the hooks feature, and pre-trust
 /// our hooks. Best-effort; a no-op if Codex isn't set up.
-pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
+pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8, telemetry: bool) void {
     const dir = std.fmt.allocPrint(a, "{s}/.codex", .{home}) catch return;
     // Only act if Codex is actually set up (don't create ~/.codex speculatively).
     var d = std.fs.cwd().openDir(dir, .{}) catch return;
     d.close();
 
+    // Codex carries no tokens on its hooks and has no statusline, so usage comes
+    // from the session rollout file. With telemetry on, the hooks point at a
+    // companion script that (1) delegates status to the shared emitter and
+    // (2) tails the active rollout for the last cumulative token_count and emits
+    // agent-usage. With telemetry off, the hooks run the plain emitter (status
+    // only). Either path is one command / one group / one handler per event, so
+    // Codex's trust-hash machinery is unchanged.
+    var hook_cmd_path = emitter_path;
+    if (telemetry) {
+        const agent_bin = std.fmt.allocPrint(a, "{s}/.config/attyx/shell-integration/agent-bin", .{home}) catch return;
+        ai.mkdirp(a, agent_bin);
+        const script_path = std.fmt.allocPrint(a, "{s}/{s}", .{ agent_bin, ai.codex_script_name }) catch return;
+        writeCodexScript(a, script_path, emitter_path);
+        hook_cmd_path = script_path;
+    }
+
     const hooks_path = std.fmt.allocPrint(a, "{s}/hooks.json", .{dir}) catch return;
-    ai.ensureHooksFile(a, hooks_path, emitter_path, &codex_events);
+    ai.ensureHooksFile(a, hooks_path, hook_cmd_path, &codex_events);
 
     const config_path = std.fmt.allocPrint(a, "{s}/config.toml", .{dir}) catch return;
     ensureFeatureFlag(a, config_path);
-    ensureTrust(a, config_path, hooks_path, emitter_path);
+    ensureTrust(a, config_path, hooks_path, hook_cmd_path);
+}
+
+/// Materialize the codex status+usage script with the shared emitter path baked
+/// in (substituted for the @EMITTER@ marker). 0o755 so Codex can exec it.
+fn writeCodexScript(a: std.mem.Allocator, path: []const u8, emitter_path: []const u8) void {
+    const size = std.mem.replacementSize(u8, codex_usage_script, "@EMITTER@", emitter_path);
+    const buf = a.alloc(u8, size) catch return;
+    _ = std.mem.replace(u8, codex_usage_script, "@EMITTER@", emitter_path, buf);
+    ai.writeAtomic(a, path, buf, 0o755);
 }
 
 /// Ensure `[features] hooks = true` in config.toml. Conservative: only appends
@@ -213,10 +238,77 @@ fn upsertTrust(a: std.mem.Allocator, content: []const u8, key: []const u8, hash:
 }
 
 // ---------------------------------------------------------------------------
+// Codex status+usage script
+// ---------------------------------------------------------------------------
+
+/// Runs as every Codex hook command (`<script> <state>`). Delegates status to
+/// the shared emitter (forwarding the hook JSON for the message preview), then
+/// tails the active rollout file for the last cumulative `token_count` event and
+/// emits an agent-usage OSC. @EMITTER@ is replaced at install time with the
+/// absolute shared-emitter path.
+///
+/// Token parsing needs `jq`; without it the script still reports status and
+/// simply omits usage (honest degradation). Codex `input_tokens` is the total
+/// prompt count including the cached portion, so non-cached `in` = input − cached
+/// and `cr` = cached. `ctx` uses the last turn's total_tokens (current window
+/// occupancy). The session file is the newest rollout in today's dir by mtime —
+/// with several concurrent Codex sessions this can attribute to the wrong one
+/// (acceptable for a live operator view).
+const codex_usage_script =
+    \\#!/bin/sh
+    \\# Attyx Codex status+usage reporter. No-op outside attyx.
+    \\[ -n "$ATTYX_PID" ] || exit 0
+    \\raw=""
+    \\[ -t 0 ] || raw=$(cat 2>/dev/null)
+    \\# Status: delegate to the shared emitter, forwarding the hook JSON for preview.
+    \\printf '%s' "$raw" | "@EMITTER@" "$1"
+    \\# Usage: tail the active rollout for the last cumulative token_count.
+    \\command -v jq >/dev/null 2>&1 || exit 0
+    \\home="${CODEX_HOME:-$HOME/.codex}"
+    \\home="${home%%,*}"
+    \\dir="$home/sessions/$(date +%Y/%m/%d)"
+    \\f=$(ls -t "$dir"/rollout-*.jsonl 2>/dev/null | head -1)
+    \\[ -n "$f" ] || exit 0
+    \\# token_count is emitted per turn near the file end; bound the scan.
+    \\line=$(tail -n 400 "$f" 2>/dev/null | grep '"token_count"' | tail -1)
+    \\[ -n "$line" ] || exit 0
+    \\kv=$(printf '%s' "$line" | jq -r '.payload.info | "in=\((.total_token_usage.input_tokens // 0) - (.total_token_usage.cached_input_tokens // 0));cr=\(.total_token_usage.cached_input_tokens // 0);out=\(.total_token_usage.output_tokens // 0);rsn=\(.total_token_usage.reasoning_output_tokens // 0);ctx=\(.last_token_usage.total_tokens // 0);ctxmax=\(.model_context_window // 0)"' 2>/dev/null)
+    \\[ -n "$kv" ] || exit 0
+    \\model=$(tail -n 1200 "$f" 2>/dev/null | grep '"turn_context"' | tail -1 | jq -r '.payload.model // empty' 2>/dev/null)
+    \\[ -n "$model" ] && kv="$kv;model=$model"
+    \\printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
+    \\exit 0
+    \\
+;
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "codex usage script self-gates, delegates status, and emits usage" {
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "[ -n \"$ATTYX_PID\" ] || exit 0") != null);
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "\"@EMITTER@\" \"$1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "token_count") != null);
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "]7337;agent-usage;agent;%s") != null);
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "model_context_window") != null);
+}
+
+test "writeCodexScript substitutes the emitter path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const home = "/tmp/attyx_codex_script_test";
+    std.fs.cwd().deleteTree(home) catch {};
+    defer std.fs.cwd().deleteTree(home) catch {};
+    const bin = home ++ "/bin";
+    ai.mkdirp(a, bin);
+    writeCodexScript(a, bin ++ "/attyx-codex-usage", "/E/attyx-agent-status");
+    const out = ai.readFile(a, bin ++ "/attyx-codex-usage") orelse return error.NoScript;
+    try testing.expect(std.mem.indexOf(u8, out, "\"/E/attyx-agent-status\" \"$1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "@EMITTER@") == null); // fully substituted
+}
 
 test "trustedHash reproduces Codex's hashes for our events (no matcher)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -328,7 +420,7 @@ test "install writes hooks, enables the feature, and pre-trusts every event" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    install(a, home, "/E/attyx-agent-status");
+    install(a, home, "/E/attyx-agent-status", true);
 
     const hooks = ai.readFile(a, home ++ "/.codex/hooks.json") orelse return error.NoHooks;
     try testing.expect(std.mem.indexOf(u8, hooks, "SessionStart") != null);
@@ -343,7 +435,7 @@ test "install writes hooks, enables the feature, and pre-trusts every event" {
     try testing.expect(std.mem.indexOf(u8, config, "trusted_hash = \"sha256:") != null);
 
     // Idempotent: a second install makes no further changes to config.toml.
-    install(a, home, "/E/attyx-agent-status");
+    install(a, home, "/E/attyx-agent-status", true);
     const config2 = ai.readFile(a, home ++ "/.codex/config.toml") orelse return error.NoConfig;
     try testing.expectEqualStrings(config, config2);
 }

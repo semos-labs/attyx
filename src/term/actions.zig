@@ -1,3 +1,5 @@
+const std = @import("std");
+
 /// The set of control codes handled by the terminal.
 pub const ControlCode = enum {
     lf,
@@ -38,6 +40,60 @@ pub const AgentStatus = enum(u2) {
         };
     }
 };
+
+/// Normalized per-agent usage telemetry reported via OSC 7337;agent-usage.
+/// Every field an agent can't fill stays `null` (rendered "—", never "0", so we
+/// never imply zero spend when we simply lack data). Counts are cumulative for
+/// the session; a partial update merges into prior values (state.setAgentUsage),
+/// it never replaces. `model` is a borrowed slice in the action view; the state
+/// copies it into a fixed buffer.
+pub const AgentUsage = struct {
+    input_tokens: ?u64 = null,
+    output_tokens: ?u64 = null,
+    cache_read_tokens: ?u64 = null,
+    cache_write_tokens: ?u64 = null,
+    reasoning_tokens: ?u64 = null,
+    context_used: ?u64 = null,
+    context_max: ?u64 = null,
+    cost_usd: ?f64 = null,
+    model: ?[]const u8 = null,
+    /// True when cost was computed by us (pricing table) rather than agent-reported.
+    cost_is_estimate: bool = false,
+};
+
+/// Parse an OSC 7337;agent-usage KV list (`in=123;out=45;model=opus;…`) into an
+/// AgentUsage. Keys are from the canonical set (§5); unknown keys, empty values,
+/// and non-numeric integers are ignored gracefully. `model` borrows from `kv`.
+pub fn parseUsageKv(kv: []const u8) AgentUsage {
+    var u = AgentUsage{};
+    var it = std.mem.splitScalar(u8, kv, ';');
+    while (it.next()) |pair| {
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        const key = pair[0..eq];
+        const val = pair[eq + 1 ..];
+        if (val.len == 0) continue;
+        if (std.mem.eql(u8, key, "in")) {
+            u.input_tokens = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "out")) {
+            u.output_tokens = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "cr")) {
+            u.cache_read_tokens = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "cw")) {
+            u.cache_write_tokens = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "rsn")) {
+            u.reasoning_tokens = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "ctx")) {
+            u.context_used = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "ctxmax")) {
+            u.context_max = std.fmt.parseInt(u64, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "cost")) {
+            u.cost_usd = std.fmt.parseFloat(f64, val) catch null;
+        } else if (std.mem.eql(u8, key, "model")) {
+            u.model = val;
+        }
+    }
+    return u;
+}
 
 /// Mode argument for erase operations (ED / EL).
 pub const EraseMode = enum(u3) {
@@ -213,6 +269,12 @@ pub const Action = union(enum) {
     /// message slice is borrowed from the parser osc_buf, valid until the next
     /// parser call.
     set_agent_status: struct { status: AgentStatus, message: []const u8 },
+
+    /// OSC 7337;agent-usage;<agent>;<k=v>… — an AI coding agent reports token /
+    /// cost / context-window usage. A separate channel from status so a usage
+    /// refresh never flips the status dot. `model` is borrowed from the parser
+    /// osc_buf, valid until the next parser call.
+    set_agent_usage: AgentUsage,
 
     /// DCS tmux passthrough — un-doubled inner payload to re-feed.
     /// Payload borrowed from parser apc_buf, valid until next parser call.

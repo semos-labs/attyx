@@ -1,6 +1,7 @@
 const std = @import("std");
 const TerminalState = @import("state.zig").TerminalState;
 const AgentStatus = @import("actions.zig").AgentStatus;
+const AgentUsage = @import("actions.zig").AgentUsage;
 const key_encode = @import("key_encode.zig");
 
 pub fn startHyperlink(self: *TerminalState, uri: []const u8) void {
@@ -70,11 +71,47 @@ pub fn setAgentStatus(self: *TerminalState, status: AgentStatus, message: []cons
         self.agent_status = status;
         self.agent_status_changed = true;
     }
+    // Session ended → clear usage so a dead agent shows no stale spend.
+    if (status == .none) {
+        self.agent_usage = .{};
+        self.agent_model_len = 0;
+        self.agent_usage_changed = true;
+    }
 }
 
 /// The message preview attached to the current agent status (may be empty).
 pub fn agentMsg(self: *const TerminalState) []const u8 {
     return self.agent_msg_buf[0..self.agent_msg_len];
+}
+
+/// Merge an agent-usage update into the current record. Non-null fields
+/// overwrite; absent fields keep their prior value (cumulative/sticky), so a
+/// partial update (e.g. a later `cost=`-only emit) never wipes earlier counts.
+pub fn setAgentUsage(self: *TerminalState, u: AgentUsage) void {
+    if (u.input_tokens) |v| self.agent_usage.input_tokens = v;
+    if (u.output_tokens) |v| self.agent_usage.output_tokens = v;
+    if (u.cache_read_tokens) |v| self.agent_usage.cache_read_tokens = v;
+    if (u.cache_write_tokens) |v| self.agent_usage.cache_write_tokens = v;
+    if (u.reasoning_tokens) |v| self.agent_usage.reasoning_tokens = v;
+    if (u.context_used) |v| self.agent_usage.context_used = v;
+    if (u.context_max) |v| self.agent_usage.context_max = v;
+    if (u.cost_usd) |v| {
+        self.agent_usage.cost_usd = v;
+        self.agent_usage.cost_is_estimate = u.cost_is_estimate;
+    }
+    if (u.model) |m| {
+        const n = @min(m.len, self.agent_model_buf.len);
+        @memcpy(self.agent_model_buf[0..n], m[0..n]);
+        self.agent_model_len = @intCast(n);
+    }
+    self.agent_usage_changed = true;
+}
+
+/// The current usage record, with `model` sliced from the fixed buffer.
+pub fn agentUsage(self: *const TerminalState) AgentUsage {
+    var u = self.agent_usage;
+    u.model = if (self.agent_model_len > 0) self.agent_model_buf[0..self.agent_model_len] else null;
+    return u;
 }
 
 /// Infer an agent status transition from user input. Agent harnesses emit no
@@ -174,4 +211,39 @@ test "applyAgentInputTransition infers interrupt and prompt-answer transitions" 
     st.setAgentStatus(.idle, "");
     st.applyAgentInputTransition("hello");
     try testing.expectEqual(AgentStatus.idle, st.agent_status);
+}
+
+test "setAgentUsage merges sticky and .none clears it" {
+    const testing = std.testing;
+    var st = try TerminalState.init(testing.allocator, 24, 80, 100);
+    defer st.deinit();
+
+    st.setAgentUsage(.{ .input_tokens = 100, .output_tokens = 200, .model = "opus-4.6" });
+    var u = st.agentUsage();
+    try testing.expectEqual(@as(?u64, 100), u.input_tokens);
+    try testing.expectEqual(@as(?u64, 200), u.output_tokens);
+    try testing.expectEqualStrings("opus-4.6", u.model.?);
+
+    // Partial update: only cost — earlier in/out and model survive.
+    st.setAgentUsage(.{ .cost_usd = 0.42 });
+    u = st.agentUsage();
+    try testing.expectEqual(@as(?u64, 100), u.input_tokens);
+    try testing.expectEqual(@as(?f64, 0.42), u.cost_usd);
+    try testing.expectEqualStrings("opus-4.6", u.model.?);
+
+    // Session end clears usage.
+    st.setAgentStatus(.none, "");
+    u = st.agentUsage();
+    try testing.expectEqual(@as(?u64, null), u.input_tokens);
+    try testing.expectEqual(@as(?f64, null), u.cost_usd);
+    try testing.expectEqual(@as(?[]const u8, null), u.model);
+}
+
+test "over-long model truncates into the fixed buffer" {
+    const testing = std.testing;
+    var st = try TerminalState.init(testing.allocator, 24, 80, 100);
+    defer st.deinit();
+    const long = "m" ** 200;
+    st.setAgentUsage(.{ .model = long });
+    try testing.expectEqual(@as(usize, 64), st.agentUsage().model.?.len);
 }

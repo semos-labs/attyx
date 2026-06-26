@@ -372,3 +372,65 @@ test "integration: agent-status transitions drive state.agent_status + changed f
     engine.feed("\x1b]7337;agent-status;claude;none\x07");
     try std.testing.expectEqual(AgentStatus.none, engine.state.agent_status);
 }
+
+test "parser: OSC 7337 agent-usage parses the KV set" {
+    var parser = Parser{};
+    const seq = "\x1b]7337;agent-usage;agent;in=1234;out=5678;cr=900000;cw=12000;ctx=82000;ctxmax=200000;cost=0.4213;model=opus-4.6\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    try std.testing.expect(action != null);
+    switch (action.?) {
+        .set_agent_usage => |u| {
+            try std.testing.expectEqual(@as(?u64, 1234), u.input_tokens);
+            try std.testing.expectEqual(@as(?u64, 5678), u.output_tokens);
+            try std.testing.expectEqual(@as(?u64, 900000), u.cache_read_tokens);
+            try std.testing.expectEqual(@as(?u64, 12000), u.cache_write_tokens);
+            try std.testing.expectEqual(@as(?u64, 82000), u.context_used);
+            try std.testing.expectEqual(@as(?u64, 200000), u.context_max);
+            try std.testing.expectEqual(@as(?f64, 0.4213), u.cost_usd);
+            try std.testing.expectEqualStrings("opus-4.6", u.model.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parser: OSC 7337 agent-usage tolerates malformed pairs" {
+    var parser = Parser{};
+    // missing '=', non-numeric, empty value, trailing ';' — all ignored; in= kept.
+    const seq = "\x1b]7337;agent-usage;agent;in=42;garbage;out=abc;cr=;\x07";
+    var action: ?@import("../../term/actions.zig").Action = null;
+    for (seq) |byte| {
+        if (parser.next(byte)) |a| action = a;
+    }
+    switch (action.?) {
+        .set_agent_usage => |u| {
+            try std.testing.expectEqual(@as(?u64, 42), u.input_tokens);
+            try std.testing.expectEqual(@as(?u64, null), u.output_tokens);
+            try std.testing.expectEqual(@as(?u64, null), u.cache_read_tokens);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "integration: agent-usage updates state usage without flipping status" {
+    const alloc = std.testing.allocator;
+    var engine = try Engine.init(alloc, 2, 20, 100);
+    defer engine.deinit();
+
+    engine.feed("\x1b]7337;agent-status;claude;working\x07");
+    engine.state.agent_status_changed = false;
+    engine.feed("\x1b]7337;agent-usage;agent;in=100;out=200;model=opus\x07");
+
+    try std.testing.expectEqual(AgentStatus.working, engine.state.agent_status);
+    try std.testing.expect(!engine.state.agent_status_changed); // usage never flips status
+    try std.testing.expect(engine.state.agent_usage_changed);
+    const u = engine.state.agentUsage();
+    try std.testing.expectEqual(@as(?u64, 100), u.input_tokens);
+    try std.testing.expectEqualStrings("opus", u.model.?);
+
+    // Session end clears usage.
+    engine.feed("\x1b]7337;agent-status;claude;none\x07");
+    try std.testing.expectEqual(@as(?u64, null), engine.state.agentUsage().input_tokens);
+}

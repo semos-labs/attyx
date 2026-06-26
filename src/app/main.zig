@@ -152,6 +152,10 @@ export fn attyx_toggle_theme_picker() void {}
 export var g_tab_picker_active: i32 = 0;
 export var g_toggle_tab_picker: i32 = 0;
 export fn attyx_toggle_tab_picker() void {}
+// Agent dashboard stubs (terminal.zig provides the real implementations)
+export var g_agent_dashboard_active: i32 = 0;
+export var g_toggle_agent_dashboard: i32 = 0;
+export fn attyx_toggle_agent_dashboard() void {}
 export var g_toggle_move_to_session: i32 = 0;
 export fn attyx_toggle_move_to_session() void {}
 

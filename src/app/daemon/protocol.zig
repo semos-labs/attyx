@@ -1,4 +1,5 @@
 const std = @import("std");
+pub const AgentUsage = @import("attyx").actions.AgentUsage;
 
 /// Grid-sync wire format (PackedCell + snapshot/delta headers).
 /// Phase 1: reserved message types only. Phase 2 wires callers.
@@ -89,6 +90,10 @@ pub const MessageType = enum(u8) {
     /// One agent status record (NDJSON line) for a parked `watch_agents`
     /// connection. Payload is the JSON object; the CLI streams it as a line.
     agent_event = 0x99,
+    /// Grid-sync: daemon pushes engine.state.agentUsage() (OSC 7337;agent-usage),
+    /// sibling to pane_agent_status. Presence bitmask carries null-vs-value so a
+    /// missing field never decodes as 0.
+    pane_agent_usage = 0x9A,
 };
 
 pub const header_size: usize = 5; // 4-byte payload length + 1-byte message type
@@ -869,6 +874,97 @@ pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
     return .{ .pane_id = pane_id, .status = status, .message = payload[7 .. 7 + msg_len] };
 }
 
+// ── PaneAgentUsage (grid-sync OSC 7337;agent-usage propagation) ──
+//
+// Layout: pane_id:u32, presence:u16, flags:u8, then 7×u64 (in/out/cr/cw/rsn/
+// ctx/ctxmax), cost:f64 (bitcast u64), model_len:u16, model:[N]. The 7 numeric
+// fields + cost are always written, but `presence` bits say which are real, so a
+// null survives the wire (never sentinel-encoded as 0). flags bit0 = cost_is_estimate.
+
+const usage_fixed = 4 + 2 + 1 + 7 * 8 + 8 + 2; // 73
+const usage_model_max = 64;
+
+pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
+    const model: []const u8 = u.model orelse "";
+    const model_len: u16 = @intCast(@min(model.len, usage_model_max));
+    const total: usize = usage_fixed + model_len;
+    if (buf.len < total) return error.BufferTooSmall;
+
+    std.mem.writeInt(u32, buf[0..4], pane_id, .little);
+    var presence: u16 = 0;
+    if (u.input_tokens != null) presence |= 1 << 0;
+    if (u.output_tokens != null) presence |= 1 << 1;
+    if (u.cache_read_tokens != null) presence |= 1 << 2;
+    if (u.cache_write_tokens != null) presence |= 1 << 3;
+    if (u.reasoning_tokens != null) presence |= 1 << 4;
+    if (u.context_used != null) presence |= 1 << 5;
+    if (u.context_max != null) presence |= 1 << 6;
+    if (u.cost_usd != null) presence |= 1 << 7;
+    std.mem.writeInt(u16, buf[4..6], presence, .little);
+    buf[6] = if (u.cost_is_estimate) 1 else 0;
+
+    const vals = [_]u64{
+        u.input_tokens orelse 0,        u.output_tokens orelse 0,
+        u.cache_read_tokens orelse 0,   u.cache_write_tokens orelse 0,
+        u.reasoning_tokens orelse 0,    u.context_used orelse 0,
+        u.context_max orelse 0,
+    };
+    var off: usize = 7;
+    for (vals) |v| {
+        std.mem.writeInt(u64, buf[off..][0..8], v, .little);
+        off += 8;
+    }
+    std.mem.writeInt(u64, buf[off..][0..8], @bitCast(u.cost_usd orelse 0), .little);
+    off += 8;
+    std.mem.writeInt(u16, buf[off..][0..2], model_len, .little);
+    off += 2;
+    @memcpy(buf[off .. off + model_len], model[0..model_len]);
+    return buf[0..total];
+}
+
+pub const PaneAgentUsageMsg = struct { pane_id: u32, usage: AgentUsage };
+
+pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
+    if (payload.len < usage_fixed) return error.PayloadTooShort;
+    const pane_id = std.mem.readInt(u32, payload[0..4], .little);
+    const presence = std.mem.readInt(u16, payload[4..6], .little);
+    const cost_is_estimate = payload[6] != 0;
+
+    var off: usize = 7;
+    const fields = [_]u64{undefined} ** 7;
+    var vals = fields;
+    for (&vals) |*slot| {
+        slot.* = std.mem.readInt(u64, payload[off..][0..8], .little);
+        off += 8;
+    }
+    const cost_bits = std.mem.readInt(u64, payload[off..][0..8], .little);
+    off += 8;
+    const model_len = std.mem.readInt(u16, payload[off..][0..2], .little);
+    off += 2;
+    if (payload.len < off + @as(usize, model_len)) return error.PayloadTooShort;
+
+    const has = struct {
+        fn b(p: u16, bit: u4) bool {
+            return (p & (@as(u16, 1) << bit)) != 0;
+        }
+    }.b;
+    return .{
+        .pane_id = pane_id,
+        .usage = .{
+            .input_tokens = if (has(presence, 0)) vals[0] else null,
+            .output_tokens = if (has(presence, 1)) vals[1] else null,
+            .cache_read_tokens = if (has(presence, 2)) vals[2] else null,
+            .cache_write_tokens = if (has(presence, 3)) vals[3] else null,
+            .reasoning_tokens = if (has(presence, 4)) vals[4] else null,
+            .context_used = if (has(presence, 5)) vals[5] else null,
+            .context_max = if (has(presence, 6)) vals[6] else null,
+            .cost_usd = if (has(presence, 7)) @as(f64, @bitCast(cost_bits)) else null,
+            .cost_is_estimate = cost_is_estimate,
+            .model = if (model_len > 0) payload[off .. off + model_len] else null,
+        },
+    };
+}
+
 // ── PaneFgCwd ──
 
 /// Encode PaneFgCwd payload: pane_id:u32, cwd_len:u16, cwd:[N]u8
@@ -1000,6 +1096,39 @@ test "pane_agent_status round-trip" {
     try std.testing.expectEqual(@as(u32, 7), msg.pane_id);
     try std.testing.expectEqual(@as(u8, 2), msg.status);
     try std.testing.expectEqualStrings("needs input", msg.message);
+}
+
+test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
+    var buf: [256]u8 = undefined;
+    // Mix of present and absent fields, an estimated cost, and a model.
+    const u = AgentUsage{
+        .input_tokens = 1234,
+        .output_tokens = null, // absent → must decode back to null, not 0
+        .cache_read_tokens = 900000,
+        .context_used = 82000,
+        .context_max = 200000,
+        .cost_usd = 0.4213,
+        .cost_is_estimate = true,
+        .model = "gpt-5.5",
+    };
+    const payload = try encodePaneAgentUsage(&buf, 9, u);
+    const msg = try decodePaneAgentUsage(payload);
+    try std.testing.expectEqual(@as(u32, 9), msg.pane_id);
+    try std.testing.expectEqual(@as(?u64, 1234), msg.usage.input_tokens);
+    try std.testing.expectEqual(@as(?u64, null), msg.usage.output_tokens);
+    try std.testing.expectEqual(@as(?u64, 900000), msg.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(?u64, null), msg.usage.cache_write_tokens);
+    try std.testing.expectEqual(@as(?u64, 82000), msg.usage.context_used);
+    try std.testing.expectEqual(@as(?u64, 200000), msg.usage.context_max);
+    try std.testing.expectEqual(@as(?f64, 0.4213), msg.usage.cost_usd);
+    try std.testing.expect(msg.usage.cost_is_estimate);
+    try std.testing.expectEqualStrings("gpt-5.5", msg.usage.model.?);
+
+    // Fully-empty usage → all null, empty model.
+    const empty = try decodePaneAgentUsage(try encodePaneAgentUsage(&buf, 1, .{}));
+    try std.testing.expectEqual(@as(?u64, null), empty.usage.input_tokens);
+    try std.testing.expectEqual(@as(?f64, null), empty.usage.cost_usd);
+    try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.model);
 }
 
 test "create round-trip" {

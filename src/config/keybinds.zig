@@ -127,6 +127,7 @@ pub const Action = enum(u8) {
     shell_picker_toggle = 95,
     tab_rename = 96,
     move_to_session = 97,
+    agent_dashboard_toggle = 98,
     _,
 
     /// Return the popup index if this is a popup_toggle action.

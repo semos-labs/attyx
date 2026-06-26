@@ -173,6 +173,11 @@ pub const AppConfig = struct {
     // plugin configs) to report idle/working/needs-input; disable to leave the
     // agents' configs untouched.
     agent_status: bool = true,
+    // Token/cost/context usage telemetry (statusline / plugin / extension /
+    // Codex tailer injection + the agent dashboard). Independent of the status
+    // dot above. When false, the usage injectors no-op and a previously wrapped
+    // Claude statusline is restored on next launch. Requires agent_status.
+    agent_telemetry: bool = true,
 
     // [mcp]
     // Embedded MCP (Model Context Protocol) server. When enabled, Attyx runs a

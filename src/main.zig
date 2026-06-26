@@ -289,7 +289,7 @@ pub fn main() !void {
     // Install AI-agent status hooks (Claude Code) once, before any pane runs.
     // Self-gated: the emitter only fires inside attyx (ATTYX_PID set).
     if (!is_windows and merged.agent_status) {
-        agent_integration.install(allocator, std.posix.getenv("HOME") orelse "");
+        agent_integration.install(allocator, std.posix.getenv("HOME") orelse "", merged.agent_telemetry);
     }
 
     terminal.run(merged, result.no_config, result.config_path, args, result.headless) catch |err| {

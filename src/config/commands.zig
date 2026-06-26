@@ -54,7 +54,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .scroll_to_bottom, .name = "scroll_to_bottom", .description = "Scroll to bottom", .scope = .global, .mac_hotkey = "shift+end", .linux_hotkey = "shift+end" },
     .{ .action = .config_reload, .name = "config_reload", .description = "Reload configuration", .scope = .global, .mac_hotkey = "ctrl+shift+r", .linux_hotkey = "ctrl+shift+r" },
     .{ .action = .debug_toggle, .name = "debug_toggle", .description = "Toggle debug overlay", .scope = .global, .mac_hotkey = "ctrl+shift+d", .linux_hotkey = "ctrl+shift+f12" },
-    .{ .action = .anchor_demo_toggle, .name = "anchor_demo_toggle", .description = "Toggle anchor demo", .scope = .global, .mac_hotkey = "ctrl+shift+a", .linux_hotkey = "ctrl+shift+a" },
+    .{ .action = .anchor_demo_toggle, .name = "anchor_demo_toggle", .description = "Toggle anchor demo", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .new_window, .name = "new_window", .description = "Open new window", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .close_window, .name = "close_window", .description = "Close window", .scope = .global, .mac_hotkey = "ctrl+shift+w", .linux_hotkey = null },
     .{ .action = .ai_demo_toggle, .name = "ai_demo_toggle", .description = "Toggle AI edit prompt", .scope = .global, .mac_hotkey = "ctrl+shift+i", .linux_hotkey = "ctrl+shift+i" },
@@ -85,6 +85,7 @@ pub const registry = [_]CommandDef{
     .{ .action = .copy_mode_enter, .name = "copy_mode", .description = "Enter copy/visual mode", .scope = .global, .mac_hotkey = "ctrl+shift+space", .linux_hotkey = "ctrl+shift+space" },
     .{ .action = .theme_picker_toggle, .name = "theme_picker", .description = "Pick theme", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .tab_picker_toggle, .name = "tab_picker", .description = "Pick tab", .scope = .global, .mac_hotkey = "cmd+shift+t", .linux_hotkey = "ctrl+alt+t" },
+    .{ .action = .agent_dashboard_toggle, .name = "agent_dashboard", .description = "Toggle agent token/cost dashboard", .scope = .global, .mac_hotkey = "cmd+shift+a", .linux_hotkey = "ctrl+shift+a" },
     .{ .action = .move_to_session, .name = "move_to_session", .description = "Move to session", .scope = .global, .mac_hotkey = null, .linux_hotkey = null },
     .{ .action = .open_config, .name = "open_config", .description = "Open config in editor", .scope = .global, .mac_hotkey = "cmd+,", .linux_hotkey = "ctrl+," },
     // Tab select by number

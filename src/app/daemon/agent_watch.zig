@@ -67,6 +67,7 @@ fn sendOne(cl: *DaemonClient, session: *DaemonSession, pane: anytype, pane_id: u
         pid,
         eng.state.agent_status,
         eng.state.agentMsg(),
+        eng.state.agentUsage(),
     ) catch return;
     cl.sendAgentEvent(stream.getWritten());
 }

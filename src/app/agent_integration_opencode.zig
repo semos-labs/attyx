@@ -23,7 +23,7 @@ const ai = @import("agent_integration.zig");
 
 /// Write the plugin and ensure opencode loads it. Best-effort; a no-op if
 /// opencode isn't set up. `emitter_path` is the absolute attyx-agent-status path.
-pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8) void {
+pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8, telemetry: bool) void {
     const cfg = std.fmt.allocPrint(a, "{s}/.config/opencode", .{home}) catch return;
     // Only act if opencode is configured (don't create ~/.config/opencode).
     var d = std.fs.cwd().openDir(cfg, .{}) catch return;
@@ -33,7 +33,7 @@ pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8)
     const plugin_dir = std.fmt.allocPrint(a, "{s}/plugins", .{cfg}) catch return;
     ai.mkdirp(a, plugin_dir);
     const plugin_path = std.fmt.allocPrint(a, "{s}/attyx-status.js", .{plugin_dir}) catch return;
-    const plugin = std.fmt.allocPrint(a, plugin_fmt, .{emitter_path}) catch return;
+    const plugin = std.fmt.allocPrint(a, plugin_fmt, .{ emitter_path, if (telemetry) "true" else "false" }) catch return;
     ai.writeAtomic(a, plugin_path, plugin, 0o644);
 
     // Remove a stale plugin from older attyx (singular `plugin/`), which would
@@ -152,8 +152,28 @@ const plugin_fmt =
     \\// terminal via the attyx emitter. No-op outside attyx (emitter self-gates).
     \\import {{ spawnSync }} from "node:child_process";
     \\const EMIT = "{s}";
+    \\const TELEMETRY = {s};
     \\function emit(state) {{
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\// opencode reports per-message token/cost (incl. its own computed cost); our
+    \\// schema is cumulative, so we keep the latest figures per message id (so
+    \\// streaming re-updates of the same message overwrite, not double-count) and
+    \\// emit the running session sum. Fired only on completed assistant messages.
+    \\const usageTotals = new Map();
+    \\function emitUsage(m) {{
+    \\  if (!TELEMETRY) return;
+    \\  const t = (m && m.tokens) || {{}};
+    \\  usageTotals.set(m.id, {{
+    \\    in: t.input || 0, out: t.output || 0,
+    \\    cr: (t.cache && t.cache.read) || 0, cw: (t.cache && t.cache.write) || 0,
+    \\    rsn: t.reasoning || 0, cost: m.cost || 0,
+    \\  }});
+    \\  const s = {{ in: 0, out: 0, cr: 0, cw: 0, rsn: 0, cost: 0 }};
+    \\  for (const v of usageTotals.values()) {{ s.in += v.in; s.out += v.out; s.cr += v.cr; s.cw += v.cw; s.rsn += v.rsn; s.cost += v.cost; }}
+    \\  const kv = ["in=" + s.in, "out=" + s.out, "cr=" + s.cr, "cw=" + s.cw, "rsn=" + s.rsn, "cost=" + s.cost];
+    \\  if (m.modelID) kv.push("model=" + m.modelID);
+    \\  try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\const AttyxStatus = async (ctx) => {{
     \\  // Runs once at opencode launch — register the agent as present-and-idle
@@ -172,6 +192,11 @@ const plugin_fmt =
     \\        case "message.part.updated":
     \\          if (props.part && props.part.type === "text") emit("working");
     \\          break;
+    \\        case "message.updated": {{
+    \\          const m = props.info;
+    \\          if (m && m.role === "assistant" && m.tokens && m.time && m.time.completed) emitUsage(m);
+    \\          break;
+    \\        }}
     \\        case "permission.asked":
     \\          emit("input");
     \\          break;
@@ -217,14 +242,20 @@ test "plugin template embeds the emitter path and maps key events" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const plugin = try std.fmt.allocPrint(a, plugin_fmt, .{"/E/attyx-status"});
+    const plugin = try std.fmt.allocPrint(a, plugin_fmt, .{ "/E/attyx-status", "true" });
     try testing.expect(std.mem.indexOf(u8, plugin, "const EMIT = \"/E/attyx-status\"") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "const TELEMETRY = true") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "permission.asked") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "permission.replied") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "session.idle") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"idle\")") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "session.created") != null);
+    // Usage enrichment: cumulative accumulator + message.updated mapping.
+    try testing.expect(std.mem.indexOf(u8, plugin, "message.updated") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "function emitUsage") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "spawnSync(EMIT, [\"usage\"") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "m.time.completed") != null);
 }
 
 test "insert into an empty object adds the plugin key" {
