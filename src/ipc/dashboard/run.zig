@@ -40,31 +40,60 @@ fn stderrMsg(s: []const u8) void {
     _ = posix.write(posix.STDERR_FILENO, s) catch {};
 }
 
-/// Open the agent stream. Tries the daemon (all sessions) first, then the
-/// attached window (its session only). Returns the connected fd, or null.
-fn openStream(sock_buf: *[256]u8) ?posix.fd_t {
-    // Daemon, all-sessions sentinel: payload [session:u32][pane_filter:u32].
-    if (session_connect.getSocketPath(sock_buf)) |sock| {
-        if (client.connectToSocket(sock)) |fd| {
-            var payload: [8]u8 = undefined;
-            std.mem.writeInt(u32, payload[0..4], agent_watch.all_sessions, .little);
-            std.mem.writeInt(u32, payload[4..8], 0, .little);
-            var frame_buf: [dproto.header_size + 8]u8 = undefined;
-            const frame = dproto.encodeMessage(&frame_buf, .watch_agents, &payload) catch return null;
-            if (io.writeAll(fd, frame)) |_| return fd else |_| io.closeFd(fd);
-        } else |_| {}
+const Source = enum { daemon, window };
+
+/// Daemon all-sessions watch: payload [session:u32 = sentinel][pane_filter:u32].
+fn openDaemon(sock_buf: *[256]u8) ?posix.fd_t {
+    const sock = session_connect.getSocketPath(sock_buf) orelse return null;
+    const fd = client.connectToSocket(sock) catch return null;
+    var payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, payload[0..4], agent_watch.all_sessions, .little);
+    std.mem.writeInt(u32, payload[4..8], 0, .little);
+    var frame_buf: [dproto.header_size + 8]u8 = undefined;
+    const frame = dproto.encodeMessage(&frame_buf, .watch_agents, &payload) catch {
+        io.closeFd(fd);
+        return null;
+    };
+    io.writeAll(fd, frame) catch {
+        io.closeFd(fd);
+        return null;
+    };
+    return fd;
+}
+
+/// Attached-window watch (its session only): payload [pane_filter:u32].
+fn openWindow(sock_buf: *[256]u8) ?posix.fd_t {
+    const sock = client.discoverSocket(sock_buf, null) orelse return null;
+    const fd = client.connectToSocket(sock) catch return null;
+    var payload: [4]u8 = undefined;
+    std.mem.writeInt(u32, payload[0..4], 0, .little);
+    var frame_buf: [ipc_proto.header_size + 4]u8 = undefined;
+    const frame = ipc_proto.encodeMessage(&frame_buf, .watch_agents, &payload) catch {
+        io.closeFd(fd);
+        return null;
+    };
+    io.writeAll(fd, frame) catch {
+        io.closeFd(fd);
+        return null;
+    };
+    return fd;
+}
+
+/// Briefly read the daemon stream; if it errors or closes before any record (an
+/// older daemon that doesn't understand the all-sessions sentinel), report that
+/// we should fall back to the window. Silence (a live daemon with no agents) is
+/// fine — keep it.
+fn daemonRejected(stream: *Stream, m: *model_mod.Model, gpa: std.mem.Allocator) bool {
+    var pf = [_]posix.pollfd{.{ .fd = stream.fd, .events = POLLIN, .revents = 0 }};
+    var rounds: usize = 0;
+    while (rounds < 3) : (rounds += 1) {
+        const ready = posix.poll(&pf, 250) catch return false;
+        if (ready == 0) return false; // open but quiet → working daemon
+        const alive = stream.pump(m, gpa);
+        if (stream.records > 0) return false; // got data → daemon is fine
+        if (!alive or stream.errored) return true; // closed/errored with no data
     }
-    // Window fallback: payload [pane_filter:u32] over the IPC protocol.
-    if (client.discoverSocket(sock_buf, null)) |sock| {
-        if (client.connectToSocket(sock)) |fd| {
-            var payload: [4]u8 = undefined;
-            std.mem.writeInt(u32, payload[0..4], 0, .little);
-            var frame_buf: [ipc_proto.header_size + 4]u8 = undefined;
-            const frame = ipc_proto.encodeMessage(&frame_buf, .watch_agents, &payload) catch return null;
-            if (io.writeAll(fd, frame)) |_| return fd else |_| io.closeFd(fd);
-        } else |_| {}
-    }
-    return null;
+    return false;
 }
 
 /// Accumulates stream bytes and feeds complete length-prefixed frames to the
@@ -74,6 +103,8 @@ const Stream = struct {
     fd: posix.fd_t,
     buf: [64 * 1024]u8 = undefined,
     len: usize = 0,
+    records: usize = 0, // agent records applied (frames starting with '{')
+    errored: bool = false, // saw a non-record frame (an error reply)
 
     /// Read available bytes and apply any complete frames. Returns false on
     /// EOF/error (stream dropped).
@@ -90,7 +121,12 @@ const Stream = struct {
             }
             if (self.len - off - io.header_size < plen) break; // incomplete
             const payload = self.buf[off + io.header_size ..][0..plen];
-            m.applyLine(gpa, payload);
+            if (plen > 0 and payload[0] == '{') {
+                m.applyLine(gpa, payload);
+                self.records += 1;
+            } else if (plen > 0) {
+                self.errored = true; // an error reply (e.g. old daemon, no sentinel)
+            }
             off += io.header_size + plen;
         }
         if (off > 0) {
@@ -121,21 +157,36 @@ fn jumpToSession(session_id: u32) void {
 
 pub fn run(gpa: std.mem.Allocator, opts: Options) void {
     var sock_buf: [256]u8 = undefined;
-    const fd = openStream(&sock_buf) orelse {
-        stderrMsg("error: no running Attyx instance found\n");
-        std.process.exit(1);
-    };
-    defer io.closeFd(fd);
-
-    var stream = Stream{ .fd = fd };
     var m = model_mod.Model{};
+
+    // Prefer the daemon (all sessions); fall back to the attached window (its
+    // session) if there's no daemon, or if the daemon is too old to understand
+    // the all-sessions sentinel (it rejects the request).
+    var source: Source = .daemon;
+    var stream: Stream = if (openDaemon(&sock_buf)) |fd| Stream{ .fd = fd } else blk: {
+        source = .window;
+        break :blk Stream{ .fd = openWindow(&sock_buf) orelse {
+            stderrMsg("error: no running Attyx instance found\n");
+            std.process.exit(1);
+        } };
+    };
+    if (source == .daemon and daemonRejected(&stream, &m, gpa)) {
+        io.closeFd(stream.fd);
+        source = .window;
+        m = .{};
+        stream = Stream{ .fd = openWindow(&sock_buf) orelse {
+            stderrMsg("error: no running Attyx instance found\n");
+            std.process.exit(1);
+        } };
+    }
+    defer io.closeFd(stream.fd);
 
     const tty = term_mod.isTty(posix.STDOUT_FILENO) and term_mod.isTty(posix.STDIN_FILENO);
 
     // --once or non-TTY: drain the snapshot (read until briefly idle), print a
     // plain table, and exit. No raw mode.
     if (opts.once or !tty) {
-        var fds = [_]posix.pollfd{.{ .fd = fd, .events = POLLIN, .revents = 0 }};
+        var fds = [_]posix.pollfd{.{ .fd = stream.fd, .events = POLLIN, .revents = 0 }};
         while (true) {
             const ready = posix.poll(&fds, 200) catch break;
             if (ready == 0) break; // ~200ms idle → snapshot complete
@@ -163,6 +214,7 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model) 
     var size = t.size();
     var dec = input.Decoder{};
     var dirty = true;
+    var connected = true;
 
     var fds = [_]posix.pollfd{
         .{ .fd = stream.fd, .events = POLLIN, .revents = 0 },
@@ -174,11 +226,14 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model) 
             var arena = std.heap.ArenaAllocator.init(gpa);
             defer arena.deinit();
             var buf = std.ArrayList(u8){};
-            render.frame(&buf, arena.allocator(), m, size.rows, size.cols) catch {};
+            render.frame(&buf, arena.allocator(), m, size.rows, size.cols, connected) catch {};
             t.write(buf.items);
             dirty = false;
         }
 
+        // Only poll the stream while connected; -1 makes poll ignore the slot so
+        // a dropped stream doesn't busy-loop. The fd is owned/closed by run().
+        fds[0].fd = if (connected) stream.fd else -1;
         _ = posix.poll(&fds, 1000) catch {};
 
         if (g_winch) {
@@ -186,10 +241,11 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model) 
             size = t.size();
             dirty = true;
         }
-        if (fds[0].revents & POLLIN != 0) {
+        if (connected and fds[0].revents & POLLIN != 0) {
             if (!stream.pump(m, gpa)) {
-                // Stream dropped — exit cleanly (reconnect is a follow-up).
-                break;
+                // Stream dropped — keep the last table visible with a banner; the
+                // user quits with q. (Auto-reconnect is a follow-up.)
+                connected = false;
             }
             dirty = true;
         }

@@ -146,7 +146,7 @@ pub fn snapshot(writer: anytype, a: std.mem.Allocator, m: *const Model) !void {
 
 /// Full-screen ANSI frame into `buf` (for the interactive TUI). Rows are colored
 /// by state; the selected row is reverse-video. Lines are clipped to `cols`.
-pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, rows: u16, cols: u16) !void {
+pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, rows: u16, cols: u16, connected: bool) !void {
     _ = cols;
     const w = buf.writer(a);
     try w.writeAll("\x1b[2J\x1b[H"); // clear + home
@@ -187,7 +187,11 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
         try moveTo(w, rows - 1);
         try w.print("{s}{s}{s}\x1b[K", .{ bold, try totalsLine(a, m), reset });
         try moveTo(w, rows);
-        try w.print("{s}  \xe2\x86\x91\xe2\x86\x93 select  \xe2\x8f\x8e focus pane  r refresh  q quit{s}\x1b[K", .{ dim, reset });
+        if (connected) {
+            try w.print("{s}  \xe2\x86\x91\xe2\x86\x93 select  \xe2\x8f\x8e focus pane  r refresh  q quit{s}\x1b[K", .{ dim, reset });
+        } else {
+            try w.print("{s}  {s}disconnected{s}{s} \xc2\xb7 q quit{s}\x1b[K", .{ dim, c_input, reset, dim, reset });
+        }
     }
 }
 
@@ -225,11 +229,11 @@ test "frame produces ANSI and is non-empty for empty + populated models" {
     const a = arena.allocator();
     var m = Model{};
     var buf = std.ArrayList(u8){};
-    try frame(&buf, a, &m, 24, 100); // empty
+    try frame(&buf, a, &m, 24, 100, true); // empty
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[2J") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "no agents") != null);
     buf.clearRetainingCapacity();
     m.applyLine(ally, "{\"session\":2,\"pane_id\":5,\"state\":\"input\"}");
-    try frame(&buf, a, &m, 24, 100);
+    try frame(&buf, a, &m, 24, 100, true);
     try testing.expect(std.mem.indexOf(u8, buf.items, "input") != null);
 }

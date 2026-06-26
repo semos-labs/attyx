@@ -3,9 +3,10 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-# Build release binary (env defaults to development so it uses its own daemon)
-echo "Building release..."
-zig build -Doptimize=ReleaseFast
+# Build the production release binary (-Denv=production: prod socket names,
+# update channel, etc. — not the dev daemon).
+echo "Building production release..."
+zig build -Doptimize=ReleaseFast -Denv=production
 
 APP="Attyx.app"
 rm -rf "$APP"

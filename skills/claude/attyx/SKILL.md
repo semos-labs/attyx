@@ -285,9 +285,9 @@ Attyx tracks the run state of AI agents (Claude Code, Codex, etc.) running insid
 
 ```bash
 attyx list agents
-# pane_id  tab_id  session  pid    state    message
-# 3        3       1        48213  working  Editing parser.zig
-# 8        7       1        48455  input    Approve running tests?
+# PANE  SESSION  STATE    MODEL          IN     OUT    CTX        COST    MESSAGE
+# 3     1        working  opus-4.8       1.2M   320K   82K/200K   $0.42   Editing parser.zig
+# 8     1        input    opus-4.8       -      -      -          -       Approve running tests?
 
 attyx list agents --json
 # [{"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"Editing parser.zig",
@@ -298,7 +298,7 @@ attyx list agents --json
 
 Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, `message` (the agent's latest status preview, may be empty), and `usage` (token/cost/context telemetry — see below). Default scope is the attached/local session.
 
-**`usage` object.** Present on every record (possibly `{}` before the agent reports anything). Only known fields appear — an absent field means *unknown*, never zero, so don't treat a missing `cost_usd` as free. Fields: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` (cumulative for the session), `context_used` / `context_max` (current context window), `cost_usd`, `cost_is_estimate` (`true` when attyx computed cost from a built-in price table because the agent didn't report one — Codex), and `model`. Coverage varies by agent (Claude/opencode/Pi report cost directly; Codex is estimated; Codex pre-Sep-2025 builds and some gaps report no usage at all). The TSV form (`list agents` without `--json`) appends these as fixed trailing columns after `message` — `in out cr cw rsn ctx ctxmax cost model` — empty for unknowns; the leading columns are unchanged.
+**`usage` object.** Present on every record (possibly `{}` before the agent reports anything). Only known fields appear — an absent field means *unknown*, never zero, so don't treat a missing `cost_usd` as free. Fields: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` (cumulative for the session), `context_used` / `context_max` (current context window), `cost_usd`, `cost_is_estimate` (`true` when attyx computed cost from a built-in price table because the agent didn't report one — Codex), and `model`. Coverage varies by agent (Claude/opencode/Pi report cost directly; Codex is estimated; Codex pre-Sep-2025 builds and some gaps report no usage at all). Without `--json`, `list agents` (and `watch agents`) print an aligned, human-readable table — columns `PANE SESSION STATE MODEL IN OUT CTX COST MESSAGE`, tokens humanized (`1.2M`), context as `used/max`, `-` for unknowns. **Parse `--json`, not the table** — the table is for humans and its layout may change.
 
 A live table of the same data is available two ways: the in-window **overlay** (`Cmd/Ctrl+Shift+A`, or the `agent_dashboard` command — current window only), and the full-screen **`attyx dashboard`** CLI, which shows agents across *all* sessions and lets you jump to any of them. For a scriptable cross-session snapshot, `attyx dashboard --once` prints a plain-text table and exits. Add `-s <id>` to `list agents` to query any session's agents directly from the daemon — it works even when no window is attached to that session:
 
@@ -310,18 +310,17 @@ attyx -s 2 list agents --json
 For per-session counts across **all** daemon sessions, use `attyx list sessions`.
 
 ### Watching for changes — `watch agents`
-`attyx watch agents` opens a long-lived stream and prints one JSON object per line (NDJSON) every time an agent's status changes. On connect it first emits a snapshot of the current active agents, then live changes. It blocks until interrupted — pipe it or run it in the background:
+`attyx watch agents` opens a long-lived stream: the live counterpart of `list agents`, emitting the same data as it changes. On connect it emits the current agents as a snapshot, then one update per change. It blocks until interrupted. Default output is the human table (like `list agents`); **use `--json` for one NDJSON record per change** — same shape as `list agents --json`, including the `usage` object — for scripting:
 
 ```bash
+# Human: live table, run it in a split/popup to keep an eye on the swarm
 attyx watch agents
-# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"..."}
-# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"input","message":"Needs your input"}
-# {"pane_id":8,"tab_id":7,"session":1,"pid":48455,"state":"idle","message":""}
 
-# React to agents that need attention
-attyx watch agents | while read -r line; do
+# Scripts: parse NDJSON (one record per change)
+attyx watch agents --json | while read -r line; do
   echo "$line" | grep -q '"state":"input"' && notify-send "Agent needs input"
 done
+# {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"input","message":"Needs your input","usage":{...}}
 ```
 
 Unlike `list agents`, the watch stream **includes** transitions to `state:"none"` so you can tell when an agent's session ends. Use `watch agents` instead of polling `list agents` in a loop — it's push-based and won't miss fast transitions.

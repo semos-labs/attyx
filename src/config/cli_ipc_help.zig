@@ -25,7 +25,7 @@ pub const top_level =
     \\  theme        Switch to a named theme
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
     \\  list         Query tabs, panes, sessions, and agents (supports --json)
-    \\  watch        Stream agent status changes as they happen (NDJSON)
+    \\  watch        Stream agent status/usage changes live (table; --json for NDJSON)
     \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
@@ -481,23 +481,24 @@ pub const list =
     \\Aliases:
     \\  panes      Same as splits
     \\
-    \\Plain text output is tab-separated, one entry per line.
-    \\Active items are marked with * in the third column.
-    \\Use --json for structured output that's easier to parse.
+    \\Plain text output is tab-separated, one entry per line (tabs/splits/
+    \\sessions); active items are marked with * in the third column. The 'agents'
+    \\target instead prints an aligned, human-readable table. Use --json for
+    \\structured output that's easier to parse.
     \\
     \\The 'agents' target lists panes running an agent (state idle/working/
-    \\input). Fields: pane_id, tab_id, session, pid, state, message, and usage
-    \\(token/cost/context telemetry: input/output/cache tokens, context_used/max,
-    \\cost_usd + cost_is_estimate, model). Unknown usage fields are omitted (JSON)
-    \\or empty (TSV) — absent means unknown, not zero. tab_id is
-    \\the agent's tab's stable handle (its focused pane's id, the same pane:N
-    \\shown by 'attyx list'); for a single-pane tab it equals pane_id. pid is the
-    \\agent's foreground process id (0 = unknown, e.g. daemon-backed panes). Pass
-    \\--pane/-p <id> to list just one agent's pane. With --json it returns a JSON
-    \\array; otherwise tab-separated rows. Default scope is the attached/local
-    \\session; add -s/--session <id> to list any session's agents directly from
-    \\the daemon (no window needs to be attached to it). Use 'list sessions' for
-    \\per-session counts, or 'watch agents' to stream changes.
+    \\input). Plain output is an aligned table: PANE, SESSION, STATE, MODEL, IN,
+    \\OUT, CTX (used/max), COST, MESSAGE — tokens humanized (1.2M), unknowns shown
+    \\as '-'. --json returns the same data with raw numbers: each record has
+    \\pane_id, tab_id, session, pid, state, message, and a usage object
+    \\(input/output/cache tokens, context_used, context_max, cost_usd +
+    \\cost_is_estimate, model); absent fields mean unknown, not zero. tab_id is the
+    \\agent's tab's stable handle (its focused pane's id); for a single-pane tab it
+    \\equals pane_id. pid is the agent's foreground process id (0 = unknown, e.g.
+    \\daemon-backed panes). Pass --pane/-p <id> to list one agent's pane. Default
+    \\scope is the attached/local session; add -s/--session <id> to list any
+    \\session's agents directly from the daemon (no window needs to be attached).
+    \\Use 'list sessions' for per-session counts, or 'watch agents' to stream live.
     \\
     \\Examples:
     \\  attyx list                   Full tab/pane tree
@@ -514,22 +515,22 @@ pub const list =
 ;
 
 pub const watch =
-    \\Stream agent status changes from a running Attyx instance.
+    \\Stream agent status/usage changes from a running Attyx instance — the live
+    \\counterpart of 'list agents', emitting the same data as it changes.
     \\
-    \\Usage: attyx watch agents [--pane <id>]
+    \\Usage: attyx watch agents [--json] [--pane <id>] [--session <id>]
     \\
-    \\Opens a long-lived connection and prints one JSON object per line
-    \\(NDJSON) every time a pane's agent status changes. On connect, the
-    \\current set of active agents is emitted first as a snapshot, then live
-    \\changes follow. Blocks until interrupted (Ctrl-C) or the instance exits.
+    \\Opens a long-lived connection and emits the current agents as a snapshot,
+    \\then one update per change. Blocks until interrupted (Ctrl-C) or the
+    \\instance exits.
     \\
-    \\Each line: {"pane_id":N,"tab_id":N,"session":N,"pid":N,"state":"...","message":"..."}
-    \\  tab_id   the tab's stable handle (its focused pane's id)
-    \\  pid      the agent's foreground process id (0 = unknown)
-    \\  state    one of: idle, working, input, none ("none" = agent ended)
-    \\  message  the agent's latest status preview (may be empty)
+    \\Default output is the same aligned table as 'list agents' (a header, then a
+    \\row per update). Use --json for one JSON object per line (NDJSON) — the same
+    \\record shape as 'list agents --json', including the usage object — ideal for
+    \\scripts. A 'none' state means the agent ended.
     \\
     \\Options:
+    \\  --json            One NDJSON record per change (machine-readable).
     \\  --pane, -p <id>   Watch only the agent in this pane (by stable pane ID
     \\                    from 'attyx list agents'). Default: all agents.
     \\  --session, -s <id>  Stream a specific session's agents directly from the
@@ -541,10 +542,10 @@ pub const watch =
     \\terminal.
     \\
     \\Examples:
-    \\  attyx watch agents                 Stream changes for every agent
-    \\  attyx watch agents -p 3            Stream only pane 3's agent
-    \\  attyx watch agents -s 2            Stream session 2's agents
-    \\  attyx watch agents | while read l; do notify-send "$l"; done
+    \\  attyx watch agents                 Live table of every agent
+    \\  attyx watch agents -p 3            Watch only pane 3's agent
+    \\  attyx watch agents -s 2            Watch session 2's agents
+    \\  attyx watch agents --json | while read l; do notify-send "$l"; done
     \\
 ;
 

@@ -9,6 +9,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const client = @import("client.zig");
+const agents = @import("agents.zig");
 const IpcRequest = @import("../config/cli_ipc.zig").IpcRequest;
 
 const max_payload = 65536;
@@ -34,6 +35,9 @@ pub fn run(socket_path: []const u8, parsed: IpcRequest) void {
     };
 
     const stdout = std.fs.File.stdout();
+    // Plain mode prints the same table as `list agents`, just streamed: a header
+    // once, then a humanized row per update. `--json` streams the raw NDJSON.
+    if (!parsed.json_output) writeRowHeader(stdout);
     var hdr: [protocol.header_size]u8 = undefined;
     var payload_buf: [max_payload]u8 = undefined;
     while (true) {
@@ -47,8 +51,12 @@ pub fn run(socket_path: []const u8, parsed: IpcRequest) void {
         switch (h.msg_type) {
             .success => {
                 if (h.payload_len > 0) {
-                    stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
-                    if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
+                    if (parsed.json_output) {
+                        stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
+                        if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
+                    } else {
+                        writeRow(stdout, payload_buf[0..h.payload_len]);
+                    }
                 }
             },
             .err => {
@@ -88,6 +96,24 @@ fn buildRequest(buf: []u8, command: @import("../config/cli_ipc.zig").IpcCommand,
 
 fn writeStderr(msg: []const u8) void {
     std.fs.File.stderr().writeAll(msg) catch {};
+}
+
+pub fn writeRowHeader(stdout: std.fs.File) void {
+    var buf: [256]u8 = undefined;
+    var s = std.io.fixedBufferStream(&buf);
+    agents.writeAgentTableHeader(s.writer()) catch return;
+    stdout.writeAll(s.getWritten()) catch {};
+}
+
+/// Reformat one NDJSON frame into the shared human table row (same as `list
+/// agents`), so the stream and the snapshot look identical.
+pub fn writeRow(stdout: std.fs.File, json_line: []const u8) void {
+    var out_buf: [512]u8 = undefined;
+    var s = std.io.fixedBufferStream(&out_buf);
+    var fba_buf: [16 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buf);
+    agents.writeAgentRowFromJson(s.writer(), fba.allocator(), json_line) catch return;
+    stdout.writeAll(s.getWritten()) catch {};
 }
 
 test "watch request carries pane filter" {

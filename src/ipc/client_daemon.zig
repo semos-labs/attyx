@@ -355,6 +355,10 @@ pub fn watchAgents(parsed: IpcRequest) void {
     };
 
     const stdout = std.fs.File.stdout();
+    // Plain mode prints the same humanized table as `list agents`, streamed;
+    // `--json` streams the raw NDJSON. (See client_watch for the shared helpers.)
+    const client_watch = @import("client_watch.zig");
+    if (!parsed.json_output) client_watch.writeRowHeader(stdout);
     var hdr: [dproto.header_size]u8 = undefined;
     var payload_buf: [65536]u8 = undefined;
     while (true) {
@@ -365,8 +369,12 @@ pub fn watchAgents(parsed: IpcRequest) void {
         switch (h.msg_type) {
             .agent_event => {
                 if (h.payload_len > 0) {
-                    stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
-                    if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
+                    if (parsed.json_output) {
+                        stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
+                        if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
+                    } else {
+                        client_watch.writeRow(stdout, payload_buf[0..h.payload_len]);
+                    }
                 }
             },
             .err => {

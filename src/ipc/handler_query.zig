@@ -143,7 +143,7 @@ pub fn buildAgentList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
     const session_id: u32 = if (ctx.session_client) |sc| (sc.attached_session_id orelse 0) else 0;
 
-    if (as_json) w.writeAll("[") catch {};
+    if (as_json) w.writeAll("[") catch {} else agents.writeAgentTableHeader(w) catch {};
     var first = true;
     const mgr = ctx.tab_mgr;
     for (0..mgr.count) |i| {
@@ -164,7 +164,7 @@ pub fn buildAgentList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
                 if (!first) w.writeAll(",") catch break;
                 agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg, usage) catch break;
             } else {
-                agents.writeAgentTsv(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg, usage) catch break;
+                agents.writeAgentRow(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg, usage) catch break;
             }
             first = false;
         }
