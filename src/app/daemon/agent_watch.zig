@@ -20,6 +20,11 @@ const agents = @import("../../ipc/agents.zig");
 
 const max_clients: usize = 16;
 
+/// Sentinel `watch_session` meaning "every session" — the dashboard's
+/// cross-session feed. A watcher set to this receives every session's agent
+/// transitions, each record self-tagged with its `session` id in the NDJSON.
+pub const all_sessions: u32 = 0xFFFFFFFF;
+
 /// Send the current set of active agents (status != none) in `session` to a
 /// freshly-parked watcher, so it has full state without waiting for the next
 /// transition. Honors the watcher's pane filter.
@@ -46,7 +51,9 @@ pub fn broadcast(
 ) void {
     for (clients) |*slot| {
         if (slot.*) |*cl| {
-            if (cl.watch_session != session.id) continue;
+            // All-sessions watchers (sentinel) receive every session's events;
+            // others only their own session.
+            if (cl.watch_session != all_sessions and cl.watch_session != session.id) continue;
             if (cl.watch_pane_filter != 0 and cl.watch_pane_filter != pane.id) continue;
             sendOne(cl, session, pane, pane.id);
         }

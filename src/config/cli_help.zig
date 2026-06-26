@@ -59,6 +59,7 @@ const commands =
     cmd("skill <install|uninstall>  ", "Install/remove the Claude Code skill") ++
     cmd("daemon                     ", "Run the session daemon") ++
     cmd("kill-daemon                ", "Kill the session daemon and remove socket") ++
+    cmd("dashboard [--once]         ", "Full-screen view of agents across all sessions") ++
     "\n";
 
 const ipc_header =

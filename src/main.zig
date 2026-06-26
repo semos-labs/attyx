@@ -7,6 +7,7 @@ const logging = @import("logging/log.zig");
 const cli_commands = @import("cli_commands");
 const session_connect = @import("app/session_connect.zig");
 const agent_integration = @import("app/agent_integration.zig");
+const dashboard_run = @import("ipc/dashboard/run.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -248,6 +249,14 @@ pub fn main() !void {
             @import("ipc/mcp.zig").run(allocator);
             return;
         },
+        .dashboard => {
+            var once = false;
+            for (args) |a| {
+                if (std.mem.eql(u8, a, "--once")) once = true;
+            }
+            dashboard_run.run(allocator, .{ .once = once });
+            return;
+        },
         .print_config => {
             var merged = try loadMergedConfig(allocator, result.no_config, result.config_path, args);
             defer merged.deinit();
@@ -353,6 +362,11 @@ test {
         _ = @import("app/agent_integration_codex.zig");
         _ = @import("app/agent_integration_opencode.zig");
         _ = @import("app/shell_scripts_posix.zig");
+        // Dashboard TUI (posix-only). Pure modules carry the tests.
+        _ = @import("ipc/dashboard/model.zig");
+        _ = @import("ipc/dashboard/format.zig");
+        _ = @import("ipc/dashboard/input.zig");
+        _ = @import("ipc/dashboard/render.zig");
     }
 }
 

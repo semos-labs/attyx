@@ -65,41 +65,61 @@ fn costStr(tmp: std.mem.Allocator, row: *const Row) []const u8 {
 // padding below is measured in DISPLAY columns (ui_cell.utf8Count), not bytes —
 // "—"/"·"/"●" are multibyte but 1–2 columns, and Zig's {s:>N} would mis-pad them.
 const dot_w: u16 = 2;
-const pane_w: u16 = 5;
-const session_w: u16 = 10;
-const model_w: u16 = 13;
-const in_w: u16 = 8;
-const out_w: u16 = 8;
-const ctx_w: u16 = 12;
-const cost_w: u16 = 10;
-const body_w: u16 = pane_w + session_w + model_w + in_w + out_w + ctx_w + cost_w; // 66
-const lead_w: u16 = pane_w + session_w + model_w; // 28 (footer "TOTAL" span)
-const content_w: u16 = dot_w + body_w; // 68
+const pane_w: u16 = 4;
+const session_w: u16 = 22; // wide enough for tab titles (ellipsis past this)
+const model_w: u16 = 16;
+const in_w: u16 = 7;
+const out_w: u16 = 7;
+const ctx_w: u16 = 13;
+const cost_w: u16 = 9;
+const gutter_w: u16 = 2; // blank columns between fields
+const gutter = "  ";
+// 7 columns => 6 gutters. lead = the pane+session+model group incl. its 2 gutters.
+const body_w: u16 = pane_w + session_w + model_w + in_w + out_w + ctx_w + cost_w + gutter_w * 6;
+const lead_w: u16 = pane_w + session_w + model_w + gutter_w * 2; // footer "TOTAL" span
+const content_w: u16 = dot_w + body_w;
 
-/// Append `s` to `buf` padded/truncated to exactly `width` display columns.
+const ellipsis = "\xe2\x80\xa6"; // …
+
+/// Append `s` to `buf` occupying exactly `width` display columns: padded with
+/// spaces if short, truncated with a trailing … if it overflows.
 fn appendCol(buf: *std.ArrayList(u8), a: std.mem.Allocator, s: []const u8, width: u16, right: bool) !void {
-    const off = ui_cell.utf8ByteOffset(s, width);
-    const shown = s[0..off];
-    const w = ui_cell.utf8Count(shown);
-    const pad: usize = if (width > w) width - w else 0;
-    if (right) {
-        try buf.appendNTimes(a, ' ', pad);
-        try buf.appendSlice(a, shown);
-    } else {
-        try buf.appendSlice(a, shown);
-        try buf.appendNTimes(a, ' ', pad);
+    const full = ui_cell.utf8Count(s);
+    if (full <= width) {
+        const pad: usize = width - full;
+        if (right) try buf.appendNTimes(a, ' ', pad);
+        try buf.appendSlice(a, s);
+        if (!right) try buf.appendNTimes(a, ' ', pad);
+        return;
     }
+    // Overflow → keep width-1 columns of content + the 1-column ellipsis, then
+    // pad to exactly `width` (a wide char at the cut can leave us 1 short).
+    const off = ui_cell.utf8ByteOffset(s, width - 1);
+    const shown = s[0..off];
+    const used: usize = ui_cell.utf8Count(shown) + 1; // + ellipsis
+    const pad: usize = if (width > used) width - used else 0;
+    if (right) try buf.appendNTimes(a, ' ', pad);
+    try buf.appendSlice(a, shown);
+    try buf.appendSlice(a, ellipsis);
+    if (!right) try buf.appendNTimes(a, ' ', pad);
 }
 
-/// Build the `body_w`-column table body (pane/session/model left, numerics right).
+/// Build the `body_w`-column table body (pane/session/model left, numerics
+/// right), with a blank gutter between every column.
 fn buildBody(a: std.mem.Allocator, pane: []const u8, session: []const u8, model: []const u8, in: []const u8, out: []const u8, ctx: []const u8, cost: []const u8) ![]const u8 {
     var b = std.ArrayList(u8){};
     try appendCol(&b, a, pane, pane_w, false);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, session, session_w, false);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, model, model_w, false);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, in, in_w, true);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, out, out_w, true);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, ctx, ctx_w, true);
+    try b.appendSlice(a, gutter);
     try appendCol(&b, a, cost, cost_w, true);
     return b.items;
 }
@@ -190,9 +210,13 @@ pub fn renderAgentDashboard(
     const cost_total = try std.fmt.allocPrint(tmp, "{s}${d:.2}", .{ if (state.any_estimate) "~" else "", state.total_cost });
     var fb = std.ArrayList(u8){};
     try appendCol(&fb, tmp, "TOTAL", lead_w, false);
+    try fb.appendSlice(tmp, gutter);
     try appendCol(&fb, tmp, tok(tmp, state.total_input), in_w, true);
+    try fb.appendSlice(tmp, gutter);
     try appendCol(&fb, tmp, tok(tmp, state.total_output), out_w, true);
+    try fb.appendSlice(tmp, gutter);
     try appendCol(&fb, tmp, "", ctx_w, true);
+    try fb.appendSlice(tmp, gutter);
     try appendCol(&fb, tmp, cost_total, cost_w, true);
     try children.append(tmp, .{ .text = .{ .content = try bodyRow(tmp, fb.items), .wrap = false, .style = .{ .text_flags = .{ .bold = true } } } });
 
@@ -244,6 +268,26 @@ test "buildBody pads every row to body_w display columns (alignment)" {
     for (cases) |c| try std.testing.expectEqual(body_w, ui_cell.utf8Count(c));
     // The status cell is always exactly dot_w columns.
     try std.testing.expectEqual(dot_w, ui_cell.utf8Count(dotCell(a)));
+    // An over-long session title truncates with an ellipsis (…), not a hard cut.
+    const overflow = try buildBody(a, "1", "a-very-long-session-name-that-overflows", "m", "", "", "", "");
+    try std.testing.expect(std.mem.indexOf(u8, overflow, ellipsis) != null);
+    try std.testing.expectEqual(body_w, ui_cell.utf8Count(overflow));
+}
+
+test "appendCol ellipsis-truncates and pads to exact width" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var b = std.ArrayList(u8){};
+    try appendCol(&b, a, "abcdefghij", 5, false); // overflow → "abcd…"
+    try std.testing.expectEqualStrings("abcd" ++ ellipsis, b.items);
+    try std.testing.expectEqual(@as(u16, 5), ui_cell.utf8Count(b.items));
+    b.clearRetainingCapacity();
+    try appendCol(&b, a, "hi", 5, false); // pad left-aligned
+    try std.testing.expectEqualStrings("hi   ", b.items);
+    b.clearRetainingCapacity();
+    try appendCol(&b, a, "42", 5, true); // pad right-aligned
+    try std.testing.expectEqualStrings("   42", b.items);
 }
 
 test "renderAgentDashboard handles the empty case" {

@@ -80,13 +80,24 @@ fn handleWatchAgents(
     }
     const target_session = std.mem.readInt(u32, payload[0..4], .little);
     const pane_filter = std.mem.readInt(u32, payload[4..8], .little);
+    cl.watch_pane_filter = pane_filter;
+
+    // All-sessions watch (dashboard): park on the sentinel and snapshot every
+    // live session. broadcast() then streams every session's transitions.
+    if (target_session == agent_watch.all_sessions) {
+        cl.watch_session = target_session;
+        for (sessions) |*slot| {
+            if (slot.*) |*s| agent_watch.sendSnapshot(cl, s);
+        }
+        return;
+    }
+
     const session = findSession(sessions, target_session) orelse {
         cl.sendError(1, "session not found");
         cl.dead = true;
         return;
     };
     cl.watch_session = target_session;
-    cl.watch_pane_filter = pane_filter;
     agent_watch.sendSnapshot(cl, session);
 }
 

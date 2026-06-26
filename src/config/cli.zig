@@ -27,6 +27,7 @@ pub const Action = enum {
     ipc_command,
     host,
     mcp,
+    dashboard,
 };
 
 fn fatal(msg: []const u8) noreturn {
@@ -79,6 +80,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "mcp")) {
             result.action = .mcp;
+            return result;
+        } else if (std.mem.eql(u8, first, "dashboard")) {
+            result.action = .dashboard;
             return result;
         } else if (isIpcSubcommand(first)) {
             result.action = .ipc_command;
