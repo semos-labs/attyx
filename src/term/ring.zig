@@ -17,6 +17,16 @@ pub const RingBuffer = struct {
     count: usize, // total rows written (≤ capacity)
     allocator: std.mem.Allocator,
 
+    /// Monotonic count of lines that have ever scrolled off the screen top into
+    /// scrollback (bumped in `advanceScreen`). The current screen's top row is
+    /// logical line `lines_total`; scrollback holds logical
+    /// `[lines_total - scrollbackCount(), lines_total)`. Drives `get_text --since`.
+    lines_total: u64 = 0,
+    /// Layout generation — bumped on resize/reflow, clear-scrollback, and
+    /// alt-screen switches. A cursor with a stale `gen` can't be deltaed, so the
+    /// server returns a fresh baseline instead. See `sinceRange`.
+    layout_gen: u32 = 0,
+
     pub const default_max_scrollback: usize = 5_000;
 
     pub fn init(
@@ -86,6 +96,62 @@ pub const RingBuffer = struct {
     /// Number of scrollback rows (rows above the visible screen).
     pub fn scrollbackCount(self: *const RingBuffer) usize {
         return if (self.count > self.screen_rows) self.count - self.screen_rows else 0;
+    }
+
+    /// The rows to emit for an incremental `get_text --since` read, plus the next
+    /// cursor and status flags. The ring maps to logical lines
+    /// `[lines_total - scrollbackCount(), lines_total + screen_rows)`, with abs
+    /// index `logical - base`.
+    pub const SinceResult = struct {
+        start_abs: usize, // first ring abs index to emit
+        row_count: usize, // rows to emit (start_abs + row_count <= count)
+        next_line: u64, // new cursor line (one past the last screen row)
+        gen: u32, // current layout generation (for the new cursor)
+        reset: bool, // layout changed / future cursor → text is a fresh baseline
+        truncated: bool, // some lines scrolled past retained scrollback unseen
+    };
+
+    /// Compute the delta range. `has_prior=false` seeds from the current screen
+    /// (returns the visible screen + a cursor at the bottom). With a prior cursor:
+    /// a `gen` mismatch or a future `line` resets to the screen baseline; a `line`
+    /// older than retained scrollback clamps and flags `truncated`; otherwise it
+    /// returns logical `[line, head)`. `max_rows != 0` caps a long catch-up read to
+    /// the newest `max_rows` rows (flagging `truncated`).
+    pub fn sinceRange(self: *const RingBuffer, has_prior: bool, gen: u32, line: u64, max_rows: usize) SinceResult {
+        const sb = self.scrollbackCount();
+        const base: u64 = self.lines_total - sb;
+        const head: u64 = self.lines_total + self.screen_rows;
+
+        var reset = false;
+        var truncated = false;
+        var start_line: u64 = undefined;
+        if (!has_prior) {
+            start_line = self.lines_total; // seed: current visible screen
+        } else if (gen != self.layout_gen or line > head) {
+            reset = true;
+            start_line = self.lines_total;
+        } else if (line < base) {
+            truncated = true;
+            start_line = base;
+        } else {
+            start_line = line; // normal delta (line == head → empty)
+        }
+
+        var start_abs: usize = @intCast(start_line - base);
+        var row_count: usize = @intCast(head - start_line);
+        if (max_rows != 0 and row_count > max_rows) {
+            start_abs += row_count - max_rows;
+            row_count = max_rows;
+            truncated = true;
+        }
+        return .{
+            .start_abs = start_abs,
+            .row_count = row_count,
+            .next_line = head,
+            .gen = self.layout_gen,
+            .reset = reset,
+            .truncated = truncated,
+        };
     }
 
     /// Ring slot for absolute row `i` (0 = oldest).
@@ -247,6 +313,7 @@ pub const RingBuffer = struct {
             self.head = (self.head + 1) % self.capacity;
             // count stays at capacity
         }
+        self.lines_total +%= 1; // one more logical line scrolled into history
         // Clear the new bottom screen row
         self.clearScreenRow(self.screen_rows - 1);
         return true;
@@ -624,4 +691,87 @@ test "ring: deleteChars" {
     try testing.expectEqual(@as(u21, 'E'), ring.getScreenCell(0, 2).char);
     try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(0, 3).char);
     try testing.expectEqual(@as(u21, ' '), ring.getScreenCell(0, 4).char);
+}
+
+test "sinceRange: seed returns the current screen, cursor at the bottom" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5);
+    defer ring.deinit();
+    const r = ring.sinceRange(false, 0, 0, 0);
+    try testing.expectEqual(@as(usize, 0), r.start_abs);
+    try testing.expectEqual(@as(usize, 3), r.row_count); // screen_rows
+    try testing.expectEqual(@as(u64, 3), r.next_line); // head = 0 + 3
+    try testing.expect(!r.reset and !r.truncated);
+}
+
+test "sinceRange: append delta returns only newly scrolled lines" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5);
+    defer ring.deinit();
+    const seed = ring.sinceRange(false, 0, 0, 0); // cursor at line 3
+    _ = ring.advanceScreen();
+    _ = ring.advanceScreen(); // 2 lines scrolled → lines_total = 2
+    const d = ring.sinceRange(true, seed.gen, seed.next_line, 0);
+    try testing.expectEqual(@as(usize, 2), d.row_count); // exactly the 2 new lines
+    try testing.expectEqual(@as(u64, 5), d.next_line); // head = 2 + 3
+    try testing.expect(!d.reset and !d.truncated);
+
+    // No change → empty, same cursor.
+    const e = ring.sinceRange(true, d.gen, d.next_line, 0);
+    try testing.expectEqual(@as(usize, 0), e.row_count);
+    try testing.expectEqual(d.next_line, e.next_line);
+}
+
+test "sinceRange: truncation when the cursor falls behind retained scrollback" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5); // capacity 8, max scrollback 5
+    defer ring.deinit();
+    const seed = ring.sinceRange(false, 0, 0, 0); // line 3
+    var i: usize = 0;
+    while (i < 10) : (i += 1) _ = ring.advanceScreen(); // lines_total = 10, scrollback caps at 5
+    const d = ring.sinceRange(true, seed.gen, seed.next_line, 0);
+    try testing.expect(d.truncated);
+    try testing.expectEqual(@as(usize, 0), d.start_abs); // clamped to oldest retained
+    // base = 10 - 5 = 5, head = 10 + 3 = 13 → 8 rows (whole ring).
+    try testing.expectEqual(@as(usize, 8), d.row_count);
+    try testing.expectEqual(@as(u64, 13), d.next_line);
+}
+
+test "sinceRange: gen mismatch resets to a fresh baseline" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5);
+    defer ring.deinit();
+    const seed = ring.sinceRange(false, 0, 0, 0);
+    _ = ring.advanceScreen();
+    ring.layout_gen +%= 1; // simulate resize/clear/alt-screen
+    const d = ring.sinceRange(true, seed.gen, seed.next_line, 0);
+    try testing.expect(d.reset);
+    try testing.expectEqual(ring.layout_gen, d.gen);
+    try testing.expectEqual(@as(usize, 3), d.row_count); // current screen baseline
+}
+
+test "sinceRange: a future cursor resets, no panic" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5);
+    defer ring.deinit();
+    const d = ring.sinceRange(true, 0, 9999, 0); // line > head
+    try testing.expect(d.reset);
+    try testing.expectEqual(@as(usize, 3), d.row_count);
+}
+
+test "sinceRange: lines caps a long catch-up read to the newest rows" {
+    var ring = try RingBuffer.init(testing.allocator, 3, 5, 5);
+    defer ring.deinit();
+    const seed = ring.sinceRange(false, 0, 0, 0);
+    var i: usize = 0;
+    while (i < 4) : (i += 1) _ = ring.advanceScreen(); // 4 new lines, all retained
+    const d = ring.sinceRange(true, seed.gen, seed.next_line, 2); // cap at 2
+    try testing.expectEqual(@as(usize, 2), d.row_count);
+    try testing.expect(d.truncated);
+    try testing.expectEqual(@as(u64, 7), d.next_line); // head = 4 + 3, cursor still advances
+}
+
+test "advanceScreen bumps lines_total monotonically" {
+    var ring = try RingBuffer.init(testing.allocator, 2, 4, 3);
+    defer ring.deinit();
+    try testing.expectEqual(@as(u64, 0), ring.lines_total);
+    _ = ring.advanceScreen();
+    _ = ring.advanceScreen();
+    _ = ring.advanceScreen();
+    try testing.expectEqual(@as(u64, 3), ring.lines_total); // counts even after eviction
 }

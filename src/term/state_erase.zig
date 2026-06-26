@@ -75,6 +75,7 @@ pub fn eraseInDisplay(self: *TerminalState, mode: actions_mod.EraseMode) void {
             // CSI 3 J — Erase Saved Lines: clear scrollback buffer.
             if (!self.alt_active) {
                 self.ring.clearScrollback();
+                self.ring.layout_gen +%= 1; // retained range changed → invalidate cursors
                 self.viewport_offset = 0;
             }
             self.dirty.markAll(rows);

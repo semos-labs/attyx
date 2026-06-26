@@ -55,6 +55,7 @@ fn clampInactiveState(self: *TerminalState, rows: usize, cols: usize) void {
 /// Resize both the ring buffer and the inactive grid.
 pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
     if (new_rows == self.ring.screen_rows and new_cols == self.ring.cols) return;
+    const prev_gen = self.ring.layout_gen;
 
     if (self.reflow_on_resize and !self.alt_active) {
         // Full reflow through the ring (scrollback + screen)
@@ -96,6 +97,11 @@ pub fn resize(self: *TerminalState, new_rows: usize, new_cols: usize) !void {
     }
 
     try self.inactive_grid.resizeNoReflow(new_rows, new_cols);
+
+    // Reflow remaps lines, so old `--since` cursors can't be deltaed: bump the
+    // generation and rebaseline the logical counter on the fresh ring.
+    self.ring.layout_gen = prev_gen +% 1;
+    self.ring.lines_total = self.ring.scrollbackCount();
 
     self.viewport_offset = 0;
 

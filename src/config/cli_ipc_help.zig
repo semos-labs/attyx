@@ -394,7 +394,8 @@ pub const send_keys =
 pub const get_text =
     \\Read visible text (or scrollback history) from a pane.
     \\
-    \\Usage: attyx get-text [--pane <target>] [--lines <N>] [--json]
+    \\Usage: attyx get-text [--pane <target>] [--lines <N>] [--since <cursor>]
+    \\                      [--cursor-only] [--json]
     \\
     \\By default, returns the current screen content of the specified pane
     \\(or the focused pane if --pane is not given). With --lines N, returns
@@ -407,18 +408,34 @@ pub const get_text =
     \\  --lines, -n <N>       Return the last N rows from scrollback + visible
     \\                        screen, instead of just the visible screen. Capped
     \\                        at the pane's scrollback depth.
+    \\  --since <cursor>      Incremental capture: return only rows produced since
+    \\                        the cursor from a previous read. Use "" to seed
+    \\                        (returns the current screen + a starting cursor). The
+    \\                        next cursor prints to stderr as `cursor: g<gen>.l<n>`;
+    \\                        pass it back next time. Treat it as opaque. With
+    \\                        --lines, caps a long catch-up read to the last N rows.
+    \\  --cursor-only         With --since, print just the next cursor to stdout
+    \\                        (no text) — advance without consuming output.
     \\
     \\Output format (plain text):
-    \\  One line per row. Trailing whitespace is trimmed per row.
+    \\  One line per row. Trailing whitespace is trimmed per row. With --since, new
+    \\  rows go to stdout and the next cursor to stderr; `truncated` (output
+    \\  scrolled past retained scrollback) and `reset` (layout changed — text is a
+    \\  fresh baseline) show as stderr notes.
     \\
     \\Output format (--json):
-    \\  { "lines": ["row1", "row2", ...] }
+    \\  { "lines": ["row1", "row2", ...] }   — or, with --since:
+    \\  { "cursor":"g3.l10581", "text":"...", "truncated":false, "reset":false,
+    \\    "rows":2 }
     \\
     \\Examples:
     \\  attyx get-text                         Print screen content
     \\  attyx get-text --pane 3                Read from pane 3
     \\  attyx get-text -n 100                  Last 100 rows (scrollback + screen)
     \\  attyx get-text -p 5 -n 500             Last 500 rows from pane 5
+    \\  # Tail a build: seed once, then read only the new output each tick.
+    \\  attyx get-text -p 3 --since "" 2>cur   Seed; cursor saved to file `cur`
+    \\  attyx get-text -p 3 --since "$(cut -d' ' -f2 cur)" 2>cur   New rows only
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.
