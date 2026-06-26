@@ -136,9 +136,9 @@ fn writeAgentRow(
     const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
     if (as_json) {
         if (!first.*) w.writeAll(",") catch return;
-        agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg()) catch return;
+        agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
     } else {
-        agents.writeAgentTsv(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg()) catch return;
+        agents.writeAgentTsv(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
     }
     first.* = false;
 }

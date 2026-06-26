@@ -255,6 +255,10 @@ void attyx_toggle_shell_picker(void);
 extern volatile int g_tab_picker_active;  // 1 = tab picker overlay has focus
 void attyx_toggle_tab_picker(void);
 
+// Agent dashboard: token/cost/context overlay
+extern volatile int g_agent_dashboard_active;  // 1 = dashboard overlay is open
+void attyx_toggle_agent_dashboard(void);
+
 // Move-tab-to-session: reuses the session picker overlay in "move" mode
 void attyx_toggle_move_to_session(void);
 

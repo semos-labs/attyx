@@ -27,6 +27,7 @@ const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
 const tab_picker_ui = @import("tab_picker_ui.zig");
+const agent_dashboard_ui = @import("agent_dashboard_ui.zig");
 const copy_mode = @import("copy_mode.zig");
 const selection = @import("selection.zig");
 const toast = attyx.overlay_toast;
@@ -421,6 +422,15 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        // Agent dashboard toggle check
+        if (@atomicRmw(i32, &terminal.g_toggle_agent_dashboard, .Xchg, 0, .seq_cst) != 0) {
+            if (terminal.g_agent_dashboard_active != 0) {
+                agent_dashboard_ui.closeAgentDashboard(ctx);
+            } else {
+                agent_dashboard_ui.openAgentDashboard(ctx);
+            }
+        }
+
         // Move-tab-to-session toggle check (reuses the session picker overlay)
         if (@atomicRmw(i32, &terminal.g_toggle_move_to_session, .Xchg, 0, .seq_cst) != 0) {
             if (terminal.g_session_picker_active != 0) {
@@ -492,6 +502,14 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Tab picker input polling
         if (terminal.g_tab_picker_active != 0) {
             _ = tab_picker_ui.consumePickerInput(ctx);
+        }
+
+        // Agent dashboard: drain input (Esc/Enter closes) and refresh the live
+        // table. Usage OSCs wake the loop, so refresh-on-iteration tracks changes
+        // without a dedicated timer.
+        if (terminal.g_agent_dashboard_active != 0) {
+            _ = agent_dashboard_ui.consumeInput(ctx);
+            if (terminal.g_agent_dashboard_active != 0) agent_dashboard_ui.refresh(ctx);
         }
 
         // Tick update check notification
@@ -1026,6 +1044,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                             got_data = true;
                         }
                     },
+                    .pane_agent_usage => |pau| {
+                        if (findPaneByDaemonId(ctx, pau.pane_id)) |result| {
+                            result.pane.engine.state.setAgentUsage(pau.usage);
+                            got_data = true;
+                        }
+                    },
                     .scrollback_chunk => |payload| {
                         const n = applyScrollbackChunk(ctx, payload);
                         logging.debug("grid", "scrollback_chunk applied: {d} rows, ring.sb={d}", .{ n, publish.ctxEngine(ctx).state.ring.scrollbackCount() });
@@ -1186,6 +1210,12 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         leaf.pane.engine.state.agent_status_changed = false;
                         title_changed = true;
                         maybeNotifyAgent(ctx, leaf.pane, ti);
+                        ipc_watch.broadcastAgent(ctx, leaf.pane, lay.focusedPane().ipc_id);
+                    }
+                    // Usage updates ride the same broadcast (writeAgentJson now
+                    // serializes usage), but never notify and never flip the dot.
+                    if (leaf.pane.engine.state.agent_usage_changed) {
+                        leaf.pane.engine.state.agent_usage_changed = false;
                         ipc_watch.broadcastAgent(ctx, leaf.pane, lay.focusedPane().ipc_id);
                     }
                 }
@@ -1996,6 +2026,12 @@ pub fn applyDaemonContentMessage(ctx: *PtyThreadCtx, msg: @import("../session_cl
         .pane_agent_status => |pas| {
             if (findPaneByDaemonId(ctx, pas.pane_id)) |result| {
                 result.pane.engine.state.setAgentStatus(AgentStatus.fromU8(pas.status), pas.message);
+            }
+            return true;
+        },
+        .pane_agent_usage => |pau| {
+            if (findPaneByDaemonId(ctx, pau.pane_id)) |result| {
+                result.pane.engine.state.setAgentUsage(pau.usage);
             }
             return true;
         },

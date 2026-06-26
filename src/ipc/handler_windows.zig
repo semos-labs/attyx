@@ -521,11 +521,12 @@ fn buildAgentList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
             if (status == .none) continue;
             if (pane_filter != 0 and pane_filter != leaf.pane.ipc_id) continue;
             const msg = leaf.pane.engine.state.agentMsg();
+            const usage = leaf.pane.engine.state.agentUsage();
             if (as_json) {
                 if (!first) w.writeAll(",") catch break;
-                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg) catch break;
+                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg, usage) catch break;
             } else {
-                agents.writeAgentTsv(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg) catch break;
+                agents.writeAgentTsv(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg, usage) catch break;
             }
             first = false;
         }

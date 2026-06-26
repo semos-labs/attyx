@@ -89,6 +89,7 @@ pub fn drainDaemon(ctx: *WinCtx) bool {
             .scrollback_chunk => {},
             .scrollback_range => {},
             .pane_title => {},
+            .pane_agent_usage => {},
         }
     }
     return got_output;

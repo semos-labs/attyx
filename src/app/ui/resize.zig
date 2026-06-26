@@ -18,6 +18,7 @@ const session_picker_ui = @import("session_picker_ui.zig");
 const command_palette_ui = @import("command_palette_ui.zig");
 const theme_picker_ui = @import("theme_picker_ui.zig");
 const tab_picker_ui = @import("tab_picker_ui.zig");
+const agent_dashboard_ui = @import("agent_dashboard_ui.zig");
 const popup_mod = @import("../popup.zig");
 
 /// Handle a window resize event. Drains old-size data, resizes all tabs,
@@ -133,6 +134,7 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
         command_palette_ui.relayout(ctx);
         theme_picker_ui.relayout(ctx);
         tab_picker_ui.relayout(ctx);
+        agent_dashboard_ui.relayout(ctx);
     }
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);

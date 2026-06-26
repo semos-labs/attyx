@@ -7,7 +7,7 @@ const ui = @import("ui.zig");
 pub const Rgb = ui.Rgb;
 pub const StyledCell = ui.StyledCell;
 
-pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7, session_picker = 8, command_palette = 9, theme_picker = 10, shell_picker = 11, tab_picker = 12, toast = 13, resize_hint = 14, completion = 15 };
+pub const OverlayId = enum(u8) { debug_card = 0, anchor_demo = 1, ai_demo = 2, search_bar = 3, context_preview = 4, update_notification = 5, tab_bar = 6, statusbar = 7, session_picker = 8, command_palette = 9, theme_picker = 10, shell_picker = 11, tab_picker = 12, toast = 13, resize_hint = 14, completion = 15, agent_dashboard = 16 };
 
 pub const OverlayStyle = struct {
     bg: Rgb = .{ .r = 30, .g = 30, .b = 40 },
@@ -32,7 +32,7 @@ pub const OverlayLayer = struct {
     action_bar: ?action_mod.ActionBar = null,
 };
 
-pub const max_layers = 16;
+pub const max_layers = 17;
 
 pub const OverlayManager = struct {
     layers: [max_layers]OverlayLayer,

@@ -133,6 +133,7 @@ fn buildFrame(buf: []u8, session: u32, pane: *Pane, tab_id: u32) ?[]const u8 {
         agents.panePid(pane.pty.master),
         pane.engine.state.agent_status,
         pane.engine.state.agentMsg(),
+        pane.engine.state.agentUsage(),
     ) catch return null;
     return protocol.encodeMessage(buf, .success, stream.getWritten()) catch null;
 }

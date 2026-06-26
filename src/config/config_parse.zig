@@ -188,6 +188,14 @@ pub fn applyToml(allocator: std.mem.Allocator, content: []const u8, path: []cons
             return error.ConfigValidationError;
         }
     }
+    if (Lookup.get(root, "agent", "telemetry")) |v| {
+        if (v == .bool) {
+            config.agent_telemetry = v.bool;
+        } else {
+            std.debug.print("error: {s}: agent.telemetry must be a boolean\n", .{path});
+            return error.ConfigValidationError;
+        }
+    }
 
     // [mcp]
     if (Lookup.get(root, "mcp", "enabled")) |v| {

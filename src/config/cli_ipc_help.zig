@@ -486,7 +486,10 @@ pub const list =
     \\Use --json for structured output that's easier to parse.
     \\
     \\The 'agents' target lists panes running an agent (state idle/working/
-    \\input). Fields: pane_id, tab_id, session, pid, state, message. tab_id is
+    \\input). Fields: pane_id, tab_id, session, pid, state, message, and usage
+    \\(token/cost/context telemetry: input/output/cache tokens, context_used/max,
+    \\cost_usd + cost_is_estimate, model). Unknown usage fields are omitted (JSON)
+    \\or empty (TSV) — absent means unknown, not zero. tab_id is
     \\the agent's tab's stable handle (its focused pane's id, the same pane:N
     \\shown by 'attyx list'); for a single-pane tab it equals pane_id. pid is the
     \\agent's foreground process id (0 = unknown, e.g. daemon-backed panes). Pass

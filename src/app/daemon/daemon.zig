@@ -262,10 +262,17 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                             // Same story for agent status (OSC 7337;agent-status):
                             // passive client engine needs it shipped explicitly.
                             const agent_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed else false;
-                            if (agent_dirty) {
+                            // Usage rides a sibling channel (OSC 7337;agent-usage):
+                            // separate flag so a usage refresh never churns status.
+                            const usage_dirty = if (pane.engine) |eng_ptr| eng_ptr.state.agent_usage_changed else false;
+                            if (usage_dirty) {
+                                if (pane.engine) |eng_ptr| eng_ptr.state.agent_usage_changed = false;
+                            }
+                            if (agent_dirty or usage_dirty) {
                                 if (pane.engine) |eng_ptr| eng_ptr.state.agent_status_changed = false;
                                 // Stream to headless `watch agents -s` watchers,
                                 // independent of any attached/grid-sync client.
+                                // (broadcast serializes the full record incl. usage.)
                                 agent_watch.broadcast(&clients, s, pane);
                             }
                             for (&clients) |*cslot| {
@@ -279,6 +286,9 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                             }
                                             if (agent_dirty) {
                                                 cl.sendPaneAgentStatus(pane.id, @intFromEnum(pane.engine.?.state.agent_status), pane.engine.?.state.agentMsg());
+                                            }
+                                            if (usage_dirty) {
+                                                cl.sendPaneAgentUsage(pane.id, pane.engine.?.state.agentUsage());
                                             }
                                         } else {
                                             cl.sendPaneOutput(pane.id, pty_buf[0..coalesced]);

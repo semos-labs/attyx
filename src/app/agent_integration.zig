@@ -31,6 +31,15 @@ const is_windows = builtin.os.tag == .windows;
 /// entries when de-duplicating on re-injection.
 pub const emitter_name = "attyx-agent-status";
 
+/// The Claude statusline wrapper's filename, also the marker for detecting our
+/// own command in a settings.json `statusLine` slot (idempotency + restore).
+pub const statusline_name = "attyx-statusline";
+
+/// The Codex status+usage companion script's filename. Codex hooks reference this
+/// (telemetry on) instead of the bare emitter, so it's a second marker the
+/// hook-group dedupe must recognize — otherwise a re-merge leaves a stale group.
+pub const codex_script_name = "attyx-codex-usage";
+
 pub const EventSpec = struct { name: []const u8, matcher: ?[]const u8, state: []const u8 };
 
 /// Claude Code hooks (settings.json). PermissionRequest is status-only — the
@@ -52,7 +61,7 @@ const claude_events = [_]EventSpec{
 
 /// Install the emitter and inject hooks into every discovered Claude config
 /// dir. Best-effort; never fails the caller.
-pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
+pub fn install(gpa: std.mem.Allocator, home: []const u8, telemetry: bool) void {
     if (comptime is_windows) return;
     if (home.len == 0) return;
 
@@ -66,25 +75,34 @@ pub fn install(gpa: std.mem.Allocator, home: []const u8) void {
     const emitter_path = std.fmt.allocPrint(a, "{s}/{s}", .{ agent_bin, emitter_name }) catch return;
     writeAtomic(a, emitter_path, emitter_script, 0o755);
 
-    // 2. Claude — merge hooks into each config dir's settings.json.
+    // Claude statusline wrapper (usage telemetry — separate from the hook-based
+    // status emitter above). Only written when telemetry is on.
+    const statusline_path = std.fmt.allocPrint(a, "{s}/{s}", .{ agent_bin, statusline_name }) catch return;
+    if (telemetry) writeAtomic(a, statusline_path, statusline_script, 0o755);
+
+    // 2. Claude — merge status hooks into each config dir's settings.json. With
+    //    telemetry on, also wrap its single statusLine slot for usage (preserving
+    //    any existing one); with it off, restore a previously wrapped statusLine.
     var dirs = std.ArrayList([]const u8){};
     discoverClaudeConfigDirs(a, home, &dirs);
     for (dirs.items) |dir| {
         mkdirp(a, dir);
         const settings = std.fmt.allocPrint(a, "{s}/settings.json", .{dir}) catch continue;
         ensureHooksFile(a, settings, emitter_path, &claude_events);
+        if (telemetry) ensureStatusLine(a, settings, statusline_path) else restoreStatusLine(a, settings);
     }
 
     // 3. Codex — same JSON hook shape (at ~/.codex/hooks.json), but Codex gates
     //    command hooks behind a trust check, so the module also pre-trusts them.
-    codex.install(a, home, emitter_path);
+    //    With telemetry on, the hooks point at the status+usage tailer script.
+    codex.install(a, home, emitter_path, telemetry);
 
     // 4. opencode — a JS plugin that shells out to the emitter, loaded via the
     //    plugins dir and registered in opencode.json(c). See its own module.
-    opencode.install(a, home, emitter_path);
+    opencode.install(a, home, emitter_path, telemetry);
 
     // 5. Pi (pi.dev) — a TS extension auto-discovered from ~/.pi/agent/extensions.
-    pi.install(a, home, emitter_path);
+    pi.install(a, home, emitter_path, telemetry);
 }
 
 /// Collect Claude config dirs to inject into: ~/.claude (the default) plus any
@@ -176,7 +194,15 @@ fn ensureEventHook(
     try arr.append(.{ .object = group });
 }
 
-/// A hook group is "ours" if any of its commands references the emitter.
+/// A command string is one of ours if it invokes any attyx hook script (the
+/// shared status emitter or the Codex status+usage tailer). Both must be
+/// recognized so a re-merge replaces our prior group instead of duplicating it.
+fn cmdIsAttyx(cmd: []const u8) bool {
+    return std.mem.indexOf(u8, cmd, emitter_name) != null or
+        std.mem.indexOf(u8, cmd, codex_script_name) != null;
+}
+
+/// A hook group is "ours" if any of its commands references an attyx script.
 fn groupIsAttyx(group: std.json.Value) bool {
     if (group != .object) return false;
     const hooks = group.object.get("hooks") orelse return false;
@@ -184,7 +210,7 @@ fn groupIsAttyx(group: std.json.Value) bool {
     for (hooks.array.items) |h| {
         if (h != .object) continue;
         const cmd = h.object.get("command") orelse continue;
-        if (cmd == .string and std.mem.indexOf(u8, cmd.string, emitter_name) != null) return true;
+        if (cmd == .string and cmdIsAttyx(cmd.string)) return true;
     }
     return false;
 }
@@ -223,6 +249,114 @@ fn eventHasCommand(groups: std.json.Array, command: []const u8) bool {
         }
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Claude statusLine wrapping (single-slot capture / delegate / restore)
+// ---------------------------------------------------------------------------
+//
+// Unlike `hooks` (an additive array), `statusLine` is a SINGLE command. Setting
+// it naively would clobber a user's existing statusline. So we wrap: our command
+// is `"<wrapper>" <token>`, where <token> is the user's previous command,
+// base64-encoded (standard alphabet — no spaces), or the sentinel `_` for none.
+// The wrapper emits the usage OSC, then base64-decodes the token and delegates to
+// it so the user's statusline still renders. Restore reads the token back out.
+
+/// Set `statusLine.command` to our wrapper, preserving any prior command as the
+/// delegated previous. Idempotent: re-running with the same prior is a no-op (and
+/// never double-wraps, since our own command is detected and unwrapped first).
+pub fn ensureStatusLine(a: std.mem.Allocator, settings_path: []const u8, wrapper_path: []const u8) void {
+    const content = readFile(a, settings_path) orelse "{}";
+    var parsed = std.json.parseFromSlice(std.json.Value, a, content, .{}) catch return;
+    if (parsed.value != .object) return;
+    const root = &parsed.value;
+
+    const existing = statusLineCommand(root.*);
+    const prev = resolvePrevCommand(a, existing);
+    const new_cmd = buildWrapperCommand(a, wrapper_path, prev) orelse return;
+    if (existing) |ec| if (std.mem.eql(u8, ec, new_cmd)) return; // already correct
+
+    setStatusLineCommand(a, &root.object, new_cmd) catch return;
+    const out = std.json.Stringify.valueAlloc(a, root.*, .{ .whitespace = .indent_2 }) catch return;
+    writeAtomic(a, settings_path, out, 0o644);
+}
+
+/// Undo `ensureStatusLine`: if the slot holds our wrapper, restore the user's
+/// captured previous command (or remove `statusLine` entirely if there was none).
+/// Leaves a non-attyx statusLine untouched. For uninstall / `telemetry = false`.
+pub fn restoreStatusLine(a: std.mem.Allocator, settings_path: []const u8) void {
+    const content = readFile(a, settings_path) orelse return;
+    var parsed = std.json.parseFromSlice(std.json.Value, a, content, .{}) catch return;
+    if (parsed.value != .object) return;
+    const root = &parsed.value;
+
+    const cmd = statusLineCommand(root.*) orelse return;
+    if (std.mem.indexOf(u8, cmd, statusline_name) == null) return; // not ours
+
+    if (resolvePrevCommand(a, cmd)) |prev| {
+        setStatusLineCommand(a, &root.object, prev) catch return;
+    } else {
+        _ = root.object.swapRemove("statusLine");
+    }
+    const out = std.json.Stringify.valueAlloc(a, root.*, .{ .whitespace = .indent_2 }) catch return;
+    writeAtomic(a, settings_path, out, 0o644);
+}
+
+/// The `statusLine.command` string, or null if absent / wrong shape.
+fn statusLineCommand(root: std.json.Value) ?[]const u8 {
+    if (root != .object) return null;
+    const sl = root.object.get("statusLine") orelse return null;
+    if (sl != .object) return null;
+    const c = sl.object.get("command") orelse return null;
+    return if (c == .string) c.string else null;
+}
+
+/// The command to preserve as "previous": if `existing` is our wrapper, the
+/// base64-decoded embedded token (null for the `_` sentinel); otherwise the
+/// user's own command verbatim; null if there's no command at all.
+fn resolvePrevCommand(a: std.mem.Allocator, existing: ?[]const u8) ?[]const u8 {
+    const cmd = existing orelse return null;
+    if (std.mem.indexOf(u8, cmd, statusline_name) == null) return cmd; // user's own
+    // Ours: the embedded token is the final space-delimited field (base64 has no
+    // spaces, so this is unambiguous even when the wrapper path contains spaces).
+    const sp = std.mem.lastIndexOfScalar(u8, cmd, ' ') orelse return null;
+    const tok = cmd[sp + 1 ..];
+    if (tok.len == 0 or std.mem.eql(u8, tok, "_")) return null;
+    const decoded = b64Decode(a, tok) orelse return null;
+    return if (decoded.len == 0) null else decoded;
+}
+
+/// `"<wrapper>" <token>` where token is base64(prev) or `_` when there's no prev.
+fn buildWrapperCommand(a: std.mem.Allocator, wrapper: []const u8, prev: ?[]const u8) ?[]const u8 {
+    const token: []const u8 = if (prev) |p| (b64Encode(a, p) orelse return null) else "_";
+    return std.fmt.allocPrint(a, "\"{s}\" {s}", .{ wrapper, token }) catch null;
+}
+
+/// Get-or-create the `statusLine` object and set type/command, preserving any
+/// other keys the user had (e.g. `padding`).
+fn setStatusLineCommand(a: std.mem.Allocator, root_obj: *std.json.ObjectMap, cmd: []const u8) !void {
+    if (root_obj.getPtr("statusLine")) |sl| {
+        if (sl.* != .object) sl.* = .{ .object = std.json.ObjectMap.init(a) };
+    } else {
+        try root_obj.put("statusLine", .{ .object = std.json.ObjectMap.init(a) });
+    }
+    const obj = &root_obj.getPtr("statusLine").?.object;
+    try obj.put("type", .{ .string = "command" });
+    try obj.put("command", .{ .string = cmd });
+}
+
+fn b64Encode(a: std.mem.Allocator, s: []const u8) ?[]const u8 {
+    const enc = std.base64.standard.Encoder;
+    const buf = a.alloc(u8, enc.calcSize(s.len)) catch return null;
+    return enc.encode(buf, s);
+}
+
+fn b64Decode(a: std.mem.Allocator, s: []const u8) ?[]const u8 {
+    const dec = std.base64.standard.Decoder;
+    const n = dec.calcSizeForSlice(s) catch return null;
+    const buf = a.alloc(u8, n) catch return null;
+    dec.decode(buf, s) catch return null;
+    return buf;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +425,12 @@ const emitter_script =
     \\# Attyx agent status emitter. No-op outside attyx; never disturbs the caller.
     \\[ -n "$ATTYX_PID" ] || exit 0
     \\s="$1"
+    \\# Usage verb: `attyx-agent-status usage <kv-list>` emits the agent-usage OSC.
+    \\# No stdin/notify classification — just format and write.
+    \\if [ "$s" = "usage" ]; then
+    \\  printf '\033]7337;agent-usage;agent;%s\a' "$2" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
+    \\  exit 0
+    \\fi
     \\# Read the hook's JSON from stdin once (skip if stdin is a tty, to never block).
     \\raw=""
     \\[ -t 0 ] || raw=$(cat 2>/dev/null)
@@ -313,6 +453,44 @@ const emitter_script =
     \\  printf '\033]7337;agent-status;agent;%s;%s\a' "$s" "$msg" > "$tty" 2>/dev/null
     \\else
     \\  printf '\033]7337;agent-status;agent;%s\a' "$s" > "$tty" 2>/dev/null
+    \\fi
+    \\exit 0
+    \\
+;
+
+/// Claude statusline wrapper. Claude pipes a JSON payload on stdin (cumulative
+/// totals, accurate — the JSONL is not, see docs/agent-token-telemetry.md §2). We
+/// emit those as an agent-usage OSC, then delegate to the user's previous
+/// statusline (base64 in $1, `_` if none) so it still renders. Delegation runs
+/// regardless of attyx env — the wrapper IS their statusLine now.
+///
+/// Field map (Claude Code statusLine schema, verified against a live v2.1.193
+/// payload): `total_input_tokens` already folds in cache reads/creation and there
+/// is no cumulative cache breakdown, so `in` is the cache-inclusive session input
+/// and we don't emit separate cr/cw. `ctx` is the current window occupancy (sum
+/// of current_usage). Cost comes straight from Claude, so token granularity never
+/// affects the dollar figure.
+const statusline_script =
+    \\#!/bin/sh
+    \\# Attyx Claude statusline wrapper. See agent_integration.zig.
+    \\prev_b64="$1"
+    \\raw=$(cat)
+    \\if [ -n "$ATTYX_PID" ] && command -v jq >/dev/null 2>&1; then
+    \\  get() { printf '%s' "$raw" | jq -r "$1 // empty" 2>/dev/null; }
+    \\  kv=""
+    \\  add() { [ -n "$2" ] && kv="${kv:+$kv;}$1=$2"; }
+    \\  add in "$(get '.context_window.total_input_tokens')"
+    \\  add out "$(get '.context_window.total_output_tokens')"
+    \\  add ctx "$(get '(.context_window.current_usage | .input_tokens + .output_tokens + .cache_read_input_tokens + .cache_creation_input_tokens)')"
+    \\  add ctxmax "$(get '.context_window.context_window_size')"
+    \\  add cost "$(get '.cost.total_cost_usd')"
+    \\  add model "$(get '.model.id')"
+    \\  [ -n "$kv" ] && printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
+    \\fi
+    \\# Delegate to the user's previous statusline so it still renders.
+    \\if [ -n "$prev_b64" ] && [ "$prev_b64" != "_" ]; then
+    \\  prev=$(printf '%s' "$prev_b64" | base64 -d 2>/dev/null)
+    \\  [ -n "$prev" ] && printf '%s' "$raw" | sh -c "$prev"
     \\fi
     \\exit 0
     \\
@@ -385,6 +563,29 @@ test "re-merge with a changed emitter path drops the stale group" {
     try testing.expect(std.mem.indexOf(u8, new, "/NEW/attyx-agent-status idle") != null); // new present
 }
 
+test "re-merge drops a stale codex-usage group (telemetry toggle), no duplicates" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Simulates a prior telemetry-on Codex install: a Stop hook pointing at the
+    // attyx-codex-usage script. Re-merging with the plain emitter (telemetry off)
+    // must recognize and replace it — not leave a duplicate.
+    const prior =
+        \\{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "/B/attyx-codex-usage idle" } ] } ] } }
+    ;
+    const out = try mergeToString(a, prior, "/B/attyx-agent-status");
+    // The stale codex-usage group is recognized as ours and dropped (not left as
+    // a duplicate alongside the new emitter group), and the emitter is injected.
+    try testing.expectEqual(@as(usize, 0), countOccurrences(out, "attyx-codex-usage"));
+    try testing.expect(std.mem.indexOf(u8, out, "/B/attyx-agent-status idle") != null);
+}
+
+test "cmdIsAttyx recognizes both the emitter and the codex-usage script" {
+    try testing.expect(cmdIsAttyx("/x/attyx-agent-status working"));
+    try testing.expect(cmdIsAttyx("/x/attyx-codex-usage idle"));
+    try testing.expect(!cmdIsAttyx("/x/some-other-hook"));
+}
+
 test "hasAllCommands detects a fully-injected file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -418,10 +619,114 @@ test "emitter script self-gates on ATTYX_PID and emits the OSC" {
     try testing.expect(std.mem.indexOf(u8, emitter_script, "]7337;agent-status;agent;%s") != null);
 }
 
+test "emitter script handles the usage verb" {
+    try testing.expect(std.mem.indexOf(u8, emitter_script, "if [ \"$s\" = \"usage\" ]") != null);
+    try testing.expect(std.mem.indexOf(u8, emitter_script, "]7337;agent-usage;agent;%s") != null);
+}
+
+test "statusline script emits usage and delegates to the previous statusline" {
+    try testing.expect(std.mem.indexOf(u8, statusline_script, "]7337;agent-usage;agent;%s") != null);
+    try testing.expect(std.mem.indexOf(u8, statusline_script, "total_input_tokens") != null);
+    try testing.expect(std.mem.indexOf(u8, statusline_script, "base64 -d") != null);
+    try testing.expect(std.mem.indexOf(u8, statusline_script, "sh -c \"$prev\"") != null);
+}
+
+test "ensureStatusLine wraps an empty slot with the sentinel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = "/tmp/attyx_statusline_empty";
+    std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    const settings = dir ++ "/settings.json";
+    writeAtomic(a, settings, "{}", 0o644);
+
+    ensureStatusLine(a, settings, "/W/attyx-statusline");
+    const out = readFile(a, settings).?;
+    // No prior command → sentinel token, our wrapper installed.
+    try testing.expect(std.mem.indexOf(u8, out, "\\\"/W/attyx-statusline\\\" _") != null or
+        std.mem.indexOf(u8, out, "\"/W/attyx-statusline\" _") != null);
+}
+
+test "ensureStatusLine captures, round-trips, and restores a user's command" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = "/tmp/attyx_statusline_wrap";
+    std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    const settings = dir ++ "/settings.json";
+    writeAtomic(a, settings,
+        \\{ "statusLine": { "type": "command", "command": "my-prompt.sh --color", "padding": 1 } }
+    , 0o644);
+
+    // Wrap: our wrapper installed, the user's command preserved (base64) and the
+    // unrelated `padding` key kept.
+    ensureStatusLine(a, settings, "/W/attyx-statusline");
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, readFile(a, settings).?, .{});
+    const cmd1 = parsed.value.object.get("statusLine").?.object.get("command").?.string;
+    try testing.expect(std.mem.indexOf(u8, cmd1, "attyx-statusline") != null);
+    try testing.expectEqualStrings("my-prompt.sh --color", resolvePrevCommand(a, cmd1).?);
+    try testing.expect(parsed.value.object.get("statusLine").?.object.get("padding") != null);
+
+    // Idempotent: a second wrap doesn't double-wrap (same embedded prev).
+    ensureStatusLine(a, settings, "/W/attyx-statusline");
+    var parsed2 = try std.json.parseFromSlice(std.json.Value, a, readFile(a, settings).?, .{});
+    const cmd2 = parsed2.value.object.get("statusLine").?.object.get("command").?.string;
+    try testing.expectEqualStrings(cmd1, cmd2);
+
+    // Restore: the user's original command comes back.
+    restoreStatusLine(a, settings);
+    var parsed3 = try std.json.parseFromSlice(std.json.Value, a, readFile(a, settings).?, .{});
+    try testing.expectEqualStrings(
+        "my-prompt.sh --color",
+        parsed3.value.object.get("statusLine").?.object.get("command").?.string,
+    );
+}
+
+test "restoreStatusLine removes the slot when there was no prior command" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = "/tmp/attyx_statusline_restore_empty";
+    std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    const settings = dir ++ "/settings.json";
+    writeAtomic(a, settings, "{}", 0o644);
+
+    ensureStatusLine(a, settings, "/W/attyx-statusline");
+    restoreStatusLine(a, settings);
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, readFile(a, settings).?, .{});
+    try testing.expect(parsed.value.object.get("statusLine") == null); // slot removed
+}
+
+test "restoreStatusLine leaves a non-attyx statusLine untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = "/tmp/attyx_statusline_foreign";
+    std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    const settings = dir ++ "/settings.json";
+    writeAtomic(a, settings,
+        \\{ "statusLine": { "type": "command", "command": "someone-elses.sh" } }
+    , 0o644);
+    restoreStatusLine(a, settings);
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, readFile(a, settings).?, .{});
+    try testing.expectEqualStrings(
+        "someone-elses.sh",
+        parsed.value.object.get("statusLine").?.object.get("command").?.string,
+    );
+}
+
 test "install generates the emitter and injects hooks into ~/.claude" {
     const home = "/tmp/attyx_install_test";
     std.fs.cwd().deleteTree("/tmp/attyx_install_test") catch {};
-    install(testing.allocator, home);
+    install(testing.allocator, home, true);
 
     // Emitter exists, non-empty, executable.
     const emitter = home ++ "/.config/attyx/shell-integration/agent-bin/attyx-agent-status";

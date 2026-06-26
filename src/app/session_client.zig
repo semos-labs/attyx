@@ -70,6 +70,8 @@ pub const DaemonMessage = union(enum) {
     pane_title: struct { pane_id: u32, title: []const u8 },
     /// Grid-sync: daemon-pushed OSC 7337;agent-status for a pane.
     pane_agent_status: struct { pane_id: u32, status: u8, message: []const u8 },
+    /// Grid-sync: daemon-pushed OSC 7337;agent-usage for a pane.
+    pane_agent_usage: struct { pane_id: u32, usage: protocol.AgentUsage },
     /// Grid-sync: scrollback chunk. Payload is the full message payload
     /// (ScrollbackHeader + cells), decoded by the consumer.
     scrollback_chunk: []const u8,
@@ -960,6 +962,23 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                 @memcpy(self.output_buf[0..mlen], msg.message[0..mlen]);
                 self.consumeBytes(total);
                 return .{ .pane_agent_status = .{ .pane_id = msg.pane_id, .status = msg.status, .message = self.output_buf[0..mlen] } };
+            },
+            .pane_agent_usage => {
+                const msg = protocol.decodePaneAgentUsage(payload) catch {
+                    self.consumeBytes(total);
+                    continue;
+                };
+                var usage = msg.usage;
+                // model borrows from payload; copy into output_buf so it survives
+                // consumeBytes. Numeric fields are already values.
+                if (usage.model) |m| {
+                    const mlen = @min(m.len, self.output_buf.len);
+                    @memcpy(self.output_buf[0..mlen], m[0..mlen]);
+                    usage.model = self.output_buf[0..mlen];
+                }
+                const pane_id = msg.pane_id;
+                self.consumeBytes(total);
+                return .{ .pane_agent_usage = .{ .pane_id = pane_id, .usage = usage } };
             },
             .scrollback_chunk => {
                 if (payload.len > self.output_buf.len) {

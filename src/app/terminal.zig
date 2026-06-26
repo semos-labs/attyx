@@ -214,6 +214,8 @@ pub export var g_toggle_theme_picker: i32 = 0;
 pub export var g_theme_picker_active: i32 = 0;
 pub export var g_toggle_tab_picker: i32 = 0;
 pub export var g_tab_picker_active: i32 = 0;
+pub export var g_toggle_agent_dashboard: i32 = 0;
+pub export var g_agent_dashboard_active: i32 = 0;
 pub export var g_toggle_move_to_session: i32 = 0;
 
 // Ensure keybind, dispatch, and copy mode exports are linked
@@ -269,6 +271,9 @@ export fn attyx_toggle_theme_picker() void {
 }
 export fn attyx_toggle_tab_picker() void {
     @atomicStore(i32, &g_toggle_tab_picker, 1, .seq_cst);
+}
+export fn attyx_toggle_agent_dashboard() void {
+    @atomicStore(i32, &g_toggle_agent_dashboard, 1, .seq_cst);
 }
 export fn attyx_toggle_move_to_session() void {
     @atomicStore(i32, &g_toggle_move_to_session, 1, .seq_cst);
