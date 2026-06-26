@@ -416,6 +416,16 @@
 # width = "80%"                 # Popup width (percentage of terminal)
 # height = "80%"               # Popup height
 # border = "single"            # Border style: "single", "double", "rounded", "heavy", "none"
+
+# The agent dashboard (`attyx dashboard`) — a full-screen, cross-session view of
+# every running AI agent's tokens, cost, and context. Bind it to a popup for a
+# quick glance; ↑↓ to select, Enter to jump to an agent's session, q to close.
+# [[popup]]
+# hotkey = "ctrl+shift+a"
+# command = "attyx dashboard"
+# width = "90%"
+# height = "80%"
+# border = "rounded"
 # border_color = "#78829a"     # Border color, hex "#RRGGBB"
 # background_opacity = 1.0     # Popup background opacity (0.0-1.0)
 # background = ""              # Background color override, hex "#RRGGBB" (empty = theme)
