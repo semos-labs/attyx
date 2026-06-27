@@ -48,7 +48,6 @@ const agent_read = @import("client_agent_read.zig");
 /// null only if the agent has no transcript at all (caller scrapes the screen).
 fn captureTurnMessage(a: std.mem.Allocator, parsed: IpcRequest, baseline: ?usize) ?[]const u8 {
     const deadline = std.time.milliTimestamp() + capture_flush_wait_ms;
-    var saw_transcript = false;
     while (true) {
         // Per-iteration arena: the transcript can be large and we read it many
         // times, so free each read instead of growing the caller's arena.
@@ -56,19 +55,22 @@ fn captureTurnMessage(a: std.mem.Allocator, parsed: IpcRequest, baseline: ?usize
         defer it.deinit();
         var newest: ?[]const u8 = null;
         if (agent_read.allMessages(it.allocator(), parsed)) |msgs| {
-            saw_transcript = true;
             if (msgs.len > 0) {
                 newest = msgs[msgs.len - 1];
-                // A message past the baseline = this turn's output is in.
-                if (baseline == null or msgs.len > baseline.?) {
+                // The count changing from the pre-turn baseline means this turn's
+                // message has landed — grew (normal flush) or shrank (the
+                // transcript rotated on a context compaction). Either way the
+                // newest line is now this turn's output.
+                if (baseline == null or msgs.len != baseline.?) {
                     return a.dupe(u8, msgs[msgs.len - 1]) catch null;
                 }
             }
         }
         if (std.time.milliTimestamp() >= deadline) {
-            // Flush never grew the transcript: best-effort newest, else give up.
+            // Flush never changed the transcript: best-effort newest, else give
+            // up (null → caller scrapes the screen).
             if (newest) |n| return a.dupe(u8, n) catch null;
-            return if (saw_transcript) "" else null;
+            return null;
         }
         std.Thread.sleep(capture_poll_ms * std.time.ns_per_ms);
     }
@@ -85,15 +87,61 @@ const Ctx = struct {
     }
 };
 
-/// Pick the transport: the daemon for any -s target, else the attached window.
-/// `sock_buf` backs the returned socket path, so it must outlive the Ctx.
-fn resolveCtx(parsed: IpcRequest, sock_buf: *[256]u8) Error!Ctx {
+/// Pick the transport. We prefer the daemon in all cases — it holds every
+/// session's engine, so it sees a pane's agent status regardless of which tab a
+/// window has focused (the window only streams the *active* pane, which is why a
+/// bare send to a background pane used to report `no_turn`). With -s we trust the
+/// given session; without it we resolve the pane's session from an all-sessions
+/// snapshot. Only if the daemon can't place the pane do we fall back to the
+/// attached window. `sock_buf` backs the returned socket path, so it must outlive
+/// the Ctx.
+fn resolveCtx(a: std.mem.Allocator, parsed: IpcRequest, sock_buf: *[256]u8) Error!Ctx {
     if (parsed.target_session != 0) {
         const sock = session_connect.getSocketPath(sock_buf) orelse return Error.NoInstance;
         return .{ .sock = sock, .session = parsed.target_session };
     }
+    if (resolvePaneSession(a, parsed.pane_id, sock_buf)) |sess| {
+        return .{ .sock = sock_buf[0..sess.sock_len], .session = sess.session };
+    }
     const sock = client.discoverSocket(sock_buf, parsed.target_pid) orelse return Error.NoInstance;
     return .{ .sock = sock, .session = 0 };
+}
+
+/// Find the session hosting `pane_id` via a daemon all-sessions agent snapshot,
+/// writing the daemon socket path into `sock_buf`. Returns the session id (and
+/// the socket path length within `sock_buf`), or null if there's no daemon or the
+/// pane isn't a live agent there.
+fn resolvePaneSession(a: std.mem.Allocator, pane_id: u32, sock_buf: *[256]u8) ?struct { session: u32, sock_len: usize } {
+    const sock = session_connect.getSocketPath(sock_buf) orelse return null;
+    const sock_len = sock.len;
+    const fd = client.connectToSocket(sock) catch return null;
+    defer protocol.closeFd(fd);
+
+    // watch_agents [all_sessions:u32][pane_filter:u32] → snapshot this pane only.
+    var pl: [8]u8 = undefined;
+    std.mem.writeInt(u32, pl[0..4], 0xFFFF_FFFF, .little);
+    std.mem.writeInt(u32, pl[4..8], pane_id, .little);
+    var rb: [dproto.header_size + 8]u8 = undefined;
+    const req = dproto.encodeMessage(&rb, .watch_agents, &pl) catch return null;
+    protocol.writeAll(fd, req) catch return null;
+
+    const agent_event: u8 = @intFromEnum(dproto.MessageType.agent_event);
+    var hdr: [dproto.header_size]u8 = undefined;
+    var payload: [4096]u8 = undefined;
+    while (true) {
+        var pfd = [_]posix.pollfd{.{ .fd = fd, .events = POLLIN, .revents = 0 }};
+        const ready = posix.poll(&pfd, 500) catch return null;
+        if (ready == 0) return null; // snapshot drained without the pane
+        protocol.readExact(fd, &hdr) catch return null;
+        const plen = std.mem.readInt(u32, hdr[0..4], .little);
+        if (plen == 0) continue;
+        if (plen > payload.len) return null;
+        protocol.readExact(fd, payload[0..plen]) catch return null;
+        if (hdr[4] != agent_event) continue;
+        if (parseRec(a, payload[0..plen])) |rec| {
+            if (rec.pane_id == pane_id) return .{ .session = rec.session, .sock_len = sock_len };
+        }
+    }
 }
 
 /// One daemon ctl round-trip; reply body owned by `a`, null on any failure.
@@ -312,7 +360,7 @@ fn Cursor_parse(tok: []const u8) ?struct { gen: u32, line: u64 } {
 /// outcome. Returns a Result owned by `a`.
 pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
     var sock_buf: [256]u8 = undefined;
-    const ctx = try resolveCtx(parsed, &sock_buf);
+    const ctx = try resolveCtx(a, parsed, &sock_buf);
 
     const snap = snapshotPane(a, ctx, parsed.pane_id) orelse return Error.NotAnAgent;
     const s0 = State.fromStr(snap.state);
@@ -411,7 +459,7 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
 /// target state, ends, or times out.
 pub fn runAwait(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
     var sock_buf: [256]u8 = undefined;
-    const ctx = try resolveCtx(parsed, &sock_buf);
+    const ctx = try resolveCtx(a, parsed, &sock_buf);
     const snap = snapshotPane(a, ctx, parsed.pane_id) orelse return Error.NotAnAgent;
     const session = snap.session;
 
@@ -510,7 +558,12 @@ pub fn run(parsed: IpcRequest) noreturn {
         var sb: [256]u8 = undefined;
         const summary = std.fmt.bufPrint(&sb, "pane {d}: {s} in {d:.1}s\n", .{ r.pane, r.outcome.label(), @as(f64, @floatFromInt(r.duration_ms)) / 1000.0 }) catch "done\n";
         std.fs.File.stderr().writeAll(summary) catch {};
-        if (r.output) |out| stdout.writeAll(out) catch {};
+        if (r.output) |out| {
+            stdout.writeAll(out) catch {};
+            // Terminate the captured output so it doesn't run into the next shell
+            // prompt (which looked like nothing was returned). Matches `agent read`.
+            if (out.len == 0 or out[out.len - 1] != '\n') stdout.writeAll("\n") catch {};
+        }
     }
     std.process.exit(r.outcome.exitCode());
 }

@@ -206,6 +206,10 @@ fn handleAttach(
 
     session.resize(attach.rows, attach.cols) catch {};
     cl.sendAttachedV2(session);
+    // Snapshot existing agents so tab indicators light up on launch, instead of
+    // only after the user visits each agent's tab. Sent after the layout so the
+    // window has built the panes these statuses key into.
+    agent_watch.sendStatusSnapshotToClient(cl, session);
 }
 
 fn handleKill(
