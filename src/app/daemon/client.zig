@@ -424,8 +424,10 @@ pub const DaemonClient = struct {
                 var ready: u8 = 0;
                 var working: u8 = 0;
                 var attention: u8 = 0;
+                var panes: u8 = 0;
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*p| {
+                        panes +|= 1;
                         const eng = p.engine orelse continue;
                         switch (eng.state.agent_status) {
                             .idle => ready +|= 1,
@@ -442,6 +444,7 @@ pub const DaemonClient = struct {
                     .ready = ready,
                     .working = working,
                     .attention = attention,
+                    .pane_count = panes,
                 };
                 access[count] = s.last_accessed;
                 count += 1;
@@ -836,8 +839,8 @@ pub const DaemonClient = struct {
     /// sendPaneAgentStatus — ships engine.state.agentUsage() so the passive
     /// client engine has token/cost/context data for the dashboard and watchers.
     pub fn sendPaneAgentUsage(self: *DaemonClient, pane_id: u32, usage: protocol.AgentUsage) void {
-        var buf: [protocol.header_size + 73 + 64]u8 = undefined;
-        var payload: [73 + 64]u8 = undefined;
+        var buf: [protocol.header_size + protocol.pane_agent_usage_max_payload]u8 = undefined;
+        var payload: [protocol.pane_agent_usage_max_payload]u8 = undefined;
         const p = protocol.encodePaneAgentUsage(&payload, pane_id, usage) catch return;
         const m = protocol.encodeMessage(&buf, .pane_agent_usage, p) catch return;
         self.sendRaw(m);

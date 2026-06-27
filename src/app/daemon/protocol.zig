@@ -357,6 +357,8 @@ pub const SessionEntry = struct {
     ready: u8 = 0,
     working: u8 = 0,
     attention: u8 = 0,
+    /// Total panes in the session (all panes, not just agent panes).
+    pane_count: u8 = 0,
 };
 
 /// Order entries by recency of access — most recently accessed first.
@@ -409,6 +411,14 @@ pub fn encodeSessionList(buf: []u8, entries: []const SessionEntry) ![]u8 {
         buf[pos + 2] = entry.attention;
         pos += 3;
     }
+    // Trailing pane-count block — 1 byte per entry, appended after the status
+    // block. A separate block (rather than a 4th status byte) keeps older
+    // decoders, which read only the 3-byte block, correctly aligned.
+    if (pos + entries.len > buf.len) return error.BufferTooSmall;
+    for (entries) |entry| {
+        buf[pos] = entry.pane_count;
+        pos += 1;
+    }
     return buf[0..pos];
 }
 
@@ -420,6 +430,7 @@ pub const DecodedListEntry = struct {
     ready: u8 = 0,
     working: u8 = 0,
     attention: u8 = 0,
+    pane_count: u8 = 0,
 };
 
 /// Decode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}]
@@ -451,6 +462,14 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
             out[i].working = payload[pos + 1];
             out[i].attention = payload[pos + 2];
             pos += 3;
+        }
+        // Optional trailing pane-count block: 1 byte per entry after the status
+        // block (only newer encoders emit it).
+        if (pos + @as(usize, count) <= payload.len) {
+            for (0..decoded) |i| {
+                out[i].pane_count = payload[pos];
+                pos += 1;
+            }
         }
     }
     return decoded;
@@ -887,11 +906,18 @@ pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
 
 const usage_fixed = 4 + 2 + 1 + 7 * 8 + 8 + 2; // 73
 const usage_model_max = 64;
+const usage_tx_max = 512; // matches agent_transcript_buf in TerminalState
+
+/// Upper bound on a pane_agent_usage payload (fixed header + model + transcript).
+/// `2 +` is the transcript length prefix. Callers size send buffers from this.
+pub const pane_agent_usage_max_payload = usage_fixed + usage_model_max + 2 + usage_tx_max;
 
 pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     const model: []const u8 = u.model orelse "";
     const model_len: u16 = @intCast(@min(model.len, usage_model_max));
-    const total: usize = usage_fixed + model_len;
+    const tx: []const u8 = u.transcript_path orelse "";
+    const tx_len: u16 = @intCast(@min(tx.len, usage_tx_max));
+    const total: usize = usage_fixed + model_len + 2 + tx_len;
     if (buf.len < total) return error.BufferTooSmall;
 
     std.mem.writeInt(u32, buf[0..4], pane_id, .little);
@@ -923,6 +949,10 @@ pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     std.mem.writeInt(u16, buf[off..][0..2], model_len, .little);
     off += 2;
     @memcpy(buf[off .. off + model_len], model[0..model_len]);
+    off += model_len;
+    std.mem.writeInt(u16, buf[off..][0..2], tx_len, .little);
+    off += 2;
+    @memcpy(buf[off .. off + tx_len], tx[0..tx_len]);
     return buf[0..total];
 }
 
@@ -946,6 +976,17 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
     const model_len = std.mem.readInt(u16, payload[off..][0..2], .little);
     off += 2;
     if (payload.len < off + @as(usize, model_len)) return error.PayloadTooShort;
+    const model_off = off;
+    off += model_len;
+
+    // Transcript path is an optional trailing field: u16 len + bytes. Older
+    // encoders omit it entirely, so treat a short payload here as "no transcript".
+    var tx: []const u8 = "";
+    if (payload.len >= off + 2) {
+        const tx_len = std.mem.readInt(u16, payload[off..][0..2], .little);
+        off += 2;
+        if (payload.len >= off + @as(usize, tx_len)) tx = payload[off .. off + tx_len];
+    }
 
     const has = struct {
         fn b(p: u16, bit: u4) bool {
@@ -964,7 +1005,8 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
             .context_max = if (has(presence, 6)) vals[6] else null,
             .cost_usd = if (has(presence, 7)) @as(f64, @bitCast(cost_bits)) else null,
             .cost_is_estimate = cost_is_estimate,
-            .model = if (model_len > 0) payload[off .. off + model_len] else null,
+            .model = if (model_len > 0) payload[model_off .. model_off + model_len] else null,
+            .transcript_path = if (tx.len > 0) tx else null,
         },
     };
 }
@@ -1114,6 +1156,7 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
         .cost_usd = 0.4213,
         .cost_is_estimate = true,
         .model = "gpt-5.5",
+        .transcript_path = "/Users/x/.claude/projects/p/abc.jsonl",
     };
     const payload = try encodePaneAgentUsage(&buf, 9, u);
     const msg = try decodePaneAgentUsage(payload);
@@ -1127,12 +1170,22 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
     try std.testing.expectEqual(@as(?f64, 0.4213), msg.usage.cost_usd);
     try std.testing.expect(msg.usage.cost_is_estimate);
     try std.testing.expectEqualStrings("gpt-5.5", msg.usage.model.?);
+    try std.testing.expectEqualStrings("/Users/x/.claude/projects/p/abc.jsonl", msg.usage.transcript_path.?);
 
-    // Fully-empty usage → all null, empty model.
+    // Fully-empty usage → all null, empty model/transcript.
     const empty = try decodePaneAgentUsage(try encodePaneAgentUsage(&buf, 1, .{}));
     try std.testing.expectEqual(@as(?u64, null), empty.usage.input_tokens);
     try std.testing.expectEqual(@as(?f64, null), empty.usage.cost_usd);
     try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.model);
+    try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.transcript_path);
+
+    // Backward compat: a payload truncated before the transcript field (an older
+    // encoder) still decodes, with transcript_path null.
+    const full = try encodePaneAgentUsage(&buf, 1, u);
+    const old_len = full.len - 2 - "/Users/x/.claude/projects/p/abc.jsonl".len;
+    const legacy = try decodePaneAgentUsage(buf[0..old_len]);
+    try std.testing.expectEqual(@as(?[]const u8, null), legacy.usage.transcript_path);
+    try std.testing.expectEqualStrings("gpt-5.5", legacy.usage.model.?);
 }
 
 test "create round-trip" {
@@ -1219,8 +1272,8 @@ test "orderEntriesByAccess: most recent first, stable for ties" {
 test "session list round-trip" {
     var buf: [256]u8 = undefined;
     const entries = [_]SessionEntry{
-        .{ .id = 1, .name = "shell", .alive = true, .ready = 2, .working = 1, .attention = 0 },
-        .{ .id = 2, .name = "vim", .alive = false, .ready = 0, .working = 0, .attention = 3 },
+        .{ .id = 1, .name = "shell", .alive = true, .ready = 2, .working = 1, .attention = 0, .pane_count = 3 },
+        .{ .id = 2, .name = "vim", .alive = false, .ready = 0, .working = 0, .attention = 3, .pane_count = 5 },
     };
     const payload = try encodeSessionList(&buf, &entries);
 
@@ -1233,10 +1286,12 @@ test "session list round-trip" {
     try std.testing.expectEqual(@as(u8, 2), decoded[0].ready);
     try std.testing.expectEqual(@as(u8, 1), decoded[0].working);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
+    try std.testing.expectEqual(@as(u8, 3), decoded[0].pane_count);
     try std.testing.expectEqual(@as(u32, 2), decoded[1].id);
     try std.testing.expectEqualStrings("vim", decoded[1].name);
     try std.testing.expect(!decoded[1].alive);
     try std.testing.expectEqual(@as(u8, 3), decoded[1].attention);
+    try std.testing.expectEqual(@as(u8, 5), decoded[1].pane_count);
 }
 
 test "session list: old-format payload (no status block) decodes with zero counts" {
@@ -1262,6 +1317,35 @@ test "session list: old-format payload (no status block) decodes with zero count
     try std.testing.expectEqual(@as(u8, 0), decoded[0].ready);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].working);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].pane_count);
+}
+
+test "session list: status block but no pane-count block decodes pane_count 0" {
+    // An encoder that emits the 3-byte status block but not the newer pane-count
+    // block (a version in between). pane_count must decode to 0, not garbage.
+    var buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    std.mem.writeInt(u16, buf[0..2], 1, .little);
+    pos = 2;
+    std.mem.writeInt(u32, buf[pos..][0..4], 7, .little);
+    pos += 4;
+    const name = "mid";
+    std.mem.writeInt(u16, buf[pos..][0..2], name.len, .little);
+    pos += 2;
+    @memcpy(buf[pos .. pos + name.len], name);
+    pos += name.len;
+    buf[pos] = 1; // alive
+    pos += 1;
+    buf[pos] = 4; // ready
+    buf[pos + 1] = 0; // working
+    buf[pos + 2] = 0; // attention
+    pos += 3;
+
+    var decoded: [8]DecodedListEntry = undefined;
+    const count = try decodeSessionList(buf[0..pos], &decoded);
+    try std.testing.expectEqual(@as(u16, 1), count);
+    try std.testing.expectEqual(@as(u8, 4), decoded[0].ready);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].pane_count);
 }
 
 test "create_pane round-trip" {

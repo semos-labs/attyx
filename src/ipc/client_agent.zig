@@ -115,13 +115,49 @@ pub const Machine = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Orchestration (attached/window path). Composes one-shot list_agents /
-// get_text --since / send_keys with the watch stream. -s (background sessions)
-// is a follow-up; rejected cleanly for now.
+// Orchestration. Composes the same primitives — list_agents (snapshot),
+// get_text --since (capture), write_input (submit), and the watch stream
+// (completion) — over one of two transports. Without -s they go to the attached
+// window's IPC socket; with -s they route through the daemon to the target
+// session (the daemon holds every session's engine, attached or not), so
+// `agent send/await` work headlessly against any session.
 // ---------------------------------------------------------------------------
 
 const keys = @import("keys.zig");
 const json = std.json;
+const dproto = @import("../app/daemon/protocol.zig");
+const session_connect = @import("../app/session_connect.zig");
+const client_daemon = @import("client_daemon.zig");
+
+/// Where the orchestration primitives are sent. `session == 0` is the attached
+/// window (direct IPC); non-zero routes every primitive through the daemon's ctl
+/// channel for that session.
+const Ctx = struct {
+    sock: []const u8,
+    session: u32 = 0,
+    fn daemon(self: Ctx) bool {
+        return self.session != 0;
+    }
+};
+
+/// Pick the transport: the daemon for any -s target, else the attached window.
+/// `sock_buf` backs the returned socket path, so it must outlive the Ctx.
+fn resolveCtx(parsed: IpcRequest, sock_buf: *[256]u8) Error!Ctx {
+    if (parsed.target_session != 0) {
+        const sock = session_connect.getSocketPath(sock_buf) orelse return Error.NoInstance;
+        return .{ .sock = sock, .session = parsed.target_session };
+    }
+    const sock = client.discoverSocket(sock_buf, parsed.target_pid) orelse return Error.NoInstance;
+    return .{ .sock = sock, .session = 0 };
+}
+
+/// One daemon ctl round-trip; reply body owned by `a`, null on any failure.
+fn daemonCtl(a: std.mem.Allocator, ctx: Ctx, op: dproto.CtlOp, body: []const u8, resp_cap: usize) ?[]const u8 {
+    const buf = a.alloc(u8, resp_cap) catch return null;
+    const reply = client_daemon.ctl(ctx.sock, ctx.session, op, body, buf) catch return null;
+    if (reply.status != 0) return null;
+    return reply.body;
+}
 
 const Usage = struct {
     input_tokens: ?u64 = null,
@@ -167,26 +203,45 @@ const default_start_grace_ms: i64 = 3000;
 const default_timeout_ms: i64 = 600_000;
 const poll_ms: i32 = 250;
 
-const Error = error{ NoInstance, IpcFailed, NotAnAgent, Busy, SessionUnsupported };
+const Error = error{ NoInstance, IpcFailed, NotAnAgent, Busy };
 
 /// A persistent watch-stream connection, polled with a timeout so the state
 /// machine's deadlines can fire between frames.
 const WatchStream = struct {
     fd: posix.fd_t,
+    is_daemon: bool,
     payload_buf: [65536]u8 = undefined,
 
-    fn open(sock: []const u8, pane_id: u32) !WatchStream {
-        const fd = try client.connectToSocket(sock);
-        var pl: [4]u8 = undefined;
-        std.mem.writeInt(u32, &pl, pane_id, .little);
-        var rb: [protocol.header_size + 4]u8 = undefined;
-        const req = try protocol.encodeMessage(&rb, .watch_agents, &pl);
-        try protocol.writeAll(fd, req);
-        return .{ .fd = fd };
+    fn open(ctx: Ctx, pane_id: u32) !WatchStream {
+        const fd = try client.connectToSocket(ctx.sock);
+        errdefer protocol.closeFd(fd);
+        if (ctx.daemon()) {
+            // Daemon watch request: [target_session:u32 LE][pane_filter:u32 LE].
+            var pl: [8]u8 = undefined;
+            std.mem.writeInt(u32, pl[0..4], ctx.session, .little);
+            std.mem.writeInt(u32, pl[4..8], pane_id, .little);
+            var rb: [dproto.header_size + 8]u8 = undefined;
+            const req = try dproto.encodeMessage(&rb, .watch_agents, &pl);
+            try protocol.writeAll(fd, req);
+        } else {
+            var pl: [4]u8 = undefined;
+            std.mem.writeInt(u32, &pl, pane_id, .little);
+            var rb: [protocol.header_size + 4]u8 = undefined;
+            const req = try protocol.encodeMessage(&rb, .watch_agents, &pl);
+            try protocol.writeAll(fd, req);
+        }
+        return .{ .fd = fd, .is_daemon = ctx.daemon() };
     }
     fn close(self: *WatchStream) void {
         protocol.closeFd(self.fd);
     }
+
+    // Both protocols share the 5-byte header (len:u32 LE, type:u8). The window
+    // stream sends one agent-JSON frame per message; the daemon wraps each in an
+    // `agent_event` and may interleave other control frames, so on the daemon
+    // path we keep only agent_event and treat `err` as end-of-stream.
+    const agent_event_type: u8 = @intFromEnum(dproto.MessageType.agent_event);
+    const daemon_err_type: u8 = @intFromEnum(dproto.MessageType.err);
 
     const Next = union(enum) { frame: []const u8, none, eof };
     fn pollNext(self: *WatchStream, timeout: i32) Next {
@@ -195,11 +250,16 @@ const WatchStream = struct {
         if (r == 0) return .none;
         var hdr: [protocol.header_size]u8 = undefined;
         protocol.readExact(self.fd, &hdr) catch return .eof;
-        const h = protocol.decodeHeader(&hdr) catch return .eof;
-        if (h.payload_len == 0) return .none;
-        if (h.payload_len > self.payload_buf.len) return .eof;
-        protocol.readExact(self.fd, self.payload_buf[0..h.payload_len]) catch return .eof;
-        return .{ .frame = self.payload_buf[0..h.payload_len] };
+        const payload_len = std.mem.readInt(u32, hdr[0..4], .little);
+        const type_byte = hdr[4];
+        if (payload_len == 0) return .none;
+        if (payload_len > self.payload_buf.len) return .eof;
+        protocol.readExact(self.fd, self.payload_buf[0..payload_len]) catch return .eof;
+        if (self.is_daemon) {
+            if (type_byte == daemon_err_type) return .eof;
+            if (type_byte != agent_event_type) return .none; // skip other control frames
+        }
+        return .{ .frame = self.payload_buf[0..payload_len] };
     }
 };
 
@@ -219,17 +279,22 @@ fn oneShot(a: std.mem.Allocator, sock: []const u8, req: IpcRequest, resp_cap: us
     return resp.payload;
 }
 
-/// Write raw bytes to a pane's PTY (no escape/token processing).
-fn sendRaw(sock: []const u8, pane_id: u32, bytes: []const u8) bool {
+/// Write raw bytes to a pane's PTY (no escape/token processing). Routes to the
+/// daemon's write_input ctl op with -s, else the window's send_keys_pane.
+fn submit(ctx: Ctx, pane_id: u32, bytes: []const u8) void {
     var pl: [4 + 8192]u8 = undefined;
     std.mem.writeInt(u32, pl[0..4], pane_id, .little);
     const n = @min(bytes.len, pl.len - 4);
     @memcpy(pl[4 .. 4 + n], bytes[0..n]);
+    if (ctx.daemon()) {
+        var rb: [256]u8 = undefined;
+        _ = client_daemon.ctl(ctx.sock, ctx.session, .write_input, pl[0 .. 4 + n], &rb) catch {};
+        return;
+    }
     var rb: [protocol.header_size + 4 + 8192]u8 = undefined;
-    const req = protocol.encodeMessage(&rb, .send_keys_pane, pl[0 .. 4 + n]) catch return false;
+    const req = protocol.encodeMessage(&rb, .send_keys_pane, pl[0 .. 4 + n]) catch return;
     var resp: [256]u8 = undefined;
-    const r = client.sendCommand(sock, req, &resp) catch return false;
-    return r.msg_type != .err;
+    _ = client.sendCommand(ctx.sock, req, &resp) catch {};
 }
 
 fn resolveSubmitKey(spec: []const u8, out: []u8) []const u8 {
@@ -239,26 +304,46 @@ fn resolveSubmitKey(spec: []const u8, out: []u8) []const u8 {
     return "\r";
 }
 
-fn snapshotPane(a: std.mem.Allocator, sock: []const u8, pane_id: u32) ?Rec {
-    const body = oneShot(a, sock, .{ .command = .list_agents, .pane_id = pane_id, .json_output = true }, 1 << 16) orelse return null;
-    const arr = json.parseFromSliceLeaky([]Rec, a, std.mem.trim(u8, body, " \t\r\n"), .{ .ignore_unknown_fields = true }) catch return null;
+fn snapshotPane(a: std.mem.Allocator, ctx: Ctx, pane_id: u32) ?Rec {
+    const body = if (ctx.daemon()) blk: {
+        var ob: [5]u8 = undefined;
+        ob[0] = 1; // JSON
+        std.mem.writeInt(u32, ob[1..5], pane_id, .little);
+        break :blk daemonCtl(a, ctx, .list_agents, &ob, 1 << 16);
+    } else oneShot(a, ctx.sock, .{ .command = .list_agents, .pane_id = pane_id, .json_output = true }, 1 << 16);
+    const arr = json.parseFromSliceLeaky([]Rec, a, std.mem.trim(u8, body orelse return null, " \t\r\n"), .{ .ignore_unknown_fields = true }) catch return null;
     for (arr) |rec| if (pane_id == 0 or rec.pane_id == pane_id) return rec;
     return null;
 }
 
-fn seedCursor(a: std.mem.Allocator, sock: []const u8, pane_id: u32) []const u8 {
-    const body = oneShot(a, sock, .{ .command = .get_text, .pane_id = pane_id, .has_since = true }, 1 << 20) orelse return "";
+/// Incremental capture body ({cursor,text,…} JSON), via the right transport.
+/// `cursor` empty (or unparseable) seeds from the current screen.
+fn getTextSince(a: std.mem.Allocator, ctx: Ctx, pane_id: u32, cursor: []const u8) ?[]const u8 {
+    var gen: u32 = 0;
+    var line: u64 = 0;
+    if (Cursor_parse(cursor)) |c| {
+        gen = c.gen;
+        line = c.line;
+    }
+    if (ctx.daemon()) {
+        var ob: [20]u8 = undefined;
+        std.mem.writeInt(u32, ob[0..4], pane_id, .little);
+        std.mem.writeInt(u32, ob[4..8], gen, .little);
+        std.mem.writeInt(u64, ob[8..16], line, .little);
+        std.mem.writeInt(u32, ob[16..20], 0, .little); // visible screen only
+        return daemonCtl(a, ctx, .get_text_since, &ob, 1 << 20);
+    }
+    return oneShot(a, ctx.sock, .{ .command = .get_text, .pane_id = pane_id, .has_since = true, .since_gen = gen, .since_line = line }, 1 << 20);
+}
+
+fn seedCursor(a: std.mem.Allocator, ctx: Ctx, pane_id: u32) []const u8 {
+    const body = getTextSince(a, ctx, pane_id, "") orelse return "";
     const r = json.parseFromSliceLeaky(SinceResp, a, body, .{ .ignore_unknown_fields = true }) catch return "";
     return r.cursor;
 }
 
-fn captureSince(a: std.mem.Allocator, sock: []const u8, pane_id: u32, cursor: []const u8) SinceResp {
-    var req = IpcRequest{ .command = .get_text, .pane_id = pane_id, .has_since = true };
-    if (Cursor_parse(cursor)) |c| {
-        req.since_gen = c.gen;
-        req.since_line = c.line;
-    }
-    const body = oneShot(a, sock, req, 1 << 20) orelse return .{};
+fn captureSince(a: std.mem.Allocator, ctx: Ctx, pane_id: u32, cursor: []const u8) SinceResp {
+    const body = getTextSince(a, ctx, pane_id, cursor) orelse return .{};
     return json.parseFromSliceLeaky(SinceResp, a, body, .{ .ignore_unknown_fields = true }) catch .{};
 }
 
@@ -275,21 +360,20 @@ fn Cursor_parse(tok: []const u8) ?struct { gen: u32, line: u64 } {
 /// `agent send` core. Submits the prompt and (with --wait) drives the turn to an
 /// outcome. Returns a Result owned by `a`.
 pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
-    if (parsed.target_session != 0) return Error.SessionUnsupported;
     var sock_buf: [256]u8 = undefined;
-    const sock = client.discoverSocket(&sock_buf, parsed.target_pid) orelse return Error.NoInstance;
+    const ctx = try resolveCtx(parsed, &sock_buf);
 
-    const snap = snapshotPane(a, sock, parsed.pane_id) orelse return Error.NotAnAgent;
+    const snap = snapshotPane(a, ctx, parsed.pane_id) orelse return Error.NotAnAgent;
     const s0 = State.fromStr(snap.state);
     if (s0 == .none) return Error.NotAnAgent;
     if (s0 == .working) return Error.Busy;
     const session = snap.session;
 
     const want_capture = parsed.agent_capture;
-    const cursor: []const u8 = if (want_capture) seedCursor(a, sock, parsed.pane_id) else "";
+    const cursor: []const u8 = if (want_capture) seedCursor(a, ctx, parsed.pane_id) else "";
 
     // Open the watch stream BEFORE submitting so we can't miss the `working` edge.
-    var ws = WatchStream.open(sock, parsed.pane_id) catch return Error.IpcFailed;
+    var ws = WatchStream.open(ctx, parsed.pane_id) catch return Error.IpcFailed;
     defer ws.close();
 
     // Submit: prompt body as a bracketed paste, then the submit key discretely.
@@ -298,11 +382,11 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
     ps.writer().writeAll("\x1b[200~") catch {};
     ps.writer().writeAll(parsed.text_arg[0..@min(parsed.text_arg.len, paste.len - 12)]) catch {};
     ps.writer().writeAll("\x1b[201~") catch {};
-    _ = sendRaw(sock, parsed.pane_id, ps.getWritten());
+    submit(ctx, parsed.pane_id, ps.getWritten());
     var key_buf: [64]u8 = undefined;
-    const submit = resolveSubmitKey(parsed.agent_submit_key, &key_buf);
+    const submit_key = resolveSubmitKey(parsed.agent_submit_key, &key_buf);
     const submit_ms = std.time.milliTimestamp();
-    _ = sendRaw(sock, parsed.pane_id, submit);
+    submit(ctx, parsed.pane_id, submit_key);
 
     if (!parsed.wait) {
         return .{ .pane = parsed.pane_id, .session = session, .outcome = .done, .duration_ms = 0 };
@@ -342,12 +426,12 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
     var result = Result{ .pane = parsed.pane_id, .session = session, .outcome = outcome, .duration_ms = duration_ms, .message = end_message };
 
     if (want_capture and (outcome == .done or outcome == .needs_input or outcome == .timeout)) {
-        const cap = captureSince(a, sock, parsed.pane_id, cursor);
+        const cap = captureSince(a, ctx, parsed.pane_id, cursor);
         result.output = cap.text;
         result.truncated = cap.truncated;
     }
     if (parsed.agent_tokens) {
-        if (snapshotPane(a, sock, parsed.pane_id)) |end_snap| {
+        if (snapshotPane(a, ctx, parsed.pane_id)) |end_snap| {
             result.tokens = .{
                 .input = (end_snap.usage.input_tokens orelse 0) -| (snap.usage.input_tokens orelse 0),
                 .output = (end_snap.usage.output_tokens orelse 0) -| (snap.usage.output_tokens orelse 0),
@@ -363,13 +447,12 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
 /// `agent await` core. Observes (no input) until the pane's agent reaches the
 /// target state, ends, or times out.
 pub fn runAwait(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
-    if (parsed.target_session != 0) return Error.SessionUnsupported;
     var sock_buf: [256]u8 = undefined;
-    const sock = client.discoverSocket(&sock_buf, parsed.target_pid) orelse return Error.NoInstance;
-    const snap = snapshotPane(a, sock, parsed.pane_id) orelse return Error.NotAnAgent;
+    const ctx = try resolveCtx(parsed, &sock_buf);
+    const snap = snapshotPane(a, ctx, parsed.pane_id) orelse return Error.NotAnAgent;
     const session = snap.session;
 
-    var ws = WatchStream.open(sock, parsed.pane_id) catch return Error.IpcFailed;
+    var ws = WatchStream.open(ctx, parsed.pane_id) catch return Error.IpcFailed;
     defer ws.close();
     const start_ms = std.time.milliTimestamp();
     const timeout_ms: i64 = if (parsed.agent_timeout_s > 0) @as(i64, parsed.agent_timeout_s) * 1000 else default_timeout_ms;
@@ -407,7 +490,6 @@ pub fn errMsg(e: Error) []const u8 {
         Error.IpcFailed => "failed to communicate with Attyx instance",
         Error.NotAnAgent => "pane is not running an agent",
         Error.Busy => "the pane's agent is busy (working); wait for it to finish first",
-        Error.SessionUnsupported => "agent send/await is not supported with -s yet; run it against the attached session",
     };
 }
 

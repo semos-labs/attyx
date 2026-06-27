@@ -272,6 +272,8 @@ fn split(sock: []const u8, parsed: IpcRequest, dir: u8) void {
         reportError(reply.body);
         std.process.exit(1);
     }
+    // Emit the new pane id on stdout so callers can capture it.
+    printBody(reply.body);
 }
 
 fn paneClose(sock: []const u8, parsed: IpcRequest) void {
@@ -301,7 +303,8 @@ fn tabCreate(sock: []const u8, parsed: IpcRequest) void {
         reportError(reply.body);
         std.process.exit(1);
     }
-    // Stay quiet on success, matching the window-side `tab create`.
+    // Emit the new pane id on stdout so callers can capture it (id=$(attyx ...)).
+    printBody(reply.body);
 }
 
 fn list(sock: []const u8, parsed: IpcRequest, kind: dproto.CtlListKind) void {
@@ -406,11 +409,11 @@ pub fn watchAgents(parsed: IpcRequest) void {
     }
 }
 
-const CtlReply = struct { status: u8, body: []const u8 };
+pub const CtlReply = struct { status: u8, body: []const u8 };
 
 /// One ctl_request → ctl_response round-trip over a fresh daemon connection.
 /// The reply body is a slice into `resp_buf`.
-fn ctl(
+pub fn ctl(
     sock: []const u8,
     target_session: u32,
     op: dproto.CtlOp,
