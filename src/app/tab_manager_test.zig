@@ -191,6 +191,26 @@ test "reconstructFromLayout: next_ipc_id stays above max daemon id" {
     try std.testing.expect(local_pane.ipc_id != 100);
 }
 
+test "findPaneWithLayout: matches daemon pane id when ipc_id diverges" {
+    const allocator = std.testing.allocator;
+    const pane = try createTestPane(allocator);
+    var mgr = TabManager.init(allocator, pane);
+    defer destroyMgr(&mgr);
+
+    // Force a divergence like a live-created pane carried before id unification.
+    pane.daemon_pane_id = 42;
+    pane.ipc_id = 7;
+
+    // Found by ipc_id…
+    try std.testing.expect(mgr.findPaneWithLayout(7) != null);
+    // …and by daemon pane id (the cross-session dashboard's lookup)…
+    const by_daemon = mgr.findPaneWithLayout(42);
+    try std.testing.expect(by_daemon != null);
+    try std.testing.expectEqual(pane, by_daemon.?.pane);
+    // …but not by an unrelated id.
+    try std.testing.expect(mgr.findPaneWithLayout(99) == null);
+}
+
 test "assignIpcId: daemon-backed pane adopts its daemon pane id" {
     const allocator = std.testing.allocator;
     var mgr = TabManager{ .allocator = allocator };
