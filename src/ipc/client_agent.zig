@@ -44,9 +44,12 @@ const agent_read = @import("client_agent_read.zig");
 /// The turn's last assistant message, read from the transcript (like `agent
 /// read`). The status hook can fire `idle` before the agent flushes its final
 /// line, so we poll until a message past `baseline` lands — returning just the
-/// newest one — then fall back to a best-effort read at the deadline. Returns
-/// null only if the agent has no transcript at all (caller scrapes the screen).
-fn captureTurnMessage(a: std.mem.Allocator, parsed: IpcRequest, baseline: ?usize) ?[]const u8 {
+/// newest one — then fall back to a best-effort read at the deadline. `path` is
+/// resolved once by the caller; the poll re-reads only the local file, so this
+/// never touches the daemon (repeated snapshots here lagged interactive I/O).
+/// Returns null if there's no transcript (caller scrapes the screen).
+fn captureTurnMessage(a: std.mem.Allocator, path: ?[]const u8, baseline: ?usize) ?[]const u8 {
+    const p = path orelse return null;
     const deadline = std.time.milliTimestamp() + capture_flush_wait_ms;
     while (true) {
         // Per-iteration arena: the transcript can be large and we read it many
@@ -54,7 +57,7 @@ fn captureTurnMessage(a: std.mem.Allocator, parsed: IpcRequest, baseline: ?usize
         var it = std.heap.ArenaAllocator.init(a);
         defer it.deinit();
         var newest: ?[]const u8 = null;
-        if (agent_read.allMessages(it.allocator(), parsed)) |msgs| {
+        if (agent_read.messagesAtPath(it.allocator(), p)) |msgs| {
             if (msgs.len > 0) {
                 newest = msgs[msgs.len - 1];
                 // The count changing from the pre-turn baseline means this turn's
@@ -370,11 +373,13 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
 
     const want_capture = parsed.agent_capture;
     const cursor: []const u8 = if (want_capture) seedCursor(a, ctx, parsed.pane_id) else "";
+    // Resolve the transcript path once (one daemon snapshot); capture then polls
+    // this file locally. null = the agent reports no transcript → screen fallback.
+    const tx_path: ?[]const u8 = if (want_capture) agent_read.resolveTranscriptPath(a, parsed) else null;
     // Assistant-message count before the turn, so capture can wait for the turn's
     // own message to land rather than reading a stale one (see captureTurnMessage).
-    // null = the agent reports no transcript → screen-scrape fallback.
-    const tx_baseline: ?usize = if (want_capture) blk: {
-        const m = agent_read.allMessages(a, parsed) orelse break :blk null;
+    const tx_baseline: ?usize = if (tx_path) |p| blk: {
+        const m = agent_read.messagesAtPath(a, p) orelse break :blk null;
         break :blk m.len;
     } else null;
 
@@ -434,7 +439,7 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
     if (want_capture and (outcome == .done or outcome == .needs_input or outcome == .timeout)) {
         // The agent's last message from the transcript — same source as `agent
         // read`. Falls back to the screen scrape for agents with no transcript.
-        result.output = captureTurnMessage(a, parsed, tx_baseline);
+        result.output = captureTurnMessage(a, tx_path, tx_baseline);
         if (result.output == null) {
             const cap = captureSince(a, ctx, parsed.pane_id, cursor);
             result.output = cap.text;

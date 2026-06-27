@@ -140,12 +140,17 @@ fn transcriptPath(a: std.mem.Allocator, parsed: IpcRequest) Error![]const u8 {
     return if (found_pane) Error.NoTranscript else Error.NoAgent;
 }
 
-/// All assistant messages in `parsed`'s pane transcript (oldest first), or null
-/// if the agent reports no transcript or it can't be read. Used by `agent send
-/// --capture` to lift a turn's output straight from the transcript (the reliable
-/// path) rather than scraping the screen.
-pub fn allMessages(a: std.mem.Allocator, parsed: IpcRequest) ?[]const []const u8 {
-    const path = transcriptPath(a, parsed) catch return null;
+/// Resolve the pane's transcript path via one daemon snapshot, or null. Split
+/// out so `agent send --capture` resolves the path *once* and then polls the
+/// local file (below) instead of hitting the daemon on every poll — repeated
+/// snapshots churned daemon connections and lagged interactive I/O.
+pub fn resolveTranscriptPath(a: std.mem.Allocator, parsed: IpcRequest) ?[]const u8 {
+    return transcriptPath(a, parsed) catch null;
+}
+
+/// Assistant messages (oldest first) read straight from a known transcript file —
+/// no daemon round-trip. null if the file can't be read/parsed.
+pub fn messagesAtPath(a: std.mem.Allocator, path: []const u8) ?[]const []const u8 {
     const file = std.fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
     const bytes = file.readToEndAlloc(a, max_transcript_bytes) catch return null;
