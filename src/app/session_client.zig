@@ -1073,20 +1073,12 @@ fn readMessageImpl(self: *SessionClient) ?DaemonMessage {
                     continue;
                 };
                 var usage = msg.usage;
-                // model and transcript_path borrow from payload; copy into
-                // output_buf (adjacent regions) so they survive consumeBytes.
-                // Numeric fields are already values.
-                var copied: usize = 0;
+                // model borrows from payload; copy into output_buf so it survives
+                // consumeBytes. Numeric fields are already values.
                 if (usage.model) |m| {
                     const mlen = @min(m.len, self.output_buf.len);
                     @memcpy(self.output_buf[0..mlen], m[0..mlen]);
                     usage.model = self.output_buf[0..mlen];
-                    copied = mlen;
-                }
-                if (usage.transcript_path) |t| {
-                    const tlen = @min(t.len, self.output_buf.len - copied);
-                    @memcpy(self.output_buf[copied .. copied + tlen], t[0..tlen]);
-                    usage.transcript_path = self.output_buf[copied .. copied + tlen];
                 }
                 const pane_id = msg.pane_id;
                 self.consumeBytes(total);

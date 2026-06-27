@@ -94,6 +94,7 @@ pub const IpcRequest = struct {
     agent_timeout_s: u32 = 0, // 0 = default
     agent_submit_key: []const u8 = "", // "" = {Enter}
     agent_offset: u32 = 0, // agent read: messages back from the last (0 = last)
+    agent_count: u32 = 1, // agent read: how many messages to return, ending at offset
     agent_await_state: AwaitState = .idle,
 };
 
@@ -831,6 +832,11 @@ fn parseAgent(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
                 if (i + 1 >= args.len) fatal("--offset requires a number");
                 i += 1;
                 r.agent_offset = std.fmt.parseInt(u32, args[i], 10) catch fatal("--offset: invalid number");
+            } else if (std.mem.eql(u8, arg, "--count") or std.mem.eql(u8, arg, "-c")) {
+                if (i + 1 >= args.len) fatal("--count requires a number");
+                i += 1;
+                r.agent_count = std.fmt.parseInt(u32, args[i], 10) catch fatal("--count: invalid number");
+                if (r.agent_count == 0) fatal("--count must be at least 1");
             }
         }
         if (r.pane_id == 0) fatal("agent read requires --pane <id>");

@@ -241,6 +241,10 @@ pub fn main() !void {
             cli_commands.doKillDaemon();
             return;
         },
+        .restart_daemon => {
+            cli_commands.doRestartDaemon();
+            return;
+        },
         .ipc_command => {
             ipc_client.run(args);
             return;

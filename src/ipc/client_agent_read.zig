@@ -10,10 +10,16 @@
 //   Codex:   {"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"…"}]}}
 
 const std = @import("std");
+const posix = std.posix;
 const protocol = @import("protocol.zig");
 const client = @import("client.zig");
+const dproto = @import("../app/daemon/protocol.zig");
+const session_connect = @import("../app/session_connect.zig");
 const IpcRequest = @import("../config/cli_ipc.zig").IpcRequest;
 const json = std.json;
+
+/// `watch_agents` sentinel meaning "every session" (mirrors agent_watch.all_sessions).
+const all_sessions: u32 = 0xFFFFFFFF;
 
 const max_transcript_bytes = 64 * 1024 * 1024;
 
@@ -27,7 +33,7 @@ pub const ReadResult = struct {
     session: u32,
     offset: u32,
     total: usize, // assistant messages found
-    message: []const u8,
+    messages: []const []const u8, // chronological (oldest first); 1..count entries
 };
 
 /// Concatenate the text blocks of one transcript line's assistant message, or
@@ -87,34 +93,51 @@ pub fn extractMessages(a: std.mem.Allocator, bytes: []const u8) ![][]const u8 {
     return out.items;
 }
 
-/// Look up the pane's transcript path via `list agents --json` (attached window,
-/// or the daemon when `-s` targets a session). Path returned is owned by `a`.
+/// Look up the pane's transcript path through the daemon. The daemon holds every
+/// session's live engine and the agent-reported transcript path, so we resolve
+/// it there rather than via the attached window — the window may never have
+/// received the path (its usage sync can lag/omit it), and daemon-routing means
+/// any session works without `-s` (pane ids are unique daemon-wide). Returns a
+/// path owned by `a`.
 fn transcriptPath(a: std.mem.Allocator, parsed: IpcRequest) Error![]const u8 {
-    const req = IpcRequest{ .command = .list_agents, .pane_id = parsed.pane_id, .json_output = true, .target_session = parsed.target_session, .target_pid = parsed.target_pid };
-    var body: []const u8 = undefined;
-    if (parsed.target_session != 0) {
-        const r = @import("client_daemon.zig").call(a, req);
-        if (r.is_error) return Error.NoInstance;
-        body = r.text;
-    } else {
-        var sock_buf: [256]u8 = undefined;
-        const sock = client.discoverSocket(&sock_buf, parsed.target_pid) orelse return Error.NoInstance;
-        var rb: [protocol.header_size + 64]u8 = undefined;
-        const request = client.buildRequest(&rb, req) catch return Error.NoInstance;
-        const resp_buf = a.alloc(u8, 1 << 16) catch return Error.NoInstance;
-        const resp = client.sendCommand(sock, request, resp_buf) catch return Error.NoInstance;
-        if (resp.msg_type != .success) return Error.NoInstance;
-        body = resp.payload;
+    var sock_buf: [256]u8 = undefined;
+    const sock = session_connect.getSocketPath(&sock_buf) orelse return Error.NoInstance;
+    const fd = client.connectToSocket(sock) catch return Error.NoInstance;
+    defer protocol.closeFd(fd);
+
+    // Snapshot just this pane across all sessions: [all_sessions:u32][pane:u32].
+    var pl: [8]u8 = undefined;
+    std.mem.writeInt(u32, pl[0..4], all_sessions, .little);
+    std.mem.writeInt(u32, pl[4..8], parsed.pane_id, .little);
+    var rb: [dproto.header_size + 8]u8 = undefined;
+    const req = dproto.encodeMessage(&rb, .watch_agents, &pl) catch return Error.NoInstance;
+    protocol.writeAll(fd, req) catch return Error.NoInstance;
+
+    // Drain the snapshot burst (the daemon parks after sending current agents,
+    // so there's no terminator — read until the matching pane or a quiet poll).
+    const agent_event: u8 = @intFromEnum(dproto.MessageType.agent_event);
+    var hdr: [dproto.header_size]u8 = undefined;
+    var payload: [4096]u8 = undefined;
+    var found_pane = false;
+    while (true) {
+        var pfd = [_]posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+        const ready = posix.poll(&pfd, 500) catch break;
+        if (ready == 0) break; // snapshot drained
+        protocol.readExact(fd, &hdr) catch break;
+        const plen = std.mem.readInt(u32, hdr[0..4], .little);
+        if (plen == 0) continue;
+        if (plen > payload.len) break;
+        protocol.readExact(fd, payload[0..plen]) catch break;
+        if (hdr[4] != agent_event) continue;
+        const rec = json.parseFromSliceLeaky(Rec, a, std.mem.trim(u8, payload[0..plen], " \t\r\n"), .{ .ignore_unknown_fields = true }) catch continue;
+        if (rec.pane_id != parsed.pane_id) continue;
+        found_pane = true;
+        const p = rec.usage.transcript_path orelse return Error.NoTranscript;
+        if (p.len == 0) return Error.NoTranscript;
+        // p slices into the stack `payload`; copy into `a` so it outlives this fn.
+        return a.dupe(u8, p) catch return Error.NoTranscript;
     }
-    const arr = json.parseFromSliceLeaky([]Rec, a, std.mem.trim(u8, body, " \t\r\n"), .{ .ignore_unknown_fields = true }) catch return Error.NoAgent;
-    for (arr) |rec| {
-        if (rec.pane_id == parsed.pane_id) {
-            const p = rec.usage.transcript_path orelse return Error.NoTranscript;
-            if (p.len == 0) return Error.NoTranscript;
-            return p;
-        }
-    }
-    return Error.NoAgent;
+    return if (found_pane) Error.NoTranscript else Error.NoAgent;
 }
 
 fn readTranscript(a: std.mem.Allocator, parsed: IpcRequest) Error!ReadResult {
@@ -125,8 +148,18 @@ fn readTranscript(a: std.mem.Allocator, parsed: IpcRequest) Error!ReadResult {
     const msgs = extractMessages(a, bytes) catch return Error.ReadFailed;
     if (msgs.len == 0) return Error.NoMessages;
     if (parsed.agent_offset >= msgs.len) return Error.OffsetOutOfRange;
-    const idx = msgs.len - 1 - parsed.agent_offset;
-    return .{ .pane = parsed.pane_id, .session = parsed.target_session, .offset = parsed.agent_offset, .total = msgs.len, .message = msgs[idx] };
+    const win = selectWindow(msgs.len, parsed.agent_offset, parsed.agent_count);
+    return .{ .pane = parsed.pane_id, .session = parsed.target_session, .offset = parsed.agent_offset, .total = msgs.len, .messages = msgs[win.start..win.end] };
+}
+
+/// Pick the `[start, end)` slice of messages to return: a window of `count`
+/// messages whose newest is `offset` back from the last, clamped to the start of
+/// the transcript. Caller guarantees `offset < total`.
+fn selectWindow(total: usize, offset: u32, count: u32) struct { start: usize, end: usize } {
+    const end = total - offset; // exclusive: one past the newest included
+    const n = @max(count, 1);
+    const start = if (end > n) end - n else 0;
+    return .{ .start = start, .end = end };
 }
 
 pub fn errMsg(e: Error) []const u8 {
@@ -143,9 +176,19 @@ pub fn errMsg(e: Error) []const u8 {
 pub fn resultJson(a: std.mem.Allocator, r: ReadResult) []const u8 {
     var buf = std.ArrayList(u8){};
     const w = buf.writer(a);
-    w.print("{{\"pane\":{d},\"session\":{d},\"offset\":{d},\"total\":{d},\"message\":\"", .{ r.pane, r.session, r.offset, r.total }) catch {};
-    writeJsonStr(w, r.message);
-    w.writeAll("\"}") catch {};
+    // `message` is the newest returned message (backward-compatible single field);
+    // `messages` carries all of them, oldest first, when --count > 1.
+    const newest = if (r.messages.len > 0) r.messages[r.messages.len - 1] else "";
+    w.print("{{\"pane\":{d},\"session\":{d},\"offset\":{d},\"count\":{d},\"total\":{d},\"message\":\"", .{ r.pane, r.session, r.offset, r.messages.len, r.total }) catch {};
+    writeJsonStr(w, newest);
+    w.writeAll("\",\"messages\":[") catch {};
+    for (r.messages, 0..) |m, i| {
+        if (i > 0) w.writeAll(",") catch {};
+        w.writeAll("\"") catch {};
+        writeJsonStr(w, m);
+        w.writeAll("\"") catch {};
+    }
+    w.writeAll("]}") catch {};
     return buf.items;
 }
 
@@ -178,8 +221,13 @@ pub fn run(parsed: IpcRequest) noreturn {
         stdout.writeAll(resultJson(a, r)) catch {};
         stdout.writeAll("\n") catch {};
     } else {
-        stdout.writeAll(r.message) catch {};
-        if (r.message.len == 0 or r.message[r.message.len - 1] != '\n') stdout.writeAll("\n") catch {};
+        // One message per turn, each newline-terminated; a blank line separates
+        // turns. For the default single message this is just the message + "\n".
+        for (r.messages, 0..) |m, i| {
+            if (i > 0) stdout.writeAll("\n") catch {};
+            stdout.writeAll(m) catch {};
+            if (m.len == 0 or m[m.len - 1] != '\n') stdout.writeAll("\n") catch {};
+        }
     }
     std.process.exit(0);
 }
@@ -248,4 +296,23 @@ test "offset indexing picks the n-th from last" {
     try testing.expectEqualStrings("c", msgs[msgs.len - 1 - 0]); // offset 0 = last
     try testing.expectEqualStrings("b", msgs[msgs.len - 1 - 1]); // offset 1
     try testing.expectEqualStrings("a", msgs[msgs.len - 1 - 2]); // offset 2
+}
+
+test "selectWindow: count + offset windowing, clamped to start" {
+    // total = 5 messages (indices 0..4).
+    // default: last message only.
+    try testing.expectEqual(@as(usize, 4), selectWindow(5, 0, 1).start);
+    try testing.expectEqual(@as(usize, 5), selectWindow(5, 0, 1).end);
+    // last 3 messages.
+    try testing.expectEqual(@as(usize, 2), selectWindow(5, 0, 3).start);
+    try testing.expectEqual(@as(usize, 5), selectWindow(5, 0, 3).end);
+    // count beyond the start clamps to 0 (returns the whole transcript).
+    try testing.expectEqual(@as(usize, 0), selectWindow(5, 0, 99).start);
+    try testing.expectEqual(@as(usize, 5), selectWindow(5, 0, 99).end);
+    // offset shifts the window's newest end back; count extends from there.
+    try testing.expectEqual(@as(usize, 1), selectWindow(5, 1, 3).start);
+    try testing.expectEqual(@as(usize, 4), selectWindow(5, 1, 3).end);
+    // count 0 is treated as 1.
+    try testing.expectEqual(@as(usize, 4), selectWindow(5, 0, 0).start);
+    try testing.expectEqual(@as(usize, 5), selectWindow(5, 0, 0).end);
 }

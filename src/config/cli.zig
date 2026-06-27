@@ -24,6 +24,7 @@ pub const Action = enum {
     daemon,
     daemon_restore,
     kill_daemon,
+    restart_daemon,
     ipc_command,
     host,
     mcp,
@@ -77,6 +78,9 @@ pub fn parse(args: []const [:0]const u8) CliResult {
             return result;
         } else if (std.mem.eql(u8, first, "kill-daemon")) {
             result.action = .kill_daemon;
+            return result;
+        } else if (std.mem.eql(u8, first, "restart-daemon")) {
+            result.action = .restart_daemon;
             return result;
         } else if (std.mem.eql(u8, first, "mcp")) {
             result.action = .mcp;

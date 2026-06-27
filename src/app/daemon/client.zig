@@ -839,8 +839,8 @@ pub const DaemonClient = struct {
     /// sendPaneAgentStatus — ships engine.state.agentUsage() so the passive
     /// client engine has token/cost/context data for the dashboard and watchers.
     pub fn sendPaneAgentUsage(self: *DaemonClient, pane_id: u32, usage: protocol.AgentUsage) void {
-        var buf: [protocol.header_size + protocol.pane_agent_usage_max_payload]u8 = undefined;
-        var payload: [protocol.pane_agent_usage_max_payload]u8 = undefined;
+        var buf: [protocol.header_size + 73 + 64]u8 = undefined;
+        var payload: [73 + 64]u8 = undefined;
         const p = protocol.encodePaneAgentUsage(&payload, pane_id, usage) catch return;
         const m = protocol.encodeMessage(&buf, .pane_agent_usage, p) catch return;
         self.sendRaw(m);

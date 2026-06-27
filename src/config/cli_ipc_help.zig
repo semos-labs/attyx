@@ -640,7 +640,7 @@ pub const agent =
     \\  attyx agent send -p <id> "<prompt>" [--wait] [--capture] [--tokens]
     \\                   [--timeout <s>] [--submit-key <key>] [--json]
     \\  attyx agent await -p <id> [--state idle|input|any] [--timeout <s>] [--json]
-    \\  attyx agent read -p <id> [--offset <n>] [-s <sess>] [--json]
+    \\  attyx agent read -p <id> [--offset <n>] [--count <n>] [-s <sess>] [--json]
     \\
     \\`agent send` types the prompt into the pane's agent (as a bracketed paste,
     \\so multi-line prompts and `{`/`}`/`\` are literal) and presses the submit
@@ -651,7 +651,8 @@ pub const agent =
     \\a state (the formalized `watch agents | while …` pattern).
     \\
     \\`agent read` returns the agent's last message from its transcript file (not
-    \\the screen). --offset <n> returns the n-th message back (0 = last). Only
+    \\the screen). --offset <n> returns the n-th message back (0 = last); --count
+    \\<n> returns the last n messages (oldest first), ending at the offset. Only
     \\agents that report a transcript (Claude Code, Codex) are supported.
     \\
     \\Options (send):
@@ -671,6 +672,7 @@ pub const agent =
     \\Options (read):
     \\  --pane, -p <id>     Target pane (required).
     \\  --offset, -o <n>    Messages back from the last (default 0 = last).
+    \\  --count, -c <n>     Return the last n messages, oldest first (default 1).
     \\  -s <sess>           Read an agent in a specific session.
     \\
     \\Outcomes (and exit codes): done (0) · needs_input (2) · timeout (3) ·
@@ -686,5 +688,6 @@ pub const agent =
     \\  attyx agent await -p 3 --state any        # block until done or needs input
     \\  attyx agent read -p 3                      # the agent's last message
     \\  attyx agent read -p 3 --offset 1           # the message before that
+    \\  attyx agent read -p 3 --count 5            # the last 5 messages
     \\
 ;

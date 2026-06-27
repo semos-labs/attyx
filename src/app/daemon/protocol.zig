@@ -906,18 +906,11 @@ pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
 
 const usage_fixed = 4 + 2 + 1 + 7 * 8 + 8 + 2; // 73
 const usage_model_max = 64;
-const usage_tx_max = 512; // matches agent_transcript_buf in TerminalState
-
-/// Upper bound on a pane_agent_usage payload (fixed header + model + transcript).
-/// `2 +` is the transcript length prefix. Callers size send buffers from this.
-pub const pane_agent_usage_max_payload = usage_fixed + usage_model_max + 2 + usage_tx_max;
 
 pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     const model: []const u8 = u.model orelse "";
     const model_len: u16 = @intCast(@min(model.len, usage_model_max));
-    const tx: []const u8 = u.transcript_path orelse "";
-    const tx_len: u16 = @intCast(@min(tx.len, usage_tx_max));
-    const total: usize = usage_fixed + model_len + 2 + tx_len;
+    const total: usize = usage_fixed + model_len;
     if (buf.len < total) return error.BufferTooSmall;
 
     std.mem.writeInt(u32, buf[0..4], pane_id, .little);
@@ -949,10 +942,6 @@ pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     std.mem.writeInt(u16, buf[off..][0..2], model_len, .little);
     off += 2;
     @memcpy(buf[off .. off + model_len], model[0..model_len]);
-    off += model_len;
-    std.mem.writeInt(u16, buf[off..][0..2], tx_len, .little);
-    off += 2;
-    @memcpy(buf[off .. off + tx_len], tx[0..tx_len]);
     return buf[0..total];
 }
 
@@ -976,17 +965,6 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
     const model_len = std.mem.readInt(u16, payload[off..][0..2], .little);
     off += 2;
     if (payload.len < off + @as(usize, model_len)) return error.PayloadTooShort;
-    const model_off = off;
-    off += model_len;
-
-    // Transcript path is an optional trailing field: u16 len + bytes. Older
-    // encoders omit it entirely, so treat a short payload here as "no transcript".
-    var tx: []const u8 = "";
-    if (payload.len >= off + 2) {
-        const tx_len = std.mem.readInt(u16, payload[off..][0..2], .little);
-        off += 2;
-        if (payload.len >= off + @as(usize, tx_len)) tx = payload[off .. off + tx_len];
-    }
 
     const has = struct {
         fn b(p: u16, bit: u4) bool {
@@ -1005,8 +983,7 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
             .context_max = if (has(presence, 6)) vals[6] else null,
             .cost_usd = if (has(presence, 7)) @as(f64, @bitCast(cost_bits)) else null,
             .cost_is_estimate = cost_is_estimate,
-            .model = if (model_len > 0) payload[model_off .. model_off + model_len] else null,
-            .transcript_path = if (tx.len > 0) tx else null,
+            .model = if (model_len > 0) payload[off .. off + model_len] else null,
         },
     };
 }
@@ -1156,7 +1133,6 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
         .cost_usd = 0.4213,
         .cost_is_estimate = true,
         .model = "gpt-5.5",
-        .transcript_path = "/Users/x/.claude/projects/p/abc.jsonl",
     };
     const payload = try encodePaneAgentUsage(&buf, 9, u);
     const msg = try decodePaneAgentUsage(payload);
@@ -1170,22 +1146,12 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
     try std.testing.expectEqual(@as(?f64, 0.4213), msg.usage.cost_usd);
     try std.testing.expect(msg.usage.cost_is_estimate);
     try std.testing.expectEqualStrings("gpt-5.5", msg.usage.model.?);
-    try std.testing.expectEqualStrings("/Users/x/.claude/projects/p/abc.jsonl", msg.usage.transcript_path.?);
 
-    // Fully-empty usage → all null, empty model/transcript.
+    // Fully-empty usage → all null, empty model.
     const empty = try decodePaneAgentUsage(try encodePaneAgentUsage(&buf, 1, .{}));
     try std.testing.expectEqual(@as(?u64, null), empty.usage.input_tokens);
     try std.testing.expectEqual(@as(?f64, null), empty.usage.cost_usd);
     try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.model);
-    try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.transcript_path);
-
-    // Backward compat: a payload truncated before the transcript field (an older
-    // encoder) still decodes, with transcript_path null.
-    const full = try encodePaneAgentUsage(&buf, 1, u);
-    const old_len = full.len - 2 - "/Users/x/.claude/projects/p/abc.jsonl".len;
-    const legacy = try decodePaneAgentUsage(buf[0..old_len]);
-    try std.testing.expectEqual(@as(?[]const u8, null), legacy.usage.transcript_path);
-    try std.testing.expectEqualStrings("gpt-5.5", legacy.usage.model.?);
 }
 
 test "create round-trip" {

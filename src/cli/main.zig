@@ -297,6 +297,70 @@ fn doKillDaemonPosix() void {
     std.fs.deleteFileAbsolute(socket_path) catch {};
 }
 
+/// `attyx restart-daemon` — hot-restart the daemon, preserving sessions. Sends a
+/// `hello` with a sentinel version so the daemon's existing version-mismatch path
+/// fires its hot-upgrade handoff (serialize sessions → re-exec the on-disk binary
+/// → restore). This is the same mechanism the app updater triggers, so a daemon
+/// left running on an old binary (e.g. after a manual app replace) picks up the
+/// new code without losing panes. Unconditional by design — we don't compare
+/// versions here; the sentinel always mismatches, forcing the restart. Distinct
+/// from `kill-daemon`, which fully terminates the daemon and removes the socket.
+pub fn doRestartDaemon() void {
+    const stdout = std.fs.File.stdout();
+    if (comptime is_windows) {
+        stdout.writeAll("restart-daemon is not supported on this platform.\n") catch {};
+        return;
+    }
+
+    var path_buf: [256]u8 = undefined;
+    const socket_path = getSocketPath(&path_buf) orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+
+    const fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        return;
+    };
+    defer std.posix.close(fd);
+    const addr = std.net.Address.initUnix(socket_path) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        return;
+    };
+    std.posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
+        stdout.writeAll("No daemon running (stale socket removed).\n") catch {};
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+        return;
+    };
+
+    // Frame a `hello` (msg_type 0x0F): payload = [vlen:u8][version][caps:u32 LE].
+    // `caps` is irrelevant to the upgrade trigger, so 0 is fine. Layout must match
+    // protocol.encodeHello / decodeHello in src/app/daemon/protocol.zig.
+    const ver = "force-restart"; // never equals a real semver → always triggers
+    const payload_len: u32 = 1 + ver.len + 4;
+    var frame: [5 + 1 + ver.len + 4]u8 = undefined;
+    std.mem.writeInt(u32, frame[0..4], payload_len, .little);
+    frame[4] = 0x0F; // hello
+    frame[5] = ver.len; // vlen
+    @memcpy(frame[6 .. 6 + ver.len], ver);
+    std.mem.writeInt(u32, frame[6 + ver.len ..][0..4], 0, .little); // caps
+
+    _ = std.posix.write(fd, &frame) catch {
+        stdout.writeAll("error: failed to reach the daemon\n") catch {};
+        return;
+    };
+
+    // Wait for the hello_ack so we know the daemon received the request (the
+    // hot-upgrade itself runs right after, on the daemon's next loop pass).
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+    const ready = std.posix.poll(&fds, 3000) catch 0;
+    if (ready == 0) {
+        stdout.writeAll("Restart requested, but the daemon did not acknowledge (it may be an older build). Sessions are unaffected.\n") catch {};
+        return;
+    }
+    stdout.writeAll("Restarting daemon (preserving sessions)... done.\n") catch {};
+}
+
 fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
     if (comptime builtin.os.tag == .macos) {
         // macOS: SOL_LOCAL=0, LOCAL_PEERPID=2

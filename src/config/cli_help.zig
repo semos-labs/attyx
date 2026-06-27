@@ -59,6 +59,7 @@ const commands =
     cmd("skill <install|uninstall>  ", "Install/remove the Claude Code skill") ++
     cmd("daemon                     ", "Run the session daemon") ++
     cmd("kill-daemon                ", "Kill the session daemon and remove socket") ++
+    cmd("restart-daemon             ", "Hot-restart the daemon, preserving sessions (picks up a replaced binary)") ++
     cmd("mcp                        ", "Run the MCP server (stdio) for AI agents") ++
     cmd("dashboard [--once]         ", "Full-screen view of agents across all sessions") ++
     "\n";
