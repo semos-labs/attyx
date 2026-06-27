@@ -165,6 +165,11 @@ pub fn run(args: []const [:0]const u8) void {
         client_daemon.run(parsed);
         return;
     }
+    // agent send/await: client-side orchestration (resolves its own socket and
+    // handles the -s rejection itself). run() is noreturn.
+    if (parsed.command == .agent_send or parsed.command == .agent_await) {
+        @import("client_agent.zig").run(parsed);
+    }
 
     // Discover socket early — needed for both paths
     var sock_buf: [256]u8 = undefined;
@@ -350,6 +355,9 @@ fn buildSendKeysRequest(buf: []u8, payload: []const u8, pane_id: u32, target_ses
 
 pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
     return switch (parsed.command) {
+        // agent send/await are client-side orchestration, never a single wire
+        // request — client.run routes them to client_agent before buildRequest.
+        .agent_send, .agent_await => error.UnsupportedCommand,
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => blk: {
             if (parsed.tab_idx != 0xFF) {

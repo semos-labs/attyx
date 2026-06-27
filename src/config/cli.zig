@@ -396,6 +396,7 @@ fn isIpcSubcommand(arg: []const u8) bool {
         "scroll-to", "list",      "session",    "popup",  "run",
         "watch", // stream agent status: `watch agents`
         "send-image", // attach an image file to a pane
+        "agent", // drive another agent: `agent send` / `agent await`
         "--target", // --target <pid> before subcommand
         "--json", // --json before subcommand
         "-s",      "--session", // -s/--session <id> before subcommand

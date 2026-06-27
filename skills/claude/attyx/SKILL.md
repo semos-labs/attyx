@@ -356,10 +356,9 @@ attyx watch agents -p 3             # only pane 3's agent
 # {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"..."}
 # {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"idle","message":""}
 
-# Block until a specific agent finishes its current turn
-attyx watch agents -p 3 | while read -r line; do
-  echo "$line" | grep -q '"state":"idle"' && break
-done
+# Block until a specific agent finishes its current turn — use `agent await`
+# (the formalized version of the hand-rolled `watch … | while read` loop):
+attyx agent await -p 3 --state idle
 ```
 The pane ID is the `pane_id` from `attyx list agents` (or the ID returned when you created the pane). `0`/omitted means all agents.
 
@@ -369,6 +368,22 @@ To check one pane's agent without streaming, pass its stable pane ID:
 attyx list agents -p 3              # just pane 3's agent (one line, or empty if none)
 attyx list agents -p 3 --json      # same, as a JSON array
 ```
+
+### Driving another agent — `agent send` / `agent await`
+To send a prompt to an agent in another pane and **block until its turn finishes**, use `agent send --wait` instead of hand-rolling send-keys + a watch loop + get-text. It pastes the prompt (multi-line safe), presses Enter, waits for the turn, and reports the outcome.
+```bash
+# Send a prompt and wait; exit code encodes the outcome.
+attyx agent send -p 3 "run the tests and fix any failures" --wait
+
+# Capture just the turn's output (uses get-text --since) as JSON:
+attyx agent send -p 3 "summarize src/api" --wait --capture --json
+# {"pane":3,"session":1,"outcome":"done","duration_ms":48213,"message":"…",
+#  "output":"…only the rows this turn produced…","truncated":false}
+
+# Just wait (send nothing) until an agent is done or needs you:
+attyx agent await -p 3 --state any
+```
+**Outcomes** (and exit codes): `done` (0) · `needs_input` (2) · `timeout` (3) · `no_turn`/`ended` (4). So `attyx agent send -p 3 "build" --wait && attyx agent send -p 5 "deploy" --wait` chains turns only on success. Add `--tokens` for the per-turn token/cost delta. Outcomes are honest: `no_turn` means the agent never started (wrong pane / it didn't accept the input), `timeout` means it's still working (the agent is never interrupted — we just stop waiting). Over MCP this is the `agent_send` tool. (Currently targets the attached session; `-s` background sessions are a follow-up.)
 `-p`/`--pane` works on both `list agents` and `watch agents`; omit it for all agents.
 
 ## Argument Handling
