@@ -65,6 +65,8 @@ pub const IpcRequest = struct {
     session_id_arg: u32 = 0,
     target_pid: ?u32 = null,
     json_output: bool = false,
+    /// ANSI color for human output: auto (TTY only), always, or never.
+    color_mode: ColorMode = .auto,
     wait: bool = false,
     wait_stable_ms: u32 = 0,
     background: bool = false,
@@ -96,6 +98,7 @@ pub const IpcRequest = struct {
 };
 
 pub const AwaitState = enum { idle, input, any };
+pub const ColorMode = enum { auto, always, never };
 
 /// Incremental-capture cursor: an opaque ASCII token `g<gen>.l<line>`. The client
 /// treats it as a blob; only the CLI/MCP arg parsers and the server decode it.
@@ -190,6 +193,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
 
     var target_pid: ?u32 = null;
     var json_output: bool = false;
+    var color_mode: ColorMode = .auto;
     var target_session: u32 = 0;
 
     // Global flags (--target, --json, -s/--session) are position-independent:
@@ -213,6 +217,12 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
             fi += 2;
         } else if (std.mem.eql(u8, a, "--json")) {
             json_output = true;
+            fi += 1;
+        } else if (std.mem.eql(u8, a, "--color")) {
+            color_mode = .always;
+            fi += 1;
+        } else if (std.mem.eql(u8, a, "--no-color")) {
+            color_mode = .never;
             fi += 1;
         } else {
             if (flen < fbuf.len) {
@@ -347,6 +357,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     if (result) |r| {
         var req = r;
         req.target_session = target_session;
+        req.color_mode = color_mode;
         return req;
     }
     return null;

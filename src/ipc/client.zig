@@ -12,6 +12,18 @@ const protocol = @import("protocol.zig");
 const keys = @import("keys.zig");
 const session_connect = @import("../app/session_connect.zig");
 const client_win = @import("client_windows.zig");
+const cli_ipc = @import("../config/cli_ipc.zig");
+const agents_mod = @import("agents.zig");
+
+/// Whether to emit ANSI color for human output: never when piped (auto), unless
+/// forced. STDOUT is the relevant stream (text goes there).
+pub fn shouldColor(mode: cli_ipc.ColorMode) bool {
+    return switch (mode) {
+        .always => true,
+        .never => false,
+        .auto => std.posix.isatty(posix.STDOUT_FILENO),
+    };
+}
 
 const max_response = 65536;
 
@@ -144,7 +156,6 @@ fn connectUnix(path: []const u8) !posix.fd_t {
 /// Run the IPC client: discover socket, send command, print response.
 /// Called from main.zig for IPC subcommands.
 pub fn run(args: []const [:0]const u8) void {
-    const cli_ipc = @import("../config/cli_ipc.zig");
     const parsed = cli_ipc.parse(args) orelse {
         // parse() already printed usage/error
         std.process.exit(1);
@@ -192,6 +203,13 @@ pub fn run(args: []const [:0]const u8) void {
     // For watch: hold the connection open and stream frames until EOF.
     if (parsed.command == .watch_agents) {
         @import("client_watch.zig").run(socket_path, parsed);
+        return;
+    }
+
+    // For `list agents`: fetch JSON and format the table client-side so it's
+    // TTY-aware (colored in a terminal, plain when piped).
+    if (parsed.command == .list_agents) {
+        listAgents(socket_path, parsed);
         return;
     }
 
@@ -637,6 +655,44 @@ fn buildGetTextRequest(buf: []u8, pane_id: u32, target_session: u32) ![]u8 {
 
 fn writeStderr(msg: []const u8) void {
     std.fs.File.stderr().writeAll(msg) catch {};
+}
+
+/// `list agents` (attached window): always fetch the JSON, then format the table
+/// client-side — colored on a TTY, plain when piped, or raw JSON if --json.
+fn listAgents(socket_path: []const u8, parsed: cli_ipc.IpcRequest) void {
+    var req = parsed;
+    req.json_output = true; // fetch structured data; presentation is local
+    var rb: [protocol.header_size + 64]u8 = undefined;
+    const request = buildRequest(&rb, req) catch {
+        writeStderr("error: failed to build request\n");
+        std.process.exit(1);
+    };
+    const resp_buf = std.heap.page_allocator.alloc(u8, 1 << 20) catch {
+        writeStderr("error: out of memory\n");
+        std.process.exit(1);
+    };
+    defer std.heap.page_allocator.free(resp_buf);
+    const resp = sendCommand(socket_path, request, resp_buf) catch {
+        writeStderr("error: failed to communicate with Attyx instance\n");
+        std.process.exit(1);
+    };
+    const stdout = std.fs.File.stdout();
+    if (resp.msg_type == .err) {
+        writeStderr("error: ");
+        std.fs.File.stderr().writeAll(resp.payload) catch {};
+        std.fs.File.stderr().writeAll("\n") catch {};
+        std.process.exit(1);
+    }
+    if (parsed.json_output) {
+        stdout.writeAll(resp.payload) catch {};
+        stdout.writeAll("\n") catch {};
+        return;
+    }
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var out = std.ArrayList(u8){};
+    agents_mod.writeAgentTable(out.writer(arena.allocator()), arena.allocator(), resp.payload, shouldColor(parsed.color_mode)) catch {};
+    stdout.writeAll(out.items) catch {};
 }
 
 /// Unwrap a `get_text --since` JSON response for plain (non-`--json`) output:

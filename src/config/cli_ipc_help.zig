@@ -36,6 +36,8 @@ pub const top_level =
     \\  -s, --session <id>   Target a specific session directly via the daemon
     \\                       (works without that session being attached)
     \\  --json               Output in JSON format (for scripts and agents)
+    \\  --color/--no-color   Force/disable ANSI color (default: auto — color on a
+    \\                       terminal, plain when piped). Affects list/watch agents.
     \\  --help, -h           Show this help (works on every subcommand)
     \\
     \\Examples:
