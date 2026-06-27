@@ -109,7 +109,7 @@ pub fn call(a: std.mem.Allocator, parsed: IpcRequest) CallResult {
     var stack_buf: [65536]u8 = undefined;
     var heap: ?[]u8 = null;
     defer if (heap) |h| std.heap.page_allocator.free(h);
-    const resp_buf: []u8 = if (parsed.command == .get_text and parsed.lines > 0) blk: {
+    const resp_buf: []u8 = if (parsed.command == .get_text and (parsed.lines > 0 or parsed.has_since)) blk: {
         const b = std.heap.page_allocator.alloc(u8, 8 * 1024 * 1024) catch
             return .{ .is_error = true, .text = "out of memory for response buffer" };
         heap = b;
@@ -157,6 +157,13 @@ const OpReq = struct { op: dproto.CtlOp, body: []const u8 };
 fn buildOp(parsed: IpcRequest, buf: []u8) ?OpReq {
     switch (parsed.command) {
         .get_text => {
+            if (parsed.has_since) {
+                std.mem.writeInt(u32, buf[0..4], parsed.pane_id, .little);
+                std.mem.writeInt(u32, buf[4..8], parsed.since_gen, .little);
+                std.mem.writeInt(u64, buf[8..16], parsed.since_line, .little);
+                std.mem.writeInt(u32, buf[16..20], parsed.lines, .little);
+                return .{ .op = .get_text_since, .body = buf[0..20] };
+            }
             std.mem.writeInt(u32, buf[0..4], parsed.pane_id, .little);
             std.mem.writeInt(u32, buf[4..8], parsed.lines, .little);
             return .{ .op = .get_text, .body = buf[0..8] };
@@ -265,6 +272,8 @@ fn split(sock: []const u8, parsed: IpcRequest, dir: u8) void {
         reportError(reply.body);
         std.process.exit(1);
     }
+    // Emit the new pane id on stdout so callers can capture it.
+    printBody(reply.body);
 }
 
 fn paneClose(sock: []const u8, parsed: IpcRequest) void {
@@ -294,7 +303,8 @@ fn tabCreate(sock: []const u8, parsed: IpcRequest) void {
         reportError(reply.body);
         std.process.exit(1);
     }
-    // Stay quiet on success, matching the window-side `tab create`.
+    // Emit the new pane id on stdout so callers can capture it (id=$(attyx ...)).
+    printBody(reply.body);
 }
 
 fn list(sock: []const u8, parsed: IpcRequest, kind: dproto.CtlListKind) void {
@@ -312,15 +322,23 @@ fn list(sock: []const u8, parsed: IpcRequest, kind: dproto.CtlListKind) void {
 /// builds the same JSON/TSV records as the window-side `list agents`.
 fn listAgents(sock: []const u8, parsed: IpcRequest) void {
     var op_body: [5]u8 = undefined;
-    op_body[0] = if (parsed.json_output) 1 else 0;
+    op_body[0] = 1; // always fetch JSON; format the table client-side (TTY-aware)
     std.mem.writeInt(u32, op_body[1..5], parsed.pane_id, .little);
-    var resp_buf: [16384]u8 = undefined;
+    var resp_buf: [65536]u8 = undefined;
     const reply = ctlOrExit(sock, parsed.target_session, .list_agents, &op_body, &resp_buf);
     if (reply.status != 0) {
         reportError(reply.body);
         std.process.exit(1);
     }
-    printBody(reply.body);
+    if (parsed.json_output) {
+        printBody(reply.body);
+        return;
+    }
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var out = std.ArrayList(u8){};
+    @import("agents.zig").writeAgentTable(out.writer(arena.allocator()), arena.allocator(), reply.body, @import("client.zig").shouldColor(parsed.color_mode)) catch {};
+    std.fs.File.stdout().writeAll(out.items) catch {};
 }
 
 /// `watch agents -s N`. Connects to the daemon, parks the connection as a
@@ -358,7 +376,8 @@ pub fn watchAgents(parsed: IpcRequest) void {
     // Plain mode prints the same humanized table as `list agents`, streamed;
     // `--json` streams the raw NDJSON. (See client_watch for the shared helpers.)
     const client_watch = @import("client_watch.zig");
-    if (!parsed.json_output) client_watch.writeRowHeader(stdout);
+    const color = @import("client.zig").shouldColor(parsed.color_mode);
+    if (!parsed.json_output) client_watch.writeRowHeader(stdout, color);
     var hdr: [dproto.header_size]u8 = undefined;
     var payload_buf: [65536]u8 = undefined;
     while (true) {
@@ -373,7 +392,7 @@ pub fn watchAgents(parsed: IpcRequest) void {
                         stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
                         if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
                     } else {
-                        client_watch.writeRow(stdout, payload_buf[0..h.payload_len]);
+                        client_watch.writeRow(stdout, payload_buf[0..h.payload_len], color);
                     }
                 }
             },
@@ -390,11 +409,11 @@ pub fn watchAgents(parsed: IpcRequest) void {
     }
 }
 
-const CtlReply = struct { status: u8, body: []const u8 };
+pub const CtlReply = struct { status: u8, body: []const u8 };
 
 /// One ctl_request → ctl_response round-trip over a fresh daemon connection.
 /// The reply body is a slice into `resp_buf`.
-fn ctl(
+pub fn ctl(
     sock: []const u8,
     target_session: u32,
     op: dproto.CtlOp,
@@ -491,15 +510,11 @@ fn sendKeys(sock: []const u8, parsed: IpcRequest) void {
 }
 
 fn getText(sock: []const u8, parsed: IpcRequest) void {
-    var op_body: [8]u8 = undefined;
-    std.mem.writeInt(u32, op_body[0..4], parsed.pane_id, .little);
-    std.mem.writeInt(u32, op_body[4..8], parsed.lines, .little);
-
-    // With --lines the screen + scrollback can be large; heap-allocate.
+    // With --lines or --since a catch-up read can be large; heap-allocate.
     var heap: ?[]u8 = null;
     defer if (heap) |h| std.heap.page_allocator.free(h);
     var stack_buf: [65536]u8 = undefined;
-    const resp_buf: []u8 = if (parsed.lines > 0) blk: {
+    const resp_buf: []u8 = if (parsed.lines > 0 or parsed.has_since) blk: {
         const b = std.heap.page_allocator.alloc(u8, 8 * 1024 * 1024) catch {
             stderr("error: out of memory for response buffer\n");
             std.process.exit(1);
@@ -508,6 +523,24 @@ fn getText(sock: []const u8, parsed: IpcRequest) void {
         break :blk b;
     } else stack_buf[0..];
 
+    if (parsed.has_since) {
+        var ob: [20]u8 = undefined;
+        std.mem.writeInt(u32, ob[0..4], parsed.pane_id, .little);
+        std.mem.writeInt(u32, ob[4..8], parsed.since_gen, .little);
+        std.mem.writeInt(u64, ob[8..16], parsed.since_line, .little);
+        std.mem.writeInt(u32, ob[16..20], parsed.lines, .little);
+        const reply = ctlOrExit(sock, parsed.target_session, .get_text_since, &ob, resp_buf);
+        if (reply.status != 0) {
+            reportError(reply.body);
+            std.process.exit(1);
+        }
+        if (parsed.json_output) printBody(reply.body) else @import("client.zig").printSince(reply.body, parsed.cursor_only);
+        return;
+    }
+
+    var op_body: [8]u8 = undefined;
+    std.mem.writeInt(u32, op_body[0..4], parsed.pane_id, .little);
+    std.mem.writeInt(u32, op_body[4..8], parsed.lines, .little);
     const reply = ctlOrExit(sock, parsed.target_session, .get_text, &op_body, resp_buf);
     if (reply.status != 0) {
         reportError(reply.body);

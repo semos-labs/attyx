@@ -226,6 +226,24 @@ attyx -s 1 get-text -p 5 -n 1000   # last 1000 rows from pane 5 in session 1
 
 The count is clamped to the pane's available scrollback depth. Use this when a long-running command's output has scrolled off-screen, or when you need to inspect history beyond the current viewport.
 
+### Incremental Capture — `--since <cursor>`
+When babysitting a long-running pane (a build, a test loop, another agent), don't re-read the whole screen every poll. `--since` returns **only the rows produced since your last read**, so a quiet pane returns nothing. Each read prints the next cursor (an opaque token) to stderr; pass it back next time. An empty/omitted token (`--since ""`) seeds: it returns the current screen and a starting cursor.
+
+```bash
+# Seed a cursor (printed to stderr as "cursor: g<gen>.l<line>").
+attyx get-text -p 3 --since "" 2>cur; cur=$(cut -d' ' -f2 <cur)
+# Later: only the new rows since last time. Advance the cursor each read.
+new=$(attyx get-text -p 3 --since "$cur" 2>c2); cur=$(cut -d' ' -f2 <c2)
+```
+
+The cleaner path for agents is `--json`, which returns everything in one object:
+
+```json
+{ "cursor": "g3.l10581", "text": "  CC parser.o\n", "truncated": false, "reset": false, "rows": 1 }
+```
+
+Feed `cursor` back as the next `--since`. `truncated: true` means output scrolled past the retained scrollback between reads (read more often, or raise `--scrollback-lines`). `reset: true` means the layout changed (resize, clear, or alt-screen) and `text` is a fresh baseline, not a delta. Semantics are append-only (new scrolled output) — for a full-screen TUI that redraws in place, use plain `get-text` instead. Cursors are per-pane; don't reuse one across panes.
+
 ### Reading Output — Use `--wait-stable`
 Instead of blind `sleep N && attyx get-text`, use `--wait-stable` to send keys and automatically wait for output to settle:
 
@@ -298,7 +316,7 @@ attyx list agents --json
 
 Fields: `pane_id` (stable ID of the agent's pane — use for targeting), `tab_id` (stable ID of the agent's tab; in attyx a tab is identified by its focused pane's id — the same `pane:N` shown by `attyx list` — so for a single-pane tab `tab_id == pane_id`), `session`, `pid` (the agent's foreground process id; `0` when unknown, e.g. daemon-backed panes), `state`, `message` (the agent's latest status preview, may be empty), and `usage` (token/cost/context telemetry — see below). Default scope is the attached/local session.
 
-**`usage` object.** Present on every record (possibly `{}` before the agent reports anything). Only known fields appear — an absent field means *unknown*, never zero, so don't treat a missing `cost_usd` as free. Fields: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` (cumulative for the session), `context_used` / `context_max` (current context window), `cost_usd`, `cost_is_estimate` (`true` when attyx computed cost from a built-in price table because the agent didn't report one — Codex), and `model`. Coverage varies by agent (Claude/opencode/Pi report cost directly; Codex is estimated; Codex pre-Sep-2025 builds and some gaps report no usage at all). Without `--json`, `list agents` (and `watch agents`) print an aligned, human-readable table — columns `PANE SESSION STATE MODEL IN OUT CTX COST MESSAGE`, tokens humanized (`1.2M`), context as `used/max`, `-` for unknowns. **Parse `--json`, not the table** — the table is for humans and its layout may change.
+**`usage` object.** Present on every record (possibly `{}` before the agent reports anything). Only known fields appear — an absent field means *unknown*, never zero, so don't treat a missing `cost_usd` as free. Fields: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` (cumulative for the session), `context_used` / `context_max` (current context window), `cost_usd`, `cost_is_estimate` (`true` when attyx computed cost from a built-in price table because the agent didn't report one — Codex), and `model`. Coverage varies by agent (Claude/opencode/Pi report cost directly; Codex is estimated; Codex pre-Sep-2025 builds and some gaps report no usage at all). Without `--json`, `list agents` (and `watch agents`) print an aligned, human-readable table — columns `PANE SESSION STATE MODEL IN OUT CTX COST MESSAGE`, tokens humanized (`1.2M`), context as `used/max`, `-` for unknowns, with a colored ● status dot at a terminal. Color is automatic (plain when piped, so `| grep` stays clean); force with `--color`, disable with `--no-color`. **Parse `--json`, not the table** — the table is for humans and its layout/color may change.
 
 A live table of the same data is available two ways: the in-window **overlay** (`Cmd/Ctrl+Shift+A`, or the `agent_dashboard` command — current window only), and the full-screen **`attyx dashboard`** CLI, which shows agents across *all* sessions and lets you jump to any of them. For a scriptable cross-session snapshot, `attyx dashboard --once` prints a plain-text table and exits. Add `-s <id>` to `list agents` to query any session's agents directly from the daemon — it works even when no window is attached to that session:
 
@@ -338,10 +356,9 @@ attyx watch agents -p 3             # only pane 3's agent
 # {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"working","message":"..."}
 # {"pane_id":3,"tab_id":3,"session":1,"pid":48213,"state":"idle","message":""}
 
-# Block until a specific agent finishes its current turn
-attyx watch agents -p 3 | while read -r line; do
-  echo "$line" | grep -q '"state":"idle"' && break
-done
+# Block until a specific agent finishes its current turn — use `agent await`
+# (the formalized version of the hand-rolled `watch … | while read` loop):
+attyx agent await -p 3 --state idle
 ```
 The pane ID is the `pane_id` from `attyx list agents` (or the ID returned when you created the pane). `0`/omitted means all agents.
 
@@ -351,6 +368,28 @@ To check one pane's agent without streaming, pass its stable pane ID:
 attyx list agents -p 3              # just pane 3's agent (one line, or empty if none)
 attyx list agents -p 3 --json      # same, as a JSON array
 ```
+
+### Driving another agent — `agent send` / `agent await`
+To send a prompt to an agent in another pane and **block until its turn finishes**, use `agent send --wait` instead of hand-rolling send-keys + a watch loop + get-text. It pastes the prompt (multi-line safe), presses Enter, waits for the turn, and reports the outcome.
+```bash
+# Send a prompt and wait; exit code encodes the outcome.
+attyx agent send -p 3 "run the tests and fix any failures" --wait
+
+# Capture just the turn's output (uses get-text --since) as JSON:
+attyx agent send -p 3 "summarize src/api" --wait --capture --json
+# {"pane":3,"session":1,"outcome":"done","duration_ms":48213,"message":"…",
+#  "output":"…only the rows this turn produced…","truncated":false}
+
+# Just wait (send nothing) until an agent is done or needs you:
+attyx agent await -p 3 --state any
+
+# Read an agent's last message from its transcript (not the screen):
+attyx agent read -p 3                  # the last message
+attyx agent read -p 3 --offset 1       # the one before it
+```
+**`agent read`** returns an agent's message straight from its transcript file (structural, not a screen scrape) — use it to collect another agent's actual output instead of `get-text`. `--offset n`/`-o n` gives the n-th message back (0 = last). Works with `-s <session>` too. Only agents that report a transcript (Claude Code, Codex) are supported; others return a clear error. Over MCP it's the `agent_read` tool.
+
+**Outcomes** (and exit codes): `done` (0) · `needs_input` (2) · `timeout` (3) · `no_turn`/`ended` (4). So `attyx agent send -p 3 "build" --wait && attyx agent send -p 5 "deploy" --wait` chains turns only on success. Add `--tokens` for the per-turn token/cost delta. Outcomes are honest: `no_turn` means the agent never started (wrong pane / it didn't accept the input), `timeout` means it's still working (the agent is never interrupted — we just stop waiting). Over MCP this is the `agent_send` tool. (Currently targets the attached session; `-s` background sessions are a follow-up.)
 `-p`/`--pane` works on both `list agents` and `watch agents`; omit it for all agents.
 
 ## Argument Handling

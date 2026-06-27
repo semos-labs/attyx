@@ -241,6 +241,10 @@ pub fn main() !void {
             cli_commands.doKillDaemon();
             return;
         },
+        .restart_daemon => {
+            cli_commands.doRestartDaemon();
+            return;
+        },
         .ipc_command => {
             ipc_client.run(args);
             return;
@@ -350,6 +354,9 @@ test {
     _ = @import("config/config.zig");
     _ = @import("config/cli_ipc.zig");
     _ = @import("ipc/client.zig");
+    _ = @import("ipc/client_agent.zig");
+    _ = @import("ipc/client_agent_machine.zig");
+    _ = @import("ipc/client_agent_read.zig");
     _ = @import("ipc/mcp.zig");
     _ = @import("ipc/image_paste.zig");
     if (!is_windows) _ = @import("ipc/mcp_http.zig");

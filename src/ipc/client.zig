@@ -12,6 +12,18 @@ const protocol = @import("protocol.zig");
 const keys = @import("keys.zig");
 const session_connect = @import("../app/session_connect.zig");
 const client_win = @import("client_windows.zig");
+const cli_ipc = @import("../config/cli_ipc.zig");
+const agents_mod = @import("agents.zig");
+
+/// Whether to emit ANSI color for human output: never when piped (auto), unless
+/// forced. STDOUT is the relevant stream (text goes there).
+pub fn shouldColor(mode: cli_ipc.ColorMode) bool {
+    return switch (mode) {
+        .always => true,
+        .never => false,
+        .auto => std.posix.isatty(posix.STDOUT_FILENO),
+    };
+}
 
 const max_response = 65536;
 
@@ -144,7 +156,6 @@ fn connectUnix(path: []const u8) !posix.fd_t {
 /// Run the IPC client: discover socket, send command, print response.
 /// Called from main.zig for IPC subcommands.
 pub fn run(args: []const [:0]const u8) void {
-    const cli_ipc = @import("../config/cli_ipc.zig");
     const parsed = cli_ipc.parse(args) orelse {
         // parse() already printed usage/error
         std.process.exit(1);
@@ -165,6 +176,16 @@ pub fn run(args: []const [:0]const u8) void {
         client_daemon.run(parsed);
         return;
     }
+    // agent send/await: client-side orchestration (resolves its own socket and
+    // handles the -s rejection itself). run() is noreturn.
+    if (parsed.command == .agent_send or parsed.command == .agent_await) {
+        @import("client_agent.zig").run(parsed);
+    }
+    // agent read: looks up the pane's transcript path (attached or -s) and reads
+    // the file locally. run() is noreturn.
+    if (parsed.command == .agent_read) {
+        @import("client_agent_read.zig").run(parsed);
+    }
 
     // Discover socket early — needed for both paths
     var sock_buf: [256]u8 = undefined;
@@ -182,6 +203,13 @@ pub fn run(args: []const [:0]const u8) void {
     // For watch: hold the connection open and stream frames until EOF.
     if (parsed.command == .watch_agents) {
         @import("client_watch.zig").run(socket_path, parsed);
+        return;
+    }
+
+    // For `list agents`: fetch JSON and format the table client-side so it's
+    // TTY-aware (colored in a terminal, plain when piped).
+    if (parsed.command == .list_agents) {
+        listAgents(socket_path, parsed);
         return;
     }
 
@@ -206,7 +234,7 @@ pub fn run(args: []const [:0]const u8) void {
     var heap_resp_buf: ?[]u8 = null;
     defer if (heap_resp_buf) |b| std.heap.page_allocator.free(b);
     var stack_resp_buf: [max_response]u8 = undefined;
-    const resp_buf: []u8 = if (parsed.command == .get_text and parsed.lines > 0) blk: {
+    const resp_buf: []u8 = if (parsed.command == .get_text and (parsed.lines > 0 or parsed.has_since)) blk: {
         const buf = std.heap.page_allocator.alloc(u8, 8 * 1024 * 1024) catch {
             writeStderr("error: out of memory for response buffer\n");
             std.process.exit(1);
@@ -226,7 +254,11 @@ pub fn run(args: []const [:0]const u8) void {
     const stdout = std.fs.File.stdout();
     switch (resp.msg_type) {
         .success => {
-            if (resp.payload.len > 0) {
+            // get-text --since: the payload is a JSON {cursor,text,...} object.
+            // In plain mode, split text→stdout, cursor→stderr (clean pipelines).
+            if (parsed.command == .get_text and parsed.has_since and !parsed.json_output) {
+                printSince(resp.payload, parsed.cursor_only);
+            } else if (resp.payload.len > 0) {
                 if (parsed.json_output) {
                     // JSON mode: pass through raw payload
                     stdout.writeAll(resp.payload) catch {};
@@ -346,6 +378,9 @@ fn buildSendKeysRequest(buf: []u8, payload: []const u8, pane_id: u32, target_ses
 
 pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcRequest) ![]u8 {
     return switch (parsed.command) {
+        // agent send/await are client-side orchestration, never a single wire
+        // request — client.run routes them to client_agent before buildRequest.
+        .agent_send, .agent_await, .agent_read => error.UnsupportedCommand,
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => blk: {
             if (parsed.tab_idx != 0xFF) {
@@ -425,6 +460,15 @@ pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcReque
             break :blk protocol.encodeMessage(buf, .send_image, payload_buf[0 .. 4 + plen]);
         },
         .get_text => blk: {
+            if (parsed.has_since) {
+                // [pane_id:u32][gen:u32][line:u64][lines:u32]
+                var payload: [20]u8 = undefined;
+                std.mem.writeInt(u32, payload[0..4], parsed.pane_id, .little);
+                std.mem.writeInt(u32, payload[4..8], parsed.since_gen, .little);
+                std.mem.writeInt(u64, payload[8..16], parsed.since_line, .little);
+                std.mem.writeInt(u32, payload[16..20], parsed.lines, .little);
+                break :blk protocol.encodeMessage(buf, .get_text_since, &payload);
+            }
             if (parsed.pane_id != 0) {
                 var payload: [8]u8 = undefined;
                 std.mem.writeInt(u32, payload[0..4], parsed.pane_id, .little);
@@ -611,6 +655,75 @@ fn buildGetTextRequest(buf: []u8, pane_id: u32, target_session: u32) ![]u8 {
 
 fn writeStderr(msg: []const u8) void {
     std.fs.File.stderr().writeAll(msg) catch {};
+}
+
+/// `list agents` (attached window): always fetch the JSON, then format the table
+/// client-side — colored on a TTY, plain when piped, or raw JSON if --json.
+fn listAgents(socket_path: []const u8, parsed: cli_ipc.IpcRequest) void {
+    var req = parsed;
+    req.json_output = true; // fetch structured data; presentation is local
+    var rb: [protocol.header_size + 64]u8 = undefined;
+    const request = buildRequest(&rb, req) catch {
+        writeStderr("error: failed to build request\n");
+        std.process.exit(1);
+    };
+    const resp_buf = std.heap.page_allocator.alloc(u8, 1 << 20) catch {
+        writeStderr("error: out of memory\n");
+        std.process.exit(1);
+    };
+    defer std.heap.page_allocator.free(resp_buf);
+    const resp = sendCommand(socket_path, request, resp_buf) catch {
+        writeStderr("error: failed to communicate with Attyx instance\n");
+        std.process.exit(1);
+    };
+    const stdout = std.fs.File.stdout();
+    if (resp.msg_type == .err) {
+        writeStderr("error: ");
+        std.fs.File.stderr().writeAll(resp.payload) catch {};
+        std.fs.File.stderr().writeAll("\n") catch {};
+        std.process.exit(1);
+    }
+    if (parsed.json_output) {
+        stdout.writeAll(resp.payload) catch {};
+        stdout.writeAll("\n") catch {};
+        return;
+    }
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var out = std.ArrayList(u8){};
+    agents_mod.writeAgentTable(out.writer(arena.allocator()), arena.allocator(), resp.payload, shouldColor(parsed.color_mode)) catch {};
+    stdout.writeAll(out.items) catch {};
+}
+
+/// Unwrap a `get_text --since` JSON response for plain (non-`--json`) output:
+/// new text → stdout, next cursor → stderr (`cursor: g<gen>.l<line>`), with
+/// `truncated`/`reset` as stderr notes. `--cursor-only` prints just the cursor.
+pub fn printSince(payload: []const u8, cursor_only: bool) void {
+    const Resp = struct {
+        cursor: []const u8 = "",
+        text: []const u8 = "",
+        truncated: bool = false,
+        reset: bool = false,
+        rows: u64 = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const r = std.json.parseFromSliceLeaky(Resp, arena.allocator(), payload, .{ .ignore_unknown_fields = true }) catch {
+        std.fs.File.stdout().writeAll(payload) catch {};
+        return;
+    };
+    const stdout = std.fs.File.stdout();
+    if (cursor_only) {
+        stdout.writeAll(r.cursor) catch {};
+        stdout.writeAll("\n") catch {};
+    } else {
+        stdout.writeAll(r.text) catch {};
+        writeStderr("cursor: ");
+        writeStderr(r.cursor);
+        writeStderr("\n");
+    }
+    if (r.reset) writeStderr("note: reset — layout changed; text is a fresh baseline\n");
+    if (r.truncated) writeStderr("note: truncated — output scrolled past retained scrollback\n");
 }
 
 /// Write a string with JSON escaping (quotes, backslashes, control chars).

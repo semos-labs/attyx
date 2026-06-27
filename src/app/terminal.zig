@@ -675,6 +675,9 @@ pub fn run(
         if (!reconstructed) {
             if (initial_pane_count > 0) {
                 initial_pane.daemon_pane_id = initial_pane_ids[0];
+                // TabManager.init assigned a counter-based IPC id before the
+                // daemon id existed; re-assign so ipc_id == daemon_pane_id.
+                tab_mgr.assignIpcId(initial_pane);
             }
         }
 

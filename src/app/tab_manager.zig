@@ -114,8 +114,24 @@ pub const TabManager = struct {
     /// Monotonically increasing counter for stable pane IPC IDs.
     next_ipc_id: u32 = 1,
 
-    /// Assign the next unique IPC ID to a pane.
+    /// Assign a stable IPC ID to a pane. Daemon-backed panes adopt their daemon
+    /// pane id (once known — not the placeholder) so the id is stable across
+    /// session switches and identical to what reconstructFromLayout, `attyx
+    /// list`, and the cross-session dashboard use (the dashboard only knows
+    /// daemon pane ids). Local panes (non-session) use the monotonic counter.
+    /// Call this AFTER setting `daemon_pane_id`; calling it earlier falls back to
+    /// the counter, so the live-create paths re-assign once the id is known.
     pub fn assignIpcId(self: *TabManager, pane: *Pane) void {
+        if (pane.daemon_pane_id) |dpid| {
+            if (dpid != Pane.daemon_backed_placeholder_id) {
+                pane.ipc_id = dpid;
+                if (dpid >= self.next_ipc_id) {
+                    self.next_ipc_id = dpid +% 1;
+                    if (self.next_ipc_id == 0) self.next_ipc_id = 1;
+                }
+                return;
+            }
+        }
         pane.ipc_id = self.next_ipc_id;
         self.next_ipc_id +%= 1;
         if (self.next_ipc_id == 0) self.next_ipc_id = 1; // skip 0 (sentinel)
@@ -187,14 +203,31 @@ pub const TabManager = struct {
         return null;
     }
 
-    /// Look up a pane by IPC ID and also return its pool index within its tab's layout.
-    pub fn findPaneWithLayout(self: *TabManager, ipc_id: u32) ?struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 } {
+    const FoundPane = struct { pane: *Pane, layout: *SplitLayout, pool_idx: u8 };
+
+    /// Look up a pane by id, returning it with its pool index within its tab's
+    /// layout. Matches the IPC id first (the CLI's id space), then falls back to
+    /// the daemon pane id. The cross-session dashboard only knows daemon pane
+    /// ids, and a pane created live can carry an ipc_id that differs from its
+    /// daemon id — so the fallback is what makes `attyx dashboard`'s jump land on
+    /// a same-session pane it didn't reach by ipc_id.
+    pub fn findPaneWithLayout(self: *TabManager, id: u32) ?FoundPane {
         for (0..self.count) |i| {
             const layout = &(self.tabs[i] orelse continue);
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = layout.collectLeaves(&leaves);
             for (leaves[0..lc]) |leaf| {
-                if (leaf.pane.ipc_id == ipc_id) return .{ .pane = leaf.pane, .layout = layout, .pool_idx = leaf.index };
+                if (leaf.pane.ipc_id == id) return .{ .pane = leaf.pane, .layout = layout, .pool_idx = leaf.index };
+            }
+        }
+        for (0..self.count) |i| {
+            const layout = &(self.tabs[i] orelse continue);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = layout.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                const dpid = leaf.pane.daemon_pane_id orelse continue;
+                if (dpid != Pane.daemon_backed_placeholder_id and dpid == id)
+                    return .{ .pane = leaf.pane, .layout = layout, .pool_idx = leaf.index };
             }
         }
         return null;

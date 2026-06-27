@@ -4,6 +4,7 @@ on:
   push:
     branches: ["release-*"]
     paths: ["releases/*.md"]
+  workflow_dispatch: {}
 
 permissions:
   contents: write

@@ -35,6 +35,9 @@ pub const IpcCommand = enum {
     send_keys,
     send_image,
     get_text,
+    agent_send,
+    agent_await,
+    agent_read,
     config_reload,
     theme_set,
     scroll_to_top,
@@ -62,6 +65,8 @@ pub const IpcRequest = struct {
     session_id_arg: u32 = 0,
     target_pid: ?u32 = null,
     json_output: bool = false,
+    /// ANSI color for human output: auto (TTY only), always, or never.
+    color_mode: ColorMode = .auto,
     wait: bool = false,
     wait_stable_ms: u32 = 0,
     background: bool = false,
@@ -77,6 +82,46 @@ pub const IpcRequest = struct {
     /// get-text: number of trailing rows from scrollback+screen to capture.
     /// 0 = visible screen (default behavior).
     lines: u32 = 0,
+    /// get-text --since: incremental-capture cursor (opaque `g<gen>.l<line>`).
+    has_since: bool = false,
+    since_gen: u32 = 0,
+    since_line: u64 = 0,
+    /// get-text --cursor-only: print just the next cursor, no text.
+    cursor_only: bool = false,
+    /// agent send/await options. Prompt text rides in `text_arg`.
+    agent_capture: bool = false,
+    agent_tokens: bool = false,
+    agent_timeout_s: u32 = 0, // 0 = default
+    agent_submit_key: []const u8 = "", // "" = {Enter}
+    agent_offset: u32 = 0, // agent read: messages back from the last (0 = last)
+    agent_count: u32 = 1, // agent read: how many messages to return, ending at offset
+    agent_await_state: AwaitState = .idle,
+};
+
+pub const AwaitState = enum { idle, input, any };
+pub const ColorMode = enum { auto, always, never };
+
+/// Incremental-capture cursor: an opaque ASCII token `g<gen>.l<line>`. The client
+/// treats it as a blob; only the CLI/MCP arg parsers and the server decode it.
+pub const Cursor = struct {
+    gen: u32 = 0,
+    line: u64 = 0,
+
+    /// Format into `buf`, returns the slice. Buffer should be >= 32 bytes.
+    pub fn format(self: Cursor, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "g{d}.l{d}", .{ self.gen, self.line }) catch "g0.l0";
+    }
+
+    /// Parse `g<gen>.l<line>`. An empty token means "seed from now" → null (the
+    /// caller treats null as has_since with gen/line 0, i.e. no prior cursor).
+    pub fn parse(tok: []const u8) ?Cursor {
+        if (tok.len < 4 or tok[0] != 'g') return null;
+        const dot = std.mem.indexOfScalar(u8, tok, '.') orelse return null;
+        if (dot + 1 >= tok.len or tok[dot + 1] != 'l') return null;
+        const gen = std.fmt.parseInt(u32, tok[1..dot], 10) catch return null;
+        const line = std.fmt.parseInt(u64, tok[dot + 2 ..], 10) catch return null;
+        return .{ .gen = gen, .line = line };
+    }
 };
 
 /// Returns true if the string looks like a filesystem path rather than a plain name.
@@ -149,6 +194,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
 
     var target_pid: ?u32 = null;
     var json_output: bool = false;
+    var color_mode: ColorMode = .auto;
     var target_session: u32 = 0;
 
     // Global flags (--target, --json, -s/--session) are position-independent:
@@ -172,6 +218,12 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
             fi += 2;
         } else if (std.mem.eql(u8, a, "--json")) {
             json_output = true;
+            fi += 1;
+        } else if (std.mem.eql(u8, a, "--color")) {
+            color_mode = .always;
+            fi += 1;
+        } else if (std.mem.eql(u8, a, "--no-color")) {
+            color_mode = .never;
             fi += 1;
         } else {
             if (flen < fbuf.len) {
@@ -217,6 +269,18 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
                     const n = std.fmt.parseInt(u32, fargs[gi], 10) catch fatal("--lines: invalid count");
                     if (n == 0) fatal("--lines: count must be >= 1");
                     gt_result.lines = n;
+                } else if (std.mem.eql(u8, fargs[gi], "--since")) {
+                    if (gi + 1 >= fargs.len) fatal("--since requires a cursor (use \"\" to seed)");
+                    gi += 1;
+                    gt_result.has_since = true;
+                    const tok = fargs[gi];
+                    if (tok.len > 0) {
+                        const c = Cursor.parse(tok) orelse fatal("--since: malformed cursor token");
+                        gt_result.since_gen = c.gen;
+                        gt_result.since_line = c.line;
+                    }
+                } else if (std.mem.eql(u8, fargs[gi], "--cursor-only")) {
+                    gt_result.cursor_only = true;
                 }
                 gi += 1;
             }
@@ -260,6 +324,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         if (std.mem.eql(u8, sub, "list")) break :blk parseList(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "watch")) break :blk parseWatch(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "session")) break :blk parseSession(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "agent")) break :blk parseAgent(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "run")) {
             if (hasHelp(fargs, start)) showHelp(help.run);
             if (start + 1 >= fargs.len) {
@@ -293,6 +358,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
     if (result) |r| {
         var req = r;
         req.target_session = target_session;
+        req.color_mode = color_mode;
         return req;
     }
     return null;
@@ -684,6 +750,102 @@ fn parseWatch(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
 // Session
 // ---------------------------------------------------------------------------
 
+fn parseAgent(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
+    if (start + 1 >= args.len or isHelp(args[start + 1])) {
+        if (start + 1 < args.len and isHelp(args[start + 1])) showHelp(help.agent);
+        printHelp(help.agent);
+        return null;
+    }
+    const action = args[start + 1];
+    if (std.mem.eql(u8, action, "send")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_send, .target_pid = target_pid, .json_output = json_output };
+        var prompt: []const u8 = "";
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--wait")) {
+                r.wait = true;
+            } else if (std.mem.eql(u8, arg, "--capture")) {
+                r.agent_capture = true;
+            } else if (std.mem.eql(u8, arg, "--tokens")) {
+                r.agent_tokens = true;
+            } else if (std.mem.eql(u8, arg, "--timeout")) {
+                if (i + 1 >= args.len) fatal("--timeout requires seconds");
+                i += 1;
+                r.agent_timeout_s = std.fmt.parseInt(u32, args[i], 10) catch fatal("--timeout: invalid seconds");
+            } else if (std.mem.eql(u8, arg, "--submit-key")) {
+                if (i + 1 >= args.len) fatal("--submit-key requires a key");
+                i += 1;
+                r.agent_submit_key = args[i];
+            } else if (prompt.len == 0) {
+                prompt = args[i];
+            }
+        }
+        if (r.pane_id == 0) fatal("agent send requires --pane <id>");
+        if (prompt.len == 0) {
+            printHelp(help.agent);
+            return null;
+        }
+        // --capture / --tokens only make sense once the turn completes.
+        if (r.agent_capture or r.agent_tokens) r.wait = true;
+        r.text_arg = prompt;
+        return r;
+    } else if (std.mem.eql(u8, action, "await")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_await, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--state")) {
+                if (i + 1 >= args.len) fatal("--state requires idle|input|any");
+                i += 1;
+                const v = args[i];
+                r.agent_await_state = if (std.mem.eql(u8, v, "idle")) .idle else if (std.mem.eql(u8, v, "input")) .input else if (std.mem.eql(u8, v, "any")) .any else fatal("--state must be idle, input, or any");
+            } else if (std.mem.eql(u8, arg, "--timeout")) {
+                if (i + 1 >= args.len) fatal("--timeout requires seconds");
+                i += 1;
+                r.agent_timeout_s = std.fmt.parseInt(u32, args[i], 10) catch fatal("--timeout: invalid seconds");
+            }
+        }
+        if (r.pane_id == 0) fatal("agent await requires --pane <id>");
+        return r;
+    } else if (std.mem.eql(u8, action, "read")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_read, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--offset") or std.mem.eql(u8, arg, "-o")) {
+                if (i + 1 >= args.len) fatal("--offset requires a number");
+                i += 1;
+                r.agent_offset = std.fmt.parseInt(u32, args[i], 10) catch fatal("--offset: invalid number");
+            } else if (std.mem.eql(u8, arg, "--count") or std.mem.eql(u8, arg, "-c")) {
+                if (i + 1 >= args.len) fatal("--count requires a number");
+                i += 1;
+                r.agent_count = std.fmt.parseInt(u32, args[i], 10) catch fatal("--count: invalid number");
+                if (r.agent_count == 0) fatal("--count must be at least 1");
+            }
+        }
+        if (r.pane_id == 0) fatal("agent read requires --pane <id>");
+        return r;
+    }
+    printHelp(help.agent);
+    return null;
+}
+
 fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
     if (start + 1 >= args.len or isHelp(args[start + 1])) {
         if (start + 1 < args.len and isHelp(args[start + 1])) showHelp(help.session);
@@ -821,4 +983,33 @@ test "watch agents -s carries target session" {
     const parsed = parse(&args).?;
     try std.testing.expectEqual(IpcCommand.watch_agents, parsed.command);
     try std.testing.expectEqual(@as(u32, 4), parsed.target_session);
+}
+
+test "Cursor token round-trips and rejects malformed input" {
+    var buf: [32]u8 = undefined;
+    const tok = (Cursor{ .gen = 3, .line = 10581 }).format(&buf);
+    try std.testing.expectEqualStrings("g3.l10581", tok);
+    const c = Cursor.parse(tok).?;
+    try std.testing.expectEqual(@as(u32, 3), c.gen);
+    try std.testing.expectEqual(@as(u64, 10581), c.line);
+    try std.testing.expect(Cursor.parse("") == null);
+    try std.testing.expect(Cursor.parse("garbage") == null);
+    try std.testing.expect(Cursor.parse("g3") == null);
+    try std.testing.expect(Cursor.parse("g3.x5") == null);
+}
+
+test "get-text --since parses cursor and --cursor-only" {
+    const args = [_][:0]const u8{ "attyx", "get-text", "-p", "3", "--since", "g2.l40", "--cursor-only" };
+    const r = parse(&args).?;
+    try std.testing.expectEqual(IpcCommand.get_text, r.command);
+    try std.testing.expect(r.has_since);
+    try std.testing.expectEqual(@as(u32, 2), r.since_gen);
+    try std.testing.expectEqual(@as(u64, 40), r.since_line);
+    try std.testing.expect(r.cursor_only);
+    try std.testing.expectEqual(@as(u32, 3), r.pane_id);
+
+    // Empty token seeds (has_since true, gen/line 0).
+    const args2 = [_][:0]const u8{ "attyx", "get-text", "--since", "" };
+    const r2 = parse(&args2).?;
+    try std.testing.expect(r2.has_since and r2.since_line == 0);
 }

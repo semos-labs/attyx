@@ -25,6 +25,25 @@ const max_clients: usize = 16;
 /// transitions, each record self-tagged with its `session` id in the NDJSON.
 pub const all_sessions: u32 = 0xFFFFFFFF;
 
+/// Push current agent status + usage for every agent pane in `session` to a
+/// freshly attached grid-sync client (the window). Tab indicators are driven by
+/// per-pane agent status, but the live broadcast only ships it for the *active*
+/// pane — so without this, a window attaching at launch shows no dots for agents
+/// in background tabs until each is focused (which makes its agent redraw and
+/// re-emit). This sends the typed pane_agent_status/usage messages the window
+/// already applies by daemon pane id, regardless of focus.
+pub fn sendStatusSnapshotToClient(cl: *DaemonClient, session: *DaemonSession) void {
+    var ids: [session_mod.max_panes_per_session]u32 = undefined;
+    const n = session.collectPaneIds(&ids);
+    for (ids[0..n]) |pid| {
+        const pane = session.findPane(pid) orelse continue;
+        const eng = pane.engine orelse continue;
+        if (eng.state.agent_status == .none) continue;
+        cl.sendPaneAgentStatus(pid, @intFromEnum(eng.state.agent_status), eng.state.agentMsg());
+        cl.sendPaneAgentUsage(pid, eng.state.agentUsage());
+    }
+}
+
 /// Send the current set of active agents (status != none) in `session` to a
 /// freshly-parked watcher, so it has full state without waiting for the next
 /// transition. Honors the watcher's pane filter.

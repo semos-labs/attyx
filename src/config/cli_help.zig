@@ -59,6 +59,7 @@ const commands =
     cmd("skill <install|uninstall>  ", "Install/remove the Claude Code skill") ++
     cmd("daemon                     ", "Run the session daemon") ++
     cmd("kill-daemon                ", "Kill the session daemon and remove socket") ++
+    cmd("restart-daemon             ", "Hot-restart the daemon, preserving sessions (picks up a replaced binary)") ++
     cmd("mcp                        ", "Run the MCP server (stdio) for AI agents") ++
     cmd("dashboard [--once]         ", "Full-screen view of agents across all sessions") ++
     "\n";
@@ -106,6 +107,7 @@ const ipc_misc =
     "  " ++ d ++ "Utilities" ++ r ++ "\n" ++
     cmd("list [tabs|splits|sessions|agents] [--json]   ", "Query tabs, panes, sessions, or agents") ++
     cmd("watch agents [--json]   ", "Stream agent status/usage changes (live)") ++
+    cmd("agent send|await|read -p <id> ...   ", "Drive another agent: send a prompt, await its turn") ++
     cmd("scroll-to <top|bottom|page-up|page-down>   ", "Scroll the viewport") ++
     cmd("reload                 ", "Hot-reload config from disk") ++
     cmd("theme <name>           ", "Switch to a named theme") ++

@@ -46,6 +46,7 @@ pub const handlePopupExit = actions.handlePopupExit;
 
 pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLIN: i16 = 0x0001;
+    const POLLOUT: i16 = 0x0004;
     const POLLHUP: i16 = 0x0010;
     var buf: [65536]u8 = undefined;
     var last_published_vp: usize = 0;
@@ -756,7 +757,10 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         // Session socket fd (shared by all daemon-backed panes)
         const session_fd_idx: ?usize = if (ctx.session_client) |sc| blk: {
             const idx = nfds;
-            fds[nfds] = .{ .fd = sc.pollFd(), .events = POLLIN, .revents = 0 };
+            // Watch for writability too when outbound bytes are queued, so a
+            // send that hit backpressure flushes the moment the socket drains.
+            const events: i16 = POLLIN | (if (sc.hasPendingOut()) POLLOUT else 0);
+            fds[nfds] = .{ .fd = sc.pollFd(), .events = events, .revents = 0 };
             nfds += 1;
             break :blk idx;
         } else null;
@@ -884,6 +888,18 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                         continue :outer;
                     }
                 }
+            }
+        }
+        // Drain the outbound queue now the socket may have room (we just read,
+        // so the daemon is likely reading too). A queued frame from this loop's
+        // IPC handlers — e.g. focus_panes during a cross-session jump — goes out
+        // here without ever blocking the thread. A fatal send error means the
+        // stream is unrecoverable; reconnect to resync.
+        if (ctx.session_client) |sc_flush| {
+            sc_flush.flushOut();
+            if (sc_flush.sendFailed()) {
+                handleDaemonDeath(ctx);
+                continue :outer;
             }
         }
         if (ctx.session_client) |sc| {
@@ -1674,6 +1690,7 @@ fn createFreshSession(ctx: *PtyThreadCtx, sc: *@import("../session_client.zig").
         return false;
     };
     pane.daemon_pane_id = attach_result.pane_ids[0];
+    ctx.tab_mgr.assignIpcId(pane); // ipc_id == daemon_pane_id for targeting
     ctx.tab_mgr.tabs[0] = SplitLayout.init(pane);
     ctx.tab_mgr.count = 1;
     ctx.tab_mgr.active = 0;

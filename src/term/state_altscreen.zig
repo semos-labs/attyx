@@ -56,6 +56,7 @@ pub fn enterAltScreen(self: *TerminalState) void {
     self.saved_cursor = null;
     self.wrap_next = false;
     self.alt_active = true;
+    self.ring.layout_gen +%= 1; // screen content swapped → invalidate --since cursors
     self.kittyResetFlags();
     self.dirty.markAll(self.ring.screen_rows);
 }
@@ -64,6 +65,7 @@ pub fn leaveAltScreen(self: *TerminalState) void {
     if (!self.alt_active) return;
     swapBuffers(self);
     self.alt_active = false;
+    self.ring.layout_gen +%= 1; // screen content swapped back → invalidate cursors
     self.kittyResetFlags();
     self.dirty.markAll(self.ring.screen_rows);
 }

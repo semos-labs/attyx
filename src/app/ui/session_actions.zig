@@ -150,6 +150,7 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
             return;
         };
         pane.daemon_pane_id = attach_result.pane_ids[0];
+        ctx.tab_mgr.assignIpcId(pane); // ipc_id == daemon_pane_id for targeting
         ctx.tab_mgr.tabs[0] = split_layout_mod.SplitLayout.init(pane);
         ctx.tab_mgr.count = 1;
         ctx.tab_mgr.active = 0;

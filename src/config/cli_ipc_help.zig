@@ -27,6 +27,7 @@ pub const top_level =
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
     \\  list         Query tabs, panes, sessions, and agents (supports --json)
     \\  watch        Stream agent status/usage changes live (table; --json for NDJSON)
+    \\  agent        Drive another agent: send a prompt, await its turn, read its last message
     \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
@@ -35,6 +36,8 @@ pub const top_level =
     \\  -s, --session <id>   Target a specific session directly via the daemon
     \\                       (works without that session being attached)
     \\  --json               Output in JSON format (for scripts and agents)
+    \\  --color/--no-color   Force/disable ANSI color (default: auto — color on a
+    \\                       terminal, plain when piped). Affects list/watch agents.
     \\  --help, -h           Show this help (works on every subcommand)
     \\
     \\Examples:
@@ -394,7 +397,8 @@ pub const send_keys =
 pub const get_text =
     \\Read visible text (or scrollback history) from a pane.
     \\
-    \\Usage: attyx get-text [--pane <target>] [--lines <N>] [--json]
+    \\Usage: attyx get-text [--pane <target>] [--lines <N>] [--since <cursor>]
+    \\                      [--cursor-only] [--json]
     \\
     \\By default, returns the current screen content of the specified pane
     \\(or the focused pane if --pane is not given). With --lines N, returns
@@ -407,18 +411,34 @@ pub const get_text =
     \\  --lines, -n <N>       Return the last N rows from scrollback + visible
     \\                        screen, instead of just the visible screen. Capped
     \\                        at the pane's scrollback depth.
+    \\  --since <cursor>      Incremental capture: return only rows produced since
+    \\                        the cursor from a previous read. Use "" to seed
+    \\                        (returns the current screen + a starting cursor). The
+    \\                        next cursor prints to stderr as `cursor: g<gen>.l<n>`;
+    \\                        pass it back next time. Treat it as opaque. With
+    \\                        --lines, caps a long catch-up read to the last N rows.
+    \\  --cursor-only         With --since, print just the next cursor to stdout
+    \\                        (no text) — advance without consuming output.
     \\
     \\Output format (plain text):
-    \\  One line per row. Trailing whitespace is trimmed per row.
+    \\  One line per row. Trailing whitespace is trimmed per row. With --since, new
+    \\  rows go to stdout and the next cursor to stderr; `truncated` (output
+    \\  scrolled past retained scrollback) and `reset` (layout changed — text is a
+    \\  fresh baseline) show as stderr notes.
     \\
     \\Output format (--json):
-    \\  { "lines": ["row1", "row2", ...] }
+    \\  { "lines": ["row1", "row2", ...] }   — or, with --since:
+    \\  { "cursor":"g3.l10581", "text":"...", "truncated":false, "reset":false,
+    \\    "rows":2 }
     \\
     \\Examples:
     \\  attyx get-text                         Print screen content
     \\  attyx get-text --pane 3                Read from pane 3
     \\  attyx get-text -n 100                  Last 100 rows (scrollback + screen)
     \\  attyx get-text -p 5 -n 500             Last 500 rows from pane 5
+    \\  # Tail a build: seed once, then read only the new output each tick.
+    \\  attyx get-text -p 3 --since "" 2>cur   Seed; cursor saved to file `cur`
+    \\  attyx get-text -p 3 --since "$(cut -d' ' -f2 cur)" 2>cur   New rows only
     \\
     \\Tip: After running a command with send-keys, wait briefly before
     \\calling get-text to give the command time to produce output.
@@ -610,5 +630,64 @@ pub const run =
     \\  attyx run htop
     \\  attyx run "make test" --wait
     \\  attyx run claude
+    \\
+;
+
+pub const agent =
+    \\Drive another agent: send it a prompt and wait for its turn to finish.
+    \\
+    \\Usage:
+    \\  attyx agent send -p <id> "<prompt>" [--wait] [--capture] [--tokens]
+    \\                   [--timeout <s>] [--submit-key <key>] [--json]
+    \\  attyx agent await -p <id> [--state idle|input|any] [--timeout <s>] [--json]
+    \\  attyx agent read -p <id> [--offset <n>] [--count <n>] [-s <sess>] [--json]
+    \\
+    \\`agent send` types the prompt into the pane's agent (as a bracketed paste,
+    \\so multi-line prompts and `{`/`}`/`\` are literal) and presses the submit
+    \\key. Without --wait it returns immediately. With --wait it blocks until the
+    \\agent's turn completes and reports the outcome.
+    \\
+    \\`agent await` sends nothing — it just blocks until the pane's agent reaches
+    \\a state (the formalized `watch agents | while …` pattern).
+    \\
+    \\`agent read` returns the agent's last message from its transcript file (not
+    \\the screen). --offset <n> returns the n-th message back (0 = last); --count
+    \\<n> returns the last n messages (oldest first), ending at the offset. Only
+    \\agents that report a transcript (Claude Code, Codex) are supported.
+    \\
+    \\Options (send):
+    \\  --pane, -p <id>     Target pane (required). From 'attyx list agents'.
+    \\  --wait              Block until the turn completes (implied by --capture
+    \\                      and --tokens).
+    \\  --capture           Include only the output the turn produced (uses
+    \\                      get-text --since under the hood).
+    \\  --tokens            Include the per-turn token/cost delta.
+    \\  --timeout <s>       Stop waiting after N seconds (default 600). The agent
+    \\                      is never interrupted — we just stop watching.
+    \\  --submit-key <key>  Key that submits the prompt (default {Enter}).
+    \\Options (await):
+    \\  --pane, -p <id>     Target pane (required).
+    \\  --state <s>         Wait for idle (default), input, or any.
+    \\  --timeout <s>       Stop waiting after N seconds (default 600).
+    \\Options (read):
+    \\  --pane, -p <id>     Target pane (required).
+    \\  --offset, -o <n>    Messages back from the last (default 0 = last).
+    \\  --count, -c <n>     Return the last n messages, oldest first (default 1).
+    \\  -s <sess>           Read an agent in a specific session.
+    \\
+    \\Outcomes (and exit codes): done (0) · needs_input (2) · timeout (3) ·
+    \\no_turn / ended (4). So `attyx agent send -p 3 "run tests" --wait && deploy`
+    \\runs deploy only if the turn finished cleanly.
+    \\
+    \\Plain output: a one-line summary to stderr; with --capture the turn's output
+    \\goes to stdout (so it pipes). --json returns the full result object.
+    \\
+    \\Examples:
+    \\  attyx agent send -p 3 "run the tests and fix failures" --wait
+    \\  attyx agent send -p 3 "summarize src/api" --wait --capture --json
+    \\  attyx agent await -p 3 --state any        # block until done or needs input
+    \\  attyx agent read -p 3                      # the agent's last message
+    \\  attyx agent read -p 3 --offset 1           # the message before that
+    \\  attyx agent read -p 3 --count 5            # the last 5 messages
     \\
 ;

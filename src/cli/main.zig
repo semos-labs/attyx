@@ -297,6 +297,70 @@ fn doKillDaemonPosix() void {
     std.fs.deleteFileAbsolute(socket_path) catch {};
 }
 
+/// `attyx restart-daemon` — hot-restart the daemon, preserving sessions. Sends a
+/// `hello` with a sentinel version so the daemon's existing version-mismatch path
+/// fires its hot-upgrade handoff (serialize sessions → re-exec the on-disk binary
+/// → restore). This is the same mechanism the app updater triggers, so a daemon
+/// left running on an old binary (e.g. after a manual app replace) picks up the
+/// new code without losing panes. Unconditional by design — we don't compare
+/// versions here; the sentinel always mismatches, forcing the restart. Distinct
+/// from `kill-daemon`, which fully terminates the daemon and removes the socket.
+pub fn doRestartDaemon() void {
+    const stdout = std.fs.File.stdout();
+    if (comptime is_windows) {
+        stdout.writeAll("restart-daemon is not supported on this platform.\n") catch {};
+        return;
+    }
+
+    var path_buf: [256]u8 = undefined;
+    const socket_path = getSocketPath(&path_buf) orelse {
+        stdout.writeAll("error: HOME not set\n") catch {};
+        return;
+    };
+
+    const fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        return;
+    };
+    defer std.posix.close(fd);
+    const addr = std.net.Address.initUnix(socket_path) catch {
+        stdout.writeAll("No daemon running.\n") catch {};
+        return;
+    };
+    std.posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
+        stdout.writeAll("No daemon running (stale socket removed).\n") catch {};
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+        return;
+    };
+
+    // Frame a `hello` (msg_type 0x0F): payload = [vlen:u8][version][caps:u32 LE].
+    // `caps` is irrelevant to the upgrade trigger, so 0 is fine. Layout must match
+    // protocol.encodeHello / decodeHello in src/app/daemon/protocol.zig.
+    const ver = "force-restart"; // never equals a real semver → always triggers
+    const payload_len: u32 = 1 + ver.len + 4;
+    var frame: [5 + 1 + ver.len + 4]u8 = undefined;
+    std.mem.writeInt(u32, frame[0..4], payload_len, .little);
+    frame[4] = 0x0F; // hello
+    frame[5] = ver.len; // vlen
+    @memcpy(frame[6 .. 6 + ver.len], ver);
+    std.mem.writeInt(u32, frame[6 + ver.len ..][0..4], 0, .little); // caps
+
+    _ = std.posix.write(fd, &frame) catch {
+        stdout.writeAll("error: failed to reach the daemon\n") catch {};
+        return;
+    };
+
+    // Wait for the hello_ack so we know the daemon received the request (the
+    // hot-upgrade itself runs right after, on the daemon's next loop pass).
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+    const ready = std.posix.poll(&fds, 3000) catch 0;
+    if (ready == 0) {
+        stdout.writeAll("Restart requested, but the daemon did not acknowledge (it may be an older build). Sessions are unaffected.\n") catch {};
+        return;
+    }
+    stdout.writeAll("Restarting daemon (preserving sessions)... done.\n") catch {};
+}
+
 fn getPeerPid(fd: std.posix.fd_t) ?std.posix.pid_t {
     if (comptime builtin.os.tag == .macos) {
         // macOS: SOL_LOCAL=0, LOCAL_PEERPID=2
@@ -364,139 +428,20 @@ pub fn doUninstall() void {
     stdout.writeAll("\nAttyx data cleaned up. You can now run `brew uninstall attyx`.\n") catch {};
 }
 
-// ── Skill auto-update ──
+// ── Skill install (implementation in skill.zig) ──
 
-const skill_content_raw = @import("skill_data").content;
-const is_dev = @import("builtin").mode == .Debug;
-const skill_name = if (is_dev) "attyx-dev" else "attyx";
-/// In dev builds, rewrite the frontmatter name so the skill registers as /attyx-dev.
-const skill_content = if (is_dev) replaceSkillName() else skill_content_raw;
+const skill = @import("skill.zig");
 
-fn replaceSkillName() []const u8 {
-    @setEvalBranchQuota(skill_content_raw.len * 2);
-    const needle = "name: attyx\n";
-    const replacement = "name: attyx-dev\n";
-    const idx = std.mem.indexOf(u8, skill_content_raw, needle) orelse return skill_content_raw;
-    return skill_content_raw[0..idx] ++ replacement ++ skill_content_raw[idx + needle.len ..];
-}
-
-/// Silently update installed skills if they exist. Called on app launch.
+/// Silently refresh every globally-installed skill on app launch.
 pub fn autoUpdateSkills() void {
-    const home = getHomeDir() orelse return;
-    var file_buf: [512]u8 = undefined;
-    const file_path = std.fmt.bufPrint(&file_buf, "{s}/.claude/skills/{s}/SKILL.md", .{ home, skill_name }) catch return;
-
-    // Only update if already installed — don't create if user never ran `attyx skill install`
-    std.fs.accessAbsolute(file_path, .{}) catch return;
-
-    const file = std.fs.cwd().createFile(file_path, .{}) catch return;
-    defer file.close();
-    file.writeAll(skill_content) catch {};
+    skill.autoUpdateSkills();
 }
 
-// ── Skill install/uninstall ──
-
+/// `attyx skill <install|uninstall>` — interactive multi-agent installer
+/// (Claude Code, Codex, opencode, Pi). See skill.zig.
 pub fn doSkill(args: []const [:0]const u8) void {
-    const stdout = std.fs.File.stdout();
-
-    // Parse sub-subcommand: attyx skill <install|uninstall>
-    const sub = if (args.len > 2) args[2] else "";
-
-    if (std.mem.eql(u8, sub, "install")) {
-        doSkillInstall(stdout);
-    } else if (std.mem.eql(u8, sub, "uninstall")) {
-        doSkillUninstall(stdout);
-    } else {
-        stdout.writeAll(skill_help) catch {};
-    }
+    skill.doSkill(args);
 }
-
-fn doSkillInstall(stdout: std.fs.File) void {
-    const home = getHomeDir() orelse {
-        stdout.writeAll("error: HOME not set\n") catch {};
-        return;
-    };
-
-    // Build path: ~/.claude/skills/{skill_name}/SKILL.md
-    var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/{s}", .{ home, skill_name }) catch {
-        stdout.writeAll("error: path too long\n") catch {};
-        return;
-    };
-
-    var file_buf: [512]u8 = undefined;
-    const file_path = std.fmt.bufPrint(&file_buf, "{s}/SKILL.md", .{dir_path}) catch {
-        stdout.writeAll("error: path too long\n") catch {};
-        return;
-    };
-
-    // Create directory tree
-    std.fs.cwd().makePath(dir_path) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error: could not create {s}: {s}\n", .{ dir_path, @errorName(err) }) catch "error: could not create skill directory\n";
-        stdout.writeAll(msg) catch {};
-        return;
-    };
-
-    // Write SKILL.md
-    const file = std.fs.cwd().createFile(file_path, .{}) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error: could not write {s}: {s}\n", .{ file_path, @errorName(err) }) catch "error: could not write skill file\n";
-        stdout.writeAll(msg) catch {};
-        return;
-    };
-    defer file.close();
-    file.writeAll(skill_content) catch {
-        stdout.writeAll("error: failed to write skill content\n") catch {};
-        return;
-    };
-
-    var msg_buf: [256]u8 = undefined;
-    const install_msg = std.fmt.bufPrint(&msg_buf, "Installed Claude Code skill to ~/.claude/skills/{s}/\nUse /{s} in Claude Code to control the terminal.\n", .{ skill_name, skill_name }) catch return;
-    stdout.writeAll(install_msg) catch {};
-}
-
-fn doSkillUninstall(stdout: std.fs.File) void {
-    const home = getHomeDir() orelse {
-        stdout.writeAll("error: HOME not set\n") catch {};
-        return;
-    };
-
-    var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.claude/skills/{s}", .{ home, skill_name }) catch {
-        stdout.writeAll("error: path too long\n") catch {};
-        return;
-    };
-
-    std.fs.cwd().deleteTree(dir_path) catch |err| {
-        if (err == error.FileNotFound) {
-            stdout.writeAll("Skill not installed.\n") catch {};
-            return;
-        }
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error: could not remove {s}: {s}\n", .{ dir_path, @errorName(err) }) catch "error: could not remove skill\n";
-        stdout.writeAll(msg) catch {};
-        return;
-    };
-
-    var msg_buf: [256]u8 = undefined;
-    const rm_msg = std.fmt.bufPrint(&msg_buf, "Removed Claude Code skill from ~/.claude/skills/{s}/\n", .{skill_name}) catch return;
-    stdout.writeAll(rm_msg) catch {};
-}
-
-const skill_help =
-    \\Install or remove the Attyx skill for Claude Code.
-    \\
-    \\Usage: attyx skill <command>
-    \\
-    \\Commands:
-    \\  install      Install the /attyx skill to ~/.claude/skills/attyx/
-    \\  uninstall    Remove the /attyx skill
-    \\
-    \\The skill lets Claude Code control Attyx via IPC — manage splits,
-    \\send input, read output, and orchestrate panes.
-    \\
-;
 
 pub fn printField(stdout: std.fs.File, label: []const u8, value: []const u8) void {
     var buf: [512]u8 = undefined;

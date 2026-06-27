@@ -75,6 +75,10 @@ pub fn processTabActions(ctx: *PtyThreadCtx) void {
                     return;
                 };
                 new_pane.daemon_pane_id = pane_id;
+                // addDaemonTab assigned a placeholder IPC id before the daemon
+                // id was known; re-assign now so ipc_id == daemon_pane_id and
+                // the cross-session dashboard can target this tab.
+                ctx.tab_mgr.assignIpcId(new_pane);
                 logging.info("tabs", "new tab: daemon pane {d}", .{pane_id});
             } else {
                 // Non-session mode: spawn a local PTY with foreground CWD.

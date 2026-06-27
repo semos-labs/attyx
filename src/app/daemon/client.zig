@@ -424,8 +424,10 @@ pub const DaemonClient = struct {
                 var ready: u8 = 0;
                 var working: u8 = 0;
                 var attention: u8 = 0;
+                var panes: u8 = 0;
                 for (&s.panes) |*pslot| {
                     if (pslot.*) |*p| {
+                        panes +|= 1;
                         const eng = p.engine orelse continue;
                         switch (eng.state.agent_status) {
                             .idle => ready +|= 1,
@@ -442,6 +444,7 @@ pub const DaemonClient = struct {
                     .ready = ready,
                     .working = working,
                     .attention = attention,
+                    .pane_count = panes,
                 };
                 access[count] = s.last_accessed;
                 count += 1;

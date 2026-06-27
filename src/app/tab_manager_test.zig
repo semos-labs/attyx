@@ -191,6 +191,49 @@ test "reconstructFromLayout: next_ipc_id stays above max daemon id" {
     try std.testing.expect(local_pane.ipc_id != 100);
 }
 
+test "findPaneWithLayout: matches daemon pane id when ipc_id diverges" {
+    const allocator = std.testing.allocator;
+    const pane = try createTestPane(allocator);
+    var mgr = TabManager.init(allocator, pane);
+    defer destroyMgr(&mgr);
+
+    // Force a divergence like a live-created pane carried before id unification.
+    pane.daemon_pane_id = 42;
+    pane.ipc_id = 7;
+
+    // Found by ipc_id…
+    try std.testing.expect(mgr.findPaneWithLayout(7) != null);
+    // …and by daemon pane id (the cross-session dashboard's lookup)…
+    const by_daemon = mgr.findPaneWithLayout(42);
+    try std.testing.expect(by_daemon != null);
+    try std.testing.expectEqual(pane, by_daemon.?.pane);
+    // …but not by an unrelated id.
+    try std.testing.expect(mgr.findPaneWithLayout(99) == null);
+}
+
+test "assignIpcId: daemon-backed pane adopts its daemon pane id" {
+    const allocator = std.testing.allocator;
+    var mgr = TabManager{ .allocator = allocator };
+    defer destroyMgr(&mgr);
+
+    // Live-create order: a placeholder pane gets a counter id, then the real
+    // daemon id arrives and a re-assign must switch ipc_id to it (so the
+    // cross-session dashboard, which targets by daemon pane id, can find it).
+    var pane = try createTestPane(allocator);
+    defer {
+        pane.engine.deinit();
+        allocator.destroy(pane);
+    }
+    pane.daemon_pane_id = @import("pane.zig").Pane.daemon_backed_placeholder_id;
+    mgr.assignIpcId(pane); // placeholder → counter
+    try std.testing.expect(pane.ipc_id != 4242);
+
+    pane.daemon_pane_id = 4242;
+    mgr.assignIpcId(pane); // real id → adopt it
+    try std.testing.expectEqual(@as(u32, 4242), pane.ipc_id);
+    try std.testing.expect(mgr.next_ipc_id > 4242);
+}
+
 test "reconstructFromLayout: high daemon ids near u32 max" {
     const allocator = std.testing.allocator;
 

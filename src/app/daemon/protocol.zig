@@ -241,6 +241,10 @@ pub const CtlOp = enum(u8) {
     /// rows. pane_filter != 0 restricts output to that pane. Replies with the
     /// listing built from the session's live engines.
     list_agents = 0x0F,
+    /// op_body: [pane_id:u32][gen:u32][line:u64][lines:u32] — incremental capture.
+    /// Replies with the JSON {cursor,text,truncated,reset,rows} object (§ get-text
+    /// --since). `line == 0` seeds from the current screen.
+    get_text_since = 0x10,
 };
 
 /// `list` ctl op kinds (first byte of op_body).
@@ -353,6 +357,8 @@ pub const SessionEntry = struct {
     ready: u8 = 0,
     working: u8 = 0,
     attention: u8 = 0,
+    /// Total panes in the session (all panes, not just agent panes).
+    pane_count: u8 = 0,
 };
 
 /// Order entries by recency of access — most recently accessed first.
@@ -405,6 +411,14 @@ pub fn encodeSessionList(buf: []u8, entries: []const SessionEntry) ![]u8 {
         buf[pos + 2] = entry.attention;
         pos += 3;
     }
+    // Trailing pane-count block — 1 byte per entry, appended after the status
+    // block. A separate block (rather than a 4th status byte) keeps older
+    // decoders, which read only the 3-byte block, correctly aligned.
+    if (pos + entries.len > buf.len) return error.BufferTooSmall;
+    for (entries) |entry| {
+        buf[pos] = entry.pane_count;
+        pos += 1;
+    }
     return buf[0..pos];
 }
 
@@ -416,6 +430,7 @@ pub const DecodedListEntry = struct {
     ready: u8 = 0,
     working: u8 = 0,
     attention: u8 = 0,
+    pane_count: u8 = 0,
 };
 
 /// Decode SessionList payload: count:u16, entries:[{id:u32, name_len:u16, name:[N]u8, alive:u8}]
@@ -447,6 +462,14 @@ pub fn decodeSessionList(payload: []const u8, out: []DecodedListEntry) !u16 {
             out[i].working = payload[pos + 1];
             out[i].attention = payload[pos + 2];
             pos += 3;
+        }
+        // Optional trailing pane-count block: 1 byte per entry after the status
+        // block (only newer encoders emit it).
+        if (pos + @as(usize, count) <= payload.len) {
+            for (0..decoded) |i| {
+                out[i].pane_count = payload[pos];
+                pos += 1;
+            }
         }
     }
     return decoded;
@@ -1215,8 +1238,8 @@ test "orderEntriesByAccess: most recent first, stable for ties" {
 test "session list round-trip" {
     var buf: [256]u8 = undefined;
     const entries = [_]SessionEntry{
-        .{ .id = 1, .name = "shell", .alive = true, .ready = 2, .working = 1, .attention = 0 },
-        .{ .id = 2, .name = "vim", .alive = false, .ready = 0, .working = 0, .attention = 3 },
+        .{ .id = 1, .name = "shell", .alive = true, .ready = 2, .working = 1, .attention = 0, .pane_count = 3 },
+        .{ .id = 2, .name = "vim", .alive = false, .ready = 0, .working = 0, .attention = 3, .pane_count = 5 },
     };
     const payload = try encodeSessionList(&buf, &entries);
 
@@ -1229,10 +1252,12 @@ test "session list round-trip" {
     try std.testing.expectEqual(@as(u8, 2), decoded[0].ready);
     try std.testing.expectEqual(@as(u8, 1), decoded[0].working);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
+    try std.testing.expectEqual(@as(u8, 3), decoded[0].pane_count);
     try std.testing.expectEqual(@as(u32, 2), decoded[1].id);
     try std.testing.expectEqualStrings("vim", decoded[1].name);
     try std.testing.expect(!decoded[1].alive);
     try std.testing.expectEqual(@as(u8, 3), decoded[1].attention);
+    try std.testing.expectEqual(@as(u8, 5), decoded[1].pane_count);
 }
 
 test "session list: old-format payload (no status block) decodes with zero counts" {
@@ -1258,6 +1283,35 @@ test "session list: old-format payload (no status block) decodes with zero count
     try std.testing.expectEqual(@as(u8, 0), decoded[0].ready);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].working);
     try std.testing.expectEqual(@as(u8, 0), decoded[0].attention);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].pane_count);
+}
+
+test "session list: status block but no pane-count block decodes pane_count 0" {
+    // An encoder that emits the 3-byte status block but not the newer pane-count
+    // block (a version in between). pane_count must decode to 0, not garbage.
+    var buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    std.mem.writeInt(u16, buf[0..2], 1, .little);
+    pos = 2;
+    std.mem.writeInt(u32, buf[pos..][0..4], 7, .little);
+    pos += 4;
+    const name = "mid";
+    std.mem.writeInt(u16, buf[pos..][0..2], name.len, .little);
+    pos += 2;
+    @memcpy(buf[pos .. pos + name.len], name);
+    pos += name.len;
+    buf[pos] = 1; // alive
+    pos += 1;
+    buf[pos] = 4; // ready
+    buf[pos + 1] = 0; // working
+    buf[pos + 2] = 0; // attention
+    pos += 3;
+
+    var decoded: [8]DecodedListEntry = undefined;
+    const count = try decodeSessionList(buf[0..pos], &decoded);
+    try std.testing.expectEqual(@as(u16, 1), count);
+    try std.testing.expectEqual(@as(u8, 4), decoded[0].ready);
+    try std.testing.expectEqual(@as(u8, 0), decoded[0].pane_count);
 }
 
 test "create_pane round-trip" {

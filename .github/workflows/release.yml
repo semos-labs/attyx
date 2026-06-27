@@ -58,16 +58,21 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED"
 
-          # Paths considered non-source; pushes that only touch these are skipped.
-          NON_SOURCE='^(releases/|docs/|README(\.[a-zA-Z-]+)?\.md$|LICENSE$|CLAUDE\.md$|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|\.gitignore$)'
+          # Allowlist of paths that actually affect the built artifact.
+          # Pushes that touch nothing here are skipped. Covers all compiled
+          # sources (Zig + ObjC/C under src/), the build config, the embedded
+          # asset roots (icon_data, themes/*.toml, the bundled skill), the
+          # packaging inputs (Info.plist, entitlements, icon, .desktop file),
+          # and the build workflow itself.
+          SOURCE='^(src/|build\.zig$|build\.zig\.zon$|resources/|images/|themes/|skills/claude/attyx/|\.github/workflows/release\.yml$)'
 
-          CODE_CHANGED=$(echo "$CHANGED" | grep -vE "$NON_SOURCE" || true)
+          CODE_CHANGED=$(echo "$CHANGED" | grep -E "$SOURCE" || true)
           if [[ -n "$CODE_CHANGED" ]]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "Source changes detected → build"
           else
             echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "Docs-only change → skip build"
+            echo "No source changes → skip build"
           fi
 
   # ── Resolve which GitHub Release to attach artifacts to ──

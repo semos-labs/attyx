@@ -464,12 +464,18 @@ const emitter_script =
 /// statusline (base64 in $1, `_` if none) so it still renders. Delegation runs
 /// regardless of attyx env — the wrapper IS their statusLine now.
 ///
-/// Field map (Claude Code statusLine schema, verified against a live v2.1.193
-/// payload): `total_input_tokens` already folds in cache reads/creation and there
-/// is no cumulative cache breakdown, so `in` is the cache-inclusive session input
-/// and we don't emit separate cr/cw. `ctx` is the current window occupancy (sum
-/// of current_usage). Cost comes straight from Claude, so token granularity never
-/// affects the dollar figure.
+/// Field map (Claude Code statusLine schema): `total_input_tokens` folds in cache
+/// reads/creation, so `in` is the cache-inclusive input and we don't emit separate
+/// cr/cw. `ctx` is the current window occupancy (sum of current_usage). Cost comes
+/// straight from Claude, so token granularity never affects the dollar figure.
+///
+/// NOTE: as of Claude Code v2.1.132 `total_input_tokens`/`total_output_tokens` are
+/// the counts *currently in the context window* (they DROP on compaction), not
+/// cumulative session totals — there is no cumulative token field in the payload.
+/// We forward the raw value; the engine turns `out` into a real session total by
+/// summing positive deltas (see TerminalState.applyAgentUsageOsc). `in` is left as
+/// the current-window figure (cumulative input is meaningless — it re-counts the
+/// resent context every turn).
 const statusline_script =
     \\#!/bin/sh
     \\# Attyx Claude statusline wrapper. See agent_integration.zig.
@@ -485,6 +491,7 @@ const statusline_script =
     \\  add ctxmax "$(get '.context_window.context_window_size')"
     \\  add cost "$(get '.cost.total_cost_usd')"
     \\  add model "$(get '.model.id')"
+    \\  add tx "$(get '.transcript_path')"
     \\  [ -n "$kv" ] && printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
     \\fi
     \\# Delegate to the user's previous statusline so it still renders.

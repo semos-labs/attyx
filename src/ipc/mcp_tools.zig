@@ -25,9 +25,12 @@ const TOOLS_RAW =
     \\{"name":"list_tabs","description":"List tabs in the current (or targeted) session.","inputSchema":{"type":"object","properties":{"session":{"type":"integer"}}}},
     \\{"name":"list_panes","description":"List panes (splits) with their stable IPC ids.","inputSchema":{"type":"object","properties":{"session":{"type":"integer"}}}},
     \\{"name":"list_agents","description":"List AI agents running in panes with status and usage. Returns JSON: each agent has pane_id, tab_id, session, pid, state (idle|working|input), message, and a usage object with input_tokens, output_tokens, context_used, context_max (context window size), cost_usd, cost_is_estimate, and model. Unknown usage fields are omitted (absent = unknown, not zero).","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Restrict to one pane id."},"session":{"type":"integer"}}}},
-    \\{"name":"get_text","description":"Capture visible screen text of a pane. With 'lines', captures that many trailing rows from scrollback.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"lines":{"type":"integer","description":"Trailing rows to capture (omit for visible screen)."},"session":{"type":"integer"}}}},
+    \\{"name":"get_text","description":"Capture a pane's screen text. With 'lines', captures that many trailing rows from scrollback. Pass the 'cursor' from a previous result as 'since' to get ONLY the new output since that read (incremental tailing) — the result is {cursor,text,truncated,reset,rows}; feed 'cursor' back next time. Use since:\"\" to seed (returns the current screen + a starting cursor).","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"lines":{"type":"integer","description":"Trailing rows to capture (omit for visible screen)."},"since":{"type":"string","description":"Cursor from a previous get_text result; returns only new rows since then. Empty string seeds from the current screen."},"cursor_only":{"type":"boolean","description":"Return just the next cursor, no text."},"session":{"type":"integer"}}}},
     \\{"name":"send_keys","description":"Send keystrokes/text to a pane. Supports C-style escapes (\\n, \\t, \\x03) and named keys like {Enter} {Down}.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}},"required":["text"]}},
     \\{"name":"send_image","description":"Attach an image to a pane as if a file were dragged/pasted into the terminal (e.g. to give Claude Code a screenshot). Provide either 'path' (an image file already on disk) or 'data' (base64-encoded image bytes, materialized to a temp file). The image's file path is injected as a bracketed paste; Enter is NOT pressed.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to an image file on disk."},"data":{"type":"string","description":"Base64-encoded image bytes (used when no path is available)."},"filename":{"type":"string","description":"Optional original filename; its extension names the temp file when using 'data'."},"pane":{"type":"integer","description":"Pane id (omit for focused pane)."},"session":{"type":"integer"}}}},
+    \\{"name":"agent_send","description":"Send a prompt to the AI agent running in a pane and (by default) wait for its turn to finish. Use to drive another agent. Returns {outcome (done|needs_input|timeout|no_turn|ended), duration_ms, message, output, tokens}. The prompt is pasted (multi-line safe) and submitted; the agent is never interrupted.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer","description":"Target pane id (from list_agents)."},"text":{"type":"string","description":"The prompt to send."},"wait":{"type":"boolean","description":"Block until the turn completes (default true)."},"capture":{"type":"boolean","description":"Include the output the turn produced (default true)."},"tokens":{"type":"boolean","description":"Include the per-turn token/cost delta."},"timeout":{"type":"integer","description":"Seconds to wait before giving up (default 600)."},"session":{"type":"integer"}},"required":["pane","text"]}},
+    \\{"name":"agent_await","description":"Block until the agent in a pane reaches a state (idle, input, or any), without sending anything. Returns the outcome.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer"},"state":{"type":"string","enum":["idle","input","any"],"description":"State to wait for (default idle)."},"timeout":{"type":"integer","description":"Seconds (default 600)."},"session":{"type":"integer"}},"required":["pane"]}},
+    \\{"name":"agent_read","description":"Read an agent's transcript and return its last message (or, with offset n, the n-th message from the last). Reads the transcript file structurally, not the screen. Only agents that report a transcript file (Claude Code, Codex) are supported.","inputSchema":{"type":"object","properties":{"pane":{"type":"integer"},"offset":{"type":"integer","description":"Messages back from the last (0 = last, the default)."},"session":{"type":"integer"}},"required":["pane"]}},
     \\{"name":"focus","description":"Move keyboard focus between panes.","inputSchema":{"type":"object","properties":{"direction":{"type":"string","enum":["up","down","left","right"]},"session":{"type":"integer"}},"required":["direction"]}},
     \\{"name":"scroll","description":"Scroll the focused pane.","inputSchema":{"type":"object","properties":{"to":{"type":"string","enum":["top","bottom","page_up","page_down"]},"session":{"type":"integer"}},"required":["to"]}},
     \\{"name":"tab_create","description":"Open a new tab, optionally running a command. With wait=true, blocks until the command exits and returns its exit code + output.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"wait":{"type":"boolean"},"session":{"type":"integer"}}}},
@@ -82,6 +85,12 @@ fn getBool(args: ?std.json.ObjectMap, key: []const u8) bool {
     return v == .bool and v.bool;
 }
 
+fn getBoolOr(args: ?std.json.ObjectMap, key: []const u8, default: bool) bool {
+    const a = args orelse return default;
+    const v = a.get(key) orelse return default;
+    return if (v == .bool) v.bool else default;
+}
+
 fn u32Of(args: ?std.json.ObjectMap, key: []const u8) u32 {
     const n = getInt(args, key) orelse return 0;
     return if (n < 0) 0 else @intCast(n);
@@ -109,6 +118,31 @@ pub fn fill(name: []const u8, args: ?std.json.ObjectMap) ?IpcRequest {
     } else if (eql(u8, name, "get_text")) {
         r.command = .get_text;
         r.lines = u32Of(args, "lines");
+        if (getStr(args, "since")) |tok| {
+            r.has_since = true;
+            if (tok.len > 0) {
+                const c = @import("../config/cli_ipc.zig").Cursor.parse(tok) orelse return null;
+                r.since_gen = c.gen;
+                r.since_line = c.line;
+            }
+        }
+        r.cursor_only = getBool(args, "cursor_only");
+    } else if (eql(u8, name, "agent_send")) {
+        r.command = .agent_send;
+        r.text_arg = getStr(args, "text") orelse return null;
+        r.wait = getBoolOr(args, "wait", true);
+        r.agent_capture = getBoolOr(args, "capture", true);
+        r.agent_tokens = getBool(args, "tokens");
+        r.agent_timeout_s = u32Of(args, "timeout");
+    } else if (eql(u8, name, "agent_await")) {
+        r.command = .agent_await;
+        if (getStr(args, "state")) |s| {
+            r.agent_await_state = if (eql(u8, s, "input")) .input else if (eql(u8, s, "any")) .any else .idle;
+        }
+        r.agent_timeout_s = u32Of(args, "timeout");
+    } else if (eql(u8, name, "agent_read")) {
+        r.command = .agent_read;
+        r.agent_offset = u32Of(args, "offset");
     } else if (eql(u8, name, "send_keys")) {
         r.command = .send_keys;
         r.text_arg = getStr(args, "text") orelse return null;
