@@ -97,6 +97,8 @@ pub fn build(b: *std.Build) void {
 
     const cli_commands_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/main.zig"),
+        // Target set so this module can be used as a test root (skill.zig tests).
+        .target = target,
         .imports = &.{
             .{ .name = "attyx", .module = mod },
             .{ .name = "skill_data", .module = skill_data_mod },
@@ -394,6 +396,11 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    // CLI command tests live in their own module (src/cli/*), so they need their
+    // own test root — the main module's test target doesn't reach them.
+    const cli_tests = b.addTest(.{ .root_module = cli_commands_mod });
+    test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 
     // exe_tests links the platform layer (Metal on macOS, GLFW/GL/FreeType on
     // Linux) which requires GUI libraries. On macOS those frameworks are always
