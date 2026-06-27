@@ -319,15 +319,23 @@ fn list(sock: []const u8, parsed: IpcRequest, kind: dproto.CtlListKind) void {
 /// builds the same JSON/TSV records as the window-side `list agents`.
 fn listAgents(sock: []const u8, parsed: IpcRequest) void {
     var op_body: [5]u8 = undefined;
-    op_body[0] = if (parsed.json_output) 1 else 0;
+    op_body[0] = 1; // always fetch JSON; format the table client-side (TTY-aware)
     std.mem.writeInt(u32, op_body[1..5], parsed.pane_id, .little);
-    var resp_buf: [16384]u8 = undefined;
+    var resp_buf: [65536]u8 = undefined;
     const reply = ctlOrExit(sock, parsed.target_session, .list_agents, &op_body, &resp_buf);
     if (reply.status != 0) {
         reportError(reply.body);
         std.process.exit(1);
     }
-    printBody(reply.body);
+    if (parsed.json_output) {
+        printBody(reply.body);
+        return;
+    }
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var out = std.ArrayList(u8){};
+    @import("agents.zig").writeAgentTable(out.writer(arena.allocator()), arena.allocator(), reply.body, @import("client.zig").shouldColor(parsed.color_mode)) catch {};
+    std.fs.File.stdout().writeAll(out.items) catch {};
 }
 
 /// `watch agents -s N`. Connects to the daemon, parks the connection as a
@@ -365,7 +373,8 @@ pub fn watchAgents(parsed: IpcRequest) void {
     // Plain mode prints the same humanized table as `list agents`, streamed;
     // `--json` streams the raw NDJSON. (See client_watch for the shared helpers.)
     const client_watch = @import("client_watch.zig");
-    if (!parsed.json_output) client_watch.writeRowHeader(stdout);
+    const color = @import("client.zig").shouldColor(parsed.color_mode);
+    if (!parsed.json_output) client_watch.writeRowHeader(stdout, color);
     var hdr: [dproto.header_size]u8 = undefined;
     var payload_buf: [65536]u8 = undefined;
     while (true) {
@@ -380,7 +389,7 @@ pub fn watchAgents(parsed: IpcRequest) void {
                         stdout.writeAll(payload_buf[0..h.payload_len]) catch return;
                         if (payload_buf[h.payload_len - 1] != '\n') stdout.writeAll("\n") catch return;
                     } else {
-                        client_watch.writeRow(stdout, payload_buf[0..h.payload_len]);
+                        client_watch.writeRow(stdout, payload_buf[0..h.payload_len], color);
                     }
                 }
             },

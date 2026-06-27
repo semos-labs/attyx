@@ -11,29 +11,35 @@ const Model = model.Model;
 const Row = model.Row;
 const State = model.State;
 
-// Column display widths and the 2-col gutter between them.
+// Column display widths and the 2-col gutter between them. Column 0 is the
+// status dot; a 2-col selection marker (▶) is prepended outside buildLine.
 const gutter = "  ";
 const gw: u16 = 2;
-const mark_w: u16 = 2;
+const dot_w: u16 = 2;
 const session_w: u16 = 10;
 const pane_w: u16 = 5;
 const model_w: u16 = 16;
 const state_w: u16 = 8;
-const age_w: u16 = 6;
+const elapsed_w: u16 = 7;
 const in_w: u16 = 8;
 const out_w: u16 = 8;
 const ctx_w: u16 = 14;
 const cost_w: u16 = 10;
-// 10 body columns => 9 gutters.
-pub const table_w: u16 = mark_w + session_w + pane_w + model_w + state_w + age_w + in_w + out_w + ctx_w + cost_w + gw * 9;
+const n_cols = 10;
+const col_widths = [n_cols]u16{ dot_w, session_w, pane_w, model_w, state_w, elapsed_w, in_w, out_w, ctx_w, cost_w };
+const col_right = [n_cols]bool{ false, false, false, false, false, true, true, true, true, true };
+const dot = "\xe2\x97\x8f"; // ●
+const marker_sel = "\xe2\x96\xb6 "; // ▶ + space
+const marker_none = "  ";
 
 const ellipsis = "\xe2\x80\xa6"; // …
 
 // ANSI
 const reset = "\x1b[0m";
+const fg_reset = "\x1b[39m"; // reset foreground only (keeps a selection background)
 const dim = "\x1b[2m";
 const bold = "\x1b[1m";
-const rev = "\x1b[7m";
+const sel_bg = "\x1b[48;2;48;48;54m"; // subtle highlight for the selected row
 const c_idle = "\x1b[38;2;96;208;120m";
 const c_working = "\x1b[38;2;255;170;64m";
 const c_input = "\x1b[38;2;176;112;255m";
@@ -108,36 +114,40 @@ fn fmtAge(buf: []u8, now_ms: i64, since_ms: i64) []const u8 {
     return std.fmt.bufPrint(buf, "{d}h{d}m", .{ secs / 3600, (secs % 3600) / 60 }) catch "-";
 }
 
-fn appendCol(buf: *std.ArrayList(u8), a: std.mem.Allocator, s: []const u8, width: u16, right: bool) !void {
+/// Append `s` in exactly `width` display columns. `color` (empty = none) wraps
+/// only the text; padding stays uncolored and we reset foreground only
+/// (`fg_reset`) so a selection background survives the cell.
+fn appendColC(buf: *std.ArrayList(u8), a: std.mem.Allocator, s: []const u8, width: u16, right: bool, color: []const u8) !void {
     const full = ui_cell.utf8Count(s);
-    if (full <= width) {
-        const pad: usize = width - full;
-        if (right) try buf.appendNTimes(a, ' ', pad);
-        try buf.appendSlice(a, s);
-        if (!right) try buf.appendNTimes(a, ' ', pad);
-        return;
+    var shown = s;
+    var content_w = full;
+    if (full > width) {
+        const off = ui_cell.utf8ByteOffset(s, width - 1);
+        shown = s[0..off];
+        content_w = ui_cell.utf8Count(shown) + 1;
     }
-    const off = ui_cell.utf8ByteOffset(s, width - 1);
-    const shown = s[0..off];
-    const used: usize = ui_cell.utf8Count(shown) + 1;
-    const pad: usize = if (width > used) width - used else 0;
+    const pad: usize = if (width > content_w) width - content_w else 0;
     if (right) try buf.appendNTimes(a, ' ', pad);
+    if (color.len > 0) try buf.appendSlice(a, color);
     try buf.appendSlice(a, shown);
-    try buf.appendSlice(a, ellipsis);
+    if (full > width) try buf.appendSlice(a, ellipsis);
+    if (color.len > 0) try buf.appendSlice(a, fg_reset);
     if (!right) try buf.appendNTimes(a, ' ', pad);
 }
 
-fn buildLine(a: std.mem.Allocator, cols: [10][]const u8, rights: [10]bool) ![]const u8 {
-    const widths = [10]u16{ mark_w, session_w, pane_w, model_w, state_w, age_w, in_w, out_w, ctx_w, cost_w };
+/// Build a table line (10 columns) with optional per-column color.
+fn buildLine(a: std.mem.Allocator, cols: [n_cols][]const u8, colors: [n_cols][]const u8) ![]const u8 {
     var b = std.ArrayList(u8){};
-    for (cols, widths, rights, 0..) |c, width, r, i| {
-        try appendCol(&b, a, c, width, r);
+    for (cols, col_widths, col_right, colors, 0..) |c, width, r, color, i| {
+        try appendColC(&b, a, c, width, r, color);
         if (i + 1 < cols.len) try b.appendSlice(a, gutter);
     }
     return b.items;
 }
 
-fn rowLine(a: std.mem.Allocator, r: *const Row, marker: []const u8, ctx: Ctx) ![]const u8 {
+const no_colors = [_][]const u8{""} ** n_cols;
+
+fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool) ![]const u8 {
     var sb: [24]u8 = undefined;
     var pb: [16]u8 = undefined;
     var ab: [16]u8 = undefined;
@@ -149,8 +159,13 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, marker: []const u8, ctx: Ctx) ![
         ctx.names.?.get(r.session).?
     else
         std.fmt.bufPrint(&sb, "s{d}", .{r.session}) catch "s?";
+    var colors = no_colors;
+    if (color) {
+        colors[0] = stateColor(r.state); // dot
+        colors[4] = stateColor(r.state); // state
+    }
     return buildLine(a, .{
-        marker,
+        dot,
         session,
         std.fmt.bufPrint(&pb, "{d}", .{r.pane_id}) catch "?",
         if (r.model_len > 0) r.model() else "\xe2\x80\x94",
@@ -160,11 +175,11 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, marker: []const u8, ctx: Ctx) ![
         fmt.tokensOpt(&ob, r.output_tokens),
         fmt.ctx(&kb, r.context_used, r.context_max),
         fmt.cost(&cb, r.cost_usd, r.cost_is_estimate),
-    }, .{ false, false, false, false, false, true, true, true, true, true });
+    }, colors);
 }
 
 fn headerLine(a: std.mem.Allocator) ![]const u8 {
-    return buildLine(a, .{ " ", "session", "pane", "model", "state", "age", "in", "out", "ctx", "cost" }, .{ false, false, false, false, false, true, true, true, true, true });
+    return buildLine(a, .{ " ", "SESSION", "PANE", "MODEL", "STATE", "ELAPSED", "IN", "OUT", "CTX", "COST" }, no_colors);
 }
 
 fn totalsLine(a: std.mem.Allocator, m: *const Model) ![]const u8 {
@@ -172,7 +187,7 @@ fn totalsLine(a: std.mem.Allocator, m: *const Model) ![]const u8 {
     var ob: [16]u8 = undefined;
     var cb: [24]u8 = undefined;
     const cost = std.fmt.bufPrint(&cb, "{s}${d:.2}", .{ if (m.any_estimate) "~" else "", m.total_cost }) catch "$?";
-    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, .{ false, false, false, false, false, true, true, true, true, true });
+    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, no_colors);
 }
 
 /// Plain-text table to `writer` (for `--once` / non-TTY). No ANSI.
@@ -180,14 +195,14 @@ pub fn snapshot(writer: anytype, a: std.mem.Allocator, m: *const Model, ctx: Ctx
     try writer.print("{d} agents \xc2\xb7 {d} working \xc2\xb7 {d} need input \xc2\xb7 ${d:.2}{s}\n", .{
         m.count, m.n_working, m.n_input, m.total_cost, if (m.any_estimate) " (incl. est)" else "",
     });
-    try writer.print("{s}\n", .{try headerLine(a)});
+    try writer.print("  {s}\n", .{try headerLine(a)});
     if (m.visibleCount() == 0) {
         try writer.writeAll("  (no agents)\n");
     } else {
         var i: usize = 0;
-        while (i < m.visibleCount()) : (i += 1) try writer.print("{s}\n", .{try rowLine(a, m.rowAt(i), " ", ctx)});
+        while (i < m.visibleCount()) : (i += 1) try writer.print("  {s}\n", .{try rowLine(a, m.rowAt(i), ctx, false)});
     }
-    try writer.print("{s}\n", .{try totalsLine(a, m)});
+    try writer.print("  {s}\n", .{try totalsLine(a, m)});
 }
 
 /// Full-screen ANSI frame into `buf` (for the interactive TUI).
@@ -205,7 +220,7 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
     });
     line += 1;
     try moveTo(w, line);
-    try w.print("{s}{s}{s}\x1b[K", .{ dim, try headerLine(a), reset });
+    try w.print("{s}  {s}{s}\x1b[K", .{ dim, try headerLine(a), reset });
     line += 1;
 
     // Reserve rows: 2 header + totals + help (+ up to 5 detail lines).
@@ -221,9 +236,11 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
             const r = m.rowAt(i);
             try moveTo(w, line);
             if (i == m.selected) {
-                try w.print("{s}{s}\x1b[K{s}", .{ rev, try rowLine(a, r, "\xe2\x96\xb6", ctx), reset });
+                // Subtle background highlight; per-cell colors use fg-only resets
+                // so the background survives across the row, and \x1b[K fills it.
+                try w.print("{s}{s}{s}\x1b[K{s}", .{ sel_bg, marker_sel, try rowLine(a, r, ctx, true), reset });
             } else {
-                try w.print("{s}{s}{s}\x1b[K", .{ stateColor(r.state), try rowLine(a, r, " ", ctx), reset });
+                try w.print("{s}{s}{s}\x1b[K", .{ marker_none, try rowLine(a, r, ctx, true), reset });
             }
             line += 1;
         }
@@ -233,7 +250,7 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
 
     if (rows >= 2) {
         try moveTo(w, rows - 1);
-        try w.print("{s}{s}{s}\x1b[K", .{ bold, try totalsLine(a, m), reset });
+        try w.print("{s}  {s}{s}\x1b[K", .{ bold, try totalsLine(a, m), reset });
         try moveTo(w, rows);
         try helpLine(w, m, ctx);
     }

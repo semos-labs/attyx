@@ -102,6 +102,24 @@ fn sep(w: anytype, first: *bool) !void {
 // are humanized (1.2M, 82K/200K); `--json` carries the raw values for scripts.
 const dash = "-"; // unknown value
 
+// ── Color palette (matches the dashboard) ──
+// Emitted only when the caller asks (TTY); plain mode stays grep-clean.
+const c_reset = "\x1b[0m";
+const c_dim = "\x1b[2m";
+const c_idle = "\x1b[38;2;96;208;120m"; // green
+const c_working = "\x1b[38;2;255;170;64m"; // orange
+const c_input = "\x1b[38;2;176;112;255m"; // purple
+const dot = "\xe2\x97\x8f"; // ●
+
+pub fn stateColor(status: AgentStatus) []const u8 {
+    return switch (status) {
+        .idle => c_idle,
+        .working => c_working,
+        .input => c_input,
+        .none => c_dim,
+    };
+}
+
 // Column display widths (the message column is free-width, last).
 const pane_w: u16 = 4;
 const session_w: u16 = 7;
@@ -119,33 +137,56 @@ fn writeSpaces(w: anytype, n: usize) !void {
 }
 
 /// Write `s` in exactly `width` display columns (space-padded, or ellipsis-
-/// truncated when it overflows), then a 2-space gutter.
-fn writeCol(w: anytype, s: []const u8, width: u16, right: bool) !void {
+/// truncated when it overflows), then a 2-space gutter. `color` (empty = none)
+/// wraps only the text — padding stays uncolored and ANSI codes are zero-width,
+/// so columns line up identically in plain and colored modes.
+fn writeColC(w: anytype, s: []const u8, width: u16, right: bool, color: []const u8) !void {
     const full = ui_cell.utf8Count(s);
     if (full <= width) {
         const pad = width - full;
         if (right) try writeSpaces(w, pad);
+        if (color.len > 0) try w.writeAll(color);
         try w.writeAll(s);
+        if (color.len > 0) try w.writeAll(c_reset);
         if (!right) try writeSpaces(w, pad);
     } else {
         const off = ui_cell.utf8ByteOffset(s, width - 1);
+        if (color.len > 0) try w.writeAll(color);
         try w.writeAll(s[0..off]);
         try w.writeAll("\xe2\x80\xa6"); // …
+        if (color.len > 0) try w.writeAll(c_reset);
     }
     try w.writeAll("  ");
 }
 
-/// Column header for the human table (printed once, above the rows).
-pub fn writeAgentTableHeader(w: anytype) !void {
-    try writeCol(w, "PANE", pane_w, false);
-    try writeCol(w, "SESSION", session_w, false);
-    try writeCol(w, "STATE", state_w, false);
-    try writeCol(w, "MODEL", model_w, false);
-    try writeCol(w, "IN", in_w, true);
-    try writeCol(w, "OUT", out_w, true);
-    try writeCol(w, "CTX", ctx_w, true);
-    try writeCol(w, "COST", cost_w, true);
-    try w.writeAll("MESSAGE\n");
+fn writeCol(w: anytype, s: []const u8, width: u16, right: bool) !void {
+    try writeColC(w, s, width, right, "");
+}
+
+/// Dim color for an unknown ("-") cell in color mode, else none.
+fn dimDash(color: bool, s: []const u8) []const u8 {
+    return if (color and std.mem.eql(u8, s, dash)) c_dim else "";
+}
+
+/// Column header for the human table (printed once, above the rows). In color
+/// mode the labels are dimmed and a 2-col lead is reserved for the status dot.
+pub fn writeAgentTableHeader(w: anytype, color: bool) !void {
+    const hc = if (color) c_dim else "";
+    if (color) try w.writeAll("  "); // dot column lead
+    try writeColC(w, "PANE", pane_w, false, hc);
+    try writeColC(w, "SESSION", session_w, false, hc);
+    try writeColC(w, "STATE", state_w, false, hc);
+    try writeColC(w, "MODEL", model_w, false, hc);
+    try writeColC(w, "IN", in_w, true, hc);
+    try writeColC(w, "OUT", out_w, true, hc);
+    try writeColC(w, "CTX", ctx_w, true, hc);
+    try writeColC(w, "COST", cost_w, true, hc);
+    if (color) {
+        try w.writeAll(c_dim);
+        try w.writeAll("MESSAGE");
+        try w.writeAll(c_reset);
+        try w.writeByte('\n');
+    } else try w.writeAll("MESSAGE\n");
 }
 
 fn fmtCtx(buf: []u8, used: ?u64, max: ?u64) []const u8 {
@@ -181,6 +222,7 @@ pub fn writeAgentRow(
     status: AgentStatus,
     message: []const u8,
     usage_in: AgentUsage,
+    color: bool,
 ) !void {
     _ = tab_id;
     _ = pid;
@@ -191,14 +233,24 @@ pub fn writeAgentRow(
     var ob: [16]u8 = undefined;
     var kb: [24]u8 = undefined;
     var cb: [24]u8 = undefined;
+    if (color) {
+        try w.writeAll(stateColor(status));
+        try w.writeAll(dot);
+        try w.writeAll(c_reset);
+        try w.writeByte(' ');
+    }
     try writeCol(w, std.fmt.bufPrint(&pb, "{d}", .{pane_id}) catch "?", pane_w, false);
     try writeCol(w, std.fmt.bufPrint(&sb, "{d}", .{session}) catch "?", session_w, false);
-    try writeCol(w, stateStr(status), state_w, false);
+    try writeColC(w, stateStr(status), state_w, false, if (color) stateColor(status) else "");
     try writeCol(w, if (usage.model) |m| m else dash, model_w, false);
-    try writeCol(w, fmtTokens(&ib, usage.input_tokens), in_w, true);
-    try writeCol(w, fmtTokens(&ob, usage.output_tokens), out_w, true);
-    try writeCol(w, fmtCtx(&kb, usage.context_used, usage.context_max), ctx_w, true);
-    try writeCol(w, fmtCost(&cb, usage.cost_usd, usage.cost_is_estimate), cost_w, true);
+    const in_s = fmtTokens(&ib, usage.input_tokens);
+    const out_s = fmtTokens(&ob, usage.output_tokens);
+    const ctx_s = fmtCtx(&kb, usage.context_used, usage.context_max);
+    const cost_s = fmtCost(&cb, usage.cost_usd, usage.cost_is_estimate);
+    try writeColC(w, in_s, in_w, true, dimDash(color, in_s));
+    try writeColC(w, out_s, out_w, true, dimDash(color, out_s));
+    try writeColC(w, ctx_s, ctx_w, true, dimDash(color, ctx_s));
+    try writeColC(w, cost_s, cost_w, true, dimDash(color, cost_s));
     // Message: free-width last column, newlines folded, ellipsis past msg_w.
     var folded: [256]u8 = undefined;
     var n: usize = 0;
@@ -248,13 +300,8 @@ fn statusFromStr(s: []const u8) AgentStatus {
 
 /// Parse one NDJSON agent record and write it as a human table row — so the
 /// `watch agents` client reuses the exact same row format as `list agents`.
-pub fn writeAgentRowFromJson(w: anytype, gpa: std.mem.Allocator, line: []const u8) !void {
-    const trimmed = std.mem.trim(u8, line, " \t\r\n");
-    if (trimmed.len == 0 or trimmed[0] != '{') return;
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const r = std.json.parseFromSliceLeaky(RawRecord, arena.allocator(), trimmed, .{ .ignore_unknown_fields = true }) catch return;
-    const u = AgentUsage{
+fn rowUsage(r: RawRecord) AgentUsage {
+    return .{
         .input_tokens = r.usage.input_tokens,
         .output_tokens = r.usage.output_tokens,
         .cache_read_tokens = r.usage.cache_read_tokens,
@@ -266,7 +313,29 @@ pub fn writeAgentRowFromJson(w: anytype, gpa: std.mem.Allocator, line: []const u
         .cost_is_estimate = r.usage.cost_is_estimate,
         .model = r.usage.model,
     };
-    try writeAgentRow(w, r.pane_id, r.tab_id, r.session, r.pid, statusFromStr(r.state), r.message, u);
+}
+
+pub fn writeAgentRowFromJson(w: anytype, gpa: std.mem.Allocator, line: []const u8, color: bool) !void {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] != '{') return;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const r = std.json.parseFromSliceLeaky(RawRecord, arena.allocator(), trimmed, .{ .ignore_unknown_fields = true }) catch return;
+    try writeAgentRow(w, r.pane_id, r.tab_id, r.session, r.pid, statusFromStr(r.state), r.message, rowUsage(r), color);
+}
+
+/// Parse a `list agents --json` array and write the full human table (header +
+/// a row per agent). Used by the client to format `list agents` locally, so the
+/// output is TTY-aware (colored on a terminal, plain when piped).
+pub fn writeAgentTable(w: anytype, gpa: std.mem.Allocator, json_array: []const u8, color: bool) !void {
+    const trimmed = std.mem.trim(u8, json_array, " \t\r\n");
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    try writeAgentTableHeader(w, color);
+    const arr = std.json.parseFromSliceLeaky([]RawRecord, arena.allocator(), trimmed, .{ .ignore_unknown_fields = true }) catch return;
+    for (arr) |r| {
+        try writeAgentRow(w, r.pane_id, r.tab_id, r.session, r.pid, statusFromStr(r.state), r.message, rowUsage(r), color);
+    }
 }
 
 /// Foreground PID of the process running in a pane, or 0 if unknown.
@@ -338,7 +407,7 @@ test "writeAgentRow renders an aligned, humanized row with context + tokens" {
         .context_max = 200_000,
         .cost_usd = 0.42,
         .model = "opus-4.8",
-    });
+    }, false);
     const out = stream.getWritten();
     // Humanized values + context as used/max + the message, all present.
     try std.testing.expect(std.mem.indexOf(u8, out, "1.2M") != null);
@@ -351,10 +420,23 @@ test "writeAgentRow renders an aligned, humanized row with context + tokens" {
 
     // Unknown usage → dashes, newline folded in the message.
     stream.reset();
-    try writeAgentRow(stream.writer(), 7, 0, 1, 0, .input, "needs\ninput", .{});
+    try writeAgentRow(stream.writer(), 7, 0, 1, 0, .input, "needs\ninput", .{}, false);
     const out2 = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, out2, "needs input") != null); // folded
     try std.testing.expect(std.mem.indexOf(u8, out2, "input") != null); // state
+    // Plain mode has no ANSI escapes (grep-safe).
+    try std.testing.expect(std.mem.indexOf(u8, out2, "\x1b[") == null);
+}
+
+test "color mode adds a status dot and ANSI codes; plain stays clean" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    try writeAgentRow(stream.writer(), 3, 1, 2, 0, .working, "hi", .{ .model = "opus-4.8" }, true);
+    const out = stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, dot) != null); // ●
+    try std.testing.expect(std.mem.indexOf(u8, out, c_working) != null); // orange
+    try std.testing.expect(std.mem.indexOf(u8, out, c_reset) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "working") != null);
 }
 
 test "writeAgentRowFromJson matches writeAgentRow (same format for watch)" {
@@ -363,18 +445,18 @@ test "writeAgentRowFromJson matches writeAgentRow (same format for watch)" {
     var as = std.io.fixedBufferStream(&a_buf);
     var bs = std.io.fixedBufferStream(&b_buf);
     const usage = AgentUsage{ .input_tokens = 1_200_000, .context_used = 82_000, .context_max = 200_000, .cost_usd = 0.42, .model = "opus-4.8" };
-    try writeAgentRow(as.writer(), 3, 1, 2, 0, .working, "hi", usage);
+    try writeAgentRow(as.writer(), 3, 1, 2, 0, .working, "hi", usage, false);
     var json: [512]u8 = undefined;
     var js = std.io.fixedBufferStream(&json);
     try writeAgentJson(js.writer(), 3, 1, 2, 0, .working, "hi", usage);
-    try writeAgentRowFromJson(bs.writer(), std.testing.allocator, js.getWritten());
+    try writeAgentRowFromJson(bs.writer(), std.testing.allocator, js.getWritten(), false);
     try std.testing.expectEqualStrings(as.getWritten(), bs.getWritten());
 }
 
 test "writeAgentTableHeader labels the columns" {
     var buf: [256]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
-    try writeAgentTableHeader(stream.writer());
+    try writeAgentTableHeader(stream.writer(), false);
     const out = stream.getWritten();
     for ([_][]const u8{ "PANE", "SESSION", "STATE", "MODEL", "IN", "OUT", "CTX", "COST", "MESSAGE" }) |h|
         try std.testing.expect(std.mem.indexOf(u8, out, h) != null);

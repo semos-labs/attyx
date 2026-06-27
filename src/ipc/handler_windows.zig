@@ -508,7 +508,7 @@ fn buildAgentList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
 
     const session_id: u32 = if (ctx.session_mgr) |smgr| smgr.activeSession().id else 0;
 
-    if (as_json) w.writeAll("[") catch {} else agents.writeAgentTableHeader(w) catch {};
+    if (as_json) w.writeAll("[") catch {} else agents.writeAgentTableHeader(w, false) catch {};
     var first = true;
     const mgr = ctx.tab_mgr;
     for (0..mgr.count) |i| {
@@ -526,7 +526,7 @@ fn buildAgentList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
                 if (!first) w.writeAll(",") catch break;
                 agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg, usage) catch break;
             } else {
-                agents.writeAgentRow(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg, usage) catch break;
+                agents.writeAgentRow(w, leaf.pane.ipc_id, tab_id, session_id, 0, status, msg, usage, false) catch break;
             }
             first = false;
         }
