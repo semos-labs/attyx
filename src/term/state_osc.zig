@@ -75,6 +75,7 @@ pub fn setAgentStatus(self: *TerminalState, status: AgentStatus, message: []cons
     if (status == .none) {
         self.agent_usage = .{};
         self.agent_model_len = 0;
+        self.agent_transcript_len = 0;
         self.agent_usage_changed = true;
     }
 }
@@ -104,13 +105,20 @@ pub fn setAgentUsage(self: *TerminalState, u: AgentUsage) void {
         @memcpy(self.agent_model_buf[0..n], m[0..n]);
         self.agent_model_len = @intCast(n);
     }
+    if (u.transcript_path) |t| {
+        const n = @min(t.len, self.agent_transcript_buf.len);
+        @memcpy(self.agent_transcript_buf[0..n], t[0..n]);
+        self.agent_transcript_len = @intCast(n);
+    }
     self.agent_usage_changed = true;
 }
 
-/// The current usage record, with `model` sliced from the fixed buffer.
+/// The current usage record, with `model` and `transcript_path` sliced from the
+/// fixed buffers.
 pub fn agentUsage(self: *const TerminalState) AgentUsage {
     var u = self.agent_usage;
     u.model = if (self.agent_model_len > 0) self.agent_model_buf[0..self.agent_model_len] else null;
+    u.transcript_path = if (self.agent_transcript_len > 0) self.agent_transcript_buf[0..self.agent_transcript_len] else null;
     return u;
 }
 

@@ -170,6 +170,11 @@ pub fn run(args: []const [:0]const u8) void {
     if (parsed.command == .agent_send or parsed.command == .agent_await) {
         @import("client_agent.zig").run(parsed);
     }
+    // agent read: looks up the pane's transcript path (attached or -s) and reads
+    // the file locally. run() is noreturn.
+    if (parsed.command == .agent_read) {
+        @import("client_agent_read.zig").run(parsed);
+    }
 
     // Discover socket early — needed for both paths
     var sock_buf: [256]u8 = undefined;
@@ -357,7 +362,7 @@ pub fn buildRequest(buf: []u8, parsed: @import("../config/cli_ipc.zig").IpcReque
     return switch (parsed.command) {
         // agent send/await are client-side orchestration, never a single wire
         // request — client.run routes them to client_agent before buildRequest.
-        .agent_send, .agent_await => error.UnsupportedCommand,
+        .agent_send, .agent_await, .agent_read => error.UnsupportedCommand,
         .tab_create => protocol.encodeMessage(buf, if (parsed.wait) .tab_create_wait else .tab_create, parsed.text_arg),
         .tab_close => blk: {
             if (parsed.tab_idx != 0xFF) {

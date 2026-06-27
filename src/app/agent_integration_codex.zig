@@ -276,6 +276,7 @@ const codex_usage_script =
     \\[ -n "$kv" ] || exit 0
     \\model=$(tail -n 1200 "$f" 2>/dev/null | grep '"turn_context"' | tail -1 | jq -r '.payload.model // empty' 2>/dev/null)
     \\[ -n "$model" ] && kv="$kv;model=$model"
+    \\kv="$kv;tx=$f"
     \\printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
     \\exit 0
     \\

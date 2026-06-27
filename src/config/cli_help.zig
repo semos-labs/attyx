@@ -106,7 +106,7 @@ const ipc_misc =
     "  " ++ d ++ "Utilities" ++ r ++ "\n" ++
     cmd("list [tabs|splits|sessions|agents] [--json]   ", "Query tabs, panes, sessions, or agents") ++
     cmd("watch agents [--json]   ", "Stream agent status/usage changes (live)") ++
-    cmd("agent send|await -p <id> ...   ", "Drive another agent: send a prompt, await its turn") ++
+    cmd("agent send|await|read -p <id> ...   ", "Drive another agent: send a prompt, await its turn") ++
     cmd("scroll-to <top|bottom|page-up|page-down>   ", "Scroll the viewport") ++
     cmd("reload                 ", "Hot-reload config from disk") ++
     cmd("theme <name>           ", "Switch to a named theme") ++

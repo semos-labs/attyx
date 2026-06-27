@@ -382,7 +382,13 @@ attyx agent send -p 3 "summarize src/api" --wait --capture --json
 
 # Just wait (send nothing) until an agent is done or needs you:
 attyx agent await -p 3 --state any
+
+# Read an agent's last message from its transcript (not the screen):
+attyx agent read -p 3                  # the last message
+attyx agent read -p 3 --offset 1       # the one before it
 ```
+**`agent read`** returns an agent's message straight from its transcript file (structural, not a screen scrape) — use it to collect another agent's actual output instead of `get-text`. `--offset n`/`-o n` gives the n-th message back (0 = last). Works with `-s <session>` too. Only agents that report a transcript (Claude Code, Codex) are supported; others return a clear error. Over MCP it's the `agent_read` tool.
+
 **Outcomes** (and exit codes): `done` (0) · `needs_input` (2) · `timeout` (3) · `no_turn`/`ended` (4). So `attyx agent send -p 3 "build" --wait && attyx agent send -p 5 "deploy" --wait` chains turns only on success. Add `--tokens` for the per-turn token/cost delta. Outcomes are honest: `no_turn` means the agent never started (wrong pane / it didn't accept the input), `timeout` means it's still working (the agent is never interrupted — we just stop waiting). Over MCP this is the `agent_send` tool. (Currently targets the attached session; `-s` background sessions are a follow-up.)
 `-p`/`--pane` works on both `list agents` and `watch agents`; omit it for all agents.
 
