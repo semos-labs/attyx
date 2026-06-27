@@ -59,6 +59,10 @@ pub const AgentUsage = struct {
     model: ?[]const u8 = null,
     /// True when cost was computed by us (pricing table) rather than agent-reported.
     cost_is_estimate: bool = false,
+    /// Absolute path to the agent's transcript file (Claude/Codex JSONL), if the
+    /// agent reports one. Borrowed in the action view; the state copies it into a
+    /// fixed buffer. Drives `attyx agent read`.
+    transcript_path: ?[]const u8 = null,
 };
 
 /// Parse an OSC 7337;agent-usage KV list (`in=123;out=45;model=opus;…`) into an
@@ -90,6 +94,10 @@ pub fn parseUsageKv(kv: []const u8) AgentUsage {
             u.cost_usd = std.fmt.parseFloat(f64, val) catch null;
         } else if (std.mem.eql(u8, key, "model")) {
             u.model = val;
+        } else if (std.mem.eql(u8, key, "tx")) {
+            // Transcript file path. Paths carry no ';'/'=' so they ride the KV
+            // list verbatim (no encoding); the state copies it into a buffer.
+            u.transcript_path = val;
         }
     }
     return u;

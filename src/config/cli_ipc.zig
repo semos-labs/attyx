@@ -37,6 +37,7 @@ pub const IpcCommand = enum {
     get_text,
     agent_send,
     agent_await,
+    agent_read,
     config_reload,
     theme_set,
     scroll_to_top,
@@ -90,6 +91,7 @@ pub const IpcRequest = struct {
     agent_tokens: bool = false,
     agent_timeout_s: u32 = 0, // 0 = default
     agent_submit_key: []const u8 = "", // "" = {Enter}
+    agent_offset: u32 = 0, // agent read: messages back from the last (0 = last)
     agent_await_state: AwaitState = .idle,
 };
 
@@ -803,6 +805,24 @@ fn parseAgent(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
             }
         }
         if (r.pane_id == 0) fatal("agent await requires --pane <id>");
+        return r;
+    } else if (std.mem.eql(u8, action, "read")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_read, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--offset") or std.mem.eql(u8, arg, "-o")) {
+                if (i + 1 >= args.len) fatal("--offset requires a number");
+                i += 1;
+                r.agent_offset = std.fmt.parseInt(u32, args[i], 10) catch fatal("--offset: invalid number");
+            }
+        }
+        if (r.pane_id == 0) fatal("agent read requires --pane <id>");
         return r;
     }
     printHelp(help.agent);

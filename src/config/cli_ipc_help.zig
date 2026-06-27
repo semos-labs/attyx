@@ -27,7 +27,7 @@ pub const top_level =
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
     \\  list         Query tabs, panes, sessions, and agents (supports --json)
     \\  watch        Stream agent status/usage changes live (table; --json for NDJSON)
-    \\  agent        Drive another agent: send a prompt and await its turn
+    \\  agent        Drive another agent: send a prompt, await its turn, read its last message
     \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
@@ -638,6 +638,7 @@ pub const agent =
     \\  attyx agent send -p <id> "<prompt>" [--wait] [--capture] [--tokens]
     \\                   [--timeout <s>] [--submit-key <key>] [--json]
     \\  attyx agent await -p <id> [--state idle|input|any] [--timeout <s>] [--json]
+    \\  attyx agent read -p <id> [--offset <n>] [-s <sess>] [--json]
     \\
     \\`agent send` types the prompt into the pane's agent (as a bracketed paste,
     \\so multi-line prompts and `{`/`}`/`\` are literal) and presses the submit
@@ -646,6 +647,10 @@ pub const agent =
     \\
     \\`agent await` sends nothing — it just blocks until the pane's agent reaches
     \\a state (the formalized `watch agents | while …` pattern).
+    \\
+    \\`agent read` returns the agent's last message from its transcript file (not
+    \\the screen). --offset <n> returns the n-th message back (0 = last). Only
+    \\agents that report a transcript (Claude Code, Codex) are supported.
     \\
     \\Options (send):
     \\  --pane, -p <id>     Target pane (required). From 'attyx list agents'.
@@ -661,6 +666,10 @@ pub const agent =
     \\  --pane, -p <id>     Target pane (required).
     \\  --state <s>         Wait for idle (default), input, or any.
     \\  --timeout <s>       Stop waiting after N seconds (default 600).
+    \\Options (read):
+    \\  --pane, -p <id>     Target pane (required).
+    \\  --offset, -o <n>    Messages back from the last (default 0 = last).
+    \\  -s <sess>           Read an agent in a specific session.
     \\
     \\Outcomes (and exit codes): done (0) · needs_input (2) · timeout (3) ·
     \\no_turn / ended (4). So `attyx agent send -p 3 "run tests" --wait && deploy`
@@ -673,5 +682,7 @@ pub const agent =
     \\  attyx agent send -p 3 "run the tests and fix failures" --wait
     \\  attyx agent send -p 3 "summarize src/api" --wait --capture --json
     \\  attyx agent await -p 3 --state any        # block until done or needs input
+    \\  attyx agent read -p 3                      # the agent's last message
+    \\  attyx agent read -p 3 --offset 1           # the message before that
     \\
 ;

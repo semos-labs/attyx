@@ -74,6 +74,12 @@ fn writeUsageJson(w: anytype, usage: AgentUsage) !void {
         try writeJsonEscaped(w, m);
         try w.writeAll("\"");
     }
+    if (u.transcript_path) |t| {
+        try sep(w, &first);
+        try w.writeAll("\"transcript_path\":\"");
+        try writeJsonEscaped(w, t);
+        try w.writeAll("\"");
+    }
     try w.writeAll("}");
 }
 

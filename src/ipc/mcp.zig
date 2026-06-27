@@ -109,11 +109,19 @@ fn handleToolCall(a: std.mem.Allocator, params_opt: ?std.json.Value, id: ?std.js
     // agent_send/agent_await are multi-step client orchestration (snapshot →
     // send_keys → watch stream → get_text), not a single round-trip — run them
     // through client_agent and return the result JSON.
-    const out: CallOut = if (req.command == .agent_send or req.command == .agent_await) blk: {
-        const ca = @import("client_agent.zig");
-        const text = ca.runForMcp(a, req) catch |e| break :blk .{ .is_error = true, .text = ca.errMsg(e) };
-        break :blk .{ .is_error = false, .text = text };
-    } else callIpc(a, req);
+    const out: CallOut = blk: {
+        if (req.command == .agent_send or req.command == .agent_await) {
+            const ca = @import("client_agent.zig");
+            const text = ca.runForMcp(a, req) catch |e| break :blk .{ .is_error = true, .text = ca.errMsg(e) };
+            break :blk .{ .is_error = false, .text = text };
+        }
+        if (req.command == .agent_read) {
+            const cr = @import("client_agent_read.zig");
+            const text = cr.runForMcp(a, req) catch |e| break :blk .{ .is_error = true, .text = cr.errMsg(e) };
+            break :blk .{ .is_error = false, .text = text };
+        }
+        break :blk callIpc(a, req);
+    };
     const text_json = std.json.Stringify.valueAlloc(a, std.json.Value{ .string = out.text }, .{}) catch "\"\"";
     const result = std.fmt.allocPrint(
         a,
