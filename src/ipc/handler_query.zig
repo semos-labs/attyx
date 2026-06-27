@@ -17,6 +17,7 @@ const agents = @import("agents.zig");
 const handler = @import("handler.zig");
 const sendOk = handler.sendOk;
 const sendError = handler.sendError;
+const session_actions = @import("../app/ui/session_actions.zig");
 
 fn resolvePaneTitle(pane: anytype, name_buf: *[256]u8) ?[]const u8 {
     return pane.engine.state.title orelse
@@ -399,19 +400,21 @@ pub fn handleSessionKill(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 }
 
 pub fn handleSessionSwitch(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
-    const sc = ctx.session_client orelse {
+    if (ctx.session_client == null) {
         sendError(cmd, "sessions not enabled");
         return;
-    };
+    }
     if (cmd.payload_len < 4) {
         sendError(cmd, "missing session id");
         return;
     }
     const sid = std.mem.readInt(u32, cmd.payload[0..4], .little);
-    sc.attach(sid, ctx.grid_rows, ctx.grid_cols) catch {
-        sendError(cmd, "failed to switch session");
-        return;
-    };
+    // Full synchronous switch: detach, attach, wait for the daemon's layout,
+    // and rebuild the window's tabs. The bare attach path doesn't reconstruct
+    // tabs (the async loop has no session_attached case), so a follow-up
+    // pane_focus_targeted — e.g. `attyx dashboard`'s jump — would find no panes.
+    // doSessionSwitch leaves tab_mgr populated so the focus lands.
+    session_actions.doSessionSwitch(ctx, sid);
     sendOk(cmd, "");
 }
 

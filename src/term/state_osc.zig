@@ -76,8 +76,32 @@ pub fn setAgentStatus(self: *TerminalState, status: AgentStatus, message: []cons
         self.agent_usage = .{};
         self.agent_model_len = 0;
         self.agent_transcript_len = 0;
+        self.agent_out_last_raw = 0;
+        self.agent_out_cumulative = 0;
         self.agent_usage_changed = true;
     }
+}
+
+/// Apply a usage update parsed straight from the agent's OSC (the authoritative
+/// path — the engine that reads the agent's PTY). Folds the agent's reported
+/// output-token figure into a session-cumulative total before storing, then
+/// delegates to `setAgentUsage`. Propagated updates (daemon→window grid-sync)
+/// call `setAgentUsage` directly and must NOT come through here, or the already-
+/// cumulative value would be accumulated twice.
+pub fn applyAgentUsageOsc(self: *TerminalState, u: AgentUsage) void {
+    var adjusted = u;
+    if (u.output_tokens) |cur| {
+        // Sum positive deltas; a drop means the agent's window shrank
+        // (compaction — tokens we already counted), so rebase without
+        // subtracting. Monotonic-source agents (Codex/opencode/Pi) pass through
+        // unchanged since cur only ever rises.
+        if (cur >= self.agent_out_last_raw) {
+            self.agent_out_cumulative += cur - self.agent_out_last_raw;
+        }
+        self.agent_out_last_raw = cur;
+        adjusted.output_tokens = self.agent_out_cumulative;
+    }
+    self.setAgentUsage(adjusted);
 }
 
 /// The message preview attached to the current agent status (may be empty).
@@ -245,6 +269,31 @@ test "setAgentUsage merges sticky and .none clears it" {
     try testing.expectEqual(@as(?u64, null), u.input_tokens);
     try testing.expectEqual(@as(?f64, null), u.cost_usd);
     try testing.expectEqual(@as(?[]const u8, null), u.model);
+}
+
+test "applyAgentUsageOsc accumulates output across context-window drops" {
+    const testing = std.testing;
+    var st = try TerminalState.init(testing.allocator, 24, 80, 100);
+    defer st.deinit();
+
+    // Window grows: out is the raw figure.
+    st.applyAgentUsageOsc(.{ .output_tokens = 1000 });
+    try testing.expectEqual(@as(?u64, 1000), st.agentUsage().output_tokens);
+    st.applyAgentUsageOsc(.{ .output_tokens = 1200 });
+    try testing.expectEqual(@as(?u64, 1200), st.agentUsage().output_tokens);
+
+    // Compaction drops the window to 300 — cumulative must NOT go backward.
+    st.applyAgentUsageOsc(.{ .output_tokens = 300 });
+    try testing.expectEqual(@as(?u64, 1200), st.agentUsage().output_tokens);
+
+    // New output after compaction adds on top (300 → 500 = +200).
+    st.applyAgentUsageOsc(.{ .output_tokens = 500 });
+    try testing.expectEqual(@as(?u64, 1400), st.agentUsage().output_tokens);
+
+    // .none resets the accumulator so the next agent starts clean.
+    st.setAgentStatus(.none, "");
+    st.applyAgentUsageOsc(.{ .output_tokens = 50 });
+    try testing.expectEqual(@as(?u64, 50), st.agentUsage().output_tokens);
 }
 
 test "over-long model truncates into the fixed buffer" {

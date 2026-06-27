@@ -85,6 +85,13 @@ pub const TerminalState = struct {
     /// `transcript_path` storage for agent_usage (the struct's slice points here).
     agent_transcript_buf: [512]u8 = undefined,
     agent_transcript_len: u16 = 0,
+    /// Output-token accumulator. Claude Code (v2.1.132+) reports output tokens
+    /// *currently in the context window*, which drops when messages compact out;
+    /// we sum the positive deltas so the reported `out` is a real session total
+    /// that only grows. `last_raw` is the last value the agent reported; for an
+    /// agent that already reports cumulative output this is a no-op transform.
+    agent_out_last_raw: u64 = 0,
+    agent_out_cumulative: u64 = 0,
 
     // -- Wrap state (per-buffer, cleared by cursor movement) ----------------
     wrap_next: bool = false,
@@ -300,7 +307,7 @@ pub const TerminalState = struct {
             .set_shell_path => |p| self.setShellPath(p),
             .xyron_event => |json| self.handleXyronEvent(json),
             .set_agent_status => |u| self.setAgentStatus(u.status, u.message),
-            .set_agent_usage => |u| self.setAgentUsage(u),
+            .set_agent_usage => |u| self.applyAgentUsageOsc(u),
             .dec_private_mode => |modes| self.applyDecPrivateModes(modes),
             .device_status => self.respondDeviceStatus(),
             .cursor_position_report => self.respondCursorPosition(),
@@ -622,6 +629,7 @@ pub const TerminalState = struct {
     pub const setAgentStatus = @import("state_osc.zig").setAgentStatus;
     pub const agentMsg = @import("state_osc.zig").agentMsg;
     pub const setAgentUsage = @import("state_osc.zig").setAgentUsage;
+    pub const applyAgentUsageOsc = @import("state_osc.zig").applyAgentUsageOsc;
     pub const agentUsage = @import("state_osc.zig").agentUsage;
     pub const applyAgentInputTransition = @import("state_osc.zig").applyAgentInputTransition;
 

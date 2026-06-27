@@ -84,6 +84,10 @@ pub const DaemonMessage = union(enum) {
 
 pub const SessionClient = struct {
     /// Max buffered events captured during blocking waits.
+    /// Outbound queue capacity. Window→daemon traffic is small control frames
+    /// plus paste chunks, so this is generous; an overflow means the daemon is
+    /// hopelessly behind and we reconnect rather than corrupt the stream.
+    pub const out_buf_len = 128 * 1024;
     const max_buffered_deaths = 16;
     const max_buffered_proc_names = 16;
     const max_buffered_fg_cwds = 16;
@@ -124,6 +128,24 @@ pub const SessionClient = struct {
     /// daemons that don't speak the extended hello. Used to decide which
     /// protocol features (e.g. grid-sync) are safe to use on this connection.
     daemon_caps: u32 = 0,
+
+    // ── Outbound queue (POSIX) ──
+    // The event-loop thread both drains the daemon socket and writes to it
+    // (IPC handlers, focus_panes, resize); keystrokes write from the render
+    // thread. A *blocking* write from the event-loop thread while the daemon
+    // is mid-burst deadlocks both processes, and giving up mid-frame leaves a
+    // torn frame that desyncs the daemon permanently. So every runtime send is
+    // queued here and flushed non-blocking from the event loop — a frame is
+    // either fully queued or not at all, and the socket is never blocked on.
+    // Windows (deprecated) keeps the original blocking path in `sendMessage`.
+    out_buf: [out_buf_len]u8 = undefined,
+    out_len: usize = 0,
+    out_off: usize = 0,
+    out_mutex: std.Thread.Mutex = .{},
+    /// Set when a send fails fatally (hard socket error or queue overflow). The
+    /// event loop tears the connection down and reconnects, resyncing the
+    /// stream — far better than feeding the daemon a corrupted frame.
+    send_dead: bool = false,
 
     // ── Connect ──
 
@@ -616,6 +638,9 @@ pub const SessionClient = struct {
 
     /// Poll for data on the socket, then recv. Returns false on disconnect.
     fn pollAndRecv(self: *SessionClient, timeout_ms: u32) bool {
+        // Push any queued outbound first so blocking request/response helpers
+        // (waitForResponse, requestListSync, ...) actually deliver the request.
+        self.flushOut();
         if (is_windows) {
             // PeekNamedPipe polling loop
             var elapsed: u32 = 0;
@@ -636,17 +661,95 @@ pub const SessionClient = struct {
     }
 
     fn sendMessage(self: *SessionClient, msg_type: protocol.MessageType, payload: []const u8) !void {
-        var msg_buf: [protocol.header_size + 512]u8 = undefined;
-        if (payload.len <= 512) {
-            const msg = protocol.encodeMessage(&msg_buf, msg_type, payload) catch
-                return error.EncodeFailed;
-            try socketWrite(self.socket_fd, msg);
-        } else {
-            var hdr: [protocol.header_size]u8 = undefined;
-            protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
-            try socketWrite(self.socket_fd, &hdr);
-            try socketWrite(self.socket_fd, payload);
+        if (is_windows) {
+            // Deprecated platform — keep the original blocking write path.
+            var msg_buf: [protocol.header_size + 512]u8 = undefined;
+            if (payload.len <= 512) {
+                const msg = protocol.encodeMessage(&msg_buf, msg_type, payload) catch
+                    return error.EncodeFailed;
+                try socketWrite(self.socket_fd, msg);
+            } else {
+                var hdr: [protocol.header_size]u8 = undefined;
+                protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
+                try socketWrite(self.socket_fd, &hdr);
+                try socketWrite(self.socket_fd, payload);
+            }
+            return;
         }
+        // POSIX: queue the whole frame atomically, then push what we can
+        // without blocking. The remainder (if the socket is full) drains from
+        // the event loop's flushOut(); we never leave a partial frame on the
+        // wire and never block the calling thread.
+        var hdr: [protocol.header_size]u8 = undefined;
+        protocol.encodeHeader(&hdr, msg_type, @intCast(payload.len));
+        self.out_mutex.lock();
+        defer self.out_mutex.unlock();
+        if (!self.queueFrameLocked(&hdr, payload)) {
+            self.send_dead = true;
+            return error.SendQueueFull;
+        }
+        self.flushOutLocked();
+    }
+
+    /// Append a full frame (header + payload) to the outbound queue, or nothing
+    /// if it won't fit even after reclaiming already-sent bytes. Caller holds
+    /// `out_mutex`. All-or-nothing so a frame is never split across reconnects.
+    fn queueFrameLocked(self: *SessionClient, hdr: []const u8, payload: []const u8) bool {
+        const need = hdr.len + payload.len;
+        const pending = self.out_len - self.out_off;
+        if (pending + need > self.out_buf.len) return false;
+        // Compact (drop the already-sent prefix) if the tail can't hold it.
+        if (self.out_len + need > self.out_buf.len) {
+            std.mem.copyForwards(u8, self.out_buf[0..pending], self.out_buf[self.out_off..self.out_len]);
+            self.out_len = pending;
+            self.out_off = 0;
+        }
+        @memcpy(self.out_buf[self.out_len..][0..hdr.len], hdr);
+        self.out_len += hdr.len;
+        @memcpy(self.out_buf[self.out_len..][0..payload.len], payload);
+        self.out_len += payload.len;
+        return true;
+    }
+
+    /// Push queued bytes to the socket until it would block. Caller holds
+    /// `out_mutex`. Marks `send_dead` on a hard error so the event loop
+    /// reconnects. POSIX only (sockets are non-blocking here).
+    fn flushOutLocked(self: *SessionClient) void {
+        while (self.out_off < self.out_len) {
+            const n = posix.write(self.socket_fd, self.out_buf[self.out_off..self.out_len]) catch |err| {
+                if (err == error.WouldBlock) return;
+                self.send_dead = true;
+                return;
+            };
+            if (n == 0) {
+                self.send_dead = true;
+                return;
+            }
+            self.out_off += n;
+        }
+        self.out_off = 0;
+        self.out_len = 0;
+    }
+
+    /// Flush queued outbound bytes (non-blocking). Called from the event loop.
+    pub fn flushOut(self: *SessionClient) void {
+        if (is_windows) return;
+        self.out_mutex.lock();
+        defer self.out_mutex.unlock();
+        self.flushOutLocked();
+    }
+
+    /// True if there are unsent bytes queued — a hint to poll for writability.
+    pub fn hasPendingOut(self: *SessionClient) bool {
+        if (is_windows) return false;
+        self.out_mutex.lock();
+        defer self.out_mutex.unlock();
+        return self.out_off < self.out_len;
+    }
+
+    /// True if a send failed fatally; the event loop should drop + reconnect.
+    pub fn sendFailed(self: *const SessionClient) bool {
+        return self.send_dead;
     }
 
     fn waitForResponse(self: *SessionClient, expected: protocol.MessageType, timeout_ms: u32) !u32 {
@@ -1041,6 +1144,36 @@ test "waitForPaneCreated buffers pane_died instead of discarding" {
 
     // Buffer should now be empty
     try std.testing.expectEqual(@as(?SessionClient.BufferedDeath, null), client.popBufferedDeath());
+}
+
+test "queueFrameLocked keeps frames intact across compaction and rejects overflow" {
+    const alloc = std.testing.allocator;
+    var client = SessionClient{ .allocator = alloc, .socket_fd = -1 };
+
+    const hdr = [_]u8{ 0xAA, 0xBB };
+    const payload = [_]u8{ 1, 2, 3, 4 };
+
+    // Queue a frame, then mark most of it as already-sent. A second frame must
+    // trigger compaction (tail too small once we pretend the buffer is huge)
+    // without ever splitting a frame.
+    try std.testing.expect(client.queueFrameLocked(&hdr, &payload));
+    try std.testing.expectEqual(@as(usize, 6), client.out_len);
+    client.out_off = client.out_len; // pretend the first frame fully drained
+
+    // Force the tail-compaction branch by simulating a nearly-full buffer.
+    client.out_len = client.out_buf.len - 3;
+    client.out_off = client.out_len - 1; // 1 pending byte near the end
+    client.out_buf[client.out_off] = 0x77;
+    try std.testing.expect(client.queueFrameLocked(&hdr, &payload));
+    // Pending byte preserved at front, then the whole new frame, contiguous.
+    try std.testing.expectEqual(@as(usize, 0), client.out_off);
+    try std.testing.expectEqual(@as(u8, 0x77), client.out_buf[0]);
+    try std.testing.expectEqualSlices(u8, &hdr, client.out_buf[1..3]);
+    try std.testing.expectEqualSlices(u8, &payload, client.out_buf[3..7]);
+
+    // Overflow: a frame larger than the whole buffer is rejected, not split.
+    var huge: [SessionClient.out_buf_len]u8 = undefined;
+    try std.testing.expect(!client.queueFrameLocked(&hdr, &huge));
 }
 
 test "popBufferedDeath drains in order" {

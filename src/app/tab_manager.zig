@@ -114,8 +114,24 @@ pub const TabManager = struct {
     /// Monotonically increasing counter for stable pane IPC IDs.
     next_ipc_id: u32 = 1,
 
-    /// Assign the next unique IPC ID to a pane.
+    /// Assign a stable IPC ID to a pane. Daemon-backed panes adopt their daemon
+    /// pane id (once known — not the placeholder) so the id is stable across
+    /// session switches and identical to what reconstructFromLayout, `attyx
+    /// list`, and the cross-session dashboard use (the dashboard only knows
+    /// daemon pane ids). Local panes (non-session) use the monotonic counter.
+    /// Call this AFTER setting `daemon_pane_id`; calling it earlier falls back to
+    /// the counter, so the live-create paths re-assign once the id is known.
     pub fn assignIpcId(self: *TabManager, pane: *Pane) void {
+        if (pane.daemon_pane_id) |dpid| {
+            if (dpid != Pane.daemon_backed_placeholder_id) {
+                pane.ipc_id = dpid;
+                if (dpid >= self.next_ipc_id) {
+                    self.next_ipc_id = dpid +% 1;
+                    if (self.next_ipc_id == 0) self.next_ipc_id = 1;
+                }
+                return;
+            }
+        }
         pane.ipc_id = self.next_ipc_id;
         self.next_ipc_id +%= 1;
         if (self.next_ipc_id == 0) self.next_ipc_id = 1; // skip 0 (sentinel)
