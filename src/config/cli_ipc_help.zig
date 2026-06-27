@@ -27,6 +27,7 @@ pub const top_level =
     \\  scroll-to    Scroll the viewport (top, bottom, page-up, page-down)
     \\  list         Query tabs, panes, sessions, and agents (supports --json)
     \\  watch        Stream agent status/usage changes live (table; --json for NDJSON)
+    \\  agent        Drive another agent: send a prompt and await its turn
     \\  popup        Open a popup terminal overlay
     \\  run          Open a new tab with a command (shorthand for tab create --cmd)
     \\
@@ -627,5 +628,50 @@ pub const run =
     \\  attyx run htop
     \\  attyx run "make test" --wait
     \\  attyx run claude
+    \\
+;
+
+pub const agent =
+    \\Drive another agent: send it a prompt and wait for its turn to finish.
+    \\
+    \\Usage:
+    \\  attyx agent send -p <id> "<prompt>" [--wait] [--capture] [--tokens]
+    \\                   [--timeout <s>] [--submit-key <key>] [--json]
+    \\  attyx agent await -p <id> [--state idle|input|any] [--timeout <s>] [--json]
+    \\
+    \\`agent send` types the prompt into the pane's agent (as a bracketed paste,
+    \\so multi-line prompts and `{`/`}`/`\` are literal) and presses the submit
+    \\key. Without --wait it returns immediately. With --wait it blocks until the
+    \\agent's turn completes and reports the outcome.
+    \\
+    \\`agent await` sends nothing — it just blocks until the pane's agent reaches
+    \\a state (the formalized `watch agents | while …` pattern).
+    \\
+    \\Options (send):
+    \\  --pane, -p <id>     Target pane (required). From 'attyx list agents'.
+    \\  --wait              Block until the turn completes (implied by --capture
+    \\                      and --tokens).
+    \\  --capture           Include only the output the turn produced (uses
+    \\                      get-text --since under the hood).
+    \\  --tokens            Include the per-turn token/cost delta.
+    \\  --timeout <s>       Stop waiting after N seconds (default 600). The agent
+    \\                      is never interrupted — we just stop watching.
+    \\  --submit-key <key>  Key that submits the prompt (default {Enter}).
+    \\Options (await):
+    \\  --pane, -p <id>     Target pane (required).
+    \\  --state <s>         Wait for idle (default), input, or any.
+    \\  --timeout <s>       Stop waiting after N seconds (default 600).
+    \\
+    \\Outcomes (and exit codes): done (0) · needs_input (2) · timeout (3) ·
+    \\no_turn / ended (4). So `attyx agent send -p 3 "run tests" --wait && deploy`
+    \\runs deploy only if the turn finished cleanly.
+    \\
+    \\Plain output: a one-line summary to stderr; with --capture the turn's output
+    \\goes to stdout (so it pipes). --json returns the full result object.
+    \\
+    \\Examples:
+    \\  attyx agent send -p 3 "run the tests and fix failures" --wait
+    \\  attyx agent send -p 3 "summarize src/api" --wait --capture --json
+    \\  attyx agent await -p 3 --state any        # block until done or needs input
     \\
 ;

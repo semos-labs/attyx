@@ -35,6 +35,8 @@ pub const IpcCommand = enum {
     send_keys,
     send_image,
     get_text,
+    agent_send,
+    agent_await,
     config_reload,
     theme_set,
     scroll_to_top,
@@ -83,7 +85,15 @@ pub const IpcRequest = struct {
     since_line: u64 = 0,
     /// get-text --cursor-only: print just the next cursor, no text.
     cursor_only: bool = false,
+    /// agent send/await options. Prompt text rides in `text_arg`.
+    agent_capture: bool = false,
+    agent_tokens: bool = false,
+    agent_timeout_s: u32 = 0, // 0 = default
+    agent_submit_key: []const u8 = "", // "" = {Enter}
+    agent_await_state: AwaitState = .idle,
 };
+
+pub const AwaitState = enum { idle, input, any };
 
 /// Incremental-capture cursor: an opaque ASCII token `g<gen>.l<line>`. The client
 /// treats it as a blob; only the CLI/MCP arg parsers and the server decode it.
@@ -301,6 +311,7 @@ pub fn parse(args: []const [:0]const u8) ?IpcRequest {
         if (std.mem.eql(u8, sub, "list")) break :blk parseList(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "watch")) break :blk parseWatch(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "session")) break :blk parseSession(fargs, start, target_pid, json_output);
+        if (std.mem.eql(u8, sub, "agent")) break :blk parseAgent(fargs, start, target_pid, json_output);
         if (std.mem.eql(u8, sub, "run")) {
             if (hasHelp(fargs, start)) showHelp(help.run);
             if (start + 1 >= fargs.len) {
@@ -724,6 +735,79 @@ fn parseWatch(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_o
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
+
+fn parseAgent(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
+    if (start + 1 >= args.len or isHelp(args[start + 1])) {
+        if (start + 1 < args.len and isHelp(args[start + 1])) showHelp(help.agent);
+        printHelp(help.agent);
+        return null;
+    }
+    const action = args[start + 1];
+    if (std.mem.eql(u8, action, "send")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_send, .target_pid = target_pid, .json_output = json_output };
+        var prompt: []const u8 = "";
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--wait")) {
+                r.wait = true;
+            } else if (std.mem.eql(u8, arg, "--capture")) {
+                r.agent_capture = true;
+            } else if (std.mem.eql(u8, arg, "--tokens")) {
+                r.agent_tokens = true;
+            } else if (std.mem.eql(u8, arg, "--timeout")) {
+                if (i + 1 >= args.len) fatal("--timeout requires seconds");
+                i += 1;
+                r.agent_timeout_s = std.fmt.parseInt(u32, args[i], 10) catch fatal("--timeout: invalid seconds");
+            } else if (std.mem.eql(u8, arg, "--submit-key")) {
+                if (i + 1 >= args.len) fatal("--submit-key requires a key");
+                i += 1;
+                r.agent_submit_key = args[i];
+            } else if (prompt.len == 0) {
+                prompt = args[i];
+            }
+        }
+        if (r.pane_id == 0) fatal("agent send requires --pane <id>");
+        if (prompt.len == 0) {
+            printHelp(help.agent);
+            return null;
+        }
+        // --capture / --tokens only make sense once the turn completes.
+        if (r.agent_capture or r.agent_tokens) r.wait = true;
+        r.text_arg = prompt;
+        return r;
+    } else if (std.mem.eql(u8, action, "await")) {
+        if (hasHelp(args, start + 1)) showHelp(help.agent);
+        var r = IpcRequest{ .command = .agent_await, .target_pid = target_pid, .json_output = json_output };
+        var i = start + 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--pane") or std.mem.eql(u8, arg, "-p")) {
+                if (i + 1 >= args.len) fatal("--pane requires a pane ID");
+                i += 1;
+                parsePaneArg(args[i], &r);
+            } else if (std.mem.eql(u8, arg, "--state")) {
+                if (i + 1 >= args.len) fatal("--state requires idle|input|any");
+                i += 1;
+                const v = args[i];
+                r.agent_await_state = if (std.mem.eql(u8, v, "idle")) .idle else if (std.mem.eql(u8, v, "input")) .input else if (std.mem.eql(u8, v, "any")) .any else fatal("--state must be idle, input, or any");
+            } else if (std.mem.eql(u8, arg, "--timeout")) {
+                if (i + 1 >= args.len) fatal("--timeout requires seconds");
+                i += 1;
+                r.agent_timeout_s = std.fmt.parseInt(u32, args[i], 10) catch fatal("--timeout: invalid seconds");
+            }
+        }
+        if (r.pane_id == 0) fatal("agent await requires --pane <id>");
+        return r;
+    }
+    printHelp(help.agent);
+    return null;
+}
 
 fn parseSession(args: []const [:0]const u8, start: usize, target_pid: ?u32, json_output: bool) ?IpcRequest {
     if (start + 1 >= args.len or isHelp(args[start + 1])) {
