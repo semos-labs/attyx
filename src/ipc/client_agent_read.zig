@@ -140,6 +140,18 @@ fn transcriptPath(a: std.mem.Allocator, parsed: IpcRequest) Error![]const u8 {
     return if (found_pane) Error.NoTranscript else Error.NoAgent;
 }
 
+/// All assistant messages in `parsed`'s pane transcript (oldest first), or null
+/// if the agent reports no transcript or it can't be read. Used by `agent send
+/// --capture` to lift a turn's output straight from the transcript (the reliable
+/// path) rather than scraping the screen.
+pub fn allMessages(a: std.mem.Allocator, parsed: IpcRequest) ?[]const []const u8 {
+    const path = transcriptPath(a, parsed) catch return null;
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const bytes = file.readToEndAlloc(a, max_transcript_bytes) catch return null;
+    return extractMessages(a, bytes) catch null;
+}
+
 fn readTranscript(a: std.mem.Allocator, parsed: IpcRequest) Error!ReadResult {
     const path = try transcriptPath(a, parsed);
     const file = std.fs.cwd().openFile(path, .{}) catch return Error.ReadFailed;
