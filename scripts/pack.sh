@@ -42,6 +42,12 @@ fi
 # Ad-hoc sign (no Apple Developer account needed)
 codesign --force --deep --sign - --entitlements resources/Attyx.entitlements "$APP"
 
+# Install into /Applications, replacing any existing copy.
+DEST="/Applications/$APP"
+rm -rf "$DEST"
+cp -R "$APP" "$DEST"
+
 echo ""
 echo "Done: $APP"
-echo "Run with: open $APP"
+echo "Installed: $DEST"
+echo "Run with: open \"$DEST\""
