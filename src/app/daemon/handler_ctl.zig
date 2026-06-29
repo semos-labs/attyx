@@ -384,8 +384,7 @@ fn writeFromLayout(
         const focused_pane = tabFocusedPane(tab);
 
         if (kind == .panes) {
-            // Panes of the active tab only — mirrors the window's `list panes`.
-            if (!active) continue;
+            // Panes from all tabs in the session.
             for (leaf_ids[0..lc]) |pid| writePaneLine(w, session, pid, pid == focused_pane, false);
             continue;
         }
@@ -496,6 +495,36 @@ fn setNonBlocking(fd: std.posix.fd_t) void {
     const F_SETFL: i32 = 4;
     const flags = std.posix.fcntl(fd, F_GETFL, 0) catch return;
     _ = std.posix.fcntl(fd, F_SETFL, flags | platform.O_NONBLOCK) catch {};
+}
+
+test "handleList includes panes from every tab" {
+    var session = session_mod.DaemonSession{
+        .id = 1,
+        .rows = 24,
+        .cols = 80,
+    };
+
+    var info = layout_codec.LayoutInfo{};
+    info.tab_count = 2;
+    info.active_tab = 0;
+    info.focused_pane_id = 100;
+
+    info.tabs[0].node_count = 1;
+    info.tabs[0].root_idx = 0;
+    info.tabs[0].focused_idx = 0;
+    info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = 11 };
+
+    info.tabs[1].node_count = 1;
+    info.tabs[1].root_idx = 0;
+    info.tabs[1].focused_idx = 0;
+    info.tabs[1].nodes[0] = .{ .tag = .leaf, .pane_id = 22 };
+
+    var buf: [128]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+
+    writeFromLayout(w, &session, &info, .panes);
+    try std.testing.expectEqualStrings("11\tshell\t*\n22\tshell\n", stream.getWritten());
 }
 
 test "computeScrollOffset transitions and clamps" {

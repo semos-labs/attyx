@@ -417,6 +417,13 @@ fn handleFocusPanes(
                     // cells; if we let delta fire too we'd double-count.
                     cl.primeScrollbackBaseline(pane);
                     cl.sendGridSnapshot(pane, true);
+                    // A forced snapshot can still be blank if this daemon-side
+                    // engine was rebuilt from incomplete replay state (common
+                    // after hot restart / old sessions) and the foreground TUI
+                    // has been idle since. Nudge it to repaint at the current
+                    // size; the daemon poll loop will ingest that redraw and
+                    // ship the next grid snapshot to this active client.
+                    pane.notifyRedraw();
                     // Hydrate scrollback on first focus so scrolling up
                     // actually shows history. Capped to keep the initial
                     // burst bounded.

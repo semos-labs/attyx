@@ -77,6 +77,9 @@ pub const PtyThreadCtx = struct {
     // Session mode (daemon-backed, single shared socket)
     session_client: ?*SessionClient = null,
     sessions_enabled: bool = false,
+    /// True when this launch created a fresh daemon session whose first pane is
+    /// deferred until the UI sends real window dimensions via pane_resize.
+    session_deferred_startup_resize: bool = false,
     // Track last-sent focus_panes IDs to avoid stale replay on refocus.
     // Sized for ALL panes across ALL tabs because we keep every daemon-backed
     // pane "warm" (claimed as focused) so the daemon streams output for them
@@ -506,6 +509,7 @@ pub fn run(
     // In session mode: attach to last active session, or create a new one.
     var initial_pane_ids: [32]u32 = .{0} ** 32;
     var initial_pane_count: u8 = 0;
+    var session_deferred_startup_resize = false;
     if (session_client) |*sc| attach_or_create: {
         // Helper: attach and get V2 response with pane IDs
         const doAttach = struct {
@@ -528,6 +532,7 @@ pub fn run(
                 break :attach_or_create;
             };
             _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
+            session_deferred_startup_resize = true;
             conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
             break :attach_or_create;
@@ -543,6 +548,7 @@ pub fn run(
                 break :attach_or_create;
             };
             _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
+            session_deferred_startup_resize = true;
             conn.saveLastSession(sid);
             logging.info("session", "created new session {d} for working directory", .{sid});
             break :attach_or_create;
@@ -587,6 +593,7 @@ pub fn run(
                     break :attach_or_create;
                 };
                 _ = doAttach(sc, new_sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
+                session_deferred_startup_resize = true;
             }
             conn.saveLastSession(found_alive.?);
             logging.info("session", "reattached to session {d}", .{found_alive.?});
@@ -598,6 +605,7 @@ pub fn run(
                 break :attach_or_create;
             };
             _ = doAttach(sc, sid, initial_pty_rows, initial_pty_cols, &initial_pane_ids, &initial_pane_count);
+            session_deferred_startup_resize = true;
             conn.saveLastSession(sid);
             logging.info("session", "created and attached to session {d}", .{sid});
         }
@@ -840,6 +848,7 @@ pub fn run(
         .statusbar = if (statusbar) |*sb| sb else null,
         .session_client = heap_session_client,
         .sessions_enabled = sessions_enabled,
+        .session_deferred_startup_resize = session_deferred_startup_resize,
         .session_icon_filter = config.session_icon_filter,
         .session_icon_session = config.session_icon_session,
         .session_icon_new = config.session_icon_new,

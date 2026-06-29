@@ -44,6 +44,42 @@ pub const doReloadConfig = actions.doReloadConfig;
 pub const closePopup = actions.closePopup;
 pub const handlePopupExit = actions.handlePopupExit;
 
+fn drainSessionStartupBurst(ctx: *PtyThreadCtx, max_iters: usize) bool {
+    const sc = ctx.session_client orelse return false;
+    var got_content = false;
+    for (0..max_iters) |_| {
+        sc.flushOut();
+        if (!sc.hasBufferedData()) {
+            var sfds = [1]posix.pollfd{.{ .fd = sc.pollFd(), .events = 0x0001, .revents = 0 }};
+            _ = posix.poll(&sfds, 50) catch break;
+            if (sfds[0].revents & 0x0001 != 0) {
+                if (!sc.recvData()) break;
+            } else if (got_content) {
+                break;
+            } else {
+                continue;
+            }
+        }
+        var drained_any = false;
+        while (sc.readMessage()) |msg| {
+            drained_any = true;
+            if (applyDaemonContentMessage(ctx, msg)) {
+                got_content = true;
+                continue;
+            }
+            switch (msg) {
+                .replay_end => |pane_id| {
+                    if (handleReplayEnd(ctx, pane_id)) got_content = true;
+                },
+                .layout_sync => |sync| session_actions.handleLayoutSync(ctx, sync.layout),
+                else => {},
+            }
+        }
+        if (!drained_any) break;
+    }
+    return got_content;
+}
+
 pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLIN: i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
@@ -157,6 +193,13 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         }
     }
 
+    if (ctx.session_client != null and !ctx.session_deferred_startup_resize) {
+        session_actions.forceActiveTabGridSnapshot(ctx);
+        if (drainSessionStartupBurst(ctx, 20)) {
+            actions.switchActiveTab(ctx);
+        }
+    }
+
     // Startup drain: process initial shell output (prompt, DA1 responses, etc.)
     // before entering the main loop.  The main-thread GL setup may complete
     // before the shell sends its prompt, leaving g_cells empty.  On macOS the
@@ -242,7 +285,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     //
     // No stale 80×24 snapshot, no SIGWINCH-redraw nudge — there's
     // nothing to redraw, the shell is starting fresh.
-    if (ctx.session_client != null and ctx.xyron_path != null) {
+    if (ctx.session_client != null and ctx.xyron_path != null and ctx.session_deferred_startup_resize) {
         const startup_pane = ctx.tab_mgr.activePane();
         if (startup_pane.daemon_pane_id != null) {
             logging.info("startup", "waiting for real window dims (session at {d}x{d})", .{ ctx.grid_cols, ctx.grid_rows });
@@ -873,9 +916,27 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Sync viewport from C BEFORE feeding PTY data, so that
         // fullScreenScroll's viewport_offset bump is not overwritten.
-        // Snapshot the C value so we can detect user scrolls later.
-        const synced_vp: i32 = @bitCast(c.g_viewport_offset);
-        publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
+        // Snapshot the C value so we can detect user scrolls later. Right after
+        // tab/session switches, skip the C→engine copy once: the global C
+        // offset may still belong to the previously active pane.
+        var synced_vp: i32 = @bitCast(c.g_viewport_offset);
+        if (actions.g_skip_viewport_sync_once) {
+            actions.g_skip_viewport_sync_once = false;
+            const eng = publish.ctxEngine(ctx);
+            const max_vp = eng.state.ring.scrollbackCount();
+            if (eng.state.viewport_offset > max_vp) eng.state.viewport_offset = max_vp;
+            c.g_viewport_offset = @intCast(eng.state.viewport_offset);
+            synced_vp = @bitCast(c.g_viewport_offset);
+        } else {
+            publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
+            const eng = publish.ctxEngine(ctx);
+            const max_vp = eng.state.ring.scrollbackCount();
+            if (eng.state.viewport_offset > max_vp) {
+                eng.state.viewport_offset = max_vp;
+                c.g_viewport_offset = @intCast(max_vp);
+                synced_vp = @bitCast(c.g_viewport_offset);
+            }
+        }
 
         // Mouse-wheel scroll routed to the pane under the cursor (not the
         // focused pane). The focused pane's viewport mirrors the global

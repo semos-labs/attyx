@@ -397,6 +397,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
+    const real_daemon_smoke = b.addExecutable(.{
+        .name = "attyx-real-daemon-smoke",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/app/daemon/real_daemon_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "attyx", .module = mod } },
+        }),
+    });
+    real_daemon_smoke.root_module.linkSystemLibrary("c", .{});
+    const run_real_daemon_smoke = b.addRunArtifact(real_daemon_smoke);
+    run_real_daemon_smoke.addArtifactArg(exe);
+    run_real_daemon_smoke.step.dependOn(b.getInstallStep());
+    const real_daemon_test_step = b.step("test-real-daemon", "Run smoke tests against an isolated real daemon");
+    real_daemon_test_step.dependOn(&run_real_daemon_smoke.step);
+
     // CLI command tests live in their own module (src/cli/*), so they need their
     // own test root — the main module's test target doesn't reach them.
     const cli_tests = b.addTest(.{ .root_module = cli_commands_mod });

@@ -515,7 +515,7 @@ pub const list =
     \\Targets:
     \\  (none)     Show full tab/pane tree (default)
     \\  tabs       List tabs only
-    \\  splits     List panes in the active tab
+    \\  splits     List panes in all tabs
     \\  sessions   List daemon sessions
     \\  agents     List panes currently running an agent
     \\
@@ -544,7 +544,7 @@ pub const list =
     \\Examples:
     \\  attyx list                   Full tab/pane tree
     \\  attyx list tabs              Just tab names and IDs
-    \\  attyx list splits            Panes in the active tab
+    \\  attyx list splits            Panes in all tabs
     \\  attyx list sessions          All daemon sessions
     \\  attyx list agents            Panes running an agent
     \\  attyx list agents -p 3       Just pane 3's agent

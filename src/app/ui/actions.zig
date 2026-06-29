@@ -20,6 +20,9 @@ const statusbar = @import("../statusbar.zig");
 
 /// Set by switchActiveTab to force mark_all_dirty on next main-loop render.
 pub var g_force_full_redraw: bool = false;
+/// Set by switchActiveTab so the next loop does not copy a stale global
+/// viewport offset from the previously active pane/session into the new one.
+pub var g_skip_viewport_sync_once: bool = false;
 
 /// Re-exports from session_actions (consumed by other modules).
 pub const saveSessionLayout = session_actions.saveSessionLayout;
@@ -388,9 +391,19 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
         terminal.g_active_daemon_pane_id = dpid;
     }
 
-    // In session mode, tell daemon which panes are now visible
+    // In session mode, tell daemon which panes are now visible. In grid-sync,
+    // force the active tab to get a fresh snapshot even when the pane is
+    // already in the warm all-panes focus set.
     if (ctx.sessions_enabled) {
-        sendActiveFocusPanes(ctx);
+        if (ctx.session_client) |sc| {
+            if (sc.hasGridSync()) {
+                session_actions.forceActiveTabGridSnapshot(ctx);
+            } else {
+                sendActiveFocusPanes(ctx);
+            }
+        } else {
+            sendActiveFocusPanes(ctx);
+        }
     }
 
     updateSplitActive(ctx);
@@ -402,6 +415,10 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     // re-filling it, and (2) the stride mismatch when fillCells wrote at
     // engine.cols while the renderer reads at g_cols.
     const layout = ctx.tab_mgr.activeLayout();
+    const active_scrollback = pane.engine.state.ring.scrollbackCount();
+    if (pane.engine.state.viewport_offset > active_scrollback) {
+        pane.engine.state.viewport_offset = active_scrollback;
+    }
     const grid_cols: u16 = ctx.grid_cols;
     const grid_rows: u16 = ctx.grid_rows;
     const scratch_total: usize = @as(usize, grid_rows) * @as(usize, grid_cols);
@@ -447,6 +464,7 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
     publish.publishImagePlacements(ctx);
     publish.publishState(ctx);
     c.g_viewport_offset = @intCast(publish.ctxEngine(ctx).state.viewport_offset);
+    g_skip_viewport_sync_once = true;
     publish.generateTabBar(ctx);
     // NOTE: the statusbar tick used to run here to refresh cwd/git widgets
     // for the new pane before painting the overlay.  Profiling showed it
