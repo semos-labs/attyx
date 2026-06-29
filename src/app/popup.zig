@@ -12,6 +12,7 @@ const Engine = attyx.Engine;
 const color_mod = attyx.render_color;
 const Pty = @import("pty.zig").Pty;
 const Pane = @import("pane.zig").Pane;
+const path_env = @import("path_env.zig");
 
 const RingBuffer = attyx.RingBuffer;
 const theme_registry_mod = @import("../theme/registry.zig");
@@ -183,15 +184,19 @@ pub const PopupState = struct {
             }
         } else {
             // POSIX: $SHELL -c '<command>'
-            // Prepend an export to restore the full PATH before the command.
+            // Restore the shell PATH and ensure the attyx CLI dir is present.
             const shell_env = std.posix.getenv("SHELL") orelse "/bin/sh";
             const shell_z = try allocator.dupeZ(u8, shell_env);
             defer allocator.free(shell_z);
             const c_flag: [:0]const u8 = "-c";
 
-            const cmd_z = if (shell_path) |sp| blk: {
-                const w = std.fmt.allocPrint(allocator,
-                    "export PATH='{s}'; {s}", .{ sp, cfg.command }) catch break :blk try allocator.dupeZ(u8, cfg.command);
+            const base_path: ?[]const u8 = shell_path orelse if (std.posix.getenv("PATH")) |p| p else null;
+            const popup_path = path_env.allocPathWithAttyxBinDir(allocator, base_path);
+            defer if (popup_path) |p| allocator.free(p);
+
+            const cmd_z = if (popup_path) |pp| blk: {
+                if (pp.len == 0) break :blk try allocator.dupeZ(u8, cfg.command);
+                const w = std.fmt.allocPrint(allocator, "export PATH='{s}'; {s}", .{ pp, cfg.command }) catch break :blk try allocator.dupeZ(u8, cfg.command);
                 defer allocator.free(w);
                 break :blk try allocator.dupeZ(u8, w);
             } else try allocator.dupeZ(u8, cfg.command);
