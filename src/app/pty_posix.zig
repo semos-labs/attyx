@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const platform = @import("../platform/platform.zig");
+const path_env = @import("path_env.zig");
 const ShellIntegration = @import("shell_integration.zig");
 
 const Winsize = extern struct {
@@ -150,7 +151,9 @@ pub const Pty = struct {
             }
 
             var argv_override: ShellIntegration.ArgvOverride = .{};
-            if (!opts.skip_shell_integration) {
+            if (opts.skip_shell_integration) {
+                path_env.prependAttyxBinDirToEnv();
+            } else {
                 argv_override = ShellIntegration.setup();
             }
 

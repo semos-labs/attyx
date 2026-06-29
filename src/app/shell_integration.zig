@@ -9,14 +9,13 @@
 /// On Windows: shell integration is handled differently (Phase 1+).
 const std = @import("std");
 const builtin = @import("builtin");
+const path_env = @import("path_env.zig");
 const is_windows = builtin.os.tag == .windows;
 
 // POSIX-only extern declarations — guarded so they don't resolve on Windows.
 const posix_ffi = if (!is_windows) struct {
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
     extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
-    extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
 } else struct {};
 
 pub const Shell = enum {
@@ -69,7 +68,7 @@ pub fn setup() ArgvOverride {
     if (comptime is_windows) return .{};
 
     var exe_buf: [1024]u8 = undefined;
-    const exe_dir = getExeDir(&exe_buf) orelse return .{};
+    const exe_dir = path_env.getExeDir(&exe_buf) orelse return .{};
 
     // Set __ATTYX_BIN_DIR for integration scripts
     var dir_buf: [1024]u8 = undefined;
@@ -355,11 +354,12 @@ const nu_env_config_flag: [:0]const u8 = "--env-config";
 
 fn appendExeDirToPath(exe_dir: []const u8) void {
     const existing = std.mem.sliceTo(posix_ffi.getenv("PATH") orelse "/usr/bin:/bin", 0);
-    if (std.mem.indexOf(u8, existing, exe_dir) != null) return;
+    if (path_env.pathContainsDir(existing, exe_dir)) return;
     var path_buf: [4096]u8 = undefined;
-    const new_path = std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{
-        exe_dir, existing,
-    }) catch return;
+    const new_path = if (existing.len == 0)
+        std.fmt.bufPrintZ(&path_buf, "{s}", .{exe_dir}) catch return
+    else
+        std.fmt.bufPrintZ(&path_buf, "{s}:{s}", .{ exe_dir, existing }) catch return;
     _ = posix_ffi.setenv("PATH", new_path, 1);
 }
 
@@ -391,34 +391,6 @@ fn mkdirp(path_z: [*:0]const u8) void {
         }
     }
     _ = std.posix.mkdiratZ(std.posix.AT.FDCWD, path_z, 0o755) catch {};
-}
-
-fn getExeDir(buf: *[1024]u8) ?[]const u8 {
-    const exe_path = getExePath(buf) orelse return null;
-    var last_slash: usize = 0;
-    for (exe_path, 0..) |ch, i| {
-        if (ch == '/') last_slash = i;
-    }
-    if (last_slash == 0) return null;
-    return exe_path[0..last_slash];
-}
-
-fn getExePath(buf: *[1024]u8) ?[]const u8 {
-    if (comptime builtin.os.tag == .macos) {
-        var size: u32 = buf.len;
-        if (posix_ffi._NSGetExecutablePath(buf, &size) == 0) {
-            return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(buf)), 0);
-        }
-    } else if (comptime is_windows) {
-        // Windows exe path resolution (Phase 1+)
-        return null;
-    } else {
-        const n = posix_ffi.readlink("/proc/self/exe", buf, buf.len);
-        if (n > 0) {
-            return buf[0..@intCast(n)];
-        }
-    }
-    return null;
 }
 
 // ---------------------------------------------------------------------------
