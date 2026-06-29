@@ -91,6 +91,18 @@ pub const SplitLayout = struct {
         self.hint_title_len = 0;
     }
 
+    /// Tab title for display/reporting: the explicit name, else the auto hint,
+    /// else the focused pane's title, else its process name. Empty when none is
+    /// known. Mirrors the fallback `fillTabLayout` serializes for the daemon, so
+    /// the window's `list/watch agents` report the same label the tab bar shows.
+    pub fn effectiveTitle(self: *SplitLayout) []const u8 {
+        if (self.getTitle()) |t| return t;
+        if (self.getHintTitle()) |t| return t;
+        const fp = self.focusedPane();
+        if (fp.engine.state.title) |t| return t;
+        return fp.getDaemonProcName() orelse "";
+    }
+
     pub fn init(initial_pane: *Pane) SplitLayout {
         var sl = SplitLayout{};
         sl.pool[0] = .{

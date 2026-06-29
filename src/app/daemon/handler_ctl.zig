@@ -15,6 +15,7 @@ const DaemonPane = @import("pane.zig").DaemonPane;
 const DaemonClient = @import("client.zig").DaemonClient;
 const platform = @import("../../platform/platform.zig");
 const layout_codec = @import("../layout_codec.zig");
+const agent_watch = @import("agent_watch.zig");
 const handler_ctl_layout = @import("handler_ctl_layout.zig");
 const agents = @import("../../ipc/agents.zig");
 
@@ -135,9 +136,11 @@ fn writeAgentRow(
     if (status == .none) return;
     // No POSIX pty master fd on Windows → PID is unavailable (0 = unknown).
     const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
+    var tab_name_buf: [layout_codec.max_title_len]u8 = undefined;
+    const tab_name = agent_watch.tabNameForPane(session, pane_id, &tab_name_buf);
     if (as_json) {
         if (!first.*) w.writeAll(",") catch return;
-        agents.writeAgentJson(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
+        agents.writeAgentJson(w, pane_id, tab_id, tab_name, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage()) catch return;
     } else {
         agents.writeAgentRow(w, pane_id, tab_id, session.id, pid, status, eng.state.agentMsg(), eng.state.agentUsage(), false) catch return;
     }

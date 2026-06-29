@@ -10,6 +10,8 @@ const term_mod = @import("term.zig");
 const model_mod = @import("model.zig");
 const render = @import("render.zig");
 const input = @import("input.zig");
+const prompt = @import("prompt.zig");
+const client_agent = @import("../client_agent.zig");
 const client = @import("../client.zig");
 const io = @import("../protocol.zig"); // writeAll/readExact/closeFd + header
 const ipc_proto = @import("../protocol.zig");
@@ -228,6 +230,106 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) void {
 
 const Mode = enum { normal, search, confirm };
 
+/// Enter inline interaction for the selected agent. If it's waiting for input and
+/// its visible screen parses as a numbered prompt, open the option picker;
+/// otherwise open a freeform reply box (works for any agent, any state).
+fn startInteract(gpa: std.mem.Allocator, it: *prompt.Interact, r: *const model_mod.Row) void {
+    it.reset();
+    it.pane_id = r.pane_id;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const screen = client_agent.paneScreen(a, r.pane_id);
+    // Message area: the agent's last transcript message, else the screen tail.
+    if (client_agent.paneLastMessage(a, r.pane_id)) |msg| {
+        it.setMsg(msg);
+    } else if (screen) |s| {
+        it.setMsg(if (s.len > 3072) s[s.len - 3072 ..] else s);
+    }
+    // Option/permission picker when the agent is waiting and its screen parses
+    // as a numbered prompt; otherwise a freeform reply box.
+    if (r.state == .input) {
+        if (screen) |s| {
+            if (prompt.Prompt.parse(s)) |p| {
+                it.prompt = p;
+                it.mode = .options;
+                return;
+            }
+        }
+    }
+    it.mode = .reply;
+}
+
+const scroll_step = 3;
+
+/// One keystroke while interacting. Reply mode edits/sends freeform text; options
+/// mode navigates (j/k), selects by digit, sends the highlighted one on Enter.
+/// Esc / Ctrl-C cancels.
+fn handleInteractByte(gpa: std.mem.Allocator, it: *prompt.Interact, b: u8) void {
+    switch (it.mode) {
+        .none => {},
+        .reply => switch (b) {
+            0x1b, 0x03 => it.reset(),
+            0x15 => it.msg_scroll -|= scroll_step, // ^U scroll message up
+            0x04 => it.msg_scroll += scroll_step, // ^D scroll message down
+            '\r', '\n' => {
+                sendReply(gpa, it);
+                it.reset();
+            },
+            0x7f, 0x08 => if (it.reply_len > 0) {
+                it.reply_len -= 1;
+            },
+            else => if (b >= 0x20 and b < 0x7f and it.reply_len < it.reply_buf.len) {
+                it.reply_buf[it.reply_len] = b;
+                it.reply_len += 1;
+            },
+        },
+        .options => switch (b) {
+            0x1b, 0x03, 'q' => it.reset(),
+            0x15 => it.msg_scroll -|= scroll_step, // ^U scroll message up
+            0x04 => it.msg_scroll += scroll_step, // ^D scroll message down
+            'j' => if (it.sel + 1 < it.prompt.n) {
+                it.sel += 1;
+            },
+            'k' => if (it.sel > 0) {
+                it.sel -= 1;
+            },
+            '\r', '\n' => {
+                if (it.sel < it.prompt.n) sendOption(gpa, it.pane_id, it.prompt.options[it.sel].num);
+                it.reset();
+            },
+            '1'...'9' => {
+                const d = b - '0';
+                for (it.prompt.options[0..it.prompt.n]) |o| {
+                    if (o.num == d) {
+                        sendOption(gpa, it.pane_id, d);
+                        it.reset();
+                        break;
+                    }
+                }
+            },
+            else => {},
+        },
+    }
+}
+
+fn sendReply(gpa: std.mem.Allocator, it: *prompt.Interact) void {
+    if (it.reply_len == 0) return;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    client_agent.paneReply(arena.allocator(), it.pane_id, it.reply());
+}
+
+/// Send the option's number key. ponytail: digit-only — Claude/Codex permission
+/// and menu prompts select immediately on the number; if some TUI needs Enter to
+/// confirm a highlighted choice, send "\r" after as a follow-up.
+fn sendOption(gpa: std.mem.Allocator, pane_id: u32, num: u8) void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const key = [_]u8{'0' + num};
+    client_agent.paneKey(arena.allocator(), pane_id, &key);
+}
+
 fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, names: *render.NameCache) !void {
     var t = try term_mod.Term.init();
     g_term = &t;
@@ -241,6 +343,7 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
     var dirty = true;
     var connected = true;
     var mode: Mode = .normal;
+    var interact = prompt.Interact{};
     var detail = false;
     var next_retry: i64 = 0;
     var backoff: i64 = 500;
@@ -262,6 +365,7 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
                 .connected = connected,
                 .detail = detail,
                 .confirm_close = mode == .confirm,
+                .interact = &interact,
             }) catch {};
             t.write(buf.items);
             dirty = false;
@@ -317,6 +421,11 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
             const n = posix.read(posix.STDIN_FILENO, &ib) catch 0;
             if (n == 0) break;
             for (ib[0..n]) |b| {
+                if (interact.mode != .none) {
+                    handleInteractByte(gpa, &interact, b);
+                    dirty = true;
+                    continue;
+                }
                 switch (mode) {
                     .search => {
                         switch (b) {
@@ -371,6 +480,12 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
                         .detail => {
                             detail = !detail;
                             dirty = true;
+                        },
+                        .interact => {
+                            if (m.selectedRow()) |r| {
+                                startInteract(gpa, &interact, r);
+                                dirty = true;
+                            }
                         },
                         .zoom => {
                             if (m.selectedRow()) |r| switchAndPane(r.session, r.pane_id, .pane_zoom_targeted);

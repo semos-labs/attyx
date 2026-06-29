@@ -87,7 +87,8 @@ pub fn broadcastAgent(ctx: *PtyThreadCtx, pane: *Pane, tab_id: u32) void {
     if (watcher_count == 0) return;
 
     var frame_buf: [frame_cap]u8 = undefined;
-    const frame = buildFrame(&frame_buf, sessionId(ctx), pane, tab_id) orelse return;
+    const tab_name = tabName(ctx, pane.ipc_id);
+    const frame = buildFrame(&frame_buf, sessionId(ctx), pane, tab_id, tab_name) orelse return;
 
     var i: usize = 0;
     while (i < watcher_count) {
@@ -120,15 +121,24 @@ fn sessionId(ctx: *PtyThreadCtx) u32 {
     return 0;
 }
 
+/// The tab title for the tab containing `pane_id` (explicit name, else the
+/// auto-derived hint, else ""), so watch frames carry the same label the tab bar
+/// shows. Empty when the pane isn't found.
+fn tabName(ctx: *PtyThreadCtx, pane_id: u32) []const u8 {
+    const found = ctx.tab_mgr.findPaneWithLayout(pane_id) orelse return "";
+    return found.layout.effectiveTitle();
+}
+
 /// Build a framed (.success) NDJSON line for one agent. Returns null if the
 /// JSON object overflowed the buffer (never expected for our field set).
-fn buildFrame(buf: []u8, session: u32, pane: *Pane, tab_id: u32) ?[]const u8 {
+fn buildFrame(buf: []u8, session: u32, pane: *Pane, tab_id: u32, tab_name: []const u8) ?[]const u8 {
     var json_buf: [frame_cap - protocol.header_size]u8 = undefined;
     var stream = std.io.fixedBufferStream(&json_buf);
     agents.writeAgentJson(
         stream.writer(),
         pane.ipc_id,
         tab_id,
+        tab_name,
         session,
         agents.panePid(pane.pty.master),
         pane.engine.state.agent_status,
@@ -153,7 +163,8 @@ fn writeSnapshot(ctx: *PtyThreadCtx, fd: posix.fd_t, pane_filter: u32) bool {
         for (leaves[0..lc]) |leaf| {
             if (leaf.pane.engine.state.agent_status == .none) continue;
             if (pane_filter != 0 and pane_filter != leaf.pane.ipc_id) continue;
-            const frame = buildFrame(&frame_buf, session, leaf.pane, tab_id) orelse continue;
+            const tab_name = layout.effectiveTitle();
+            const frame = buildFrame(&frame_buf, session, leaf.pane, tab_id, tab_name) orelse continue;
             if (!tryWriteFrame(fd, frame)) return false;
         }
     }

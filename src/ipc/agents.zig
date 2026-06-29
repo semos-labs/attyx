@@ -33,6 +33,7 @@ pub fn writeAgentJson(
     w: anytype,
     pane_id: u32,
     tab_id: u32,
+    tab_name: []const u8,
     session: u32,
     pid: u32,
     status: AgentStatus,
@@ -40,9 +41,11 @@ pub fn writeAgentJson(
     usage: AgentUsage,
 ) !void {
     try w.print(
-        "{{\"pane_id\":{d},\"tab_id\":{d},\"session\":{d},\"pid\":{d},\"state\":\"{s}\",\"message\":\"",
-        .{ pane_id, tab_id, session, pid, stateStr(status) },
+        "{{\"pane_id\":{d},\"tab_id\":{d},\"tab_name\":\"",
+        .{ pane_id, tab_id },
     );
+    try writeJsonEscaped(w, tab_name);
+    try w.print("\",\"session\":{d},\"pid\":{d},\"state\":\"{s}\",\"message\":\"", .{ session, pid, stateStr(status) });
     try writeJsonEscaped(w, message);
     try w.writeAll("\"");
     try writeUsageJson(w, usage);
@@ -369,9 +372,9 @@ pub fn writeJsonEscaped(w: anytype, s: []const u8) !void {
 test "writeAgentJson escapes message and omits unknown usage" {
     var buf: [256]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
-    try writeAgentJson(stream.writer(), 3, 1, 2, 4242, .working, "say \"hi\"\nnow", .{});
+    try writeAgentJson(stream.writer(), 3, 1, "dev", 2, 4242, .working, "say \"hi\"\nnow", .{});
     try std.testing.expectEqualStrings(
-        "{\"pane_id\":3,\"tab_id\":1,\"session\":2,\"pid\":4242,\"state\":\"working\",\"message\":\"say \\\"hi\\\"\\nnow\",\"usage\":{}}",
+        "{\"pane_id\":3,\"tab_id\":1,\"tab_name\":\"dev\",\"session\":2,\"pid\":4242,\"state\":\"working\",\"message\":\"say \\\"hi\\\"\\nnow\",\"usage\":{}}",
         stream.getWritten(),
     );
 }
@@ -388,9 +391,9 @@ test "writeAgentJson emits known usage fields and skips nulls" {
         .cost_is_estimate = false,
         .model = "opus-4.6",
     };
-    try writeAgentJson(stream.writer(), 3, 1, 2, 0, .working, "", u);
+    try writeAgentJson(stream.writer(), 3, 1, "", 2, 0, .working, "", u);
     try std.testing.expectEqualStrings(
-        "{\"pane_id\":3,\"tab_id\":1,\"session\":2,\"pid\":0,\"state\":\"working\",\"message\":\"\"," ++
+        "{\"pane_id\":3,\"tab_id\":1,\"tab_name\":\"\",\"session\":2,\"pid\":0,\"state\":\"working\",\"message\":\"\"," ++
             "\"usage\":{\"input_tokens\":1234,\"output_tokens\":5678,\"context_used\":82000," ++
             "\"context_max\":200000,\"cost_usd\":0.4213,\"cost_is_estimate\":false,\"model\":\"opus-4.6\"}}",
         stream.getWritten(),
@@ -448,7 +451,7 @@ test "writeAgentRowFromJson matches writeAgentRow (same format for watch)" {
     try writeAgentRow(as.writer(), 3, 1, 2, 0, .working, "hi", usage, false);
     var json: [512]u8 = undefined;
     var js = std.io.fixedBufferStream(&json);
-    try writeAgentJson(js.writer(), 3, 1, 2, 0, .working, "hi", usage);
+    try writeAgentJson(js.writer(), 3, 1, "", 2, 0, .working, "hi", usage);
     try writeAgentRowFromJson(bs.writer(), std.testing.allocator, js.getWritten(), false);
     try std.testing.expectEqualStrings(as.getWritten(), bs.getWritten());
 }

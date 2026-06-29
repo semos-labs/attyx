@@ -96,12 +96,17 @@ pub const Row = struct {
     cost_is_estimate: bool = false,
     model_buf: [40]u8 = undefined,
     model_len: u8 = 0,
+    tab_buf: [48]u8 = undefined,
+    tab_len: u8 = 0,
     msg_buf: [120]u8 = undefined,
     msg_len: u8 = 0,
     state_since_ms: i64 = 0, // when the row entered its current state (for elapsed)
 
     pub fn model(self: *const Row) []const u8 {
         return self.model_buf[0..self.model_len];
+    }
+    pub fn tabName(self: *const Row) []const u8 {
+        return self.tab_buf[0..self.tab_len];
     }
     pub fn message(self: *const Row) []const u8 {
         return self.msg_buf[0..self.msg_len];
@@ -123,6 +128,7 @@ const RawUsage = struct {
 const RawRecord = struct {
     pane_id: u32 = 0,
     tab_id: u32 = 0,
+    tab_name: []const u8 = "",
     session: u32 = 0,
     pid: u32 = 0,
     state: []const u8 = "none",
@@ -218,6 +224,7 @@ pub const Model = struct {
         r.session = parsed.session;
         r.pane_id = parsed.pane_id;
         r.tab_id = parsed.tab_id;
+        r.tab_len = copyBuf(&r.tab_buf, parsed.tab_name);
         r.pid = parsed.pid;
         r.state = st;
         r.msg_len = copyBuf(&r.msg_buf, parsed.message);
@@ -363,6 +370,9 @@ pub const Model = struct {
 };
 
 fn less(a: Row, b: Row, mode: SortMode) bool {
+    // Always group by session first; the mode orders rows within a session. This
+    // keeps the view session-contiguous so the dashboard can render group headers.
+    if (a.session != b.session) return a.session < b.session;
     switch (mode) {
         .state => {
             if (a.state.rank() != b.state.rank()) return a.state.rank() < b.state.rank();
@@ -385,7 +395,6 @@ fn less(a: Row, b: Row, mode: SortMode) bool {
         },
         .session => {},
     }
-    if (a.session != b.session) return a.session < b.session;
     return a.pane_id < b.pane_id;
 }
 
@@ -395,7 +404,7 @@ fn less(a: Row, b: Row, mode: SortMode) bool {
 
 const testing = std.testing;
 
-test "applyLine upserts, sticky-merges usage, sorts by state then cost" {
+test "applyLine upserts, sticky-merges usage; groups by session then state/cost" {
     const a = testing.allocator;
     var m = Model{};
     m.applyLine(a, "{\"session\":1,\"pane_id\":3,\"state\":\"working\",\"usage\":{\"input_tokens\":100,\"cost_usd\":0.10}}", 0);
@@ -403,8 +412,10 @@ test "applyLine upserts, sticky-merges usage, sorts by state then cost" {
     m.applyLine(a, "{\"session\":2,\"pane_id\":5,\"state\":\"working\",\"usage\":{\"input_tokens\":50,\"cost_usd\":0.50}}", 0);
     try testing.expectEqual(@as(usize, 3), m.count);
     try testing.expectEqual(@as(usize, 3), m.view_count);
-    try testing.expectEqual(State.input, m.rows[0].state);
-    try testing.expectEqual(@as(u32, 5), m.rows[1].pane_id); // 0.50 before 0.10
+    // Session 1 rows first (grouped); within it input ranks before working.
+    try testing.expectEqual(@as(u32, 8), m.rows[0].pane_id); // s1, input
+    try testing.expectEqual(@as(u32, 3), m.rows[1].pane_id); // s1, working
+    try testing.expectEqual(@as(u32, 5), m.rows[2].pane_id); // s2
     try testing.expectApproxEqAbs(@as(f64, 0.60), m.total_cost, 1e-9);
 
     m.applyLine(a, "{\"session\":2,\"pane_id\":5,\"state\":\"idle\"}", 0);
