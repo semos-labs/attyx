@@ -440,6 +440,7 @@ pub const Pty = struct {
         cwd: ?[*:0]const u8 = null,
         capture_stdout: bool = false,
         preserve_tmux: bool = false,
+        path_override: ?[*:0]const u8 = null,
         skip_shell_integration: bool = false,
         startup_cmd: ?[*:0]const u8 = null,
         shell: ShellType = .auto,

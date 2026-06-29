@@ -193,19 +193,17 @@ pub const PopupState = struct {
             const base_path: ?[]const u8 = shell_path orelse if (std.posix.getenv("PATH")) |p| p else null;
             const popup_path = path_env.allocPathWithAttyxBinDir(allocator, base_path);
             defer if (popup_path) |p| allocator.free(p);
+            const popup_path_z: ?[:0]u8 = if (popup_path) |p| try allocator.dupeZ(u8, p) else null;
+            defer if (popup_path_z) |p| allocator.free(p);
 
-            const cmd_z = if (popup_path) |pp| blk: {
-                if (pp.len == 0) break :blk try allocator.dupeZ(u8, cfg.command);
-                const w = std.fmt.allocPrint(allocator, "export PATH='{s}'; {s}", .{ pp, cfg.command }) catch break :blk try allocator.dupeZ(u8, cfg.command);
-                defer allocator.free(w);
-                break :blk try allocator.dupeZ(u8, w);
-            } else try allocator.dupeZ(u8, cfg.command);
+            const cmd_z = try allocator.dupeZ(u8, cfg.command);
             defer allocator.free(cmd_z);
 
             const shell_argv = [_][:0]const u8{ shell_z, c_flag, cmd_z };
             pane.* = Pane.spawnOpts(allocator, dims.rows, dims.cols, &shell_argv, if (cwd_z) |z| z.ptr else null, RingBuffer.default_max_scrollback, .{
                 .capture_stdout = cfg.capture_stdout or cfg.on_return_cmd != null,
                 .preserve_tmux = true,
+                .path_override = if (popup_path_z) |p| p.ptr else null,
                 .skip_shell_integration = true,
             }) catch |err| {
                 allocator.destroy(pane);

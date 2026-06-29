@@ -58,6 +58,8 @@ pub const Pty = struct {
         /// When true, keep TMUX/TMUX_PANE env vars in the child.
         /// Popup commands need these to interact with tmux.
         preserve_tmux: bool = false,
+        /// When set, replace PATH in the child before exec.
+        path_override: ?[*:0]const u8 = null,
         /// When true, skip ZDOTDIR override and shell integration setup.
         /// Popup one-shot commands don't need integration hooks, and the
         /// ZDOTDIR trick can cause init scripts to rebuild PATH.
@@ -143,6 +145,10 @@ pub const Pty = struct {
             // FORCE_HYPERLINK first, so this opts us in without lying about
             // TERM_PROGRAM. overwrite=0 — respects a value the user set.
             _ = setenv("FORCE_HYPERLINK", "1", 0);
+
+            if (opts.path_override) |path| {
+                _ = setenv("PATH", path, 1);
+            }
 
             // Set startup command for shell integration to execute after init.
             // This ensures the command runs with the user's full PATH loaded.
@@ -318,6 +324,34 @@ pub const Pty = struct {
 };
 
 // ── Tests ──
+
+test "path_override sets PATH without shell quoting" {
+    const allocator = std.testing.allocator;
+    const base_path = "/tmp/lazy'git/bin:/usr/bin:/bin";
+    const expected = path_env.allocPathWithAttyxBinDir(allocator, base_path) orelse return error.TestUnexpectedResult;
+    defer allocator.free(expected);
+    const expected_z = try allocator.dupeZ(u8, expected);
+    defer allocator.free(expected_z);
+
+    const shell: [:0]const u8 = "/bin/sh";
+    const c_flag: [:0]const u8 = "-c";
+    const cmd: [:0]const u8 = "printf '%s' \"$PATH\"";
+    const argv = [_][:0]const u8{ shell, c_flag, cmd };
+
+    var pty = try Pty.spawn(.{
+        .argv = &argv,
+        .capture_stdout = true,
+        .path_override = expected_z.ptr,
+        .skip_shell_integration = true,
+    });
+    defer pty.deinit();
+    pty.waitForExit();
+    try std.testing.expectEqual(@as(?u8, 0), pty.exitCode());
+
+    var buf: [4096]u8 = undefined;
+    const n = try posix.read(pty.stdout_read_fd, &buf);
+    try std.testing.expectEqualStrings(expected, buf[0..n]);
+}
 
 test "childExited returns false for non-child process that is still alive" {
     // Simulates the hot-upgrade scenario: the new daemon process inherits
