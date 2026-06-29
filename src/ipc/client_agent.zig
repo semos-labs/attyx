@@ -579,3 +579,53 @@ pub fn runForMcp(a: std.mem.Allocator, parsed: IpcRequest) ![]const u8 {
     return resultJson(a, r);
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard helpers. Resolve the pane's transport (daemon if present, else the
+// attached window) and act on it directly — read the visible screen, submit a
+// reply, or send a raw key. Reuse the same focus-free primitives as `agent
+// send`, so the dashboard never switches the user's window. Synchronous (one
+// round-trip); call them only on user action, not per frame.
+// ---------------------------------------------------------------------------
+
+fn paneCtx(a: std.mem.Allocator, pane_id: u32, sock_buf: *[256]u8) ?Ctx {
+    return resolveCtx(a, .{ .command = .agent_send, .pane_id = pane_id }, sock_buf) catch null;
+}
+
+/// Visible screen text of the pane (plain rows), or null if unreachable.
+pub fn paneScreen(a: std.mem.Allocator, pane_id: u32) ?[]const u8 {
+    var sock_buf: [256]u8 = undefined;
+    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return null;
+    return captureSince(a, ctx, pane_id, "").text;
+}
+
+/// Submit a freeform reply: bracketed-paste body + Enter (same as `agent send`
+/// without --wait, so multi-line text and `{`/`}` stay literal).
+pub fn paneReply(a: std.mem.Allocator, pane_id: u32, text: []const u8) void {
+    var sock_buf: [256]u8 = undefined;
+    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return;
+    var paste: [8192]u8 = undefined;
+    var ps = std.io.fixedBufferStream(&paste);
+    ps.writer().writeAll("\x1b[200~") catch {};
+    ps.writer().writeAll(text[0..@min(text.len, paste.len - 12)]) catch {};
+    ps.writer().writeAll("\x1b[201~") catch {};
+    submit(ctx, pane_id, ps.getWritten());
+    submit(ctx, pane_id, "\r");
+}
+
+/// Send raw key bytes to the pane (e.g. an option digit). No paste/Enter.
+pub fn paneKey(a: std.mem.Allocator, pane_id: u32, bytes: []const u8) void {
+    var sock_buf: [256]u8 = undefined;
+    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return;
+    submit(ctx, pane_id, bytes);
+}
+
+/// The agent's last assistant message from its transcript (same source as `agent
+/// read`), or null when the agent reports no transcript (caller falls back to a
+/// screen scrape). Only Claude/Codex report transcripts.
+pub fn paneLastMessage(a: std.mem.Allocator, pane_id: u32) ?[]const u8 {
+    const path = agent_read.resolveTranscriptPath(a, .{ .command = .agent_send, .pane_id = pane_id }) orelse return null;
+    const msgs = agent_read.messagesAtPath(a, path) orelse return null;
+    if (msgs.len == 0) return null;
+    return msgs[msgs.len - 1];
+}
+

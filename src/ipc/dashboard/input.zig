@@ -18,6 +18,7 @@ pub const Key = enum {
     zoom, // z — zoom selected pane
     close, // x — close selected pane (confirm)
     detail, // Tab — toggle detail panel
+    interact, // i — reply / answer the selected agent inline
     none,
 };
 
@@ -38,6 +39,7 @@ pub const Decoder = struct {
             '/' => .search,
             'z' => .zoom,
             'x' => .close,
+            'i' => .interact,
             0x09 => .detail, // Tab
             '\r', '\n' => .enter,
             'j' => .down,
@@ -95,8 +97,8 @@ fn collect(bytes: []const u8, out: []Key) usize {
 
 test "decodes letters and control keys" {
     var out: [16]Key = undefined;
-    const n = collect("jkqG g\r\x03?rsfz x/\t", &out);
-    const want = [_]Key{ .down, .up, .quit, .bottom, .top, .enter, .quit, .help, .refresh, .sort, .filter, .zoom, .close, .search, .detail };
+    const n = collect("jkqG g\r\x03?rsfz xi/\t", &out);
+    const want = [_]Key{ .down, .up, .quit, .bottom, .top, .enter, .quit, .help, .refresh, .sort, .filter, .zoom, .close, .interact, .search, .detail };
     try testing.expectEqual(want.len, n);
     for (want, 0..) |k, i| try testing.expectEqual(k, out[i]);
 }

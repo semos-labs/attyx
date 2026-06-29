@@ -152,6 +152,7 @@ pub fn buildAgentList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         // A tab's stable handle is its focused pane's IPC id — the same `pane:N`
         // value `attyx list` prints on each tab line.
         const tab_id = layout.focusedPane().ipc_id;
+        const tab_name = layout.effectiveTitle();
         var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
         const lc = layout.collectLeaves(&leaves);
         for (leaves[0..lc]) |leaf| {
@@ -163,7 +164,7 @@ pub fn buildAgentList(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
             const pid = agents.panePid(leaf.pane.pty.master);
             if (as_json) {
                 if (!first) w.writeAll(",") catch break;
-                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg, usage) catch break;
+                agents.writeAgentJson(w, leaf.pane.ipc_id, tab_id, tab_name, session_id, pid, status, msg, usage) catch break;
             } else {
                 agents.writeAgentRow(w, leaf.pane.ipc_id, tab_id, session_id, pid, status, msg, usage, false) catch break;
             }

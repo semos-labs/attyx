@@ -85,10 +85,16 @@ fn sendOne(cl: *DaemonClient, session: *DaemonSession, pane: anytype, pane_id: u
     var stream = std.io.fixedBufferStream(&json_buf);
     // No POSIX pty master fd on Windows → PID is unavailable (0 = unknown).
     const pid: u32 = if (comptime builtin.os.tag == .windows) 0 else agents.panePid(pane.pty.master);
+    var tab_name_buf: [layout_codec.max_title_len]u8 = undefined;
+    var tab_name = tabNameForPane(session, pane_id, &tab_name_buf);
+    // No serialized layout title (session never viewed, or daemon-backed pane
+    // with no stored title) → fall back to this pane's own title.
+    if (tab_name.len == 0) tab_name = eng.state.title orelse "";
     agents.writeAgentJson(
         stream.writer(),
         pane_id,
         tabIdForPane(session, pane_id),
+        tab_name,
         session.id,
         pid,
         eng.state.agent_status,
@@ -114,6 +120,27 @@ pub fn tabIdForPane(session: *DaemonSession, pane_id: u32) u32 {
         }
     }
     return pane_id;
+}
+
+/// The tab's effective title (explicit name, else the serialized fallback —
+/// the focused pane's process/title) for the tab containing `pane_id`, copied
+/// into `buf`. Empty when there's no layout or title. Mirrors tabIdForPane.
+pub fn tabNameForPane(session: *DaemonSession, pane_id: u32, buf: []u8) []const u8 {
+    if (session.layout_len == 0) return "";
+    const info = layout_codec.deserialize(session.layout_data[0..session.layout_len]) catch return "";
+    for (0..info.tab_count) |ti| {
+        const tab = &info.tabs[ti];
+        for (0..tab.node_count) |ni| {
+            const node = tab.nodes[ni];
+            if (node.tag == .leaf and node.pane_id == pane_id) {
+                const title = tab.getTitle() orelse return "";
+                const n = @min(title.len, buf.len);
+                @memcpy(buf[0..n], title[0..n]);
+                return buf[0..n];
+            }
+        }
+    }
+    return "";
 }
 
 fn tabFocusedPane(tab: *const layout_codec.TabLayout) u32 {
