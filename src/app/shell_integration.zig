@@ -86,7 +86,7 @@ pub fn setup() ArgvOverride {
         .bash => setupBash(home),
         .fish => setupFish(home),
         .nushell => setupNushell(home),
-        .xyron => setupXyron(exe_dir),
+        .xyron => setupXyron(home, exe_dir),
         .posix_sh => setupPosixSh(home, exe_dir),
         .powershell, .cmd => .{},
     };
@@ -285,10 +285,50 @@ fn setupPosixSh(_: []const u8, exe_dir: []const u8) ArgvOverride {
 /// Xyron is not POSIX and uses Lua for scripting, so it can't source one of
 /// our shell init scripts. Instead, xyron itself reads __ATTYX_STARTUP_CMD,
 /// emits OSC events natively (when ATTYX=1), and inherits PATH directly.
-/// We just need to make `attyx` reachable on PATH.
-fn setupXyron(exe_dir: []const u8) ArgvOverride {
+/// We make `attyx` reachable on PATH and drop a managed Lua module (wired into
+/// config.lua) that drives the agent-status dot via xyron's command hooks —
+/// xyron emits cwd/path natively but not agent-status.
+fn setupXyron(home: []const u8, exe_dir: []const u8) ArgvOverride {
     appendExeDirToPath(exe_dir);
+    installXyronStatus(home);
     return .{};
+}
+
+/// Write ~/.config/xyron/attyx_status.lua and ensure config.lua requires it.
+/// Resolves the config dir like xyron does (XDG_CONFIG_HOME, else ~/.config).
+fn installXyronStatus(home: []const u8) void {
+    var dir_buf: [600]u8 = undefined;
+    const dir = blk: {
+        if (posix_ffi.getenv("XDG_CONFIG_HOME")) |xdg| {
+            break :blk std.fmt.bufPrintZ(&dir_buf, "{s}/xyron", .{std.mem.sliceTo(xdg, 0)}) catch return;
+        }
+        break :blk std.fmt.bufPrintZ(&dir_buf, "{s}/.config/xyron", .{home}) catch return;
+    };
+    mkdirp(dir);
+
+    var mod_buf: [700]u8 = undefined;
+    const mod_path = std.fmt.bufPrintZ(&mod_buf, "{s}/attyx_status.lua", .{dir}) catch return;
+    writeScript(mod_path, posix_scripts.xyron_status_lua);
+
+    var cfg_buf: [700]u8 = undefined;
+    const cfg_path = std.fmt.bufPrintZ(&cfg_buf, "{s}/config.lua", .{dir}) catch return;
+    ensureXyronRequire(cfg_path);
+}
+
+/// Append the require line to config.lua unless it's already present (idempotent).
+/// Creates config.lua if it doesn't exist.
+fn ensureXyronRequire(path: [*:0]const u8) void {
+    var read_buf: [64 * 1024]u8 = undefined;
+    if (std.fs.openFileAbsoluteZ(path, .{})) |f| {
+        defer f.close();
+        const n = f.readAll(&read_buf) catch 0;
+        if (std.mem.indexOf(u8, read_buf[0..n], "attyx_status") != null) return;
+    } else |_| {}
+
+    const f = std.fs.createFileAbsoluteZ(path, .{ .truncate = false }) catch return;
+    defer f.close();
+    f.seekFromEnd(0) catch {};
+    f.writeAll(posix_scripts.xyron_require_line) catch {};
 }
 
 // ---------------------------------------------------------------------------
