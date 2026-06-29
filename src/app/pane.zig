@@ -122,6 +122,7 @@ pub const Pane = struct {
     pub const SpawnOpts = struct {
         capture_stdout: bool = false,
         preserve_tmux: bool = false,
+        path_override: ?[*:0]const u8 = null,
         skip_shell_integration: bool = false,
         shell: if (builtin.os.tag == .windows) Pty.ShellType else void = if (builtin.os.tag == .windows) .auto else {},
     };
@@ -146,6 +147,7 @@ pub const Pane = struct {
                 .cwd = cwd,
                 .capture_stdout = opts.capture_stdout,
                 .preserve_tmux = opts.preserve_tmux,
+                .path_override = opts.path_override,
                 .skip_shell_integration = opts.skip_shell_integration,
             };
             if (comptime builtin.os.tag == .windows) {
