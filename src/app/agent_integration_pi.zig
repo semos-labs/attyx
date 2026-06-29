@@ -46,10 +46,32 @@ const extension_fmt =
     \\// Attyx agent status extension — reports Pi's run state to the terminal via
     \\// the attyx emitter. No-op outside attyx (emitter self-gates on ATTYX_PID).
     \\import {{ spawnSync }} from "node:child_process";
+    \\import {{ appendFileSync }} from "node:fs";
+    \\import {{ tmpdir }} from "node:os";
     \\const EMIT = "{s}";
     \\const TELEMETRY = {s};
     \\function emit(state) {{
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\// Transcript: Pi hands us the finalized assistant message in `message_end`,
+    \\// so we append one line in Claude's transcript schema to a per-pane file.
+    \\// `agent read` parses that schema as-is; the path rides `tx=` on the usage emit.
+    \\const ATTYX_PID = process.env.ATTYX_PID;
+    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + ".jsonl" : null;
+    \\let wrote = false;
+    \\function messageText(m) {{
+    \\  if (!m) return "";
+    \\  if (typeof m.content === "string") return m.content;
+    \\  if (Array.isArray(m.content)) return m.content.map((b) => (b && (b.text || (typeof b === "string" ? b : ""))) || "").filter(Boolean).join("\n");
+    \\  if (typeof m.text === "string") return m.text;
+    \\  return "";
+    \\}}
+    \\function recordTurn(m) {{
+    \\  if (!TX) return;
+    \\  const text = messageText(m);
+    \\  if (!text) return;
+    \\  const line = JSON.stringify({{ type: "assistant", message: {{ content: [{{ type: "text", text }}] }} }}) + "\n";
+    \\  try {{ appendFileSync(TX, line); wrote = true; }} catch (e) {{}}
     \\}}
     \\// Per-message token/cost is cumulative-summed: message_end fires once per
     \\// finalized message (not streamed), so plain addition is correct. Context
@@ -63,6 +85,8 @@ const extension_fmt =
     \\  totCr += u.cacheRead || 0; totCw += u.cacheWrite || 0;
     \\  if (u.cost && typeof u.cost.total === "number") totCost += u.cost.total;
     \\  const kv = ["in=" + totIn, "out=" + totOut, "cr=" + totCr, "cw=" + totCw, "cost=" + totCost];
+    \\  recordTurn(message);
+    \\  if (TX && wrote) kv.push("tx=" + TX);
     \\  try {{
     \\    const cu = ctx && ctx.getContextUsage && ctx.getContextUsage();
     \\    if (cu) {{
@@ -115,6 +139,9 @@ test "extension template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, ext, "message_end") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "function emitUsage") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "spawnSync(EMIT, [\"usage\"") != null);
+    // Transcript: writes Claude-schema lines from message_end, rides tx= on usage.
+    try testing.expect(std.mem.indexOf(u8, ext, "function recordTurn") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "kv.push(\"tx=\" + TX)") != null);
 }
 
 test "install writes the extension only when ~/.pi exists" {
