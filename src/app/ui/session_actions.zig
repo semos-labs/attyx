@@ -50,71 +50,43 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
     var pane_ids: [split_layout_mod.max_panes * @import("../tab_manager.zig").max_tabs]u32 = undefined;
     var count: usize = 0;
 
-    const Collector = struct {
-        fn appendPane(
-            context: *PtyThreadCtx,
-            ids: []u32,
-            id_count: *usize,
-            leaf: split_layout_mod.LeafEntry,
-        ) void {
-            const dpid = leaf.pane.daemon_pane_id orelse return;
-            if (id_count.* >= ids.len) return;
-            ids[id_count.*] = dpid;
-            id_count.* += 1;
-
-            // Arm shadow-replay routing only if this pane is brand new to us
-            // (not in the prior focus set). Existing panes stay warm — their
-            // engines already have the current state.
-            var was_focused = false;
-            for (context.last_focus_panes[0..context.last_focus_count]) |old_id| {
-                if (old_id == dpid) {
-                    was_focused = true;
-                    break;
-                }
-            }
-            if (!was_focused) {
-                if (leaf.pane.shadow_engine) |*s| {
-                    s.deinit();
-                    leaf.pane.shadow_engine = null;
-                }
-                leaf.pane.needs_engine_reinit = true;
-            }
-        }
-    };
-
-    // Keep every daemon-backed pane active so inactive tabs stay warm, but put
-    // the active tab first. A tab switch then changes the focus_panes order,
-    // which lets the daemon refresh that pane's grid snapshot immediately even
-    // when no shell output is arriving.
-    if (ctx.tab_mgr.tabs[ctx.tab_mgr.active]) |*lay| {
-        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-        const lc = lay.collectLeaves(&leaves);
-        for (leaves[0..lc]) |leaf| Collector.appendPane(ctx, &pane_ids, &count, leaf);
-    }
-    const active_count = count;
-    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count], 0..) |*maybe_layout, tab_idx| {
-        if (tab_idx == ctx.tab_mgr.active) continue;
+    // Collect daemon-backed panes from every tab (not just the active one).
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
         if (maybe_layout.*) |*lay| {
             var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
             const lc = lay.collectLeaves(&leaves);
-            for (leaves[0..lc]) |leaf| Collector.appendPane(ctx, &pane_ids, &count, leaf);
-        }
-    }
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id) |dpid| {
+                    if (count >= pane_ids.len) break;
+                    pane_ids[count] = dpid;
+                    count += 1;
 
-    // Skip the IPC round-trip only when the ordered focus list is unchanged.
-    // Order matters locally because active-first order tells us a tab switch
-    // happened even though the daemon pane set is the same.
-    var same_order = (count == ctx.last_focus_count);
-    if (same_order) {
-        for (pane_ids[0..count], 0..) |new_id, i| {
-            if (ctx.last_focus_panes[i] != new_id) {
-                same_order = false;
-                break;
+                    // Arm shadow-replay routing only for the legacy byte-replay
+                    // path. Grid-sync sends authoritative cell snapshots, not
+                    // replay_end, so setting needs_engine_reinit there strands
+                    // future updates in a shadow engine and can leave tabs blank.
+                    if (!sc.hasGridSync()) {
+                        var was_focused = false;
+                        for (ctx.last_focus_panes[0..ctx.last_focus_count]) |old_id| {
+                            if (old_id == dpid) {
+                                was_focused = true;
+                                break;
+                            }
+                        }
+                        if (!was_focused) {
+                            if (leaf.pane.shadow_engine) |*s| {
+                                s.deinit();
+                                leaf.pane.shadow_engine = null;
+                            }
+                            leaf.pane.needs_engine_reinit = true;
+                        }
+                    }
+                }
             }
         }
     }
-    if (same_order) return;
 
+    // Skip the IPC round-trip entirely if the pane set hasn't changed.
     var same_set = (count == ctx.last_focus_count);
     if (same_set) {
         outer: for (pane_ids[0..count]) |new_id| {
@@ -125,18 +97,9 @@ pub fn sendActiveFocusPanes(ctx: *PtyThreadCtx) void {
             break;
         }
     }
+    if (same_set) return;
 
-    // If this is only a tab switch, the daemon already considers every pane
-    // active and would not re-send a focus snapshot. Briefly drop the newly
-    // active tab's panes from the focus list, then send the full active-first
-    // list below; the second message makes the daemon treat them as newly
-    // active and push an immediate grid snapshot while preserving warm
-    // streaming for the rest of the panes.
-    if (same_set and active_count > 0) {
-        sc.sendFocusPanes(pane_ids[active_count..count]) catch {};
-    }
-
-    // Pane order/set changed — update tracking and tell the daemon.
+    // Pane set changed — update tracking and tell the daemon.
     for (0..count) |i| {
         ctx.last_focus_panes[i] = pane_ids[i];
     }

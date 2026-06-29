@@ -110,6 +110,53 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
         if (sc.legacy_daemon) showLegacyDaemonOverlay(ctx);
     }
 
+    // Session startup drain: after attaching/relaunching a session, focus_panes
+    // may have already caused the daemon to send the initial grid snapshot. Do
+    // a short synchronous drain before the first render so the window doesn't
+    // stay blank until an input event wakes the normal loop.
+    if (ctx.session_client) |sc| {
+        var got_initial_session_content = false;
+        for (0..10) |_| {
+            sc.flushOut();
+            if (!sc.hasBufferedData()) {
+                var sfds = [1]posix.pollfd{.{
+                    .fd = sc.pollFd(),
+                    .events = POLLIN,
+                    .revents = 0,
+                }};
+                _ = posix.poll(&sfds, 50) catch break;
+                if (sfds[0].revents & POLLIN != 0) {
+                    if (!sc.recvData()) break;
+                } else if (got_initial_session_content) {
+                    break;
+                } else {
+                    continue;
+                }
+            }
+            var drained_any = false;
+            while (sc.readMessage()) |msg| {
+                drained_any = true;
+                if (applyDaemonContentMessage(ctx, msg)) {
+                    got_initial_session_content = true;
+                    continue;
+                }
+                switch (msg) {
+                    .replay_end => |pane_id| {
+                        if (handleReplayEnd(ctx, pane_id)) got_initial_session_content = true;
+                    },
+                    .layout_sync => |sync| session_actions.handleLayoutSync(ctx, sync.layout),
+                    else => {},
+                }
+            }
+            if (!drained_any) break;
+        }
+        if (got_initial_session_content) {
+            actions.switchActiveTab(ctx);
+            actions.g_force_full_redraw = true;
+            c.attyx_mark_all_dirty();
+        }
+    }
+
     // Startup drain: process initial shell output (prompt, DA1 responses, etc.)
     // before entering the main loop.  The main-thread GL setup may complete
     // before the shell sends its prompt, leaving g_cells empty.  On macOS the
@@ -1885,6 +1932,16 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     // — preventing TUIs (claude code, opencode) from receiving mouse input.
     result.pane.engine.state.mouse_tracking = @enumFromInt(info.mouse_tracking);
     result.pane.engine.state.mouse_sgr = info.mouse_sgr;
+    // Grid-sync snapshots are authoritative and do not have a replay_end.
+    // If this pane was previously armed for byte-replay, clear that state so
+    // later output/snapshots keep updating the live engine instead of a shadow.
+    if (result.pane.needs_engine_reinit) {
+        if (result.pane.shadow_engine) |*shadow| {
+            shadow.deinit();
+            result.pane.shadow_engine = null;
+        }
+        result.pane.needs_engine_reinit = false;
+    }
     return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
 }
 
