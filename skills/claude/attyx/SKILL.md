@@ -2,7 +2,7 @@
 name: attyx
 description: Control the Attyx terminal via IPC — manage splits, send input, read output, track and watch agent status, orchestrate panes. Use when the user asks to interact with terminal panes, run commands in splits, monitor AI agents running in panes, or coordinate multi-pane workflows.
 allowed-tools: Bash
-argument-hint: [action] [args...]
+argument-hint: "[action] [args...]"
 ---
 
 # Attyx Terminal IPC Skill
