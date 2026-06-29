@@ -267,6 +267,48 @@ pub const nushell_script =
     \\
 ;
 
+/// Xyron is not POSIX and sources no script, but it loads ~/.config/xyron/
+/// config.lua and exposes on_command_start/finish hooks. attyx drops this
+/// managed module and requires it from config.lua, mirroring the zsh/bash/
+/// fish/nu shell backstop: idle when a known agent launches, none when it exits.
+pub const xyron_status_lua =
+    \\-- Attyx agent-status backstop (managed by attyx; safe to delete).
+    \\-- Codex defers its own launch hook to the first turn, so the per-tab status
+    \\-- dot wouldn't appear until you prompt it. Drive the dot from the shell:
+    \\-- idle when a known agent launches, cleared when it exits.
+    \\if xyron.is_attyx() then
+    \\  local agents = { codex = true, claude = true, opencode = true, pi = true }
+    \\  local wrappers = { sudo = true, env = true, command = true, exec = true,
+    \\    nohup = true, nice = true, time = true, builtin = true }
+    \\  local function agent_of(raw)
+    \\    for word in (raw or ""):gmatch("%S+") do
+    \\      if word:find("=", 1, true) then
+    \\        -- env assignment prefix, skip
+    \\      elseif wrappers[word] then
+    \\        -- command wrapper, skip
+    \\      else
+    \\        local base = word:match("[^/]+$") or word
+    \\        return agents[base] and base or nil
+    \\      end
+    \\    end
+    \\    return nil
+    \\  end
+    \\  local function emit(state)
+    \\    io.stderr:write("\27]7337;agent-status;agent;" .. state .. "\7")
+    \\  end
+    \\  xyron.on("on_command_start", function(d)
+    \\    if agent_of(d.raw) then emit("idle") end
+    \\  end)
+    \\  xyron.on("on_command_finish", function(d)
+    \\    if agent_of(d.raw) then emit("none") end
+    \\  end)
+    \\end
+    \\
+;
+
+/// The line attyx appends to config.lua so xyron loads xyron_status_lua.
+pub const xyron_require_line = "require(\"attyx_status\") -- attyx-managed: agent status dot\n";
+
 const std = @import("std");
 const testing = std.testing;
 
@@ -281,6 +323,15 @@ test "each posix script drives the agent-status dot for all agents" {
         for ([_][]const u8{ "codex", "claude", "opencode", "pi" }) |agent|
             try testing.expect(std.mem.indexOf(u8, s, agent) != null);
     }
+}
+
+test "xyron lua module drives the agent-status dot for all agents" {
+    try testing.expect(std.mem.indexOf(u8, xyron_status_lua, "agent-status;agent;\" .. state") != null);
+    try testing.expect(std.mem.indexOf(u8, xyron_status_lua, "on_command_start") != null);
+    try testing.expect(std.mem.indexOf(u8, xyron_status_lua, "on_command_finish") != null);
+    try testing.expect(std.mem.indexOf(u8, xyron_status_lua, "is_attyx") != null);
+    for ([_][]const u8{ "codex", "claude", "opencode", "pi" }) |agent|
+        try testing.expect(std.mem.indexOf(u8, xyron_status_lua, agent) != null);
 }
 
 test "zsh registers the preexec hook and bash installs a DEBUG trap" {
