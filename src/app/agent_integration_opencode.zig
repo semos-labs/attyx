@@ -151,10 +151,29 @@ const plugin_fmt =
     \\// Attyx agent status plugin — reports opencode's run state to the
     \\// terminal via the attyx emitter. No-op outside attyx (emitter self-gates).
     \\import {{ spawnSync }} from "node:child_process";
+    \\import {{ appendFileSync }} from "node:fs";
+    \\import {{ tmpdir }} from "node:os";
     \\const EMIT = "{s}";
     \\const TELEMETRY = {s};
     \\function emit(state) {{
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\// Transcript: opencode hands us assistant text in `message.part.updated`
+    \\// events, so we buffer text parts per message id and, on finalize, append one
+    \\// line in Claude's transcript schema to a per-pane file. `agent read` parses
+    \\// that schema as-is; the path rides `tx=` on the usage emit below.
+    \\const ATTYX_PID = process.env.ATTYX_PID;
+    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + ".jsonl" : null;
+    \\let wrote = false;
+    \\const texts = new Map();
+    \\function recordTurn(id) {{
+    \\  const parts = texts.get(id);
+    \\  if (!parts) return;
+    \\  const text = [...parts.values()].join("\n");
+    \\  texts.delete(id);
+    \\  if (!TX || !text) return;
+    \\  const line = JSON.stringify({{ type: "assistant", message: {{ content: [{{ type: "text", text }}] }} }}) + "\n";
+    \\  try {{ appendFileSync(TX, line); wrote = true; }} catch (e) {{}}
     \\}}
     \\// opencode reports per-message token/cost (incl. its own computed cost); our
     \\// schema is cumulative, so we keep the latest figures per message id (so
@@ -173,6 +192,8 @@ const plugin_fmt =
     \\  for (const v of usageTotals.values()) {{ s.in += v.in; s.out += v.out; s.cr += v.cr; s.cw += v.cw; s.rsn += v.rsn; s.cost += v.cost; }}
     \\  const kv = ["in=" + s.in, "out=" + s.out, "cr=" + s.cr, "cw=" + s.cw, "rsn=" + s.rsn, "cost=" + s.cost];
     \\  if (m.modelID) kv.push("model=" + m.modelID);
+    \\  recordTurn(m.id);
+    \\  if (TX && wrote) kv.push("tx=" + TX);
     \\  try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\const AttyxStatus = async (ctx) => {{
@@ -190,7 +211,15 @@ const plugin_fmt =
     \\          emit("working");
     \\          break;
     \\        case "message.part.updated":
-    \\          if (props.part && props.part.type === "text") emit("working");
+    \\          if (props.part && props.part.type === "text") {{
+    \\            emit("working");
+    \\            const p = props.part;
+    \\            if (p.messageID && typeof p.text === "string") {{
+    \\              let inner = texts.get(p.messageID);
+    \\              if (!inner) {{ inner = new Map(); texts.set(p.messageID, inner); }}
+    \\              inner.set(p.id, p.text);
+    \\            }}
+    \\          }}
     \\          break;
     \\        case "message.updated": {{
     \\          const m = props.info;
@@ -256,6 +285,9 @@ test "plugin template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, plugin, "function emitUsage") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "spawnSync(EMIT, [\"usage\"") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "m.time.completed") != null);
+    // Transcript: buffers text parts, writes Claude-schema lines, rides tx= on usage.
+    try testing.expect(std.mem.indexOf(u8, plugin, "function recordTurn") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "kv.push(\"tx=\" + TX)") != null);
 }
 
 test "insert into an empty object adds the plugin key" {
