@@ -480,7 +480,7 @@ fn helpLine(w: anytype, m: *const Model, ctx: Ctx) !void {
         try w.print("{s}  {s}disconnected{s}{s} \xc2\xb7 reconnecting \xc2\xb7 q quit{s}\x1b[K", .{ dim, c_input, reset, dim, reset });
         return;
     }
-    try w.print("{s}  \xe2\x86\x91\xe2\x86\x93 sel  \xe2\x8f\x8e focus  i reply  z zoom  x close  s sort:{s}  f filter:{s}  / search  \xe2\x87\xa5 detail  q quit{s}\x1b[K", .{ dim, m.sort_mode.label(), m.filter_mode.label(), reset });
+    try w.print("{s}  \xe2\x86\x91\xe2\x86\x93 sel  \xe2\x8f\x8e focus  i reply  x close  s sort:{s}  f filter:{s}  / search  \xe2\x87\xa5 detail  q quit{s}\x1b[K", .{ dim, m.sort_mode.label(), m.filter_mode.label(), reset });
 }
 
 fn moveTo(w: anytype, row: u16) !void {

@@ -1,6 +1,6 @@
 //! `attyx dashboard` entry point. Opens a cross-session `watch_agents` stream,
-//! renders a live full-screen table, and lets you navigate/jump/zoom/close
-//! agents. Connection: the daemon (all-sessions sentinel) when available, else
+//! renders a live full-screen table, and lets you navigate/jump/close agents.
+//! Connection: the daemon (all-sessions sentinel) when available, else
 //! the attached window (its session only); reconnects with backoff if dropped.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -146,9 +146,9 @@ const Stream = struct {
 };
 
 /// Switch the attached window to `session`, then send a pane-targeted op
-/// (`.pane_focus_targeted` / `.pane_zoom_targeted` / `.pane_close_targeted`) for
-/// `pane_id`. Best-effort; ignores failure. Switching first means the op lands on
-/// the right session's tab manager even when it isn't the attached one.
+/// (`.pane_focus_targeted` / `.pane_close_targeted`) for `pane_id`. Best-effort;
+/// ignores failure. Switching first means the op lands on the right session's tab
+/// manager even when it isn't the attached one.
 fn switchAndPane(session: u32, pane_id: u32, op: ipc_proto.MessageType) void {
     var sock_buf: [256]u8 = undefined;
     const sock = client.discoverSocket(&sock_buf, null) orelse return;
@@ -491,9 +491,6 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
                                 startInteract(gpa, &interact, r);
                                 dirty = true;
                             }
-                        },
-                        .zoom => {
-                            if (m.selectedRow()) |r| switchAndPane(r.session, r.pane_id, .pane_zoom_targeted);
                         },
                         .close => {
                             if (m.selectedRow()) |_| {
