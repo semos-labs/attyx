@@ -44,6 +44,42 @@ pub const doReloadConfig = actions.doReloadConfig;
 pub const closePopup = actions.closePopup;
 pub const handlePopupExit = actions.handlePopupExit;
 
+fn drainSessionStartupBurst(ctx: *PtyThreadCtx, max_iters: usize) bool {
+    const sc = ctx.session_client orelse return false;
+    var got_content = false;
+    for (0..max_iters) |_| {
+        sc.flushOut();
+        if (!sc.hasBufferedData()) {
+            var sfds = [1]posix.pollfd{.{ .fd = sc.pollFd(), .events = 0x0001, .revents = 0 }};
+            _ = posix.poll(&sfds, 50) catch break;
+            if (sfds[0].revents & 0x0001 != 0) {
+                if (!sc.recvData()) break;
+            } else if (got_content) {
+                break;
+            } else {
+                continue;
+            }
+        }
+        var drained_any = false;
+        while (sc.readMessage()) |msg| {
+            drained_any = true;
+            if (applyDaemonContentMessage(ctx, msg)) {
+                got_content = true;
+                continue;
+            }
+            switch (msg) {
+                .replay_end => |pane_id| {
+                    if (handleReplayEnd(ctx, pane_id)) got_content = true;
+                },
+                .layout_sync => |sync| session_actions.handleLayoutSync(ctx, sync.layout),
+                else => {},
+            }
+        }
+        if (!drained_any) break;
+    }
+    return got_content;
+}
+
 pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     const POLLIN: i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
@@ -108,6 +144,60 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     // Show legacy daemon notification if connected to an outdated daemon
     if (ctx.session_client) |sc| {
         if (sc.legacy_daemon) showLegacyDaemonOverlay(ctx);
+    }
+
+    // Session startup drain: after attaching/relaunching a session, focus_panes
+    // may have already caused the daemon to send the initial grid snapshot. Do
+    // a short synchronous drain before the first render so the window doesn't
+    // stay blank until an input event wakes the normal loop.
+    if (ctx.session_client) |sc| {
+        var got_initial_session_content = false;
+        for (0..10) |_| {
+            sc.flushOut();
+            if (!sc.hasBufferedData()) {
+                var sfds = [1]posix.pollfd{.{
+                    .fd = sc.pollFd(),
+                    .events = POLLIN,
+                    .revents = 0,
+                }};
+                _ = posix.poll(&sfds, 50) catch break;
+                if (sfds[0].revents & POLLIN != 0) {
+                    if (!sc.recvData()) break;
+                } else if (got_initial_session_content) {
+                    break;
+                } else {
+                    continue;
+                }
+            }
+            var drained_any = false;
+            while (sc.readMessage()) |msg| {
+                drained_any = true;
+                if (applyDaemonContentMessage(ctx, msg)) {
+                    got_initial_session_content = true;
+                    continue;
+                }
+                switch (msg) {
+                    .replay_end => |pane_id| {
+                        if (handleReplayEnd(ctx, pane_id)) got_initial_session_content = true;
+                    },
+                    .layout_sync => |sync| session_actions.handleLayoutSync(ctx, sync.layout),
+                    else => {},
+                }
+            }
+            if (!drained_any) break;
+        }
+        if (got_initial_session_content) {
+            actions.switchActiveTab(ctx);
+            actions.g_force_full_redraw = true;
+            c.attyx_mark_all_dirty();
+        }
+    }
+
+    if (ctx.session_client != null and !ctx.session_deferred_startup_resize) {
+        session_actions.forceActiveTabGridSnapshot(ctx);
+        if (drainSessionStartupBurst(ctx, 20)) {
+            actions.switchActiveTab(ctx);
+        }
     }
 
     // Startup drain: process initial shell output (prompt, DA1 responses, etc.)
@@ -178,6 +268,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                 @intCast(eng.state.cursor.col + left_off_u16),
             );
+            c.g_renderer_full_redraw = 1;
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
@@ -195,7 +286,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     //
     // No stale 80×24 snapshot, no SIGWINCH-redraw nudge — there's
     // nothing to redraw, the shell is starting fresh.
-    if (ctx.session_client != null and ctx.xyron_path != null) {
+    if (ctx.session_client != null and ctx.session_deferred_startup_resize) {
         const startup_pane = ctx.tab_mgr.activePane();
         if (startup_pane.daemon_pane_id != null) {
             logging.info("startup", "waiting for real window dims (session at {d}x{d})", .{ ctx.grid_cols, ctx.grid_rows });
@@ -255,6 +346,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                 @intCast(eng.state.cursor.col + left_off_u16),
             );
+            c.g_renderer_full_redraw = 1;
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
@@ -826,9 +918,27 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
 
         // Sync viewport from C BEFORE feeding PTY data, so that
         // fullScreenScroll's viewport_offset bump is not overwritten.
-        // Snapshot the C value so we can detect user scrolls later.
-        const synced_vp: i32 = @bitCast(c.g_viewport_offset);
-        publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
+        // Snapshot the C value so we can detect user scrolls later. Right after
+        // tab/session switches, skip the C→engine copy once: the global C
+        // offset may still belong to the previously active pane.
+        var synced_vp: i32 = @bitCast(c.g_viewport_offset);
+        if (actions.g_skip_viewport_sync_once) {
+            actions.g_skip_viewport_sync_once = false;
+            const eng = publish.ctxEngine(ctx);
+            const max_vp = eng.state.ring.scrollbackCount();
+            if (eng.state.viewport_offset > max_vp) eng.state.viewport_offset = max_vp;
+            c.g_viewport_offset = @intCast(eng.state.viewport_offset);
+            synced_vp = @bitCast(c.g_viewport_offset);
+        } else {
+            publish.syncViewportFromC(&publish.ctxEngine(ctx).state);
+            const eng = publish.ctxEngine(ctx);
+            const max_vp = eng.state.ring.scrollbackCount();
+            if (eng.state.viewport_offset > max_vp) {
+                eng.state.viewport_offset = max_vp;
+                c.g_viewport_offset = @intCast(max_vp);
+                synced_vp = @bitCast(c.g_viewport_offset);
+            }
+        }
 
         // Mouse-wheel scroll routed to the pane under the cursor (not the
         // focused pane). The focused pane's viewport mirrors the global
@@ -1042,7 +1152,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     },
                     .grid_snapshot => |payload| {
                         if (applyGridSnapshot(ctx, payload)) |res| {
-                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active) {
+                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active and !res.screen_blank) {
                                 got_data = true;
                                 actions.g_force_full_redraw = true;
                             }
@@ -1328,6 +1438,16 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        if (need_update_final and activeGridFramePending(ctx)) {
+            // Session switch rebuilt the tab tree with placeholder client
+            // engines, and the daemon snapshot is still in flight. Do not let
+            // the forced redraw path publish that blank placeholder to the
+            // renderer; the non-blank grid_snapshot will mark got_data again.
+            actions.g_force_full_redraw = false;
+            got_data = false;
+            continue;
+        }
+
         if (need_update_final) {
             const layout = ctx.tab_mgr.activeLayout();
             if (layout.pane_count > 1 and !layout.isZoomed()) {
@@ -1366,6 +1486,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                     @intCast(eng.state.cursor.col + rect.col + split_left_off),
                 );
+                c.g_renderer_full_redraw = 1;
                 c.attyx_mark_all_dirty();
                 actions.g_force_full_redraw = false;
             } else {
@@ -1418,6 +1539,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     @intCast(eng.state.cursor.col + left_off_u16),
                 );
                 if (full_redraw) {
+                    c.g_renderer_full_redraw = 1;
                     c.attyx_mark_all_dirty();
                     actions.g_force_full_redraw = false;
                 } else {
@@ -1823,7 +1945,7 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
 /// info on success so the caller can decide whether to force a redraw.
 /// Shared by the startup drain (xyron path) and the main event loop so
 /// snapshots aren't silently dropped during startup.
-const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32 };
+const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32, screen_blank: bool };
 fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     const info = grid_sync.decodeSnapshotHeader(payload) catch {
         logging.warn("grid", "snapshot decode failed", .{});
@@ -1885,7 +2007,37 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     // — preventing TUIs (claude code, opencode) from receiving mouse input.
     result.pane.engine.state.mouse_tracking = @enumFromInt(info.mouse_tracking);
     result.pane.engine.state.mouse_sgr = info.mouse_sgr;
-    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
+    // Grid-sync snapshots are authoritative and do not have a replay_end.
+    // If this pane was previously armed for byte-replay, clear that state so
+    // later output/snapshots keep updating the live engine instead of a shadow.
+    if (result.pane.needs_engine_reinit) {
+        if (result.pane.shadow_engine) |*shadow| {
+            shadow.deinit();
+            result.pane.shadow_engine = null;
+        }
+        result.pane.needs_engine_reinit = false;
+    }
+    const screen_blank = info.final_chunk and paneGridScreenBlank(result.pane);
+    if (info.final_chunk and !screen_blank) result.pane.grid_has_frame = true;
+    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id, .screen_blank = screen_blank };
+}
+
+fn paneGridScreenBlank(pane: anytype) bool {
+    const ring = &pane.engine.state.ring;
+    for (0..ring.screen_rows) |row| {
+        for (ring.getScreenRow(row)) |cell| {
+            if (!attyx.grid.isDefaultCell(cell)) return false;
+        }
+    }
+    return true;
+}
+
+fn activeGridFramePending(ctx: *PtyThreadCtx) bool {
+    if (ctx.tab_mgr.count == 0) return false;
+    const sc = ctx.session_client orelse return false;
+    if (!sc.hasGridSync()) return false;
+    const pane = ctx.tab_mgr.activePane();
+    return pane.daemon_pane_id != null and !pane.grid_has_frame;
 }
 
 /// Apply a scrollback_range payload (RPC response) to the matching pane,

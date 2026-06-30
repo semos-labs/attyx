@@ -541,19 +541,18 @@ fn buildSplitList(cmd: *queue.IpcCommand, ctx: *WinCtx) void {
     var stream = std.io.fixedBufferStream(&buf);
     const w = stream.writer();
     const mgr = ctx.tab_mgr;
-    const layout = &(mgr.tabs[mgr.active] orelse {
-        sendOk(cmd, "");
-        return;
-    });
-    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-    const lc = layout.collectLeaves(&leaves);
-    for (leaves[0..lc]) |leaf| {
-        var name_buf: [256]u8 = undefined;
-        const title = resolvePaneTitle(leaf.pane, &name_buf) orelse "shell";
-        w.print("{d}\t{s}", .{ leaf.pane.ipc_id, title }) catch break;
-        if (leaf.index == layout.focused) w.writeAll("\t*") catch break;
-        w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
-        w.writeAll("\n") catch break;
+    for (0..mgr.count) |ti| {
+        const layout = &(mgr.tabs[ti] orelse continue);
+        var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+        const lc = layout.collectLeaves(&leaves);
+        for (leaves[0..lc]) |leaf| {
+            var name_buf: [256]u8 = undefined;
+            const title = resolvePaneTitle(leaf.pane, &name_buf) orelse "shell";
+            w.print("{d}\t{s}", .{ leaf.pane.ipc_id, title }) catch break;
+            if (leaf.index == layout.focused) w.writeAll("\t*") catch break;
+            w.print("\t{d}x{d}", .{ leaf.rect.cols, leaf.rect.rows }) catch break;
+            w.writeAll("\n") catch break;
+        }
     }
     sendOk(cmd, stream.getWritten());
 }

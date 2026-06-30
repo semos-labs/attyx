@@ -5,7 +5,8 @@
 // Attyx stores per pane and exposes via `list agents --json`. This command looks
 // that path up (attached window or `-s` daemon session), reads the file, and
 // extracts assistant messages structurally — no screen scraping, no heuristics.
-// Two transcript shapes are understood:
+// Supported agents all report transcripts; Pi/opencode write Claude-compatible
+// JSONL, while native Claude/Codex transcript shapes are parsed directly:
 //   Claude:  {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"…"}]}}
 //   Codex:   {"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"…"}]}}
 
@@ -96,18 +97,20 @@ pub fn extractMessages(a: std.mem.Allocator, bytes: []const u8) ![][]const u8 {
 /// Look up the pane's transcript path through the daemon. The daemon holds every
 /// session's live engine and the agent-reported transcript path, so we resolve
 /// it there rather than via the attached window — the window may never have
-/// received the path (its usage sync can lag/omit it), and daemon-routing means
-/// any session works without `-s` (pane ids are unique daemon-wide). Returns a
-/// path owned by `a`.
+/// received the path (its usage sync can lag/omit it). When a session is given,
+/// the lookup stays scoped to that session so reused pane ids cannot resolve to
+/// another agent's transcript. Returns a path owned by `a`.
 fn transcriptPath(a: std.mem.Allocator, parsed: IpcRequest) Error![]const u8 {
     var sock_buf: [256]u8 = undefined;
     const sock = session_connect.getSocketPath(&sock_buf) orelse return Error.NoInstance;
     const fd = client.connectToSocket(sock) catch return Error.NoInstance;
     defer protocol.closeFd(fd);
 
-    // Snapshot just this pane across all sessions: [all_sessions:u32][pane:u32].
+    // Snapshot just this pane in the requested session, or across all sessions
+    // when no session was specified: [target_session:u32][pane:u32].
+    const target_session = if (parsed.target_session != 0) parsed.target_session else all_sessions;
     var pl: [8]u8 = undefined;
-    std.mem.writeInt(u32, pl[0..4], all_sessions, .little);
+    std.mem.writeInt(u32, pl[0..4], target_session, .little);
     std.mem.writeInt(u32, pl[4..8], parsed.pane_id, .little);
     var rb: [dproto.header_size + 8]u8 = undefined;
     const req = dproto.encodeMessage(&rb, .watch_agents, &pl) catch return Error.NoInstance;
@@ -131,9 +134,10 @@ fn transcriptPath(a: std.mem.Allocator, parsed: IpcRequest) Error![]const u8 {
         if (hdr[4] != agent_event) continue;
         const rec = json.parseFromSliceLeaky(Rec, a, std.mem.trim(u8, payload[0..plen], " \t\r\n"), .{ .ignore_unknown_fields = true }) catch continue;
         if (rec.pane_id != parsed.pane_id) continue;
+        if (parsed.target_session != 0 and rec.session != parsed.target_session) continue;
         found_pane = true;
         const p = rec.usage.transcript_path orelse return Error.NoTranscript;
-        if (p.len == 0) return Error.NoTranscript;
+        if (p.len == 0 or isLegacyAttyxTranscriptPath(p)) return Error.NoTranscript;
         // p slices into the stack `payload`; copy into `a` so it outlives this fn.
         return a.dupe(u8, p) catch return Error.NoTranscript;
     }
@@ -155,6 +159,23 @@ pub fn messagesAtPath(a: std.mem.Allocator, path: []const u8) ?[]const []const u
     defer file.close();
     const bytes = file.readToEndAlloc(a, max_transcript_bytes) catch return null;
     return extractMessages(a, bytes) catch null;
+}
+
+/// Older Pi/opencode hooks used only ATTYX_PID in the generated temp filename,
+/// which is the app pid shared by every pane. Treat those as unavailable so the
+/// dashboard/capture path falls back to pane-local screen text instead of showing
+/// another agent's transcript.
+fn isLegacyAttyxTranscriptPath(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    const prefix = "attyx-tx-";
+    const suffix = ".jsonl";
+    if (!std.mem.startsWith(u8, base, prefix) or !std.mem.endsWith(u8, base, suffix)) return false;
+    const id = base[prefix.len .. base.len - suffix.len];
+    if (id.len == 0) return false;
+    for (id) |ch| {
+        if (!std.ascii.isDigit(ch)) return false;
+    }
+    return true;
 }
 
 fn readTranscript(a: std.mem.Allocator, parsed: IpcRequest) Error!ReadResult {
@@ -183,9 +204,9 @@ pub fn errMsg(e: Error) []const u8 {
     return switch (e) {
         Error.NoInstance => "no running Attyx instance found",
         Error.NoAgent => "pane is not running an agent",
-        Error.NoTranscript => "this agent doesn't report a transcript (only Claude and Codex do)",
-        Error.ReadFailed => "could not read the transcript file",
-        Error.NoMessages => "the transcript has no agent messages yet",
+        Error.NoTranscript => "no transcript is available yet (supported agents publish one after the first assistant message)",
+        Error.ReadFailed => "transcript path was reported, but the file could not be read",
+        Error.NoMessages => "the transcript exists but has no assistant messages yet",
         Error.OffsetOutOfRange => "--offset is beyond the number of messages in the transcript",
     };
 }
@@ -313,6 +334,12 @@ test "offset indexing picks the n-th from last" {
     try testing.expectEqualStrings("c", msgs[msgs.len - 1 - 0]); // offset 0 = last
     try testing.expectEqualStrings("b", msgs[msgs.len - 1 - 1]); // offset 1
     try testing.expectEqualStrings("a", msgs[msgs.len - 1 - 2]); // offset 2
+}
+
+test "legacy generated transcript path is rejected" {
+    try testing.expect(isLegacyAttyxTranscriptPath("/tmp/attyx-tx-77305.jsonl"));
+    try testing.expect(!isLegacyAttyxTranscriptPath("/tmp/attyx-tx-77305-91843.jsonl"));
+    try testing.expect(!isLegacyAttyxTranscriptPath("/Users/nick/.claude/projects/x/session.jsonl"));
 }
 
 test "selectWindow: count + offset windowing, clamped to start" {

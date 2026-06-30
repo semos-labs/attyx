@@ -257,13 +257,21 @@ pub fn isUpgradeInProgress() bool {
     return true;
 }
 
+fn daemonStateSuffix() []const u8 {
+    if (getEnv("ATTYX_STATE_SUFFIX")) |suffix| {
+        if (suffix.len > 0) return suffix;
+    }
+    return if (comptime std.mem.eql(u8, attyx.env, "production")) "" else "-dev";
+}
+
 /// Build a path under the attyx state directory.
 /// POSIX: XDG_STATE_HOME or ~/.local/state/attyx.
 /// Windows: %LOCALAPPDATA%\attyx (Phase 1+).
-/// `name` must contain one `{s}` placeholder for the dev-mode suffix.
-/// Non-production builds get a "-dev" suffix so they use a separate daemon.
+/// `name` must contain one `{s}` placeholder for the daemon state suffix.
+/// Non-production builds default to "-dev". Tests may set ATTYX_STATE_SUFFIX
+/// (for example "-test-1234") to use an isolated daemon/socket namespace.
 pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
-    const suffix = if (comptime std.mem.eql(u8, attyx.env, "production")) "" else "-dev";
+    const suffix = daemonStateSuffix();
     if (comptime is_windows) {
         const appdata = getEnv("LOCALAPPDATA") orelse return null;
         return std.fmt.bufPrint(buf, "{s}\\attyx\\" ++ name, .{ appdata, suffix }) catch null;
@@ -279,8 +287,7 @@ pub fn statePath(buf: []u8, comptime name: []const u8) ?[]const u8 {
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
     if (comptime is_windows) {
         // Windows named pipe path (Phase 1+)
-        const suffix = if (comptime std.mem.eql(u8, attyx.env, "production")) "" else "-dev";
-        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{suffix}) catch null;
+        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\attyx-sessions{s}", .{daemonStateSuffix()}) catch null;
     }
     return statePath(buf, "sessions{s}.sock");
 }
@@ -430,7 +437,7 @@ pub fn migrateToStateDir() void {
     if (comptime @import("builtin").mode == .Debug) return;
 
     const home = std.posix.getenv("HOME") orelse return;
-    const suffix = if (comptime @import("builtin").mode == .Debug) "-dev" else "";
+    const suffix = daemonStateSuffix();
 
     // Old location: config dir
     var old_buf: [256]u8 = undefined;
@@ -457,11 +464,15 @@ pub fn migrateToStateDir() void {
     std.fs.makeDirAbsolute(new_dir) catch {};
 
     // Move each runtime file
+    var sessions_sock_buf: [64]u8 = undefined;
+    var last_session_buf: [64]u8 = undefined;
+    var daemon_version_buf: [64]u8 = undefined;
+    var upgrade_buf: [64]u8 = undefined;
     const files = [_][]const u8{
-        "sessions" ++ suffix ++ ".sock",
-        "last-session" ++ suffix,
-        "daemon" ++ suffix ++ ".version",
-        "upgrade" ++ suffix ++ ".bin",
+        std.fmt.bufPrint(&sessions_sock_buf, "sessions{s}.sock", .{suffix}) catch return,
+        std.fmt.bufPrint(&last_session_buf, "last-session{s}", .{suffix}) catch return,
+        std.fmt.bufPrint(&daemon_version_buf, "daemon{s}.version", .{suffix}) catch return,
+        std.fmt.bufPrint(&upgrade_buf, "upgrade{s}.bin", .{suffix}) catch return,
         "auth.json",
     };
     for (files) |name| {
@@ -471,8 +482,10 @@ pub fn migrateToStateDir() void {
     // macOS: also migrate recent.json from ~/Library/Application Support/attyx/
     if (comptime @import("builtin").os.tag == .macos) {
         var macos_buf: [512]u8 = undefined;
+        var recent_buf: [64]u8 = undefined;
         const macos_dir = std.fmt.bufPrint(&macos_buf, "{s}/Library/Application Support/attyx", .{home}) catch return;
-        moveFile(macos_dir, new_dir, "recent" ++ suffix ++ ".json");
+        const recent_name = std.fmt.bufPrint(&recent_buf, "recent{s}.json", .{suffix}) catch return;
+        moveFile(macos_dir, new_dir, recent_name);
     }
 }
 

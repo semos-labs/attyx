@@ -7,9 +7,10 @@ const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const session_connect = @import("../session_connect.zig");
 const spawn = @import("../spawn.zig");
 const protocol = @import("protocol.zig");
+const upgrade_agent_state = @import("upgrade_agent_state.zig");
 
 const magic = "ATUP";
-const format_version: u8 = 3;
+const format_version: u8 = 4;
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -43,14 +44,14 @@ const SliceReader = struct {
     data: []const u8,
     pos: usize = 0,
 
-    fn readByte(self: *SliceReader) !u8 {
+    pub fn readByte(self: *SliceReader) !u8 {
         if (self.pos >= self.data.len) return error.EndOfStream;
         const b = self.data[self.pos];
         self.pos += 1;
         return b;
     }
 
-    fn readU16(self: *SliceReader) !u16 {
+    pub fn readU16(self: *SliceReader) !u16 {
         if (self.pos + 2 > self.data.len) return error.EndOfStream;
         const val = std.mem.readInt(u16, self.data[self.pos..][0..2], .little);
         self.pos += 2;
@@ -64,6 +65,13 @@ const SliceReader = struct {
         return val;
     }
 
+    pub fn readU64(self: *SliceReader) !u64 {
+        if (self.pos + 8 > self.data.len) return error.EndOfStream;
+        const val = std.mem.readInt(u64, self.data[self.pos..][0..8], .little);
+        self.pos += 8;
+        return val;
+    }
+
     fn readI32(self: *SliceReader) !i32 {
         if (self.pos + 4 > self.data.len) return error.EndOfStream;
         const val = std.mem.readInt(i32, self.data[self.pos..][0..4], .little);
@@ -71,7 +79,7 @@ const SliceReader = struct {
         return val;
     }
 
-    fn readSlice(self: *SliceReader, len: usize) ![]const u8 {
+    pub fn readSlice(self: *SliceReader, len: usize) ![]const u8 {
         if (self.pos + len > self.data.len) return error.EndOfStream;
         const slice = self.data[self.pos .. self.pos + len];
         self.pos += len;
@@ -165,6 +173,8 @@ fn serializePane(w: ListWriter, p: *DaemonPane) !void {
     try writeU32(w, ring_len);
     if (slices.first.len > 0) try writeBytes(w, slices.first);
     if (slices.second.len > 0) try writeBytes(w, slices.second);
+
+    try upgrade_agent_state.serialize(w, p);
 }
 
 /// Deserialize session state from a byte slice. Returns count of sessions restored.
@@ -182,7 +192,7 @@ pub fn deserialize(
     if (!std.mem.eql(u8, &magic_buf, magic)) return error.InvalidMagic;
 
     const ver = try r.readByte();
-    if (ver != 1 and ver != 2 and ver != format_version) return error.UnsupportedVersion;
+    if (ver != 1 and ver != 2 and ver != 3 and ver != format_version) return error.UnsupportedVersion;
 
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
@@ -278,6 +288,7 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
 
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
+    const restored_agent = if (ver >= 4) try upgrade_agent_state.deserialize(&r) else upgrade_agent_state.RestoredState{};
 
     var pane = try DaemonPane.fromRestored(
         allocator,
@@ -306,6 +317,8 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
     const fg_len: u16 = @intCast(@min(fg_cwd_slice.len, pane.fg_cwd.len));
     @memcpy(pane.fg_cwd[0..fg_len], fg_cwd_slice[0..fg_len]);
     pane.fg_cwd_len = fg_len;
+
+    upgrade_agent_state.apply(&pane, restored_agent);
 
     return pane;
 }
@@ -441,7 +454,10 @@ pub fn performUpgrade(
         if (!probed) {
             if (!probeNewDaemon(socket_path)) continue;
             probed = true;
-            if (expected_sessions == 0) { verified = true; break; }
+            if (expected_sessions == 0) {
+                verified = true;
+                break;
+            }
             continue; // give restore a moment before verifying
         }
         if (verifySessionCount(socket_path, expected_sessions)) {
@@ -645,6 +661,12 @@ test "serialize/deserialize round-trip" {
         .cursor_visible = true,
         .alt_screen = false,
     };
+    const Engine = @import("attyx").Engine;
+    const eng = try allocator.create(Engine);
+    eng.* = try Engine.init(allocator, 24, 80, 128);
+    eng.state.setAgentStatus(.working, "planning");
+    eng.state.setAgentUsage(.{ .output_tokens = 42, .model = "pi", .transcript_path = "/tmp/attyx-tx-1.jsonl" });
+    s.panes[0].?.engine = eng;
     s.pane_count = 1;
     sessions[0] = s;
 
@@ -676,6 +698,14 @@ test "serialize/deserialize round-trip" {
     try std.testing.expect(rp.alive);
     try std.testing.expect(rp.cursor_visible);
     try std.testing.expect(!rp.alt_screen);
+    try std.testing.expect(rp.engine != null);
+    const restored_engine = rp.engine.?;
+    try std.testing.expectEqual(@import("attyx").actions.AgentStatus.working, restored_engine.state.agent_status);
+    try std.testing.expectEqualStrings("planning", restored_engine.state.agentMsg());
+    const restored_usage = restored_engine.state.agentUsage();
+    try std.testing.expectEqual(@as(?u64, 42), restored_usage.output_tokens);
+    try std.testing.expectEqualStrings("pi", restored_usage.model.?);
+    try std.testing.expectEqualStrings("/tmp/attyx-tx-1.jsonl", restored_usage.transcript_path.?);
 
     const slices = rp.replay.readSlices();
     try std.testing.expectEqualStrings("hello world", slices.first);

@@ -11,6 +11,7 @@ const publish = @import("publish.zig");
 const actions = @import("actions.zig");
 const event_loop = @import("event_loop.zig");
 const session_actions = @import("session_actions.zig");
+const session_grid_prime = @import("session_grid_prime.zig");
 const SessionClient = @import("../session_client.zig").SessionClient;
 const ai = @import("ai.zig");
 const toast = attyx.overlay_toast;
@@ -88,6 +89,21 @@ pub fn handleResize(ctx: *PtyThreadCtx, buf: []u8) void {
                 rpane.feed(buf[0..n]);
             }
         }
+    }
+
+    if (session_grid_prime.activeFramePending(ctx)) {
+        // A resize event can race with session switching after the tab tree has
+        // been rebuilt but before the first daemon grid snapshot arrives. Do not
+        // repaint from the blank placeholder engine; preserve the current cells
+        // until the grid-sync frame lands.
+        c.attyx_begin_cell_update();
+        c.attyx_set_grid_size(rc, rr);
+        publish.generateTabBar(ctx);
+        publish.generateStatusbar(ctx);
+        publish.publishOverlays(ctx);
+        c.attyx_end_cell_update();
+        publish.publishState(ctx);
+        return;
     }
 
     c.attyx_begin_cell_update();

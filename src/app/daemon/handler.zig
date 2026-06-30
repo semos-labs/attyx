@@ -197,6 +197,9 @@ fn handleAttach(
         return;
     };
     cl.attached_session = attach.session_id;
+    cl.active_pane_count = 0;
+    @memset(&cl.active_pane_last_gen, 0);
+    @memset(&cl.active_pane_last_sb, 0);
     session.last_accessed = std.time.nanoTimestamp();
 
     // Revive dead (recent) sessions by spawning fresh panes.
@@ -380,7 +383,8 @@ fn handleFocusPanes(
                 break;
             }
         }
-        if (!was_active) {
+        const force_snapshot = cl.hasGridSync() and i < cl.active_pane_last_gen.len and cl.active_pane_last_gen[i] == 0;
+        if (!was_active or force_snapshot) {
             if (session.findPane(new_id)) |pane| {
                 // Skip drain/snapshot for deferred panes: the PTY hasn't
                 // been spawned yet (master == -1) and there's no engine
@@ -408,8 +412,8 @@ fn handleFocusPanes(
                 }
                 if (cl.hasGridSync() and pane.engine != null) {
                     // Grid-sync path: ship one authoritative snapshot.
-                    // No byte replay, no SIGWINCH nudge — the engine
-                    // already holds the TUI's current screen.
+                    // No byte replay, no SIGWINCH nudge unless the engine is
+                    // still genuinely blank after the forced snapshot.
                     //
                     // Prime the scrollback baseline BEFORE the snapshot so
                     // the snapshot's scrollback_delta is 0. The explicit
@@ -417,10 +421,18 @@ fn handleFocusPanes(
                     // cells; if we let delta fire too we'd double-count.
                     cl.primeScrollbackBaseline(pane);
                     cl.sendGridSnapshot(pane, true);
+                    // A forced snapshot can still be blank if this daemon-side
+                    // engine was rebuilt from incomplete replay state and the
+                    // foreground TUI has been idle since. Nudge only in that
+                    // case; daemon.zig suppresses the temporary-width snapshot
+                    // and sends the restored-size frame after the nudge settles.
+                    if (paneScreenLooksBlank(pane)) pane.notifyRedraw();
                     // Hydrate scrollback on first focus so scrolling up
-                    // actually shows history. Capped to keep the initial
-                    // burst bounded.
-                    cl.sendScrollbackChunks(pane, 1024);
+                    // actually shows history. This is historical data older
+                    // than the current screen, so send it as a prepend range;
+                    // appending after the snapshot shifts the live screen down
+                    // and leaves blank rows at the bottom.
+                    cl.sendScrollbackRangeResponse(pane, 0, 1024);
                     // Also ship the current title so the client's tab bar
                     // picks it up on first focus (engine is passive, won't
                     // see the OSC 0/2 bytes).
@@ -459,6 +471,17 @@ fn handleFocusPanes(
             }
         }
     }
+}
+
+fn paneScreenLooksBlank(pane: *DaemonPane) bool {
+    const eng = pane.engine orelse return true;
+    const ring = &eng.state.ring;
+    for (0..ring.screen_rows) |row| {
+        for (ring.getScreenRow(row)) |cell| {
+            if (!attyx.grid.isDefaultCell(cell)) return false;
+        }
+    }
+    return true;
 }
 
 fn handleSetThemeColors(

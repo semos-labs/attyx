@@ -328,6 +328,16 @@ pub const Model = struct {
         if (self.view_count == 0) return null;
         return &self.rows[self.view[self.selected]];
     }
+    pub fn selectRow(self: *Model, session: u32, pane_id: u32) bool {
+        for (self.view[0..self.view_count], 0..) |idx, i| {
+            const r = &self.rows[idx];
+            if (r.session == session and r.pane_id == pane_id) {
+                self.selected = i;
+                return true;
+            }
+        }
+        return false;
+    }
 
     pub fn moveUp(self: *Model) void {
         if (self.selected > 0) self.selected -= 1;
@@ -486,6 +496,19 @@ test "remove on none fixes selection; movement clamps to view" {
     try testing.expectEqual(@as(usize, 0), m.selected);
     m.moveDown();
     try testing.expectEqual(@as(usize, 0), m.selected); // clamped to view
+}
+
+test "selectRow keeps selection keyed by session and pane" {
+    const a = testing.allocator;
+    var m = Model{};
+    m.applyLine(a, "{\"session\":1,\"pane_id\":1,\"state\":\"working\"}", 0);
+    m.applyLine(a, "{\"session\":1,\"pane_id\":2,\"state\":\"input\"}", 0);
+    try testing.expect(m.selectRow(1, 1));
+    try testing.expectEqual(@as(u32, 1), m.selectedRow().?.pane_id);
+    m.applyLine(a, "{\"session\":1,\"pane_id\":1,\"state\":\"input\",\"usage\":{\"cost_usd\":1.0}}", 100);
+    try testing.expect(m.selectRow(1, 1));
+    try testing.expectEqual(@as(u32, 1), m.selectedRow().?.pane_id);
+    try testing.expect(!m.selectRow(9, 9));
 }
 
 test "malformed lines ignored" {

@@ -248,6 +248,46 @@ pub fn collectLeafPaneIds(info: *const LayoutInfo, out: []u32) u32 {
     return count;
 }
 
+/// Return true when the layout's leaf pane IDs exactly match the live pane IDs
+/// advertised by the daemon. Order is ignored, but duplicates/missing/stale IDs
+/// fail. This protects session attach from resurrecting stale layout leaves as
+/// blank tabs while the real live panes are orphaned in the daemon.
+pub fn paneSetMatches(info: *const LayoutInfo, pane_ids: []const u32) bool {
+    var layout_ids: [max_tabs * max_nodes_per_tab]u32 = undefined;
+    const layout_count_u32 = collectLeafPaneIds(info, &layout_ids);
+    if (layout_count_u32 != pane_ids.len) return false;
+    const layout_count: usize = @intCast(layout_count_u32);
+
+    for (layout_ids[0..layout_count], 0..) |id, i| {
+        var found_live = false;
+        for (pane_ids) |live_id| {
+            if (id == live_id) {
+                found_live = true;
+                break;
+            }
+        }
+        if (!found_live) return false;
+
+        // Duplicate layout leaf IDs are invalid even if the ID is live.
+        for (layout_ids[0..i]) |prev_id| {
+            if (prev_id == id) return false;
+        }
+    }
+
+    for (pane_ids) |live_id| {
+        var found_layout = false;
+        for (layout_ids[0..layout_count]) |id| {
+            if (id == live_id) {
+                found_layout = true;
+                break;
+            }
+        }
+        if (!found_layout) return false;
+    }
+
+    return true;
+}
+
 /// Replace old pane IDs with new ones in all leaf nodes and focused_pane_id.
 pub fn remapPaneIds(info: *LayoutInfo, old_ids: []const u32, new_ids: []const u32) void {
     for (0..info.tab_count) |ti| {
@@ -556,6 +596,22 @@ test "collectLeafPaneIds: collects all leaves" {
     try std.testing.expectEqual(@as(u32, 2), count);
     try std.testing.expectEqual(@as(u32, 10), ids[0]);
     try std.testing.expectEqual(@as(u32, 20), ids[1]);
+}
+
+test "paneSetMatches rejects stale missing and duplicate layout IDs" {
+    var info = LayoutInfo{};
+    info.tab_count = 2;
+    info.tabs[0].node_count = 1;
+    info.tabs[0].nodes[0] = .{ .tag = .leaf, .pane_id = 10 };
+    info.tabs[1].node_count = 1;
+    info.tabs[1].nodes[0] = .{ .tag = .leaf, .pane_id = 20 };
+
+    try std.testing.expect(paneSetMatches(&info, &.{ 20, 10 }));
+    try std.testing.expect(!paneSetMatches(&info, &.{ 10 }));
+    try std.testing.expect(!paneSetMatches(&info, &.{ 10, 30 }));
+
+    info.tabs[1].nodes[0].pane_id = 10;
+    try std.testing.expect(!paneSetMatches(&info, &.{ 10, 20 }));
 }
 
 test "remapPaneIds: remaps leaves and focused" {

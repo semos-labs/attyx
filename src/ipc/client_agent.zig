@@ -373,9 +373,11 @@ pub fn runSend(a: std.mem.Allocator, parsed: IpcRequest) Error!Result {
 
     const want_capture = parsed.agent_capture;
     const cursor: []const u8 = if (want_capture) seedCursor(a, ctx, parsed.pane_id) else "";
+    var transcript_req = parsed;
+    transcript_req.target_session = if (session != 0) session else parsed.target_session;
     // Resolve the transcript path once (one daemon snapshot); capture then polls
     // this file locally. null = the agent reports no transcript → screen fallback.
-    const tx_path: ?[]const u8 = if (want_capture) agent_read.resolveTranscriptPath(a, parsed) else null;
+    const tx_path: ?[]const u8 = if (want_capture) agent_read.resolveTranscriptPath(a, transcript_req) else null;
     // Assistant-message count before the turn, so capture can wait for the turn's
     // own message to land rather than reading a stale one (see captureTurnMessage).
     const tx_baseline: ?usize = if (tx_path) |p| blk: {
@@ -587,22 +589,27 @@ pub fn runForMcp(a: std.mem.Allocator, parsed: IpcRequest) ![]const u8 {
 // round-trip); call them only on user action, not per frame.
 // ---------------------------------------------------------------------------
 
-fn paneCtx(a: std.mem.Allocator, pane_id: u32, sock_buf: *[256]u8) ?Ctx {
+fn paneCtx(a: std.mem.Allocator, session: u32, pane_id: u32, sock_buf: *[256]u8) ?Ctx {
+    if (session != 0) {
+        if (session_connect.getSocketPath(sock_buf)) |sock| return .{ .sock = sock, .session = session };
+        const sock = client.discoverSocket(sock_buf, null) orelse return null;
+        return .{ .sock = sock, .session = 0 };
+    }
     return resolveCtx(a, .{ .command = .agent_send, .pane_id = pane_id }, sock_buf) catch null;
 }
 
 /// Visible screen text of the pane (plain rows), or null if unreachable.
-pub fn paneScreen(a: std.mem.Allocator, pane_id: u32) ?[]const u8 {
+pub fn paneScreen(a: std.mem.Allocator, session: u32, pane_id: u32) ?[]const u8 {
     var sock_buf: [256]u8 = undefined;
-    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return null;
+    const ctx = paneCtx(a, session, pane_id, &sock_buf) orelse return null;
     return captureSince(a, ctx, pane_id, "").text;
 }
 
 /// Submit a freeform reply: bracketed-paste body + Enter (same as `agent send`
 /// without --wait, so multi-line text and `{`/`}` stay literal).
-pub fn paneReply(a: std.mem.Allocator, pane_id: u32, text: []const u8) void {
+pub fn paneReply(a: std.mem.Allocator, session: u32, pane_id: u32, text: []const u8) void {
     var sock_buf: [256]u8 = undefined;
-    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return;
+    const ctx = paneCtx(a, session, pane_id, &sock_buf) orelse return;
     var paste: [8192]u8 = undefined;
     var ps = std.io.fixedBufferStream(&paste);
     ps.writer().writeAll("\x1b[200~") catch {};
@@ -613,19 +620,18 @@ pub fn paneReply(a: std.mem.Allocator, pane_id: u32, text: []const u8) void {
 }
 
 /// Send raw key bytes to the pane (e.g. an option digit). No paste/Enter.
-pub fn paneKey(a: std.mem.Allocator, pane_id: u32, bytes: []const u8) void {
+pub fn paneKey(a: std.mem.Allocator, session: u32, pane_id: u32, bytes: []const u8) void {
     var sock_buf: [256]u8 = undefined;
-    const ctx = paneCtx(a, pane_id, &sock_buf) orelse return;
+    const ctx = paneCtx(a, session, pane_id, &sock_buf) orelse return;
     submit(ctx, pane_id, bytes);
 }
 
 /// The agent's last assistant message from its transcript (same source as `agent
 /// read`), or null when the agent reports no transcript (caller falls back to a
 /// screen scrape). Only Claude/Codex report transcripts.
-pub fn paneLastMessage(a: std.mem.Allocator, pane_id: u32) ?[]const u8 {
-    const path = agent_read.resolveTranscriptPath(a, .{ .command = .agent_send, .pane_id = pane_id }) orelse return null;
+pub fn paneLastMessage(a: std.mem.Allocator, session: u32, pane_id: u32) ?[]const u8 {
+    const path = agent_read.resolveTranscriptPath(a, .{ .command = .agent_read, .target_session = session, .pane_id = pane_id }) orelse return null;
     const msgs = agent_read.messagesAtPath(a, path) orelse return null;
     if (msgs.len == 0) return null;
     return msgs[msgs.len - 1];
 }
-

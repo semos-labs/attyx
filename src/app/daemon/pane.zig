@@ -91,6 +91,11 @@ pub const DaemonPane = struct {
     /// Monotonic counter bumped when engine.feed dirties any row.
     engine_generation: u64 = 0,
 
+    /// Delayed restore for notifyRedraw's resize nudge. See notifyRedraw().
+    redraw_restore_due_ns: i128 = 0,
+    redraw_restore_rows: u16 = 0,
+    redraw_restore_cols: u16 = 0,
+
     /// Scrollback position for the headless IPC view, in rows back from the
     /// live bottom (0 = live tail). Driven only by `attyx scroll-to -s N` and
     /// read only by headless `get-text`; completely separate from any window's
@@ -660,22 +665,41 @@ pub const DaemonPane = struct {
     }
 
     /// Force a full repaint after focus change so TUI apps re-render their
-    /// current frame into the PTY (and thus into the replay stream the client
-    /// is processing).  On POSIX we send SIGWINCH directly to the foreground
-    /// process group at the *current* dimensions — this triggers the redraw
-    /// without changing geometry, so width-responsive TUIs (Claude Code
-    /// banner, tmux status line, etc.) don't flicker between layouts during
-    /// the tab switch.  Windows has no SIGWINCH, so we keep the old col-nudge
-    /// there (host_conn.sendResize doesn't accept same-dim no-op).
+    /// current frame into the PTY (and thus into the daemon-side engine).
+    ///
+    /// We used to send SIGWINCH directly, but on macOS `tcgetpgrp()` against
+    /// the PTY master can fail, so the foreground app never sees it. A real
+    /// window resize fixes blank tabs because TIOCSWINSZ on the master makes
+    /// the kernel notify the foreground process group. Do the same thing here:
+    /// nudge the PTY size, then restore it on a later daemon tick. Restoring in
+    /// the same call can be coalesced by apps that query size after SIGWINCH,
+    /// so they observe no effective change and skip repainting.
     pub fn notifyRedraw(self: *DaemonPane) void {
-        if (comptime is_windows) {
-            if (self.host_conn) |hc| {
-                const nudged = if (self.cols < std.math.maxInt(u16)) self.cols + 1 else self.cols - 1;
-                _ = hc.sendResize(self.rows, nudged);
-                return;
-            }
-        }
-        self.pty.sendSigwinch();
+        if (self.rows == 0 or self.cols == 0) return;
+        if (self.redraw_restore_due_ns != 0) return;
+
+        const original_rows = self.rows;
+        const original_cols = self.cols;
+        const nudged_cols: u16 = if (original_cols > 1) original_cols - 1 else original_cols + 1;
+
+        self.resize(original_rows, nudged_cols) catch return;
+        self.redraw_restore_rows = original_rows;
+        self.redraw_restore_cols = original_cols;
+        self.redraw_restore_due_ns = std.time.nanoTimestamp() + 75 * std.time.ns_per_ms;
+    }
+
+    /// Complete a delayed notifyRedraw size restore. Returns true when it sent
+    /// the restore resize. Called by the daemon loop; harmless for panes that
+    /// have no pending redraw nudge.
+    pub fn tickRedrawRestore(self: *DaemonPane, now_ns: i128) bool {
+        if (self.redraw_restore_due_ns == 0 or now_ns < self.redraw_restore_due_ns) return false;
+        const rows = self.redraw_restore_rows;
+        const cols = self.redraw_restore_cols;
+        self.redraw_restore_due_ns = 0;
+        self.redraw_restore_rows = 0;
+        self.redraw_restore_cols = 0;
+        self.resize(rows, cols) catch return false;
+        return true;
     }
 
     /// Non-blocking check if child process has exited.
