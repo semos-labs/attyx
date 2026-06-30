@@ -56,10 +56,10 @@ const extension_fmt =
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\// Transcript: Pi hands us the finalized assistant message in `message_end`,
-    \\// so we append one line in Claude's transcript schema to a per-pane file.
+    \\// so we append one line in Claude's transcript schema to a per-agent file.
     \\// `agent read` parses that schema as-is; the path rides `tx=` on the usage emit.
     \\const ATTYX_PID = process.env.ATTYX_PID;
-    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + ".jsonl" : null;
+    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + "-" + process.pid + ".jsonl" : null;
     \\let wrote = false;
     \\function messageText(m) {{
     \\  if (!m) return "";
@@ -145,6 +145,7 @@ test "extension template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, ext, "spawnSync(EMIT, [\"usage\"") != null);
     // Transcript: writes Claude-schema lines from message_end, rides tx= on usage.
     try testing.expect(std.mem.indexOf(u8, ext, "function recordTurn") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "process.pid") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "kv.push(\"tx=\" + TX)") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "if (!TELEMETRY) return") == null);
 }

@@ -100,6 +100,7 @@ pub const Prompt = struct {
 /// (the agent's last message, scrollable). Owned by run.zig, read by render.zig.
 pub const Interact = struct {
     mode: enum { none, reply, options } = .none,
+    session: u32 = 0,
     pane_id: u32 = 0,
     reply_buf: [512]u8 = undefined,
     reply_len: usize = 0,
@@ -216,6 +217,15 @@ test "no numbered block → null (freeform)" {
     try testing.expect(Prompt.parse("Tell me what to build next.\n> ") == null);
     try testing.expect(Prompt.parse("") == null);
     try testing.expect(Prompt.parse("step 1. done\nstep 3. later") == null); // not 1..N consecutive
+}
+
+test "interact tracks session and pane until reset" {
+    var it = Interact{ .session = 7, .pane_id = 42, .mode = .reply };
+    try testing.expectEqual(@as(u32, 7), it.session);
+    try testing.expectEqual(@as(u32, 42), it.pane_id);
+    it.reset();
+    try testing.expectEqual(@as(u32, 0), it.session);
+    try testing.expectEqual(@as(u32, 0), it.pane_id);
 }
 
 test "ignores prose above; only bottom block counts" {

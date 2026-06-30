@@ -160,10 +160,10 @@ const plugin_fmt =
     \\}}
     \\// Transcript: opencode hands us assistant text in `message.part.updated`
     \\// events, so we buffer text parts per message id and, on finalize, append one
-    \\// line in Claude's transcript schema to a per-pane file. `agent read` parses
+    \\// line in Claude's transcript schema to a per-agent file. `agent read` parses
     \\// that schema as-is; the path rides `tx=` on the usage emit below.
     \\const ATTYX_PID = process.env.ATTYX_PID;
-    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + ".jsonl" : null;
+    \\const TX = ATTYX_PID ? tmpdir() + "/attyx-tx-" + ATTYX_PID + "-" + process.pid + ".jsonl" : null;
     \\let wrote = false;
     \\const texts = new Map();
     \\function recordTurn(id) {{
@@ -289,6 +289,7 @@ test "plugin template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, plugin, "m.time.completed") != null);
     // Transcript: buffers text parts, writes Claude-schema lines, rides tx= on usage.
     try testing.expect(std.mem.indexOf(u8, plugin, "function recordTurn") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "process.pid") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "kv.push(\"tx=\" + TX)") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "if (!TELEMETRY) return") == null);
     try testing.expect(std.mem.indexOf(u8, plugin, "m.tokens &&") == null);

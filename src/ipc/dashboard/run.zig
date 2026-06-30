@@ -235,13 +235,14 @@ const Mode = enum { normal, search, confirm };
 /// otherwise open a freeform reply box (works for any agent, any state).
 fn startInteract(gpa: std.mem.Allocator, it: *prompt.Interact, r: *const model_mod.Row) void {
     it.reset();
+    it.session = r.session;
     it.pane_id = r.pane_id;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    const screen = client_agent.paneScreen(a, r.pane_id);
+    const screen = client_agent.paneScreen(a, r.session, r.pane_id);
     // Message area: the agent's last transcript message, else the screen tail.
-    if (client_agent.paneLastMessage(a, r.pane_id)) |msg| {
+    if (client_agent.paneLastMessage(a, r.session, r.pane_id)) |msg| {
         it.setMsg(msg);
     } else if (screen) |s| {
         it.setMsg(if (s.len > 3072) s[s.len - 3072 ..] else s);
@@ -295,14 +296,14 @@ fn handleInteractByte(gpa: std.mem.Allocator, it: *prompt.Interact, b: u8) void 
                 it.sel -= 1;
             },
             '\r', '\n' => {
-                if (it.sel < it.prompt.n) sendOption(gpa, it.pane_id, it.prompt.options[it.sel].num);
+                if (it.sel < it.prompt.n) sendOption(gpa, it.session, it.pane_id, it.prompt.options[it.sel].num);
                 it.reset();
             },
             '1'...'9' => {
                 const d = b - '0';
                 for (it.prompt.options[0..it.prompt.n]) |o| {
                     if (o.num == d) {
-                        sendOption(gpa, it.pane_id, d);
+                        sendOption(gpa, it.session, it.pane_id, d);
                         it.reset();
                         break;
                     }
@@ -317,17 +318,17 @@ fn sendReply(gpa: std.mem.Allocator, it: *prompt.Interact) void {
     if (it.reply_len == 0) return;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    client_agent.paneReply(arena.allocator(), it.pane_id, it.reply());
+    client_agent.paneReply(arena.allocator(), it.session, it.pane_id, it.reply());
 }
 
 /// Send the option's number key. ponytail: digit-only — Claude/Codex permission
 /// and menu prompts select immediately on the number; if some TUI needs Enter to
 /// confirm a highlighted choice, send "\r" after as a follow-up.
-fn sendOption(gpa: std.mem.Allocator, pane_id: u32, num: u8) void {
+fn sendOption(gpa: std.mem.Allocator, session: u32, pane_id: u32, num: u8) void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const key = [_]u8{'0' + num};
-    client_agent.paneKey(arena.allocator(), pane_id, &key);
+    client_agent.paneKey(arena.allocator(), session, pane_id, &key);
 }
 
 fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, names: *render.NameCache) !void {
@@ -355,6 +356,10 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
     };
 
     while (true) {
+        if (interact.mode != .none and !m.selectRow(interact.session, interact.pane_id)) {
+            interact.reset();
+            dirty = true;
+        }
         if (dirty) {
             var arena = std.heap.ArenaAllocator.init(gpa);
             defer arena.deinit();
