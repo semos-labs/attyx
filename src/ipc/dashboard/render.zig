@@ -28,9 +28,11 @@ const out_w: u16 = 8;
 const ctx_w: u16 = 14;
 const cost_w: u16 = 10;
 const n_cols = 11;
-const col_widths = [n_cols]u16{ dot_w, session_w, tab_w, pane_w, model_w, state_w, elapsed_w, in_w, out_w, ctx_w, cost_w };
+const tab_col: usize = 2;
+const col_widths_base = [n_cols]u16{ dot_w, session_w, tab_w, pane_w, model_w, state_w, elapsed_w, in_w, out_w, ctx_w, cost_w };
 const col_right = [n_cols]bool{ false, false, false, false, false, false, true, true, true, true, true };
 const dot = "\xe2\x97\x8f"; // ●
+const marker_w: u16 = 2;
 const marker_sel = "\xe2\x96\xb6 "; // ▶ + space
 const marker_none = "  ";
 
@@ -138,10 +140,25 @@ fn appendColC(buf: *std.ArrayList(u8), a: std.mem.Allocator, s: []const u8, widt
     if (!right) try buf.appendNTimes(a, ' ', pad);
 }
 
-/// Build a table line (10 columns) with optional per-column color.
-fn buildLine(a: std.mem.Allocator, cols: [n_cols][]const u8, colors: [n_cols][]const u8) ![]const u8 {
+fn tableWidth(widths: [n_cols]u16) u16 {
+    var total: u16 = gw * @as(u16, @intCast(n_cols - 1));
+    for (widths) |width| total += width;
+    return total;
+}
+
+fn frameWidths(cols: u16) [n_cols]u16 {
+    var widths = col_widths_base;
+    if (cols <= marker_w) return widths;
+    const target = cols - marker_w;
+    const current = tableWidth(widths);
+    if (target > current) widths[tab_col] += target - current;
+    return widths;
+}
+
+/// Build a table line with optional per-column color.
+fn buildLine(a: std.mem.Allocator, cols: [n_cols][]const u8, colors: [n_cols][]const u8, widths: [n_cols]u16) ![]const u8 {
     var b = std.ArrayList(u8){};
-    for (cols, col_widths, col_right, colors, 0..) |c, width, r, color, i| {
+    for (cols, widths, col_right, colors, 0..) |c, width, r, color, i| {
         try appendColC(&b, a, c, width, r, color);
         if (i + 1 < cols.len) try b.appendSlice(a, gutter);
     }
@@ -150,7 +167,7 @@ fn buildLine(a: std.mem.Allocator, cols: [n_cols][]const u8, colors: [n_cols][]c
 
 const no_colors = [_][]const u8{""} ** n_cols;
 
-fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool) ![]const u8 {
+fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool, widths: [n_cols]u16) ![]const u8 {
     var sb: [24]u8 = undefined;
     var pb: [16]u8 = undefined;
     var ab: [16]u8 = undefined;
@@ -179,34 +196,35 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool) ![]const 
         fmt.tokensOpt(&ob, r.output_tokens),
         fmt.ctx(&kb, r.context_used, r.context_max),
         fmt.cost(&cb, r.cost_usd, r.cost_is_estimate),
-    }, colors);
+    }, colors, widths);
 }
 
-fn headerLine(a: std.mem.Allocator) ![]const u8 {
-    return buildLine(a, .{ " ", "SESSION", "TAB", "PANE", "MODEL", "STATE", "ELAPSED", "IN", "OUT", "CTX", "COST" }, no_colors);
+fn headerLine(a: std.mem.Allocator, widths: [n_cols]u16) ![]const u8 {
+    return buildLine(a, .{ " ", "SESSION", "TAB", "PANE", "MODEL", "STATE", "ELAPSED", "IN", "OUT", "CTX", "COST" }, no_colors, widths);
 }
 
-fn totalsLine(a: std.mem.Allocator, m: *const Model) ![]const u8 {
+fn totalsLine(a: std.mem.Allocator, m: *const Model, widths: [n_cols]u16) ![]const u8 {
     var ib: [16]u8 = undefined;
     var ob: [16]u8 = undefined;
     var cb: [24]u8 = undefined;
     const cost = std.fmt.bufPrint(&cb, "{s}${d:.2}", .{ if (m.any_estimate) "~" else "", m.total_cost }) catch "$?";
-    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, no_colors);
+    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, no_colors, widths);
 }
 
 /// Plain-text table to `writer` (for `--once` / non-TTY). No ANSI.
 pub fn snapshot(writer: anytype, a: std.mem.Allocator, m: *const Model, ctx: Ctx) !void {
+    const widths = col_widths_base;
     try writer.print("{d} agents \xc2\xb7 {d} working \xc2\xb7 {d} need input \xc2\xb7 ${d:.2}{s}\n", .{
         m.count, m.n_working, m.n_input, m.total_cost, if (m.any_estimate) " (incl. est)" else "",
     });
-    try writer.print("  {s}\n", .{try headerLine(a)});
+    try writer.print("  {s}\n", .{try headerLine(a, widths)});
     if (m.visibleCount() == 0) {
         try writer.writeAll("  (no agents)\n");
     } else {
         var i: usize = 0;
-        while (i < m.visibleCount()) : (i += 1) try writer.print("  {s}\n", .{try rowLine(a, m.rowAt(i), ctx, false)});
+        while (i < m.visibleCount()) : (i += 1) try writer.print("  {s}\n", .{try rowLine(a, m.rowAt(i), ctx, false, widths)});
     }
-    try writer.print("  {s}\n", .{try totalsLine(a, m)});
+    try writer.print("  {s}\n", .{try totalsLine(a, m, widths)});
 }
 
 const interact_msg_rows: u16 = 5; // message scroll-area height inside the panel
@@ -246,6 +264,7 @@ fn distinctSessions(m: *const Model) u16 {
 /// Full-screen ANSI frame into `buf` (for the interactive TUI).
 pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, rows: u16, cols: u16, ctx: Ctx) !void {
     const w = buf.writer(a);
+    const widths = frameWidths(cols);
     try w.writeAll("\x1b[2J\x1b[H");
     var line: u16 = 1;
     try moveTo(w, line);
@@ -257,7 +276,7 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
     });
     line += 1;
     try moveTo(w, line);
-    try w.print("{s}  {s}{s}\x1b[K", .{ dim, try headerLine(a), reset });
+    try w.print("{s}  {s}{s}\x1b[K", .{ dim, try headerLine(a, widths), reset });
     line += 1;
 
     // The inline interaction panel (expanded under the selected row) and the
@@ -297,9 +316,9 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
             if (i == m.selected) {
                 // Subtle background highlight; per-cell colors use fg-only resets
                 // so the background survives across the row, and \x1b[K fills it.
-                try w.print("{s}{s}{s}\x1b[K{s}", .{ sel_bg, marker_sel, try rowLine(a, r, ctx, true), reset });
+                try w.print("{s}{s}{s}\x1b[K{s}", .{ sel_bg, marker_sel, try rowLine(a, r, ctx, true, widths), reset });
             } else {
-                try w.print("{s}{s}{s}\x1b[K", .{ marker_none, try rowLine(a, r, ctx, true), reset });
+                try w.print("{s}{s}{s}\x1b[K", .{ marker_none, try rowLine(a, r, ctx, true, widths), reset });
             }
             line += 1;
             shown += 1;
@@ -314,7 +333,7 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
 
     if (rows >= 2) {
         try moveTo(w, rows - 1);
-        try w.print("{s}  {s}{s}\x1b[K", .{ bold, try totalsLine(a, m), reset });
+        try w.print("{s}  {s}{s}\x1b[K", .{ bold, try totalsLine(a, m, widths), reset });
         try moveTo(w, rows);
         try helpLine(w, m, ctx);
     }
@@ -483,6 +502,16 @@ test "frame renders without overflow; view-based; age + detail" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "opus-4.8") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "1m0s") != null); // age 60s
     try testing.expect(std.mem.indexOf(u8, buf.items, "detail") != null);
+}
+
+test "frame widths stretch tab column to terminal width" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const widths = frameWidths(160);
+    const line = try headerLine(a, widths);
+    try testing.expectEqual(@as(u16, 160 - marker_w), ui_cell.utf8Count(line));
+    try testing.expect(widths[tab_col] > tab_w);
 }
 
 test "name cache resolves the session column" {
