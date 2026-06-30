@@ -4,6 +4,7 @@ const logging = @import("../../logging/log.zig");
 const split_layout_mod = @import("../split_layout.zig");
 const layout_codec = @import("../layout_codec.zig");
 const SessionClient = @import("../session_client.zig").SessionClient;
+const TabManager = @import("../tab_manager.zig").TabManager;
 const Pane = @import("../pane.zig").Pane;
 const session_connect = @import("../session_connect.zig");
 
@@ -12,6 +13,7 @@ const PtyThreadCtx = terminal.PtyThreadCtx;
 const c = terminal.c;
 const publish = @import("publish.zig");
 const actions = @import("actions.zig");
+const session_grid_prime = @import("session_grid_prime.zig");
 const statusbar = @import("../statusbar.zig");
 
 // ---------------------------------------------------------------------------
@@ -121,50 +123,72 @@ pub fn forceActiveTabGridSnapshot(ctx: *PtyThreadCtx) void {
         return;
     }
 
-    var active_ids: [split_layout_mod.max_panes]u32 = undefined;
-    var active_count: usize = 0;
-    const layout = ctx.tab_mgr.activeLayout();
-    var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-    const lc = layout.collectLeaves(&leaves);
-    for (leaves[0..lc]) |leaf| {
+    var pane_ids: [split_layout_mod.max_panes * @import("../tab_manager.zig").max_tabs]u32 = undefined;
+    var count: usize = 0;
+
+    const active_layout = ctx.tab_mgr.activeLayout();
+    var active_leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+    const active_lc = active_layout.collectLeaves(&active_leaves);
+    for (active_leaves[0..active_lc]) |leaf| {
         if (leaf.pane.daemon_pane_id) |dpid| {
-            active_ids[active_count] = dpid;
-            active_count += 1;
+            pane_ids[count] = dpid;
+            count += 1;
         }
     }
-    if (active_count == 0) return;
+    if (count == 0) return;
 
-    // 1. Empty focus set clears daemon-side active state/generation slots.
-    // 2. Active tab first forces its snapshot to be sent first.
-    // 3. Re-send the all-panes set so background tabs stay warm.
-    sc.sendFocusPanes(&.{}) catch {};
-    sc.sendFocusPanes(active_ids[0..active_count]) catch {};
-    ctx.last_focus_count = 0;
-    sendActiveFocusPanes(ctx);
+    // Keep every pane warm, but move the active tab's panes to the front. The
+    // daemon treats changed slots as needing a fresh snapshot, without the old
+    // clear-then-refocus dance that briefly left no panes active and flickered.
+    for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
+        if (maybe_layout.*) |*lay| {
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = lay.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                const dpid = leaf.pane.daemon_pane_id orelse continue;
+                var already_added = false;
+                for (pane_ids[0..count]) |existing| {
+                    if (existing == dpid) {
+                        already_added = true;
+                        break;
+                    }
+                }
+                if (!already_added and count < pane_ids.len) {
+                    pane_ids[count] = dpid;
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    for (0..count) |i| ctx.last_focus_panes[i] = pane_ids[i];
+    ctx.last_focus_count = @intCast(count);
+    sc.sendFocusPanes(pane_ids[0..count]) catch {};
 }
 
 fn synthesizeTabsFromAttachedPanes(
-    ctx: *PtyThreadCtx,
+    mgr: *TabManager,
     pane_ids: []const u32,
     rows: u16,
     cols: u16,
+    scrollback_lines: usize,
 ) bool {
-    ctx.tab_mgr.reset();
-    ctx.tab_mgr.active = 0;
+    mgr.reset();
+    mgr.active = 0;
     var tab_count: u8 = 0;
     for (pane_ids) |pane_id| {
         if (tab_count >= @import("../tab_manager.zig").max_tabs) break;
-        const pane = ctx.tab_mgr.allocator.create(Pane) catch return tab_count > 0;
-        pane.* = Pane.initDaemonBacked(ctx.tab_mgr.allocator, rows, cols, ctx.applied_scrollback_lines) catch {
-            ctx.tab_mgr.allocator.destroy(pane);
+        const pane = mgr.allocator.create(Pane) catch return tab_count > 0;
+        pane.* = Pane.initDaemonBacked(mgr.allocator, rows, cols, scrollback_lines) catch {
+            mgr.allocator.destroy(pane);
             return tab_count > 0;
         };
         pane.daemon_pane_id = pane_id;
-        ctx.tab_mgr.assignIpcId(pane);
-        ctx.tab_mgr.tabs[tab_count] = split_layout_mod.SplitLayout.init(pane);
+        mgr.assignIpcId(pane);
+        mgr.tabs[tab_count] = split_layout_mod.SplitLayout.init(pane);
         tab_count += 1;
     }
-    ctx.tab_mgr.count = tab_count;
+    mgr.count = tab_count;
     return tab_count > 0;
 }
 
@@ -177,96 +201,82 @@ pub fn doSessionSwitch(ctx: *PtyThreadCtx, session_id: u32) void {
     const pty_rows: u16 = @intCast(@max(1, @as(i32, ctx.grid_rows) - terminal.g_grid_top_offset - terminal.g_grid_bottom_offset));
     const pty_cols: u16 = @intCast(@max(1, @as(i32, ctx.grid_cols) - terminal.g_grid_left_offset - terminal.g_grid_right_offset));
 
-    // Skip if already attached to this session
     if (sc.attached_session_id) |current| {
         if (current == session_id) return;
     }
 
-    // Save current layout
     saveSessionLayout(ctx);
 
-    // Detach from current session
-    sc.detach() catch {};
-
-    // Teardown current tabs
-    ctx.tab_mgr.reset();
-    terminal.g_engine = null;
-    terminal.g_pty_master = -1;
-
-    // Attach to new session
+    // Attach first, but keep the old tab manager/rendered frame alive until the
+    // replacement manager has been reconstructed and hydrated from daemon grid
+    // snapshots. This is the key difference from the old destructive switch:
+    // no blank client-side placeholder engine ever becomes the active renderer.
     sc.attach(session_id, pty_rows, pty_cols) catch return;
     const attach_result = sc.waitForAttach(3000) catch return;
-
     const attached_panes = attachPaneSlice(&attach_result.pane_ids, attach_result.pane_count);
+
+    var next_mgr = TabManager{
+        .allocator = ctx.tab_mgr.allocator,
+        .split_gap_h = ctx.tab_mgr.split_gap_h,
+        .split_gap_v = ctx.tab_mgr.split_gap_v,
+        .next_ipc_id = ctx.tab_mgr.next_ipc_id,
+    };
     var repaired_layout = false;
 
-    // Reconstruct tabs from the daemon layout only if it references exactly the
-    // live panes the daemon advertised in this attach response. If the layout is
-    // stale (for example after a previous close/move/restart race), rebuilding it
-    // would create client-only blank tabs for pane IDs the daemon can never
-    // snapshot. Fall back to one tab per live daemon pane and save that healed
-    // layout below.
     if (sc.layout_len > 0) {
         if (layout_codec.deserialize(sc.layout_buf[0..sc.layout_len])) |info| {
             if (layout_codec.paneSetMatches(&info, attached_panes)) {
-                ctx.tab_mgr.reconstructFromLayout(&info, pty_rows, pty_cols, ctx.applied_scrollback_lines) catch {
-                    repaired_layout = synthesizeTabsFromAttachedPanes(ctx, attached_panes, pty_rows, pty_cols);
+                next_mgr.reconstructFromLayout(&info, pty_rows, pty_cols, ctx.applied_scrollback_lines) catch {
+                    repaired_layout = synthesizeTabsFromAttachedPanes(&next_mgr, attached_panes, pty_rows, pty_cols, ctx.applied_scrollback_lines);
                 };
             } else {
                 logging.warn("session-picker", "discarding stale layout for session {d}: layout pane set does not match {d} live panes", .{ session_id, attach_result.pane_count });
-                repaired_layout = synthesizeTabsFromAttachedPanes(ctx, attached_panes, pty_rows, pty_cols);
+                repaired_layout = synthesizeTabsFromAttachedPanes(&next_mgr, attached_panes, pty_rows, pty_cols, ctx.applied_scrollback_lines);
             }
         } else |_| {
-            repaired_layout = synthesizeTabsFromAttachedPanes(ctx, attached_panes, pty_rows, pty_cols);
+            repaired_layout = synthesizeTabsFromAttachedPanes(&next_mgr, attached_panes, pty_rows, pty_cols, ctx.applied_scrollback_lines);
         }
     }
-
-    // Fallback: one tab per live pane when there is no layout blob.
-    if (ctx.tab_mgr.count == 0 and attached_panes.len > 0) {
-        repaired_layout = synthesizeTabsFromAttachedPanes(ctx, attached_panes, pty_rows, pty_cols);
+    if (next_mgr.count == 0 and attached_panes.len > 0) {
+        repaired_layout = synthesizeTabsFromAttachedPanes(&next_mgr, attached_panes, pty_rows, pty_cols, ctx.applied_scrollback_lines);
     }
+    if (next_mgr.count == 0) return;
 
-    // Update globals
-    if (ctx.tab_mgr.count > 0) {
-        const ap = ctx.tab_mgr.activePane();
-        terminal.g_engine = &ap.engine;
-        terminal.g_pty_master = ap.pty.master;
-        terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
-    }
-
-    // Compute rects and resize daemon PTYs to match each pane's dimensions.
-    if (ctx.tab_mgr.count > 0) {
-        for (ctx.tab_mgr.tabs[0..ctx.tab_mgr.count]) |*maybe_layout| {
-            if (maybe_layout.*) |*lay| {
-                lay.layout(pty_rows, pty_cols);
-                var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
-                const lc = lay.collectLeaves(&leaves);
-                for (leaves[0..lc]) |leaf| {
-                    if (leaf.pane.daemon_pane_id) |dpid| {
-                        sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
-                    }
+    // Compute rects and resize daemon PTYs before the first snapshot request so
+    // daemon/client dimensions agree for the initial frame.
+    for (next_mgr.tabs[0..next_mgr.count]) |*maybe_layout| {
+        if (maybe_layout.*) |*lay| {
+            lay.layout(pty_rows, pty_cols);
+            var leaves: [split_layout_mod.max_panes]split_layout_mod.LeafEntry = undefined;
+            const lc = lay.collectLeaves(&leaves);
+            for (leaves[0..lc]) |leaf| {
+                if (leaf.pane.daemon_pane_id) |dpid| {
+                    sc.sendPaneResize(dpid, leaf.rect.rows, leaf.rect.cols) catch {};
                 }
             }
         }
     }
 
-    if (ctx.tab_mgr.count == 0) return;
+    // Ask the daemon for the new session's active tab, then synchronously drain
+    // its first real frame into next_mgr while the old manager remains visible.
+    var active_ids: [split_layout_mod.max_panes]u32 = undefined;
+    const active_count = session_grid_prime.activePaneIds(&next_mgr, &active_ids);
+    if (active_count > 0) sc.sendFocusPanes(active_ids[0..active_count]) catch {};
+    session_grid_prime.primeManager(ctx, &next_mgr, 1200);
 
+    ctx.tab_mgr.reset();
+    ctx.tab_mgr.* = next_mgr;
     ctx.last_focus_count = 0;
+
+    const ap = ctx.tab_mgr.activePane();
+    terminal.g_engine = &ap.engine;
+    terminal.g_pty_master = ap.pty.master;
+    terminal.g_active_daemon_pane_id = ap.daemon_pane_id orelse 0;
+
     actions.switchActiveTab(ctx);
     if (repaired_layout) saveSessionLayout(ctx);
 
-    // Force full redraw so the new session's content appears immediately.
-    actions.g_force_full_redraw = true;
-    c.attyx_mark_all_dirty();
-    // Reset cached cwd/git state so the next periodic tick picks up the new
-    // session's values.  Skip the synchronous tick that used to run here —
-    // profiling showed it forking subprocesses (git status, etc.) and
-    // adding 50–70ms of input latency, same as on tab switch.  The worst
-    // case is one frame of stale widgets (~16ms) — invisible.
-    if (ctx.statusbar) |sb| {
-        sb.resetWidgets();
-    }
+    if (ctx.statusbar) |sb| sb.resetWidgets();
     publish.generateTabBar(ctx);
     publish.generateStatusbar(ctx);
     publish.publishOverlays(ctx);

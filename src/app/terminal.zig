@@ -33,6 +33,7 @@ pub const c = publish.c;
 
 // Sub-modules
 const publish = @import("ui/publish.zig");
+const session_grid_prime = @import("ui/session_grid_prime.zig");
 const input = @import("ui/input.zig");
 const search = @import("ui/search.zig");
 const ai = @import("ui/ai.zig");
@@ -870,6 +871,25 @@ pub fn run(
     publish.publishThemeToEngines(&ctx);
     // Push theme colors to daemon for direct OSC 10/11/12/4 response.
     publish.publishThemeToDaemon(&ctx);
+
+    // Reattached daemon-backed panes already have real dimensions, so prime a
+    // first grid snapshot before the native renderer sees the cell buffer. Newly
+    // created sessions use deferred spawn and cannot produce a snapshot until
+    // the window exists and reports its real size; those are hydrated in the
+    // PTY thread's cold-launch handoff instead.
+    if (heap_session_client != null and !session_deferred_startup_resize) {
+        session_grid_prime.primeActiveTab(&ctx, 1200);
+        const eng = &tab_mgr.activePane().engine;
+        const initial_total: usize = @as(usize, config.rows) * @as(usize, config.cols);
+        const initial_left_off: u16 = @intCast(@max(0, g_grid_left_offset));
+        const bg_cell = publish.bgCell(&initial_theme);
+        @memset(render_cells[0..initial_total], bg_cell);
+        publish.fillCellsStrideAt(render_cells[0..initial_total], eng, &initial_theme, config.cols, initial_left_off, null);
+        c.attyx_set_cursor(
+            @intCast(eng.state.cursor.row + @as(usize, @intCast(g_grid_top_offset))),
+            @intCast(eng.state.cursor.col + initial_left_off),
+        );
+    }
 
     // Start IPC control socket server
     ipc_server.start() catch |err| {

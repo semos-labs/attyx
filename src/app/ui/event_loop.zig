@@ -268,6 +268,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                 @intCast(eng.state.cursor.col + left_off_u16),
             );
+            c.g_renderer_full_redraw = 1;
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
@@ -285,7 +286,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
     //
     // No stale 80×24 snapshot, no SIGWINCH-redraw nudge — there's
     // nothing to redraw, the shell is starting fresh.
-    if (ctx.session_client != null and ctx.xyron_path != null and ctx.session_deferred_startup_resize) {
+    if (ctx.session_client != null and ctx.session_deferred_startup_resize) {
         const startup_pane = ctx.tab_mgr.activePane();
         if (startup_pane.daemon_pane_id != null) {
             logging.info("startup", "waiting for real window dims (session at {d}x{d})", .{ ctx.grid_cols, ctx.grid_rows });
@@ -345,6 +346,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                 @intCast(eng.state.cursor.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                 @intCast(eng.state.cursor.col + left_off_u16),
             );
+            c.g_renderer_full_redraw = 1;
             c.attyx_mark_all_dirty();
             eng.state.dirty.clear();
             c.attyx_end_cell_update();
@@ -1150,7 +1152,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     },
                     .grid_snapshot => |payload| {
                         if (applyGridSnapshot(ctx, payload)) |res| {
-                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active) {
+                            if (res.final_chunk and res.tab_idx == ctx.tab_mgr.active and !res.screen_blank) {
                                 got_data = true;
                                 actions.g_force_full_redraw = true;
                             }
@@ -1436,6 +1438,16 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
             }
         }
 
+        if (need_update_final and activeGridFramePending(ctx)) {
+            // Session switch rebuilt the tab tree with placeholder client
+            // engines, and the daemon snapshot is still in flight. Do not let
+            // the forced redraw path publish that blank placeholder to the
+            // renderer; the non-blank grid_snapshot will mark got_data again.
+            actions.g_force_full_redraw = false;
+            got_data = false;
+            continue;
+        }
+
         if (need_update_final) {
             const layout = ctx.tab_mgr.activeLayout();
             if (layout.pane_count > 1 and !layout.isZoomed()) {
@@ -1474,6 +1486,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     @intCast(eng.state.cursor.row + vp_cur + rect.row + @as(usize, @intCast(terminal.g_grid_top_offset))),
                     @intCast(eng.state.cursor.col + rect.col + split_left_off),
                 );
+                c.g_renderer_full_redraw = 1;
                 c.attyx_mark_all_dirty();
                 actions.g_force_full_redraw = false;
             } else {
@@ -1526,6 +1539,7 @@ pub fn ptyReaderThread(ctx: *PtyThreadCtx) void {
                     @intCast(eng.state.cursor.col + left_off_u16),
                 );
                 if (full_redraw) {
+                    c.g_renderer_full_redraw = 1;
                     c.attyx_mark_all_dirty();
                     actions.g_force_full_redraw = false;
                 } else {
@@ -1931,7 +1945,7 @@ fn drainBufferedDeaths(ctx: *PtyThreadCtx) DrainResult {
 /// info on success so the caller can decide whether to force a redraw.
 /// Shared by the startup drain (xyron path) and the main event loop so
 /// snapshots aren't silently dropped during startup.
-const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32 };
+const GridApplyResult = struct { final_chunk: bool, tab_idx: u8, pane_id: u32, screen_blank: bool };
 fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
     const info = grid_sync.decodeSnapshotHeader(payload) catch {
         logging.warn("grid", "snapshot decode failed", .{});
@@ -2003,7 +2017,27 @@ fn applyGridSnapshot(ctx: *PtyThreadCtx, payload: []const u8) ?GridApplyResult {
         }
         result.pane.needs_engine_reinit = false;
     }
-    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id };
+    const screen_blank = info.final_chunk and paneGridScreenBlank(result.pane);
+    if (info.final_chunk and !screen_blank) result.pane.grid_has_frame = true;
+    return .{ .final_chunk = info.final_chunk, .tab_idx = result.tab_idx, .pane_id = info.pane_id, .screen_blank = screen_blank };
+}
+
+fn paneGridScreenBlank(pane: anytype) bool {
+    const ring = &pane.engine.state.ring;
+    for (0..ring.screen_rows) |row| {
+        for (ring.getScreenRow(row)) |cell| {
+            if (!attyx.grid.isDefaultCell(cell)) return false;
+        }
+    }
+    return true;
+}
+
+fn activeGridFramePending(ctx: *PtyThreadCtx) bool {
+    if (ctx.tab_mgr.count == 0) return false;
+    const sc = ctx.session_client orelse return false;
+    if (!sc.hasGridSync()) return false;
+    const pane = ctx.tab_mgr.activePane();
+    return pane.daemon_pane_id != null and !pane.grid_has_frame;
 }
 
 /// Apply a scrollback_range payload (RPC response) to the matching pane,

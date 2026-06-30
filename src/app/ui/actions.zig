@@ -408,6 +408,15 @@ pub fn switchActiveTab(ctx: *PtyThreadCtx) void {
 
     updateSplitActive(ctx);
 
+    if (ctx.session_client) |sc| {
+        if (sc.hasGridSync() and pane.daemon_pane_id != null and !pane.grid_has_frame) {
+            // The daemon snapshot is in flight. Do not paint the blank
+            // client-side placeholder engine; keep the previous frame visible
+            // until applyGridSnapshot installs a real frame and marks dirty.
+            return;
+        }
+    }
+
     // Compose the new frame into a scratch buffer first, then swap it into
     // the live render buffer with a single memcpy under the begin/end_cell
     // guard.  Composing off-buffer eliminates two flicker sources: (1) the

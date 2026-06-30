@@ -5,7 +5,8 @@
 // Attyx stores per pane and exposes via `list agents --json`. This command looks
 // that path up (attached window or `-s` daemon session), reads the file, and
 // extracts assistant messages structurally — no screen scraping, no heuristics.
-// Two transcript shapes are understood:
+// Supported agents all report transcripts; Pi/opencode write Claude-compatible
+// JSONL, while native Claude/Codex transcript shapes are parsed directly:
 //   Claude:  {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"…"}]}}
 //   Codex:   {"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"…"}]}}
 
@@ -183,9 +184,9 @@ pub fn errMsg(e: Error) []const u8 {
     return switch (e) {
         Error.NoInstance => "no running Attyx instance found",
         Error.NoAgent => "pane is not running an agent",
-        Error.NoTranscript => "this agent doesn't report a transcript (only Claude and Codex do)",
-        Error.ReadFailed => "could not read the transcript file",
-        Error.NoMessages => "the transcript has no agent messages yet",
+        Error.NoTranscript => "no transcript is available yet (supported agents publish one after the first assistant message)",
+        Error.ReadFailed => "transcript path was reported, but the file could not be read",
+        Error.NoMessages => "the transcript exists but has no assistant messages yet",
         Error.OffsetOutOfRange => "--offset is beyond the number of messages in the transcript",
     };
 }

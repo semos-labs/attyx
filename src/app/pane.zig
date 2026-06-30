@@ -60,6 +60,11 @@ pub const Pane = struct {
     /// no "Tab N" fallback, no stacked duplicate content.
     needs_engine_reinit: bool = false,
     shadow_engine: ?Engine = null,
+    /// Grid-sync: true once this client has received a non-blank authoritative
+    /// snapshot for the daemon-backed pane. Until then, tab/session switches keep
+    /// the previous frame on screen instead of painting the blank placeholder
+    /// engine created during layout reconstruction.
+    grid_has_frame: bool = false,
     /// Last agent status we acted on (to detect transitions for notifications).
     last_agent_status: attyx.actions.AgentStatus = .none,
     /// Foreground process name reported by the daemon (for title fallback).

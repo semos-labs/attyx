@@ -182,7 +182,21 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
         for (&sessions) |*slot| {
             if (slot.*) |*s| {
                 for (&s.panes) |*pslot| {
-                    if (pslot.*) |*pane| _ = pane.tickRedrawRestore(now_ns);
+                    if (pslot.*) |*pane| {
+                        if (pane.tickRedrawRestore(now_ns)) {
+                            // While the nudge is pending we suppress grid snapshots
+                            // to avoid showing the temporary one-column resize. Once
+                            // restored, push an authoritative same-size frame even if
+                            // the foreground app did not emit fresh bytes.
+                            for (&clients) |*cslot| {
+                                if (cslot.*) |*cl| {
+                                    if (cl.attached_session == s.id and cl.hasGridSync() and cl.isPaneActive(pane.id)) {
+                                        cl.sendGridSnapshot(pane, true);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -288,7 +302,11 @@ pub fn run(allocator: std.mem.Allocator, restore_path: ?[]const u8) !void {
                                 if (cslot.*) |*cl| {
                                     if (cl.attached_session == s.id and cl.isPaneActive(pane.id)) {
                                         if (cl.hasGridSync() and pane.engine != null) {
-                                            cl.sendGridSnapshot(pane, false);
+                                            // notifyRedraw temporarily resizes the PTY by one col to make
+                                            // full-screen TUIs repaint. Do not stream that intermediate
+                                            // grid to the UI; wait for the restore-size repaint, otherwise
+                                            // tab/session switches visibly flicker between widths.
+                                            if (pane.redraw_restore_due_ns == 0) cl.sendGridSnapshot(pane, false);
                                             if (title_dirty) {
                                                 const t = pane.engine.?.state.title orelse "";
                                                 cl.sendPaneTitle(pane.id, t);

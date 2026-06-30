@@ -39,9 +39,11 @@ pub fn install(a: std.mem.Allocator, home: []const u8, emitter_path: []const u8,
 /// Pi extension. `{s}` is the absolute emitter path. The factory body runs once
 /// when Pi loads the extension at launch (env, incl. ATTYX_PID/ATTYX_TTY, is
 /// inherited), so we emit idle there to register the agent immediately. Then:
-/// session_start → idle, agent_start/tool_call → working, agent_end → idle,
-/// session_shutdown → none. Runs the emitter via Node's child_process so it
-/// self-gates and targets the pane tty.
+/// session_start → idle, agent_start/tool_call → working, agent_end → idle.
+/// We intentionally don't emit `none` on shutdown: Pi can fire shutdown from an
+/// old runtime after a restart has already loaded a new extension, which would
+/// erase tracking for the replacement agent. Runs the emitter via Node's
+/// child_process so it self-gates and targets the pane tty.
 const extension_fmt =
     \\// Attyx agent status extension — reports Pi's run state to the terminal via
     \\// the attyx emitter. No-op outside attyx (emitter self-gates on ATTYX_PID).
@@ -78,25 +80,28 @@ const extension_fmt =
     \\// (used/max) is a live snapshot from ctx.getContextUsage(); model from ctx.
     \\let totIn = 0, totOut = 0, totCr = 0, totCw = 0, totCost = 0;
     \\function emitUsage(ctx, message) {{
-    \\  if (!TELEMETRY) return;
     \\  const u = message && message.usage;
-    \\  if (!u) return;
-    \\  totIn += u.input || 0; totOut += u.output || 0;
-    \\  totCr += u.cacheRead || 0; totCw += u.cacheWrite || 0;
-    \\  if (u.cost && typeof u.cost.total === "number") totCost += u.cost.total;
-    \\  const kv = ["in=" + totIn, "out=" + totOut, "cr=" + totCr, "cw=" + totCw, "cost=" + totCost];
+    \\  const kv = [];
+    \\  if (TELEMETRY && u) {{
+    \\    totIn += u.input || 0; totOut += u.output || 0;
+    \\    totCr += u.cacheRead || 0; totCw += u.cacheWrite || 0;
+    \\    if (u.cost && typeof u.cost.total === "number") totCost += u.cost.total;
+    \\    kv.push("in=" + totIn, "out=" + totOut, "cr=" + totCr, "cw=" + totCw, "cost=" + totCost);
+    \\  }}
     \\  recordTurn(message);
     \\  if (TX && wrote) kv.push("tx=" + TX);
-    \\  try {{
-    \\    const cu = ctx && ctx.getContextUsage && ctx.getContextUsage();
-    \\    if (cu) {{
-    \\      if (cu.tokens != null) kv.push("ctx=" + cu.tokens);
-    \\      if (cu.contextWindow) kv.push("ctxmax=" + cu.contextWindow);
-    \\    }}
-    \\    const model = ctx && ctx.model && ctx.model.id;
-    \\    if (model) kv.push("model=" + model);
-    \\  }} catch (e) {{}}
-    \\  try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\  if (TELEMETRY) {{
+    \\    try {{
+    \\      const cu = ctx && ctx.getContextUsage && ctx.getContextUsage();
+    \\      if (cu) {{
+    \\        if (cu.tokens != null) kv.push("ctx=" + cu.tokens);
+    \\        if (cu.contextWindow) kv.push("ctxmax=" + cu.contextWindow);
+    \\      }}
+    \\      const model = ctx && ctx.model && ctx.model.id;
+    \\      if (model) kv.push("model=" + model);
+    \\    }} catch (e) {{}}
+    \\  }}
+    \\  if (kv.length) try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\export default function (pi) {{
     \\  // Runs once at extension load (Pi launch) — register the agent as
@@ -109,7 +114,6 @@ const extension_fmt =
     \\  pi.on("message_end", async (event, ctx) => {{
     \\    try {{ if (event && event.message && event.message.role === "assistant") emitUsage(ctx, event.message); }} catch (e) {{}}
     \\  }});
-    \\  pi.on("session_shutdown", async () => emit("none"));
     \\}}
     \\
 ;
@@ -131,9 +135,9 @@ test "extension template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, ext, "agent_start") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "tool_call") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "agent_end") != null);
-    try testing.expect(std.mem.indexOf(u8, ext, "session_shutdown") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "session_shutdown") == null);
     try testing.expect(std.mem.indexOf(u8, ext, "emit(\"working\")") != null);
-    try testing.expect(std.mem.indexOf(u8, ext, "emit(\"none\")") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "emit(\"none\")") == null);
     // Usage enrichment: getContextUsage + message_end mapping.
     try testing.expect(std.mem.indexOf(u8, ext, "getContextUsage") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "message_end") != null);
@@ -142,6 +146,7 @@ test "extension template embeds the emitter path and maps key events" {
     // Transcript: writes Claude-schema lines from message_end, rides tx= on usage.
     try testing.expect(std.mem.indexOf(u8, ext, "function recordTurn") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "kv.push(\"tx=\" + TX)") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "if (!TELEMETRY) return") == null);
 }
 
 test "install writes the extension only when ~/.pi exists" {
@@ -162,5 +167,5 @@ test "install writes the extension only when ~/.pi exists" {
     install(a, home, "/E/attyx-agent-status", true);
     const ext = ai.readFile(a, home ++ "/.pi/agent/extensions/attyx-status.ts") orelse return error.NoExtension;
     try testing.expect(std.mem.indexOf(u8, ext, "/E/attyx-agent-status") != null);
-    try testing.expect(std.mem.indexOf(u8, ext, "session_shutdown") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "session_shutdown") == null);
 }

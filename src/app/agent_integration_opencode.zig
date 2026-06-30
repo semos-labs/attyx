@@ -181,20 +181,22 @@ const plugin_fmt =
     \\// emit the running session sum. Fired only on completed assistant messages.
     \\const usageTotals = new Map();
     \\function emitUsage(m) {{
-    \\  if (!TELEMETRY) return;
-    \\  const t = (m && m.tokens) || {{}};
-    \\  usageTotals.set(m.id, {{
-    \\    in: t.input || 0, out: t.output || 0,
-    \\    cr: (t.cache && t.cache.read) || 0, cw: (t.cache && t.cache.write) || 0,
-    \\    rsn: t.reasoning || 0, cost: m.cost || 0,
-    \\  }});
-    \\  const s = {{ in: 0, out: 0, cr: 0, cw: 0, rsn: 0, cost: 0 }};
-    \\  for (const v of usageTotals.values()) {{ s.in += v.in; s.out += v.out; s.cr += v.cr; s.cw += v.cw; s.rsn += v.rsn; s.cost += v.cost; }}
-    \\  const kv = ["in=" + s.in, "out=" + s.out, "cr=" + s.cr, "cw=" + s.cw, "rsn=" + s.rsn, "cost=" + s.cost];
-    \\  if (m.modelID) kv.push("model=" + m.modelID);
+    \\  const kv = [];
+    \\  if (TELEMETRY && m && m.tokens) {{
+    \\    const t = m.tokens;
+    \\    usageTotals.set(m.id, {{
+    \\      in: t.input || 0, out: t.output || 0,
+    \\      cr: (t.cache && t.cache.read) || 0, cw: (t.cache && t.cache.write) || 0,
+    \\      rsn: t.reasoning || 0, cost: m.cost || 0,
+    \\    }});
+    \\    const s = {{ in: 0, out: 0, cr: 0, cw: 0, rsn: 0, cost: 0 }};
+    \\    for (const v of usageTotals.values()) {{ s.in += v.in; s.out += v.out; s.cr += v.cr; s.cw += v.cw; s.rsn += v.rsn; s.cost += v.cost; }}
+    \\    kv.push("in=" + s.in, "out=" + s.out, "cr=" + s.cr, "cw=" + s.cw, "rsn=" + s.rsn, "cost=" + s.cost);
+    \\    if (m.modelID) kv.push("model=" + m.modelID);
+    \\  }}
     \\  recordTurn(m.id);
     \\  if (TX && wrote) kv.push("tx=" + TX);
-    \\  try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\  if (kv.length) try {{ spawnSync(EMIT, ["usage", kv.join(";")], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
     \\const AttyxStatus = async (ctx) => {{
     \\  // Runs once at opencode launch — register the agent as present-and-idle
@@ -223,7 +225,7 @@ const plugin_fmt =
     \\          break;
     \\        case "message.updated": {{
     \\          const m = props.info;
-    \\          if (m && m.role === "assistant" && m.tokens && m.time && m.time.completed) emitUsage(m);
+    \\          if (m && m.role === "assistant" && m.time && m.time.completed) emitUsage(m);
     \\          break;
     \\        }}
     \\        case "permission.asked":
@@ -288,6 +290,8 @@ test "plugin template embeds the emitter path and maps key events" {
     // Transcript: buffers text parts, writes Claude-schema lines, rides tx= on usage.
     try testing.expect(std.mem.indexOf(u8, plugin, "function recordTurn") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "kv.push(\"tx=\" + TX)") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "if (!TELEMETRY) return") == null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "m.tokens &&") == null);
 }
 
 test "insert into an empty object adds the plugin key" {
