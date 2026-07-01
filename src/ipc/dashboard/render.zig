@@ -6,6 +6,7 @@ const std = @import("std");
 const model = @import("model.zig");
 const fmt = @import("format.zig");
 const prompt = @import("prompt.zig");
+const viewport = @import("viewport.zig");
 const ui_cell = @import("attyx").overlay_ui_cell;
 
 const Model = model.Model;
@@ -227,7 +228,7 @@ pub fn snapshot(writer: anytype, a: std.mem.Allocator, m: *const Model, ctx: Ctx
     try writer.print("  {s}\n", .{try totalsLine(a, m, widths)});
 }
 
-const interact_msg_rows: u16 = 5; // message scroll-area height inside the panel
+const interact_msg_rows: u16 = 8; // message scroll-area height inside the panel
 
 /// Rows the inline interaction panel occupies: a label, the message area, a hint,
 /// plus the input row (reply) or question+buttons rows (options).
@@ -241,24 +242,6 @@ fn sessionName(ctx: Ctx, id: u32, buf: []u8) []const u8 {
         if (nm.get(id)) |n| return n;
     }
     return std.fmt.bufPrint(buf, "s{d}", .{id}) catch "s?";
-}
-
-/// Distinct sessions in the view. Rows are session-contiguous under the session
-/// sort, so a change-count is exact — used to reserve group-header rows.
-fn distinctSessions(m: *const Model) u16 {
-    var n: u16 = 0;
-    var prev: u32 = 0;
-    var have = false;
-    var i: usize = 0;
-    while (i < m.visibleCount()) : (i += 1) {
-        const s = m.rowAt(i).session;
-        if (!have or s != prev) {
-            n += 1;
-            prev = s;
-            have = true;
-        }
-    }
-    return n;
 }
 
 /// Full-screen ANSI frame into `buf` (for the interactive TUI).
@@ -288,30 +271,24 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
     };
     const panel_rows: u16 = if (it) |x| interactRows(x) else 0;
     const detail_rows: u16 = if (it == null and ctx.detail and m.selectedRow() != null) 5 else 0;
-    // Agents are always grouped by session (the view is session-contiguous), so
-    // we emit a header whenever the session changes. Headers reserve rows.
-    const group = m.visibleCount() > 0;
-    const header_rows: u16 = distinctSessions(m);
-    const reserved: u16 = 4 + detail_rows + panel_rows + header_rows;
-    const body_rows = if (rows > reserved + 1) rows - reserved else 1;
+    const body_rows = if (rows > 4 + detail_rows) rows - 4 - detail_rows else 1;
+    const view = viewport.plan(m, body_rows, panel_rows);
     if (m.visibleCount() == 0) {
         try moveTo(w, line);
         try w.print("{s}  no agents \xe2\x80\x94 launch claude/codex/opencode/pi in any pane{s}\x1b[K", .{ dim, reset });
     } else {
-        var i: usize = 0;
-        var shown: u16 = 0;
-        var prev_sess: u32 = 0;
-        var have_prev = false;
+        var i: usize = view.start;
+        var used: u16 = 0;
         var sb: [24]u8 = undefined;
-        while (i < m.visibleCount() and shown < body_rows) : (i += 1) {
+        while (i < m.visibleCount() and used < view.body_lines) : (i += 1) {
             const r = m.rowAt(i);
-            if (group and (!have_prev or r.session != prev_sess)) {
+            if (viewport.rowHasGroupHeader(m, i) and used + 1 < view.body_lines) {
                 try moveTo(w, line);
                 try w.print("{s}  {s}{s}\x1b[K", .{ dim, sessionName(ctx, r.session, &sb), reset });
                 line += 1;
-                prev_sess = r.session;
-                have_prev = true;
+                used += 1;
             }
+            if (used >= view.body_lines) break;
             try moveTo(w, line);
             if (i == m.selected) {
                 // Subtle background highlight; per-cell colors use fg-only resets
@@ -321,15 +298,19 @@ pub fn frame(buf: *std.ArrayList(u8), a: std.mem.Allocator, m: *const Model, row
                 try w.print("{s}{s}{s}\x1b[K", .{ marker_none, try rowLine(a, r, ctx, true, widths), reset });
             }
             line += 1;
-            shown += 1;
-            if (it != null and i == m.selected) {
+            used += 1;
+            if (it != null and i == m.selected and used + panel_rows <= view.body_lines) {
                 try drawInteract(w, line, cols, it.?);
                 line += panel_rows;
+                used += panel_rows;
             }
         }
     }
 
-    if (detail_rows > 0) try detailPanel(w, a, m.selectedRow().?, rows - reserved + 1, ctx);
+    if (detail_rows > 0) {
+        const detail_at = if (rows > detail_rows + 1) rows - 1 - detail_rows else line;
+        try detailPanel(w, a, m.selectedRow().?, detail_at, ctx);
+    }
 
     if (rows >= 2) {
         try moveTo(w, rows - 1);
@@ -450,14 +431,17 @@ fn detailPanel(w: anytype, a: std.mem.Allocator, r: *const Row, at: u16, ctx: Ct
     try w.print("{s}\xe2\x94\x80\xe2\x94\x80 detail \xe2\x94\x80\xe2\x94\x80{s}\x1b[K", .{ dim, reset });
     try moveTo(w, at + 1);
     try w.print("  session {d}{s}{s}{s} \xc2\xb7 pane {d} \xc2\xb7 {s}{s}{s} \xc2\xb7 {s}\x1b[K", .{
-        r.session, if (name.len > 0) " (" else "", name, if (name.len > 0) ")" else "",
-        r.pane_id, stateColor(r.state), stateLabel(r.state), reset, fmtAge(&ab, ctx.now_ms, r.state_since_ms),
+        r.session,                                 if (name.len > 0) " (" else "", name,                if (name.len > 0) ")" else "",
+        r.pane_id,                                 stateColor(r.state),            stateLabel(r.state), reset,
+        fmtAge(&ab, ctx.now_ms, r.state_since_ms),
     });
     try moveTo(w, at + 2);
     try w.print("  {s} \xc2\xb7 in {s} \xc2\xb7 out {s} \xc2\xb7 ctx {s} \xc2\xb7 {s}\x1b[K", .{
         if (r.model_len > 0) r.model() else "\xe2\x80\x94",
-        fmt.tokensOpt(&ib, r.input_tokens), fmt.tokensOpt(&ob, r.output_tokens),
-        fmt.ctx(&kb, r.context_used, r.context_max), fmt.cost(&cb, r.cost_usd, r.cost_is_estimate),
+        fmt.tokensOpt(&ib, r.input_tokens),
+        fmt.tokensOpt(&ob, r.output_tokens),
+        fmt.ctx(&kb, r.context_used, r.context_max),
+        fmt.cost(&cb, r.cost_usd, r.cost_is_estimate),
     });
     try moveTo(w, at + 3);
     const msg = if (r.msg_len > 0) r.message() else "\xe2\x80\x94";
@@ -573,6 +557,22 @@ test "agents are grouped under per-session headers (any sort)" {
     // A header line is a dimmed bare session name (distinct from the row's cell).
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[2m  web\x1b[0m") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[2m  api\x1b[0m") != null);
+}
+
+test "frame scrolls selected agent into view" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var m = Model{};
+    for (0..20) |i| {
+        var line_buf: [96]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buf, "{{\"session\":1,\"pane_id\":{d},\"state\":\"working\"}}", .{i + 1});
+        m.applyLine(a, line, 0);
+    }
+    m.moveBottom();
+    var buf = std.ArrayList(u8){};
+    try frame(&buf, a, &m, 12, 100, .{});
+    try testing.expect(std.mem.indexOf(u8, buf.items, "20") != null);
 }
 
 test "wrapText breaks long lines and respects newlines" {
