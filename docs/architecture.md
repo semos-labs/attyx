@@ -230,7 +230,7 @@ Central struct holding all configuration values:
 | `[tabs]` | `appearance` | enum | `builtin` | Tab style (builtin/native) |
 | | `always_show` | bool | `false` | Show tab bar with single tab |
 | `[splits]` | `resize_step` | u16 | `4` | Split resize increment |
-| `[sessions]` | `enabled` | bool | `false` | Enable daemon-backed sessions |
+| `[sessions]` | `enabled` | bool | `true` | Enable daemon-backed sessions |
 | | `finder_root` | string | `"~"` | Session finder root path |
 | | `finder_depth` | u8 | `4` | Finder directory depth |
 | `[updates]` | `check_updates` | bool | `true` | Auto-check for updates |

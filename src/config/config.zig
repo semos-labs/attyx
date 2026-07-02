@@ -244,7 +244,7 @@ pub const AppConfig = struct {
     tab_side: TabSide = .none,
 
     // [sessions]
-    sessions_enabled: bool = false,
+    sessions_enabled: bool = true,
     session_finder_root: []const u8 = "~",
     session_finder_depth: u8 = 4,
     session_finder_show_hidden: bool = false,

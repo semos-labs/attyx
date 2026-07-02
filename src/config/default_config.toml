@@ -229,7 +229,7 @@
 [sessions]
 
 # Enable session management (named sessions with persist/switch).  [restart]
-# enabled = false
+# enabled = true
 
 # Root directory for the session finder. Folders here are offered when creating
 # a session, and "Create <name>" makes a new directory under this root.  [restart]
