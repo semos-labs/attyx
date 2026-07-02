@@ -2,9 +2,11 @@ const std = @import("std");
 const attyx = @import("attyx");
 const split_layout_mod = @import("../split_layout.zig");
 const grid_sync = @import("../daemon/grid_sync.zig");
+const protocol = @import("../daemon/protocol.zig");
 const terminal = @import("../terminal.zig");
 const PtyThreadCtx = terminal.PtyThreadCtx;
 const Pane = @import("../pane.zig").Pane;
+const SessionClient = @import("../session_client.zig").SessionClient;
 const TabManager = @import("../tab_manager.zig").TabManager;
 
 /// Synchronously drain the first real grid frame for the active tab after a
@@ -24,26 +26,19 @@ pub fn primeManager(ctx: *PtyThreadCtx, mgr: *TabManager, timeout_ms: u32) void 
     if (active_count == 0) return;
 
     sc.flushOut();
-    var elapsed: u32 = 0;
-    while (elapsed < timeout_ms and !allPrimed(mgr, active_ids[0..active_count])) : (elapsed += 20) {
+    const deadline_ns = std.time.nanoTimestamp() + @as(i128, @intCast(timeout_ms)) * std.time.ns_per_ms;
+    while (!allPrimed(mgr, active_ids[0..active_count])) {
+        if (drainPrimeMessages(sc, mgr)) continue;
+
+        const now_ns = std.time.nanoTimestamp();
+        if (now_ns >= deadline_ns) break;
+
         if (!sc.recvData()) return;
-        while (sc.readMessage()) |msg| {
-            switch (msg) {
-                .grid_snapshot => |payload| applyGridSnapshot(mgr, payload),
-                .pane_title => |pt| if (findPane(mgr, pt.pane_id)) |pane| pane.engine.state.setTitle(pt.title),
-                .pane_fg_cwd => |fc| if (findPane(mgr, fc.pane_id)) |pane| {
-                    const len: u16 = @intCast(@min(fc.cwd.len, pane.daemon_fg_cwd.len));
-                    @memcpy(pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
-                    pane.daemon_fg_cwd_len = len;
-                },
-                .pane_agent_status => |pas| if (findPane(mgr, pas.pane_id)) |pane| {
-                    pane.engine.state.setAgentStatus(attyx.actions.AgentStatus.fromU8(pas.status), pas.message);
-                },
-                .pane_agent_usage => |pau| if (findPane(mgr, pau.pane_id)) |pane| pane.engine.state.setAgentUsage(pau.usage),
-                else => {},
-            }
-        }
-        std.posix.nanosleep(0, 20 * std.time.ns_per_ms);
+        if (drainPrimeMessages(sc, mgr)) continue;
+
+        const wait_now_ns = std.time.nanoTimestamp();
+        if (wait_now_ns >= deadline_ns) break;
+        waitForReadable(sc.pollFd(), deadline_ns - wait_now_ns);
     }
 
     // If the pane is genuinely blank, don't hold the previous session forever.
@@ -77,6 +72,38 @@ pub fn activePaneIds(mgr: *TabManager, out: []u32) usize {
         }
     }
     return count;
+}
+
+fn drainPrimeMessages(sc: *SessionClient, mgr: *TabManager) bool {
+    var drained_any = false;
+    while (sc.readMessage()) |msg| {
+        drained_any = true;
+        switch (msg) {
+            .grid_snapshot => |payload| applyGridSnapshot(mgr, payload),
+            .pane_title => |pt| if (findPane(mgr, pt.pane_id)) |pane| pane.engine.state.setTitle(pt.title),
+            .pane_fg_cwd => |fc| if (findPane(mgr, fc.pane_id)) |pane| {
+                const len: u16 = @intCast(@min(fc.cwd.len, pane.daemon_fg_cwd.len));
+                @memcpy(pane.daemon_fg_cwd[0..len], fc.cwd[0..len]);
+                pane.daemon_fg_cwd_len = len;
+            },
+            .pane_agent_status => |pas| if (findPane(mgr, pas.pane_id)) |pane| {
+                pane.engine.state.setAgentStatus(attyx.actions.AgentStatus.fromU8(pas.status), pas.message);
+            },
+            .pane_agent_usage => |pau| if (findPane(mgr, pau.pane_id)) |pane| pane.engine.state.setAgentUsage(pau.usage),
+            else => {},
+        }
+    }
+    return drained_any;
+}
+
+fn waitForReadable(fd: std.posix.fd_t, remaining_ns: i128) void {
+    if (remaining_ns <= 0) return;
+    const max_wait_ns: i128 = 20 * std.time.ns_per_ms;
+    const wait_ns = @min(remaining_ns, max_wait_ns);
+    const timeout_ms_i128 = @max(@as(i128, 1), @divTrunc(wait_ns + std.time.ns_per_ms - 1, std.time.ns_per_ms));
+    const timeout_ms: i32 = @intCast(@min(timeout_ms_i128, @as(i128, std.math.maxInt(i32))));
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = 0x0001, .revents = 0 }};
+    _ = std.posix.poll(&fds, timeout_ms) catch {};
 }
 
 fn allPrimed(mgr: *TabManager, ids: []const u32) bool {
@@ -143,4 +170,82 @@ fn screenBlank(pane: *Pane) bool {
         }
     }
     return true;
+}
+
+const testing = std.testing;
+const scrollback = attyx.RingBuffer.default_max_scrollback;
+
+fn makeTestManager(allocator: std.mem.Allocator, daemon_pane_id: u32, rows: u16, cols: u16) !TabManager {
+    const pane = try allocator.create(Pane);
+    pane.* = try Pane.initDaemonBacked(allocator, rows, cols, scrollback);
+    pane.daemon_pane_id = daemon_pane_id;
+    return TabManager.init(allocator, pane);
+}
+
+fn injectSnapshotRow(
+    sc: *SessionClient,
+    pane_id: u32,
+    rows: u16,
+    cols: u16,
+    start_row: u16,
+    final_chunk: bool,
+    chars: []const u21,
+) !void {
+    const payload_len = grid_sync.snapshot_header_size + @as(usize, cols) * @sizeOf(grid_sync.PackedCell);
+    var payload: [512]u8 = undefined;
+    _ = try grid_sync.encodeSnapshotHeader(&payload, .{
+        .pane_id = pane_id,
+        .generation = 1,
+        .rows = rows,
+        .cols = cols,
+        .cursor_row = start_row,
+        .cursor_col = cols,
+        .cursor_visible = true,
+        .cursor_shape = 0,
+        .alt_active = false,
+        .start_row = start_row,
+        .row_count = 1,
+        .final_chunk = final_chunk,
+        .scrollback_delta = 0,
+    });
+    const cell_bytes = payload[grid_sync.snapshot_header_size..payload_len];
+    for (0..cols) |i| {
+        grid_sync.writePackedCell(cell_bytes, i, grid_sync.packCell(attyx.Cell{ .char = chars[i] }));
+    }
+
+    var framed: [1024]u8 = undefined;
+    const msg = try protocol.encodeMessage(&framed, .grid_snapshot, payload[0..payload_len]);
+    @memcpy(sc.read_buf[sc.read_len..][0..msg.len], msg);
+    sc.read_len += msg.len;
+}
+
+test "primeManager drains buffered snapshot chunks before reading socket" {
+    const allocator = testing.allocator;
+    const rows: u16 = 2;
+    const cols: u16 = 4;
+    const pane_id: u32 = 77;
+
+    var tab_mgr = try makeTestManager(allocator, pane_id, rows, cols);
+    defer tab_mgr.reset();
+
+    var sc = SessionClient{
+        .allocator = allocator,
+        .socket_fd = -1,
+        .daemon_caps = protocol.Capabilities.GRID_SYNC,
+    };
+    const row0 = [_]u21{ 'O', 'K', ' ', ' ' };
+    const row1 = [_]u21{ '!', '!', ' ', ' ' };
+    try injectSnapshotRow(&sc, pane_id, rows, cols, 0, false, &row0);
+    try injectSnapshotRow(&sc, pane_id, rows, cols, 1, true, &row1);
+
+    var ctx: PtyThreadCtx = undefined;
+    ctx.session_client = &sc;
+    primeManager(&ctx, &tab_mgr, 1000);
+
+    const pane = tab_mgr.activePane();
+    try testing.expect(pane.grid_has_frame);
+    try testing.expectEqual(@as(u21, 'O'), pane.engine.state.ring.getScreenCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'K'), pane.engine.state.ring.getScreenCell(0, 1).char);
+    try testing.expectEqual(@as(u21, '!'), pane.engine.state.ring.getScreenCell(1, 0).char);
+    try testing.expectEqual(@as(u21, '!'), pane.engine.state.ring.getScreenCell(1, 1).char);
 }
