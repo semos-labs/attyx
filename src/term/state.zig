@@ -82,6 +82,9 @@ pub const TerminalState = struct {
     /// `model` storage for agent_usage (the struct's slice points in here).
     agent_model_buf: [64]u8 = undefined,
     agent_model_len: u8 = 0,
+    /// `effort` storage for agent_usage (the struct's slice points in here).
+    agent_effort_buf: [24]u8 = undefined,
+    agent_effort_len: u8 = 0,
     /// `transcript_path` storage for agent_usage (the struct's slice points here).
     agent_transcript_buf: [512]u8 = undefined,
     agent_transcript_len: u16 = 0,

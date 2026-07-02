@@ -484,6 +484,7 @@ pub fn handlePaneFocusTargeted(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void 
         }
     }
     actions.switchActiveTab(ctx);
+    actions.saveSessionLayout(ctx);
     sendOk(cmd, "");
 }
 

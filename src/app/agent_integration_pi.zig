@@ -55,6 +55,22 @@ const extension_fmt =
     \\function emit(state) {{
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
+    \\let currentEffort = null;
+    \\function rememberEffort(level) {{
+    \\  if (typeof level === "string" && level) currentEffort = level;
+    \\  return currentEffort;
+    \\}}
+    \\function effort(pi) {{
+    \\  try {{ return rememberEffort(pi && pi.getThinkingLevel && pi.getThinkingLevel()); }} catch (e) {{ return currentEffort; }}
+    \\}}
+    \\function emitEffort(pi, level) {{
+    \\  const ef = rememberEffort(level) || effort(pi);
+    \\  if (ef) try {{ spawnSync(EMIT, ["usage", "effort=" + ef], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\function emitState(pi, state) {{
+    \\  emit(state);
+    \\  emitEffort(pi);
+    \\}}
     \\// Transcript: Pi hands us the finalized assistant message in `message_end`,
     \\// so we append one line in Claude's transcript schema to a per-agent file.
     \\// `agent read` parses that schema as-is; the path rides `tx=` on the usage emit.
@@ -79,9 +95,11 @@ const extension_fmt =
     \\// finalized message (not streamed), so plain addition is correct. Context
     \\// (used/max) is a live snapshot from ctx.getContextUsage(); model from ctx.
     \\let totIn = 0, totOut = 0, totCr = 0, totCw = 0, totCost = 0;
-    \\function emitUsage(ctx, message) {{
+    \\function emitUsage(pi, ctx, message) {{
     \\  const u = message && message.usage;
     \\  const kv = [];
+    \\  const ef = effort(pi);
+    \\  if (ef) kv.push("effort=" + ef);
     \\  if (TELEMETRY && u) {{
     \\    totIn += u.input || 0; totOut += u.output || 0;
     \\    totCr += u.cacheRead || 0; totCw += u.cacheWrite || 0;
@@ -106,13 +124,15 @@ const extension_fmt =
     \\export default function (pi) {{
     \\  // Runs once at extension load (Pi launch) — register the agent as
     \\  // present-and-idle immediately, before any activity event.
-    \\  emit("idle");
-    \\  pi.on("session_start", async () => emit("idle"));
-    \\  pi.on("agent_start", async () => emit("working"));
-    \\  pi.on("tool_call", async () => emit("working"));
-    \\  pi.on("agent_end", async () => emit("idle"));
+    \\  emitState(pi, "idle");
+    \\  pi.on("session_start", async () => emitState(pi, "idle"));
+    \\  pi.on("agent_start", async () => emitState(pi, "working"));
+    \\  pi.on("tool_call", async () => emitState(pi, "working"));
+    \\  pi.on("agent_end", async () => emitState(pi, "idle"));
+    \\  pi.on("thinking_level_select", async (event) => emitEffort(pi, event && event.level));
+    \\  pi.on("model_select", async () => emitEffort(pi));
     \\  pi.on("message_end", async (event, ctx) => {{
-    \\    try {{ if (event && event.message && event.message.role === "assistant") emitUsage(ctx, event.message); }} catch (e) {{}}
+    \\    try {{ if (event && event.message && event.message.role === "assistant") emitUsage(pi, ctx, event.message); }} catch (e) {{}}
     \\  }});
     \\}}
     \\
@@ -135,13 +155,19 @@ test "extension template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, ext, "agent_start") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "tool_call") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "agent_end") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "thinking_level_select") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "model_select") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "session_shutdown") == null);
-    try testing.expect(std.mem.indexOf(u8, ext, "emit(\"working\")") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "emitState(pi, \"working\")") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "emit(\"none\")") == null);
     // Usage enrichment: getContextUsage + message_end mapping.
     try testing.expect(std.mem.indexOf(u8, ext, "getContextUsage") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "message_end") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "function emitUsage") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "function emitEffort") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "currentEffort") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "event && event.level") != null);
+    try testing.expect(std.mem.indexOf(u8, ext, "getThinkingLevel") != null);
     try testing.expect(std.mem.indexOf(u8, ext, "spawnSync(EMIT, [\"usage\"") != null);
     // Transcript: writes Claude-schema lines from message_end, rides tx= on usage.
     try testing.expect(std.mem.indexOf(u8, ext, "function recordTurn") != null);

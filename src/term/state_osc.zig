@@ -75,6 +75,7 @@ pub fn setAgentStatus(self: *TerminalState, status: AgentStatus, message: []cons
     if (status == .none) {
         self.agent_usage = .{};
         self.agent_model_len = 0;
+        self.agent_effort_len = 0;
         self.agent_transcript_len = 0;
         self.agent_out_last_raw = 0;
         self.agent_out_cumulative = 0;
@@ -129,6 +130,11 @@ pub fn setAgentUsage(self: *TerminalState, u: AgentUsage) void {
         @memcpy(self.agent_model_buf[0..n], m[0..n]);
         self.agent_model_len = @intCast(n);
     }
+    if (u.effort) |e| {
+        const n = @min(e.len, self.agent_effort_buf.len);
+        @memcpy(self.agent_effort_buf[0..n], e[0..n]);
+        self.agent_effort_len = @intCast(n);
+    }
     if (u.transcript_path) |t| {
         const n = @min(t.len, self.agent_transcript_buf.len);
         @memcpy(self.agent_transcript_buf[0..n], t[0..n]);
@@ -137,11 +143,12 @@ pub fn setAgentUsage(self: *TerminalState, u: AgentUsage) void {
     self.agent_usage_changed = true;
 }
 
-/// The current usage record, with `model` and `transcript_path` sliced from the
-/// fixed buffers.
+/// The current usage record, with `model`, `effort`, and `transcript_path`
+/// sliced from the fixed buffers.
 pub fn agentUsage(self: *const TerminalState) AgentUsage {
     var u = self.agent_usage;
     u.model = if (self.agent_model_len > 0) self.agent_model_buf[0..self.agent_model_len] else null;
+    u.effort = if (self.agent_effort_len > 0) self.agent_effort_buf[0..self.agent_effort_len] else null;
     u.transcript_path = if (self.agent_transcript_len > 0) self.agent_transcript_buf[0..self.agent_transcript_len] else null;
     return u;
 }
@@ -250,18 +257,20 @@ test "setAgentUsage merges sticky and .none clears it" {
     var st = try TerminalState.init(testing.allocator, 24, 80, 100);
     defer st.deinit();
 
-    st.setAgentUsage(.{ .input_tokens = 100, .output_tokens = 200, .model = "opus-4.6" });
+    st.setAgentUsage(.{ .input_tokens = 100, .output_tokens = 200, .model = "opus-4.6", .effort = "high" });
     var u = st.agentUsage();
     try testing.expectEqual(@as(?u64, 100), u.input_tokens);
     try testing.expectEqual(@as(?u64, 200), u.output_tokens);
     try testing.expectEqualStrings("opus-4.6", u.model.?);
+    try testing.expectEqualStrings("high", u.effort.?);
 
-    // Partial update: only cost — earlier in/out and model survive.
+    // Partial update: only cost — earlier in/out, model, and effort survive.
     st.setAgentUsage(.{ .cost_usd = 0.42 });
     u = st.agentUsage();
     try testing.expectEqual(@as(?u64, 100), u.input_tokens);
     try testing.expectEqual(@as(?f64, 0.42), u.cost_usd);
     try testing.expectEqualStrings("opus-4.6", u.model.?);
+    try testing.expectEqualStrings("high", u.effort.?);
 
     // Session end clears usage.
     st.setAgentStatus(.none, "");
@@ -269,6 +278,7 @@ test "setAgentUsage merges sticky and .none clears it" {
     try testing.expectEqual(@as(?u64, null), u.input_tokens);
     try testing.expectEqual(@as(?f64, null), u.cost_usd);
     try testing.expectEqual(@as(?[]const u8, null), u.model);
+    try testing.expectEqual(@as(?[]const u8, null), u.effort);
 }
 
 test "applyAgentUsageOsc accumulates output across context-window drops" {

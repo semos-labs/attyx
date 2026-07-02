@@ -274,8 +274,11 @@ const codex_usage_script =
     \\[ -n "$line" ] || exit 0
     \\kv=$(printf '%s' "$line" | jq -r '.payload.info | "in=\((.total_token_usage.input_tokens // 0) - (.total_token_usage.cached_input_tokens // 0));cr=\(.total_token_usage.cached_input_tokens // 0);out=\(.total_token_usage.output_tokens // 0);rsn=\(.total_token_usage.reasoning_output_tokens // 0);ctx=\(.last_token_usage.total_tokens // 0);ctxmax=\(.model_context_window // 0)"' 2>/dev/null)
     \\[ -n "$kv" ] || exit 0
-    \\model=$(tail -n 1200 "$f" 2>/dev/null | grep '"turn_context"' | tail -1 | jq -r '.payload.model // empty' 2>/dev/null)
+    \\turn=$(tail -n 1200 "$f" 2>/dev/null | grep '"turn_context"' | tail -1)
+    \\model=$(printf '%s' "$turn" | jq -r '.payload.model // empty' 2>/dev/null)
+    \\effort=$(printf '%s' "$turn" | jq -r '.payload.collaboration_mode.settings.reasoning_effort // "auto"' 2>/dev/null)
     \\[ -n "$model" ] && kv="$kv;model=$model"
+    \\[ -n "$effort" ] && kv="$kv;effort=$effort"
     \\kv="$kv;tx=$f"
     \\printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
     \\exit 0
@@ -294,6 +297,7 @@ test "codex usage script self-gates, delegates status, and emits usage" {
     try testing.expect(std.mem.indexOf(u8, codex_usage_script, "token_count") != null);
     try testing.expect(std.mem.indexOf(u8, codex_usage_script, "]7337;agent-usage;agent;%s") != null);
     try testing.expect(std.mem.indexOf(u8, codex_usage_script, "model_context_window") != null);
+    try testing.expect(std.mem.indexOf(u8, codex_usage_script, "reasoning_effort") != null);
 }
 
 test "writeCodexScript substitutes the emitter path" {

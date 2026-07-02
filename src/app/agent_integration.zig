@@ -491,6 +491,7 @@ const statusline_script =
     \\  add ctxmax "$(get '.context_window.context_window_size')"
     \\  add cost "$(get '.cost.total_cost_usd')"
     \\  add model "$(get '.model.id')"
+    \\  add effort "$(get '.effort.level')"
     \\  add tx "$(get '.transcript_path')"
     \\  [ -n "$kv" ] && printf '\033]7337;agent-usage;agent;%s\a' "$kv" > "${ATTYX_TTY:-/dev/tty}" 2>/dev/null
     \\fi

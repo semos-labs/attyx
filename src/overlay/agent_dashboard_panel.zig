@@ -68,15 +68,16 @@ const dot_w: u16 = 2;
 const pane_w: u16 = 4;
 const session_w: u16 = 22; // wide enough for tab titles (ellipsis past this)
 const model_w: u16 = 16;
+const effort_w: u16 = 7;
 const in_w: u16 = 7;
 const out_w: u16 = 7;
 const ctx_w: u16 = 13;
 const cost_w: u16 = 9;
 const gutter_w: u16 = 2; // blank columns between fields
 const gutter = "  ";
-// 7 columns => 6 gutters. lead = the pane+session+model group incl. its 2 gutters.
-const body_w: u16 = pane_w + session_w + model_w + in_w + out_w + ctx_w + cost_w + gutter_w * 6;
-const lead_w: u16 = pane_w + session_w + model_w + gutter_w * 2; // footer "TOTAL" span
+// 8 columns => 7 gutters. lead = the pane+session+model+effort group incl. its 3 gutters.
+const body_w: u16 = pane_w + session_w + model_w + effort_w + in_w + out_w + ctx_w + cost_w + gutter_w * 7;
+const lead_w: u16 = pane_w + session_w + model_w + effort_w + gutter_w * 3; // footer "TOTAL" span
 const content_w: u16 = dot_w + body_w;
 
 const ellipsis = "\xe2\x80\xa6"; // …
@@ -106,13 +107,15 @@ fn appendCol(buf: *std.ArrayList(u8), a: std.mem.Allocator, s: []const u8, width
 
 /// Build the `body_w`-column table body (pane/session/model left, numerics
 /// right), with a blank gutter between every column.
-fn buildBody(a: std.mem.Allocator, pane: []const u8, session: []const u8, model: []const u8, in: []const u8, out: []const u8, ctx: []const u8, cost: []const u8) ![]const u8 {
+fn buildBody(a: std.mem.Allocator, pane: []const u8, session: []const u8, model: []const u8, effort: []const u8, in: []const u8, out: []const u8, ctx: []const u8, cost: []const u8) ![]const u8 {
     var b = std.ArrayList(u8){};
     try appendCol(&b, a, pane, pane_w, false);
     try b.appendSlice(a, gutter);
     try appendCol(&b, a, session, session_w, false);
     try b.appendSlice(a, gutter);
     try appendCol(&b, a, model, model_w, false);
+    try b.appendSlice(a, gutter);
+    try appendCol(&b, a, effort, effort_w, false);
     try b.appendSlice(a, gutter);
     try appendCol(&b, a, in, in_w, true);
     try b.appendSlice(a, gutter);
@@ -177,7 +180,7 @@ pub fn renderAgentDashboard(
     try children.append(tmp, .{ .text = .{ .content = " ", .wrap = false } });
 
     // Header + rule.
-    const header_body = try buildBody(tmp, "pane", "session", "model", "in", "out", "ctx", "cost");
+    const header_body = try buildBody(tmp, "pane", "session", "model", "effort", "in", "out", "ctx", "cost");
     try children.append(tmp, dim(try bodyRow(tmp, header_body)));
     try children.append(tmp, dim(rule(tmp)));
 
@@ -194,6 +197,7 @@ pub fn renderAgentDashboard(
             pane,
             row.session(),
             row.model(),
+            if (row.effort().len > 0) row.effort() else "\xe2\x80\x94",
             tok(tmp, row.input_tokens),
             tok(tmp, row.output_tokens),
             ctxStr(tmp, row.context_used, row.context_max),
@@ -260,16 +264,16 @@ test "buildBody pads every row to body_w display columns (alignment)" {
     // Header, a fully-unknown row (em-dashes), a unicode session, and a full
     // data row must all measure exactly body_w columns so the table aligns.
     const cases = [_][]const u8{
-        try buildBody(a, "pane", "session", "model", "in", "out", "ctx", "cost"),
-        try buildBody(a, "7", "\xe2\x80\xa2 Check", "gpt-5.5", "\xe2\x80\x94", "\xe2\x80\x94", "\xe2\x80\x94", "\xe2\x80\x94"),
-        try buildBody(a, "3", "myapp", "opus-4.8", "1.2M", "842K", "82K/200K", "$0.42"),
-        try buildBody(a, "12", "a-very-long-session-name", "a-very-long-model-name", "999K", "999K", "1.0M/1.0M", "~$123.45"),
+        try buildBody(a, "pane", "session", "model", "effort", "in", "out", "ctx", "cost"),
+        try buildBody(a, "7", "\xe2\x80\xa2 Check", "gpt-5.5", "\xe2\x80\x94", "\xe2\x80\x94", "\xe2\x80\x94", "\xe2\x80\x94", "\xe2\x80\x94"),
+        try buildBody(a, "3", "myapp", "opus-4.8", "high", "1.2M", "842K", "82K/200K", "$0.42"),
+        try buildBody(a, "12", "a-very-long-session-name", "a-very-long-model-name", "medium", "999K", "999K", "1.0M/1.0M", "~$123.45"),
     };
     for (cases) |c| try std.testing.expectEqual(body_w, ui_cell.utf8Count(c));
     // The status cell is always exactly dot_w columns.
     try std.testing.expectEqual(dot_w, ui_cell.utf8Count(dotCell(a)));
     // An over-long session title truncates with an ellipsis (…), not a hard cut.
-    const overflow = try buildBody(a, "1", "a-very-long-session-name-that-overflows", "m", "", "", "", "");
+    const overflow = try buildBody(a, "1", "a-very-long-session-name-that-overflows", "m", "", "", "", "", "");
     try std.testing.expect(std.mem.indexOf(u8, overflow, ellipsis) != null);
     try std.testing.expectEqual(body_w, ui_cell.utf8Count(overflow));
 }

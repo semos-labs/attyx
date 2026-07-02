@@ -900,17 +900,21 @@ pub fn decodePaneAgentStatus(payload: []const u8) !PaneAgentStatusMsg {
 // ── PaneAgentUsage (grid-sync OSC 7337;agent-usage propagation) ──
 //
 // Layout: pane_id:u32, presence:u16, flags:u8, then 7×u64 (in/out/cr/cw/rsn/
-// ctx/ctxmax), cost:f64 (bitcast u64), model_len:u16, model:[N]. The 7 numeric
-// fields + cost are always written, but `presence` bits say which are real, so a
-// null survives the wire (never sentinel-encoded as 0). flags bit0 = cost_is_estimate.
+// ctx/ctxmax), cost:f64 (bitcast u64), model_len:u16, effort_len:u16,
+// model:[N], effort:[N]. The 7 numeric fields + cost are always written, but
+// `presence` bits say which are real, so a null survives the wire (never
+// sentinel-encoded as 0). flags bit0 = cost_is_estimate.
 
-const usage_fixed = 4 + 2 + 1 + 7 * 8 + 8 + 2; // 73
+const usage_fixed = 4 + 2 + 1 + 7 * 8 + 8 + 2 + 2; // 75
 const usage_model_max = 64;
+const usage_effort_max = 24;
 
 pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     const model: []const u8 = u.model orelse "";
+    const effort: []const u8 = u.effort orelse "";
     const model_len: u16 = @intCast(@min(model.len, usage_model_max));
-    const total: usize = usage_fixed + model_len;
+    const effort_len: u16 = @intCast(@min(effort.len, usage_effort_max));
+    const total: usize = usage_fixed + model_len + effort_len;
     if (buf.len < total) return error.BufferTooSmall;
 
     std.mem.writeInt(u32, buf[0..4], pane_id, .little);
@@ -941,7 +945,11 @@ pub fn encodePaneAgentUsage(buf: []u8, pane_id: u32, u: AgentUsage) ![]u8 {
     off += 8;
     std.mem.writeInt(u16, buf[off..][0..2], model_len, .little);
     off += 2;
+    std.mem.writeInt(u16, buf[off..][0..2], effort_len, .little);
+    off += 2;
     @memcpy(buf[off .. off + model_len], model[0..model_len]);
+    off += model_len;
+    @memcpy(buf[off .. off + effort_len], effort[0..effort_len]);
     return buf[0..total];
 }
 
@@ -964,7 +972,11 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
     off += 8;
     const model_len = std.mem.readInt(u16, payload[off..][0..2], .little);
     off += 2;
-    if (payload.len < off + @as(usize, model_len)) return error.PayloadTooShort;
+    const effort_len = std.mem.readInt(u16, payload[off..][0..2], .little);
+    off += 2;
+    if (payload.len < off + @as(usize, model_len) + @as(usize, effort_len)) return error.PayloadTooShort;
+    const model_start = off;
+    const effort_start = model_start + model_len;
 
     const has = struct {
         fn b(p: u16, bit: u4) bool {
@@ -983,7 +995,8 @@ pub fn decodePaneAgentUsage(payload: []const u8) !PaneAgentUsageMsg {
             .context_max = if (has(presence, 6)) vals[6] else null,
             .cost_usd = if (has(presence, 7)) @as(f64, @bitCast(cost_bits)) else null,
             .cost_is_estimate = cost_is_estimate,
-            .model = if (model_len > 0) payload[off .. off + model_len] else null,
+            .model = if (model_len > 0) payload[model_start .. model_start + model_len] else null,
+            .effort = if (effort_len > 0) payload[effort_start .. effort_start + effort_len] else null,
         },
     };
 }
@@ -1133,6 +1146,7 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
         .cost_usd = 0.4213,
         .cost_is_estimate = true,
         .model = "gpt-5.5",
+        .effort = "high",
     };
     const payload = try encodePaneAgentUsage(&buf, 9, u);
     const msg = try decodePaneAgentUsage(payload);
@@ -1146,12 +1160,14 @@ test "pane_agent_usage round-trip preserves null-via-bitmask and model" {
     try std.testing.expectEqual(@as(?f64, 0.4213), msg.usage.cost_usd);
     try std.testing.expect(msg.usage.cost_is_estimate);
     try std.testing.expectEqualStrings("gpt-5.5", msg.usage.model.?);
+    try std.testing.expectEqualStrings("high", msg.usage.effort.?);
 
-    // Fully-empty usage → all null, empty model.
+    // Fully-empty usage → all null, empty model/effort.
     const empty = try decodePaneAgentUsage(try encodePaneAgentUsage(&buf, 1, .{}));
     try std.testing.expectEqual(@as(?u64, null), empty.usage.input_tokens);
     try std.testing.expectEqual(@as(?f64, null), empty.usage.cost_usd);
     try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.model);
+    try std.testing.expectEqual(@as(?[]const u8, null), empty.usage.effort);
 }
 
 test "create round-trip" {

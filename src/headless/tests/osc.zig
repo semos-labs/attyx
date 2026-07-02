@@ -375,7 +375,7 @@ test "integration: agent-status transitions drive state.agent_status + changed f
 
 test "parser: OSC 7337 agent-usage parses the KV set" {
     var parser = Parser{};
-    const seq = "\x1b]7337;agent-usage;agent;in=1234;out=5678;cr=900000;cw=12000;ctx=82000;ctxmax=200000;cost=0.4213;model=opus-4.6\x07";
+    const seq = "\x1b]7337;agent-usage;agent;in=1234;out=5678;cr=900000;cw=12000;ctx=82000;ctxmax=200000;cost=0.4213;model=opus-4.6;effort=high\x07";
     var action: ?@import("../../term/actions.zig").Action = null;
     for (seq) |byte| {
         if (parser.next(byte)) |a| action = a;
@@ -391,6 +391,7 @@ test "parser: OSC 7337 agent-usage parses the KV set" {
             try std.testing.expectEqual(@as(?u64, 200000), u.context_max);
             try std.testing.expectEqual(@as(?f64, 0.4213), u.cost_usd);
             try std.testing.expectEqualStrings("opus-4.6", u.model.?);
+            try std.testing.expectEqualStrings("high", u.effort.?);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -421,7 +422,7 @@ test "integration: agent-usage updates state usage without flipping status" {
 
     engine.feed("\x1b]7337;agent-status;claude;working\x07");
     engine.state.agent_status_changed = false;
-    engine.feed("\x1b]7337;agent-usage;agent;in=100;out=200;model=opus\x07");
+    engine.feed("\x1b]7337;agent-usage;agent;in=100;out=200;model=opus;effort=medium\x07");
 
     try std.testing.expectEqual(AgentStatus.working, engine.state.agent_status);
     try std.testing.expect(!engine.state.agent_status_changed); // usage never flips status
@@ -429,6 +430,7 @@ test "integration: agent-usage updates state usage without flipping status" {
     const u = engine.state.agentUsage();
     try std.testing.expectEqual(@as(?u64, 100), u.input_tokens);
     try std.testing.expectEqualStrings("opus", u.model.?);
+    try std.testing.expectEqualStrings("medium", u.effort.?);
 
     // Session end clears usage.
     engine.feed("\x1b]7337;agent-status;claude;none\x07");

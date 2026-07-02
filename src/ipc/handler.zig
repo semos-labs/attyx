@@ -64,30 +64,45 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
         .tab_close_targeted => handler_cmd.handleTabCloseTargeted(cmd, ctx),
         .tab_rename_targeted => handler_cmd.handleTabRenameTargeted(cmd, ctx),
         .tab_next => {
-            dispatchAction(.tab_next);
+            if (ctx.tab_mgr.count > 1) {
+                ctx.tab_mgr.nextTab();
+                actions.switchActiveTab(ctx);
+                actions.saveSessionLayout(ctx);
+            }
             sendOk(cmd, "");
         },
         .tab_prev => {
-            dispatchAction(.tab_prev);
+            if (ctx.tab_mgr.count > 1) {
+                ctx.tab_mgr.prevTab();
+                actions.switchActiveTab(ctx);
+                actions.saveSessionLayout(ctx);
+            }
             sendOk(cmd, "");
         },
         .tab_select => {
-            if (cmd.payload_len >= 1) {
-                const idx = cmd.payload[0];
-                if (idx >= 1 and idx <= 9) {
-                    const action_val = @intFromEnum(Action.tab_select_1) + idx - 1;
-                    const action: Action = @enumFromInt(action_val);
-                    dispatchAction(action);
+            if (tabSelectIndex(cmd.payload[0..cmd.payload_len], ctx.tab_mgr.count)) |idx| {
+                if (idx != ctx.tab_mgr.active) {
+                    ctx.tab_mgr.switchTo(idx);
+                    actions.switchActiveTab(ctx);
+                    actions.saveSessionLayout(ctx);
                 }
             }
             sendOk(cmd, "");
         },
         .tab_move_left => {
-            dispatchAction(.tab_move_left);
+            if (ctx.tab_mgr.count > 1) {
+                ctx.tab_mgr.moveTabLeft();
+                actions.switchActiveTab(ctx);
+                actions.saveSessionLayout(ctx);
+            }
             sendOk(cmd, "");
         },
         .tab_move_right => {
-            dispatchAction(.tab_move_right);
+            if (ctx.tab_mgr.count > 1) {
+                ctx.tab_mgr.moveTabRight();
+                actions.switchActiveTab(ctx);
+                actions.saveSessionLayout(ctx);
+            }
             sendOk(cmd, "");
         },
         .tab_rename => {
@@ -258,6 +273,13 @@ pub fn handle(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 // Dispatch helper — calls the existing attyx_dispatch_action export
 // ---------------------------------------------------------------------------
 
+fn tabSelectIndex(payload: []const u8, tab_count: u8) ?u8 {
+    if (payload.len < 1) return null;
+    const idx1 = payload[0];
+    if (idx1 == 0 or idx1 > tab_count) return null;
+    return idx1 - 1;
+}
+
 extern fn attyx_dispatch_action(action_raw: u8) u8;
 
 fn dispatchAction(action: Action) void {
@@ -355,7 +377,10 @@ fn handleXyronOverlay(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
 
     const payload = cmd.payload[0..cmd.payload_len];
     // Xyron's TLV payload: selected:i64, scroll:i64, total:i64, visible_count:i64, then candidates
-    if (payload.len < 32) { sendOk(cmd, ""); return; }
+    if (payload.len < 32) {
+        sendOk(cmd, "");
+        return;
+    }
 
     var pos: usize = 0;
     const selected = readI64(payload, &pos);
@@ -368,7 +393,11 @@ fn handleXyronOverlay(cmd: *queue.IpcCommand, ctx: *PtyThreadCtx) void {
     for (0..count) |i| {
         const text = readStr(payload, &pos);
         const desc = readStr(payload, &pos);
-        const kind = if (pos < payload.len) blk: { const k = payload[pos]; pos += 1; break :blk k; } else 0;
+        const kind = if (pos < payload.len) blk: {
+            const k = payload[pos];
+            pos += 1;
+            break :blk k;
+        } else 0;
 
         var cand = &ctx.xyron_completion.candidates[i];
         const tl: u16 = @intCast(@min(text.len, 256));
@@ -465,4 +494,14 @@ pub fn sendError(cmd: *queue.IpcCommand, err_msg: []const u8) void {
     var buf: [protocol.header_size + 512]u8 = undefined;
     const resp = protocol.encodeMessage(&buf, .err, err_msg) catch return;
     protocol.writeAll(cmd.response_fd, resp) catch {};
+}
+
+const testing = std.testing;
+
+test "tab_select IPC payload is 1-based and bounds checked" {
+    try testing.expectEqual(@as(?u8, 0), tabSelectIndex(&.{1}, 3));
+    try testing.expectEqual(@as(?u8, 2), tabSelectIndex(&.{3}, 3));
+    try testing.expectEqual(@as(?u8, null), tabSelectIndex(&.{0}, 3));
+    try testing.expectEqual(@as(?u8, null), tabSelectIndex(&.{4}, 3));
+    try testing.expectEqual(@as(?u8, null), tabSelectIndex("", 3));
 }

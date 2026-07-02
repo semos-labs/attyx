@@ -57,6 +57,8 @@ pub const AgentUsage = struct {
     context_max: ?u64 = null,
     cost_usd: ?f64 = null,
     model: ?[]const u8 = null,
+    /// Current selected reasoning/thinking effort, if the agent exposes it.
+    effort: ?[]const u8 = null,
     /// True when cost was computed by us (pricing table) rather than agent-reported.
     cost_is_estimate: bool = false,
     /// Absolute path to the agent's transcript file (Claude/Codex JSONL), if the
@@ -94,6 +96,8 @@ pub fn parseUsageKv(kv: []const u8) AgentUsage {
             u.cost_usd = std.fmt.parseFloat(f64, val) catch null;
         } else if (std.mem.eql(u8, key, "model")) {
             u.model = val;
+        } else if (std.mem.eql(u8, key, "effort")) {
+            u.effort = val;
         } else if (std.mem.eql(u8, key, "tx")) {
             // Transcript file path. Paths carry no ';'/'=' so they ride the KV
             // list verbatim (no encoding); the state copies it into a buffer.

@@ -96,6 +96,8 @@ pub const Row = struct {
     cost_is_estimate: bool = false,
     model_buf: [40]u8 = undefined,
     model_len: u8 = 0,
+    effort_buf: [16]u8 = undefined,
+    effort_len: u8 = 0,
     tab_buf: [48]u8 = undefined,
     tab_len: u8 = 0,
     msg_buf: [120]u8 = undefined,
@@ -104,6 +106,9 @@ pub const Row = struct {
 
     pub fn model(self: *const Row) []const u8 {
         return self.model_buf[0..self.model_len];
+    }
+    pub fn effort(self: *const Row) []const u8 {
+        return self.effort_buf[0..self.effort_len];
     }
     pub fn tabName(self: *const Row) []const u8 {
         return self.tab_buf[0..self.tab_len];
@@ -124,6 +129,7 @@ const RawUsage = struct {
     cost_usd: ?f64 = null,
     cost_is_estimate: bool = false,
     model: ?[]const u8 = null,
+    effort: ?[]const u8 = null,
 };
 const RawRecord = struct {
     pane_id: u32 = 0,
@@ -238,6 +244,7 @@ pub const Model = struct {
             r.cost_is_estimate = u.cost_is_estimate;
         }
         if (u.model) |m| r.model_len = copyBuf(&r.model_buf, m);
+        if (u.effort) |e| r.effort_len = copyBuf(&r.effort_buf, e);
         self.refresh(now_ms);
     }
 
@@ -287,6 +294,7 @@ pub const Model = struct {
         const q = self.searchQuery();
         if (q.len == 0) return true;
         if (lowerEql(r.model(), q)) return true;
+        if (lowerEql(r.effort(), q)) return true;
         if (lowerEql(r.message(), q)) return true;
         var nb: [24]u8 = undefined;
         if (std.fmt.bufPrint(&nb, "s{d} {d}", .{ r.session, r.pane_id })) |ids| {

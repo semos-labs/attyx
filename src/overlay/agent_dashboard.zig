@@ -19,6 +19,8 @@ pub const Row = struct {
     session_len: u8 = 0,
     model_buf: [24]u8 = undefined,
     model_len: u8 = 0,
+    effort_buf: [16]u8 = undefined,
+    effort_len: u8 = 0,
     note_buf: [24]u8 = undefined,
     note_len: u8 = 0,
     input_tokens: ?u64 = null,
@@ -33,6 +35,9 @@ pub const Row = struct {
     }
     pub fn model(self: *const Row) []const u8 {
         return self.model_buf[0..self.model_len];
+    }
+    pub fn effort(self: *const Row) []const u8 {
+        return self.effort_buf[0..self.effort_len];
     }
     pub fn note(self: *const Row) []const u8 {
         return self.note_buf[0..self.note_len];

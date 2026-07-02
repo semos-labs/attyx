@@ -11,6 +11,7 @@ const model_mod = @import("model.zig");
 const render = @import("render.zig");
 const input = @import("input.zig");
 const prompt = @import("prompt.zig");
+const window_nav = @import("window_nav.zig");
 const client_agent = @import("../client_agent.zig");
 const client = @import("../client.zig");
 const io = @import("../protocol.zig"); // writeAll/readExact/closeFd + header
@@ -144,32 +145,6 @@ const Stream = struct {
         return true;
     }
 };
-
-/// Switch the attached window to `session`, then send a pane-targeted op
-/// (`.pane_focus_targeted` / `.pane_close_targeted`) for `pane_id`. Best-effort;
-/// ignores failure. Switching first means the op lands on the right session's tab
-/// manager even when it isn't the attached one.
-fn switchAndPane(session: u32, pane_id: u32, op: ipc_proto.MessageType) void {
-    var sock_buf: [256]u8 = undefined;
-    const sock = client.discoverSocket(&sock_buf, null) orelse return;
-    const fd = client.connectToSocket(sock) catch return;
-    defer io.closeFd(fd);
-    var hdr: [ipc_proto.header_size]u8 = undefined;
-
-    var p1: [4]u8 = undefined;
-    std.mem.writeInt(u32, &p1, session, .little);
-    var fb1: [ipc_proto.header_size + 4]u8 = undefined;
-    const f1 = ipc_proto.encodeMessage(&fb1, .session_switch, &p1) catch return;
-    io.writeAll(fd, f1) catch return;
-    io.readExact(fd, &hdr) catch return; // ack — ensure the switch applied first
-
-    var p2: [4]u8 = undefined;
-    std.mem.writeInt(u32, &p2, pane_id, .little);
-    var fb2: [ipc_proto.header_size + 4]u8 = undefined;
-    const f2 = ipc_proto.encodeMessage(&fb2, op, &p2) catch return;
-    io.writeAll(fd, f2) catch return;
-    io.readExact(fd, &hdr) catch {};
-}
 
 /// Populate `names` from the window's `session_list` (TSV: `id\tname\t...`).
 fn resolveNames(names: *render.NameCache) void {
@@ -446,7 +421,7 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
                     },
                     .confirm => {
                         if (b == 'y' or b == 'Y') {
-                            if (m.selectedRow()) |r| switchAndPane(r.session, r.pane_id, .pane_close_targeted);
+                            if (m.selectedRow()) |r| window_nav.paneOp(r.session, r.pane_id, .pane_close_targeted);
                         }
                         mode = .normal;
                         dirty = true;
@@ -502,7 +477,7 @@ fn runInteractive(gpa: std.mem.Allocator, stream: *Stream, m: *model_mod.Model, 
                         .enter => {
                             if (m.selectedRow()) |r| {
                                 t.restore(); // leave the TUI before switching the window
-                                switchAndPane(r.session, r.pane_id, .pane_focus_targeted);
+                                window_nav.jumpToAgent(r.session, r.tab_id, r.pane_id);
                                 return;
                             }
                         },

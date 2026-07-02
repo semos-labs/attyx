@@ -77,6 +77,12 @@ fn writeUsageJson(w: anytype, usage: AgentUsage) !void {
         try writeJsonEscaped(w, m);
         try w.writeAll("\"");
     }
+    if (u.effort) |e| {
+        try sep(w, &first);
+        try w.writeAll("\"effort\":\"");
+        try writeJsonEscaped(w, e);
+        try w.writeAll("\"");
+    }
     if (u.transcript_path) |t| {
         try sep(w, &first);
         try w.writeAll("\"transcript_path\":\"");
@@ -128,6 +134,7 @@ const pane_w: u16 = 4;
 const session_w: u16 = 7;
 const state_w: u16 = 7;
 const model_w: u16 = 14;
+const effort_w: u16 = 7;
 const in_w: u16 = 7;
 const out_w: u16 = 7;
 const ctx_w: u16 = 13;
@@ -180,6 +187,7 @@ pub fn writeAgentTableHeader(w: anytype, color: bool) !void {
     try writeColC(w, "SESSION", session_w, false, hc);
     try writeColC(w, "STATE", state_w, false, hc);
     try writeColC(w, "MODEL", model_w, false, hc);
+    try writeColC(w, "EFFORT", effort_w, false, hc);
     try writeColC(w, "IN", in_w, true, hc);
     try writeColC(w, "OUT", out_w, true, hc);
     try writeColC(w, "CTX", ctx_w, true, hc);
@@ -246,6 +254,7 @@ pub fn writeAgentRow(
     try writeCol(w, std.fmt.bufPrint(&sb, "{d}", .{session}) catch "?", session_w, false);
     try writeColC(w, stateStr(status), state_w, false, if (color) stateColor(status) else "");
     try writeCol(w, if (usage.model) |m| m else dash, model_w, false);
+    try writeCol(w, if (usage.effort) |e| e else dash, effort_w, false);
     const in_s = fmtTokens(&ib, usage.input_tokens);
     const out_s = fmtTokens(&ob, usage.output_tokens);
     const ctx_s = fmtCtx(&kb, usage.context_used, usage.context_max);
@@ -283,6 +292,7 @@ const RawUsage = struct {
     cost_usd: ?f64 = null,
     cost_is_estimate: bool = false,
     model: ?[]const u8 = null,
+    effort: ?[]const u8 = null,
 };
 const RawRecord = struct {
     pane_id: u32 = 0,
@@ -315,6 +325,7 @@ fn rowUsage(r: RawRecord) AgentUsage {
         .cost_usd = r.usage.cost_usd,
         .cost_is_estimate = r.usage.cost_is_estimate,
         .model = r.usage.model,
+        .effort = r.usage.effort,
     };
 }
 
@@ -390,12 +401,13 @@ test "writeAgentJson emits known usage fields and skips nulls" {
         .cost_usd = 0.4213,
         .cost_is_estimate = false,
         .model = "opus-4.6",
+        .effort = "high",
     };
     try writeAgentJson(stream.writer(), 3, 1, "", 2, 0, .working, "", u);
     try std.testing.expectEqualStrings(
         "{\"pane_id\":3,\"tab_id\":1,\"tab_name\":\"\",\"session\":2,\"pid\":0,\"state\":\"working\",\"message\":\"\"," ++
             "\"usage\":{\"input_tokens\":1234,\"output_tokens\":5678,\"context_used\":82000," ++
-            "\"context_max\":200000,\"cost_usd\":0.4213,\"cost_is_estimate\":false,\"model\":\"opus-4.6\"}}",
+            "\"context_max\":200000,\"cost_usd\":0.4213,\"cost_is_estimate\":false,\"model\":\"opus-4.6\",\"effort\":\"high\"}}",
         stream.getWritten(),
     );
 }
@@ -410,6 +422,7 @@ test "writeAgentRow renders an aligned, humanized row with context + tokens" {
         .context_max = 200_000,
         .cost_usd = 0.42,
         .model = "opus-4.8",
+        .effort = "high",
     }, false);
     const out = stream.getWritten();
     // Humanized values + context as used/max + the message, all present.
@@ -418,6 +431,7 @@ test "writeAgentRow renders an aligned, humanized row with context + tokens" {
     try std.testing.expect(std.mem.indexOf(u8, out, "82K/200K") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "$0.42") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "opus-4.8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "high") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Editing parser.zig") != null);
     try std.testing.expect(out[out.len - 1] == '\n');
 
@@ -447,7 +461,7 @@ test "writeAgentRowFromJson matches writeAgentRow (same format for watch)" {
     var b_buf: [512]u8 = undefined;
     var as = std.io.fixedBufferStream(&a_buf);
     var bs = std.io.fixedBufferStream(&b_buf);
-    const usage = AgentUsage{ .input_tokens = 1_200_000, .context_used = 82_000, .context_max = 200_000, .cost_usd = 0.42, .model = "opus-4.8" };
+    const usage = AgentUsage{ .input_tokens = 1_200_000, .context_used = 82_000, .context_max = 200_000, .cost_usd = 0.42, .model = "opus-4.8", .effort = "high" };
     try writeAgentRow(as.writer(), 3, 1, 2, 0, .working, "hi", usage, false);
     var json: [512]u8 = undefined;
     var js = std.io.fixedBufferStream(&json);
@@ -461,6 +475,6 @@ test "writeAgentTableHeader labels the columns" {
     var stream = std.io.fixedBufferStream(&buf);
     try writeAgentTableHeader(stream.writer(), false);
     const out = stream.getWritten();
-    for ([_][]const u8{ "PANE", "SESSION", "STATE", "MODEL", "IN", "OUT", "CTX", "COST", "MESSAGE" }) |h|
+    for ([_][]const u8{ "PANE", "SESSION", "STATE", "MODEL", "EFFORT", "IN", "OUT", "CTX", "COST", "MESSAGE" }) |h|
         try std.testing.expect(std.mem.indexOf(u8, out, h) != null);
 }

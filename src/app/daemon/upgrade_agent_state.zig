@@ -36,11 +36,11 @@ pub fn serialize(w: anytype, p: *DaemonPane) !void {
     try serializeUsage(w, eng.state.agentUsage());
 }
 
-pub fn deserialize(r: anytype) !RestoredState {
+pub fn deserialize(r: anytype, has_effort: bool) !RestoredState {
     const status = AgentStatus.fromU8(try r.*.readByte());
     const msg_len = try r.*.readU16();
     const msg = try r.*.readSlice(msg_len);
-    const usage = try deserializeUsage(r);
+    const usage = try deserializeUsage(r, has_effort);
     return .{ .status = status, .message = msg, .usage = usage };
 }
 
@@ -80,10 +80,11 @@ fn serializeUsage(w: anytype, u: AgentUsage) !void {
     if (u.cost_usd) |v| try w.writeInt(u64, @bitCast(v), .little);
     try w.writeByte(if (u.cost_is_estimate) 1 else 0);
     try writeOptionalString(w, u.model);
+    try writeOptionalString(w, u.effort);
     try writeOptionalString(w, u.transcript_path);
 }
 
-fn deserializeUsage(r: anytype) !AgentUsage {
+fn deserializeUsage(r: anytype, has_effort: bool) !AgentUsage {
     const bits = try r.*.readU16();
     var u = AgentUsage{};
     if ((bits & UsageBits.input) != 0) u.input_tokens = try r.*.readU64();
@@ -96,6 +97,7 @@ fn deserializeUsage(r: anytype) !AgentUsage {
     if ((bits & UsageBits.cost) != 0) u.cost_usd = @bitCast(try r.*.readU64());
     u.cost_is_estimate = (try r.*.readByte()) != 0;
     u.model = try readOptionalString(r);
+    if (has_effort) u.effort = try readOptionalString(r);
     u.transcript_path = try readOptionalString(r);
     return u;
 }

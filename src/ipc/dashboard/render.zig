@@ -22,16 +22,17 @@ const session_w: u16 = 10;
 const tab_w: u16 = 14;
 const pane_w: u16 = 5;
 const model_w: u16 = 16;
+const effort_w: u16 = 7;
 const state_w: u16 = 8;
 const elapsed_w: u16 = 7;
 const in_w: u16 = 8;
 const out_w: u16 = 8;
 const ctx_w: u16 = 14;
 const cost_w: u16 = 10;
-const n_cols = 11;
+const n_cols = 12;
 const tab_col: usize = 2;
-const col_widths_base = [n_cols]u16{ dot_w, session_w, tab_w, pane_w, model_w, state_w, elapsed_w, in_w, out_w, ctx_w, cost_w };
-const col_right = [n_cols]bool{ false, false, false, false, false, false, true, true, true, true, true };
+const col_widths_base = [n_cols]u16{ dot_w, session_w, tab_w, pane_w, model_w, effort_w, state_w, elapsed_w, in_w, out_w, ctx_w, cost_w };
+const col_right = [n_cols]bool{ false, false, false, false, false, false, false, true, true, true, true, true };
 const dot = "\xe2\x97\x8f"; // ●
 const marker_w: u16 = 2;
 const marker_sel = "\xe2\x96\xb6 "; // ▶ + space
@@ -183,7 +184,7 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool, widths: [
     var colors = no_colors;
     if (color) {
         colors[0] = stateColor(r.state); // dot
-        colors[5] = stateColor(r.state); // state
+        colors[6] = stateColor(r.state); // state
     }
     return buildLine(a, .{
         dot,
@@ -191,6 +192,7 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool, widths: [
         if (r.tab_len > 0) r.tabName() else "\xe2\x80\x94",
         std.fmt.bufPrint(&pb, "{d}", .{r.pane_id}) catch "?",
         if (r.model_len > 0) r.model() else "\xe2\x80\x94",
+        if (r.effort_len > 0) r.effort() else "\xe2\x80\x94",
         stateLabel(r.state),
         fmtAge(&ab, ctx.now_ms, r.state_since_ms),
         fmt.tokensOpt(&ib, r.input_tokens),
@@ -201,7 +203,7 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool, widths: [
 }
 
 fn headerLine(a: std.mem.Allocator, widths: [n_cols]u16) ![]const u8 {
-    return buildLine(a, .{ " ", "SESSION", "TAB", "PANE", "MODEL", "STATE", "ELAPSED", "IN", "OUT", "CTX", "COST" }, no_colors, widths);
+    return buildLine(a, .{ " ", "SESSION", "TAB", "PANE", "MODEL", "EFFORT", "STATE", "ELAPSED", "IN", "OUT", "CTX", "COST" }, no_colors, widths);
 }
 
 fn totalsLine(a: std.mem.Allocator, m: *const Model, widths: [n_cols]u16) ![]const u8 {
@@ -209,7 +211,7 @@ fn totalsLine(a: std.mem.Allocator, m: *const Model, widths: [n_cols]u16) ![]con
     var ob: [16]u8 = undefined;
     var cb: [24]u8 = undefined;
     const cost = std.fmt.bufPrint(&cb, "{s}${d:.2}", .{ if (m.any_estimate) "~" else "", m.total_cost }) catch "$?";
-    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, no_colors, widths);
+    return buildLine(a, .{ " ", "TOTAL", "", "", "", "", "", "", fmt.tokens(&ib, m.total_input), fmt.tokens(&ob, m.total_output), "", cost }, no_colors, widths);
 }
 
 /// Plain-text table to `writer` (for `--once` / non-TTY). No ANSI.
@@ -436,8 +438,9 @@ fn detailPanel(w: anytype, a: std.mem.Allocator, r: *const Row, at: u16, ctx: Ct
         fmtAge(&ab, ctx.now_ms, r.state_since_ms),
     });
     try moveTo(w, at + 2);
-    try w.print("  {s} \xc2\xb7 in {s} \xc2\xb7 out {s} \xc2\xb7 ctx {s} \xc2\xb7 {s}\x1b[K", .{
+    try w.print("  {s} \xc2\xb7 effort {s} \xc2\xb7 in {s} \xc2\xb7 out {s} \xc2\xb7 ctx {s} \xc2\xb7 {s}\x1b[K", .{
         if (r.model_len > 0) r.model() else "\xe2\x80\x94",
+        if (r.effort_len > 0) r.effort() else "\xe2\x80\x94",
         fmt.tokensOpt(&ib, r.input_tokens),
         fmt.tokensOpt(&ob, r.output_tokens),
         fmt.ctx(&kb, r.context_used, r.context_max),

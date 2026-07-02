@@ -10,7 +10,7 @@ const protocol = @import("protocol.zig");
 const upgrade_agent_state = @import("upgrade_agent_state.zig");
 
 const magic = "ATUP";
-const format_version: u8 = 4;
+const format_version: u8 = 5;
 const max_sessions: usize = 32;
 const max_panes_per_session = @import("session.zig").max_panes_per_session;
 
@@ -192,7 +192,7 @@ pub fn deserialize(
     if (!std.mem.eql(u8, &magic_buf, magic)) return error.InvalidMagic;
 
     const ver = try r.readByte();
-    if (ver != 1 and ver != 2 and ver != 3 and ver != format_version) return error.UnsupportedVersion;
+    if (ver != 1 and ver != 2 and ver != 3 and ver != 4 and ver != format_version) return error.UnsupportedVersion;
 
     next_session_id.* = try r.readU32();
     next_pane_id.* = try r.readU32();
@@ -288,7 +288,7 @@ fn deserializePane(r: *SliceReader, ver: u8, allocator: std.mem.Allocator) !Daem
 
     const ring_len = try r.readU32();
     const ring_data = try r.readSlice(ring_len);
-    const restored_agent = if (ver >= 4) try upgrade_agent_state.deserialize(&r) else upgrade_agent_state.RestoredState{};
+    const restored_agent = if (ver >= 4) try upgrade_agent_state.deserialize(&r, ver >= 5) else upgrade_agent_state.RestoredState{};
 
     var pane = try DaemonPane.fromRestored(
         allocator,
@@ -665,7 +665,7 @@ test "serialize/deserialize round-trip" {
     const eng = try allocator.create(Engine);
     eng.* = try Engine.init(allocator, 24, 80, 128);
     eng.state.setAgentStatus(.working, "planning");
-    eng.state.setAgentUsage(.{ .output_tokens = 42, .model = "pi", .transcript_path = "/tmp/attyx-tx-1.jsonl" });
+    eng.state.setAgentUsage(.{ .output_tokens = 42, .model = "pi", .effort = "high", .transcript_path = "/tmp/attyx-tx-1.jsonl" });
     s.panes[0].?.engine = eng;
     s.pane_count = 1;
     sessions[0] = s;
@@ -705,6 +705,7 @@ test "serialize/deserialize round-trip" {
     const restored_usage = restored_engine.state.agentUsage();
     try std.testing.expectEqual(@as(?u64, 42), restored_usage.output_tokens);
     try std.testing.expectEqualStrings("pi", restored_usage.model.?);
+    try std.testing.expectEqualStrings("high", restored_usage.effort.?);
     try std.testing.expectEqualStrings("/tmp/attyx-tx-1.jsonl", restored_usage.transcript_path.?);
 
     const slices = rp.replay.readSlices();

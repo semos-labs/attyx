@@ -158,6 +158,128 @@ const plugin_fmt =
     \\function emit(state) {{
     \\  try {{ spawnSync(EMIT, [state], {{ stdio: "ignore" }}); }} catch (e) {{}}
     \\}}
+    \\let currentEffort = null;
+    \\let defaultAgent = "build";
+    \\let defaultModel = null;
+    \\const agentEffort = new Map();
+    \\const agentModel = new Map();
+    \\const modelEffort = new Map();
+    \\function rememberEffort(level) {{
+    \\  if (typeof level === "string" && level) currentEffort = level;
+    \\  return currentEffort;
+    \\}}
+    \\function emitEffort(level) {{
+    \\  const ef = rememberEffort(level);
+    \\  if (ef) try {{ spawnSync(EMIT, ["usage", "effort=" + ef], {{ stdio: "ignore" }}); }} catch (e) {{}}
+    \\}}
+    \\function findEffort(value, seen = new WeakSet(), depth = 0) {{
+    \\  if (!value || typeof value !== "object" || depth > 5) return null;
+    \\  if (seen.has(value)) return null;
+    \\  seen.add(value);
+    \\  for (const key of ["reasoningEffort", "reasoning_effort", "effort"]) {{
+    \\    const v = value[key];
+    \\    if (typeof v === "string" && v) return v;
+    \\  }}
+    \\  for (const v of Object.values(value)) {{
+    \\    const hit = findEffort(v, seen, depth + 1);
+    \\    if (hit) return hit;
+    \\  }}
+    \\  return null;
+    \\}}
+    \\function effortFrom(value) {{
+    \\  return rememberEffort(findEffort(value));
+    \\}}
+    \\function modelKeys(ref) {{
+    \\  const keys = [];
+    \\  if (!ref) return keys;
+    \\  let providerID = null, modelID = null, variant = null;
+    \\  if (typeof ref === "string") {{
+    \\    const slash = ref.indexOf("/");
+    \\    const rawModel = slash >= 0 ? ref.slice(slash + 1) : ref;
+    \\    const colon = rawModel.indexOf(":");
+    \\    providerID = slash >= 0 ? ref.slice(0, slash) : null;
+    \\    modelID = colon >= 0 ? rawModel.slice(0, colon) : rawModel;
+    \\    variant = colon >= 0 ? rawModel.slice(colon + 1) : null;
+    \\    keys.push(ref);
+    \\  }} else if (typeof ref === "object") {{
+    \\    providerID = ref.providerID || ref.provider || null;
+    \\    modelID = ref.modelID || ref.id || ref.model || null;
+    \\    variant = ref.variant || null;
+    \\    if (typeof modelID === "string" && modelID.indexOf("/") >= 0 && !providerID) {{
+    \\      const parts = modelID.split("/");
+    \\      providerID = parts[0];
+    \\      modelID = parts.slice(1).join("/");
+    \\    }}
+    \\  }}
+    \\  if (providerID && modelID && variant) keys.push(providerID + "/" + modelID + ":" + variant);
+    \\  if (providerID && modelID) keys.push(providerID + "/" + modelID);
+    \\  if (modelID && variant) keys.push(modelID + ":" + variant);
+    \\  if (modelID) keys.push(modelID);
+    \\  return keys;
+    \\}}
+    \\function rememberModelEffort(providerID, modelID, variant, level) {{
+    \\  if (!level) return;
+    \\  if (providerID && modelID && variant) modelEffort.set(providerID + "/" + modelID + ":" + variant, level);
+    \\  if (providerID && modelID) modelEffort.set(providerID + "/" + modelID, level);
+    \\  if (modelID && variant) modelEffort.set(modelID + ":" + variant, level);
+    \\  if (modelID) modelEffort.set(modelID, level);
+    \\}}
+    \\function effortFromVariant(variant) {{
+    \\  if (typeof variant !== "string" || !variant) return null;
+    \\  const v = variant.toLowerCase();
+    \\  if (["auto", "off", "minimal", "low", "medium", "high", "xhigh"].includes(v)) return rememberEffort(variant);
+    \\  return null;
+    \\}}
+    \\function effortForModel(ref) {{
+    \\  const direct = findEffort(ref && ref.options) || findEffort(ref);
+    \\  if (direct) return rememberEffort(direct);
+    \\  for (const key of modelKeys(ref)) {{
+    \\    const ef = modelEffort.get(key);
+    \\    if (ef) return rememberEffort(ef);
+    \\  }}
+    \\  return effortFromVariant(ref && ref.variant) || effortFromVariant(typeof ref === "string" && ref.includes(":") ? ref.split(":").pop() : null);
+    \\}}
+    \\function effortForAgent(name) {{
+    \\  if (typeof name !== "string" || !name) return null;
+    \\  return rememberEffort(agentEffort.get(name)) || effortForModel(agentModel.get(name));
+    \\}}
+    \\function rememberConfig(cfg) {{
+    \\  const priorEffort = currentEffort;
+    \\  defaultAgent = (cfg && (cfg.default_agent || cfg.defaultAgent)) || defaultAgent || "build";
+    \\  defaultModel = (cfg && cfg.model) || defaultModel;
+    \\  agentEffort.clear();
+    \\  agentModel.clear();
+    \\  modelEffort.clear();
+    \\  for (const [name, agent] of Object.entries((cfg && cfg.agent) || {{}})) {{
+    \\    if (agent && agent.model) agentModel.set(name, {{ model: agent.model, variant: agent.variant }});
+    \\    const ef = findEffort(agent && agent.options) || findEffort(agent);
+    \\    if (ef) agentEffort.set(name, ef);
+    \\  }}
+    \\  for (const [name, agent] of Object.entries((cfg && cfg.mode) || {{}})) {{
+    \\    if (agent && agent.model) agentModel.set(name, {{ model: agent.model, variant: agent.variant }});
+    \\    const ef = findEffort(agent && agent.options) || findEffort(agent);
+    \\    if (ef) agentEffort.set(name, ef);
+    \\  }}
+    \\  for (const [providerID, provider] of Object.entries((cfg && cfg.provider) || {{}})) {{
+    \\    for (const [modelID, model] of Object.entries((provider && provider.models) || {{}})) {{
+    \\      rememberModelEffort(providerID, modelID, null, findEffort(model && model.options) || findEffort(model));
+    \\      for (const [variant, value] of Object.entries((model && model.variants) || {{}})) {{
+    \\        rememberModelEffort(providerID, modelID, variant, findEffort(value && value.options) || findEffort(value));
+    \\      }}
+    \\    }}
+    \\  }}
+    \\  currentEffort = priorEffort;
+    \\  emitEffort(effortForAgent(defaultAgent) || effortForModel(defaultModel));
+    \\}}
+    \\function effortForSession(info) {{
+    \\  return effortForAgent(info && info.agent) || effortForModel(info && info.model) || currentEffort;
+    \\}}
+    \\function effortForChat(input, output) {{
+    \\  return effortFrom(output && output.options)
+    \\    || effortForModel(input && input.model)
+    \\    || effortForAgent(input && input.agent)
+    \\    || currentEffort;
+    \\}}
     \\// Transcript: opencode hands us assistant text in `message.part.updated`
     \\// events, so we buffer text parts per message id and, on finalize, append one
     \\// line in Claude's transcript schema to a per-agent file. `agent read` parses
@@ -180,8 +302,10 @@ const plugin_fmt =
     \\// streaming re-updates of the same message overwrite, not double-count) and
     \\// emit the running session sum. Fired only on completed assistant messages.
     \\const usageTotals = new Map();
-    \\function emitUsage(m) {{
+    \\function emitUsage(m, ctx) {{
     \\  const kv = [];
+    \\  const ef = effortFrom(m) || effortFrom(ctx) || currentEffort;
+    \\  if (ef) kv.push("effort=" + ef);
     \\  if (TELEMETRY && m && m.tokens) {{
     \\    const t = m.tokens;
     \\    usageTotals.set(m.id, {{
@@ -203,11 +327,23 @@ const plugin_fmt =
     \\  // immediately, instead of waiting for the first activity event.
     \\  emit("idle");
     \\  return {{
+    \\    config: async (cfg) => rememberConfig(cfg),
+    \\    "chat.params": async (input, output) => emitEffort(effortForChat(input, output)),
     \\    event: async ({{ event }}) => {{
     \\      const props = (event && event.properties) || {{}};
     \\      switch (event && event.type) {{
     \\        case "session.created":
     \\          emit("idle");
+    \\          emitEffort(effortForSession(props.info));
+    \\          break;
+    \\        case "session.updated":
+    \\          emitEffort(effortForSession(props.info));
+    \\          break;
+    \\        case "session.next.agent.switched":
+    \\          emitEffort(effortForAgent(props.agent));
+    \\          break;
+    \\        case "session.next.model.switched":
+    \\          emitEffort(effortForModel(props.model));
     \\          break;
     \\        case "tool.execute.before":
     \\          emit("working");
@@ -225,7 +361,7 @@ const plugin_fmt =
     \\          break;
     \\        case "message.updated": {{
     \\          const m = props.info;
-    \\          if (m && m.role === "assistant" && m.time && m.time.completed) emitUsage(m);
+    \\          if (m && m.role === "assistant" && m.time && m.time.completed) emitUsage(m, ctx);
     \\          break;
     \\        }}
     \\        case "permission.asked":
@@ -282,9 +418,21 @@ test "plugin template embeds the emitter path and maps key events" {
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"working\")") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "emit(\"idle\")") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "session.created") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "session.updated") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "session.next.agent.switched") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "session.next.model.switched") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "variant") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "function effortFromVariant") != null);
     // Usage enrichment: cumulative accumulator + message.updated mapping.
     try testing.expect(std.mem.indexOf(u8, plugin, "message.updated") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "function emitUsage") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "reasoningEffort") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "\"chat.params\"") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "output && output.options") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "agentEffort") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "agentModel") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "modelEffort") != null);
+    try testing.expect(std.mem.indexOf(u8, plugin, "function effortForSession") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "spawnSync(EMIT, [\"usage\"") != null);
     try testing.expect(std.mem.indexOf(u8, plugin, "m.time.completed") != null);
     // Transcript: buffers text parts, writes Claude-schema lines, rides tx= on usage.

@@ -121,6 +121,7 @@ fn buildState(ctx: *PtyThreadCtx) DashboardState {
             };
             row.session_len = dash.copyField(&row.session_buf, titles[i] orelse "shell");
             if (usage.model) |m| row.model_len = dash.copyField(&row.model_buf, m);
+            if (usage.effort) |e| row.effort_len = dash.copyField(&row.effort_buf, e);
             if (status == .input) row.note_len = dash.copyField(&row.note_buf, "needs input");
             st.addRow(row);
         }
@@ -143,6 +144,7 @@ fn fingerprint(st: *const DashboardState) u64 {
         h = mix(h, @intFromEnum(r.status));
         h = mix(h, r.input_tokens orelse 0);
         h = mix(h, r.output_tokens orelse 0);
+        for (r.effort()) |ch| h = mix(h, ch);
         h = mix(h, r.context_used orelse 0);
         h = mix(h, @as(u64, @bitCast(r.cost_usd orelse 0)));
     }
