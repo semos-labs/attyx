@@ -121,6 +121,11 @@ fn fmtAge(buf: []u8, now_ms: i64, since_ms: i64) []const u8 {
     return std.fmt.bufPrint(buf, "{d}h{d}m", .{ secs / 3600, (secs % 3600) / 60 }) catch "-";
 }
 
+fn elapsedForState(buf: []u8, now_ms: i64, r: *const Row) []const u8 {
+    if (r.state == .idle) return "";
+    return fmtAge(buf, now_ms, r.state_since_ms);
+}
+
 /// Append `s` in exactly `width` display columns. `color` (empty = none) wraps
 /// only the text; padding stays uncolored and we reset foreground only
 /// (`fg_reset`) so a selection background survives the cell.
@@ -194,7 +199,7 @@ fn rowLine(a: std.mem.Allocator, r: *const Row, ctx: Ctx, color: bool, widths: [
         if (r.model_len > 0) r.model() else "\xe2\x80\x94",
         if (r.effort_len > 0) r.effort() else "\xe2\x80\x94",
         stateLabel(r.state),
-        fmtAge(&ab, ctx.now_ms, r.state_since_ms),
+        elapsedForState(&ab, ctx.now_ms, r),
         fmt.tokensOpt(&ib, r.input_tokens),
         fmt.tokensOpt(&ob, r.output_tokens),
         fmt.ctx(&kb, r.context_used, r.context_max),
@@ -432,10 +437,11 @@ fn detailPanel(w: anytype, a: std.mem.Allocator, r: *const Row, at: u16, ctx: Ct
     try moveTo(w, at);
     try w.print("{s}\xe2\x94\x80\xe2\x94\x80 detail \xe2\x94\x80\xe2\x94\x80{s}\x1b[K", .{ dim, reset });
     try moveTo(w, at + 1);
-    try w.print("  session {d}{s}{s}{s} \xc2\xb7 pane {d} \xc2\xb7 {s}{s}{s} \xc2\xb7 {s}\x1b[K", .{
+    const elapsed = elapsedForState(&ab, ctx.now_ms, r);
+    try w.print("  session {d}{s}{s}{s} \xc2\xb7 pane {d} \xc2\xb7 {s}{s}{s}{s}{s}\x1b[K", .{
         r.session,                                 if (name.len > 0) " (" else "", name,                if (name.len > 0) ")" else "",
         r.pane_id,                                 stateColor(r.state),            stateLabel(r.state), reset,
-        fmtAge(&ab, ctx.now_ms, r.state_since_ms),
+        if (elapsed.len > 0) " \xc2\xb7 " else "", elapsed,
     });
     try moveTo(w, at + 2);
     try w.print("  {s} \xc2\xb7 effort {s} \xc2\xb7 in {s} \xc2\xb7 out {s} \xc2\xb7 ctx {s} \xc2\xb7 {s}\x1b[K", .{
@@ -489,6 +495,18 @@ test "frame renders without overflow; view-based; age + detail" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "opus-4.8") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "1m0s") != null); // age 60s
     try testing.expect(std.mem.indexOf(u8, buf.items, "detail") != null);
+}
+
+test "idle agents hide elapsed age" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var m = Model{};
+    m.applyLine(a, "{\"session\":1,\"pane_id\":3,\"state\":\"idle\"}", 5000);
+    var buf = std.ArrayList(u8){};
+    try frame(&buf, a, &m, 24, 100, .{ .now_ms = 65000, .detail = true });
+    try testing.expect(std.mem.indexOf(u8, buf.items, "idle") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "1m0s") == null);
 }
 
 test "frame widths stretch tab column to terminal width" {
