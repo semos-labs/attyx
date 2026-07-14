@@ -114,7 +114,7 @@ pub const bash_script =
     \\if [ -f /etc/profile ]; then . /etc/profile; fi
     \\if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
     \\# Append attyx bin dir to PATH
-    \\if [ -n "$__ATTYX_BIN_DIR" ] && [ "${PATH#*"$__ATTYX_BIN_DIR"}" = "$PATH" ]; then
+    \\if [ -n "${__ATTYX_BIN_DIR:-}" ] && [ "${PATH#*"$__ATTYX_BIN_DIR"}" = "$PATH" ]; then
     \\  export PATH="$__ATTYX_BIN_DIR:$PATH"
     \\fi
     \\unset __ATTYX_BIN_DIR
@@ -136,7 +136,7 @@ pub const bash_script =
     \\  case $base in codex|claude|opencode|pi) printf '%s' "$base" ;; esac
     \\}
     \\__attyx_preexec() {
-    \\  [ -n "$COMP_LINE" ] && return
+    \\  [ -n "${COMP_LINE:-}" ] && return
     \\  # The DEBUG trap fires for every command; skip our own hooks and bail before
     \\  # the agent_name subshell unless an agent name actually appears.
     \\  case "$BASH_COMMAND" in __attyx_*) return ;; *codex*|*claude*|*opencode*|*pi*) ;; *) return ;; esac
@@ -144,13 +144,13 @@ pub const bash_script =
     \\  [ -n "$a" ] && { __ATTYX_AGENT=$a; printf '\e]7337;agent-status;agent;idle\a' >&2; }
     \\}
     \\__attyx_agent_clear() {
-    \\  [ -n "$__ATTYX_AGENT" ] || return
+    \\  [ -n "${__ATTYX_AGENT:-}" ] || return
     \\  printf '\e]7337;agent-status;agent;none\a' >&2; __ATTYX_AGENT=
     \\}
     \\# Execute startup command on first prompt, then remove the hook
     \\__attyx_first_prompt() {
     \\  __attyx_agent_clear; __attyx_chpwd; __attyx_report_path
-    \\  if [ -n "$__ATTYX_STARTUP_CMD" ]; then
+    \\  if [ -n "${__ATTYX_STARTUP_CMD:-}" ]; then
     \\    local cmd="$__ATTYX_STARTUP_CMD"
     \\    unset __ATTYX_STARTUP_CMD
     \\    eval "$cmd"
@@ -158,7 +158,7 @@ pub const bash_script =
     \\  PROMPT_COMMAND="__attyx_agent_clear;__attyx_chpwd;__attyx_report_path${__ATTYX_ORIG_PC:+;$__ATTYX_ORIG_PC}"
     \\  unset __ATTYX_ORIG_PC
     \\}
-    \\__ATTYX_ORIG_PC="$PROMPT_COMMAND"
+    \\__ATTYX_ORIG_PC="${PROMPT_COMMAND:-}"
     \\PROMPT_COMMAND="__attyx_first_prompt"
     \\# Install the preexec DEBUG trap only if the user hasn't set one (bash allows
     \\# a single DEBUG trap; clobbering theirs could break their setup).
@@ -337,4 +337,30 @@ test "xyron lua module drives the agent-status dot for all agents" {
 test "zsh registers the preexec hook and bash installs a DEBUG trap" {
     try testing.expect(std.mem.indexOf(u8, zsh_rc_script, "preexec_functions+=(__attyx_preexec)") != null);
     try testing.expect(std.mem.indexOf(u8, bash_script, "trap '__attyx_preexec' DEBUG") != null);
+}
+
+// The bash script is sourced by non-interactive shells via BASH_ENV, and the
+// DEBUG trap fires while a caller may have `set -u` (nounset) active. Every
+// variable the script may dereference before it is guaranteed set must use
+// ${x:-} default expansion, or nounset aborts with "unbound variable" on every
+// command. Regression guard for the bare forms. See issue #293.
+test "bash integration is nounset-safe" {
+    // Guarded forms present.
+    for ([_][]const u8{
+        "${COMP_LINE:-}",
+        "${__ATTYX_AGENT:-}",
+        "${__ATTYX_STARTUP_CMD:-}",
+        "${__ATTYX_BIN_DIR:-}",
+        "${PROMPT_COMMAND:-}",
+    }) |guarded|
+        try testing.expect(std.mem.indexOf(u8, bash_script, guarded) != null);
+    // Bare forms that abort under nounset must be gone.
+    for ([_][]const u8{
+        "[ -n \"$COMP_LINE\" ]",
+        "[ -n \"$__ATTYX_AGENT\" ]",
+        "[ -n \"$__ATTYX_STARTUP_CMD\" ]",
+        "[ -n \"$__ATTYX_BIN_DIR\" ]",
+        "__ATTYX_ORIG_PC=\"$PROMPT_COMMAND\"",
+    }) |bare|
+        try testing.expect(std.mem.indexOf(u8, bash_script, bare) == null);
 }
