@@ -162,7 +162,13 @@ pub const bash_script =
     \\PROMPT_COMMAND="__attyx_first_prompt"
     \\# Install the preexec DEBUG trap only if the user hasn't set one (bash allows
     \\# a single DEBUG trap; clobbering theirs could break their setup).
-    \\[ -z "$(trap -p DEBUG)" ] && trap '__attyx_preexec' DEBUG
+    \\# `|| true` keeps the trap from ever returning non-zero: when this rc is
+    \\# sourced via BASH_ENV in a non-interactive shell with `set -e` (errexit)
+    \\# active, a DEBUG trap that returns non-zero aborts the shell — and
+    \\# __attyx_preexec returns 1 on its common early-out (empty COMP_LINE leaves
+    \\# `[ -n "" ] && return` at status 1), which would kill the caller's script
+    \\# on its first command. Swallowing the status makes the hook errexit-safe.
+    \\[ -z "$(trap -p DEBUG)" ] && trap '__attyx_preexec || true' DEBUG
     \\
 ;
 
@@ -336,7 +342,19 @@ test "xyron lua module drives the agent-status dot for all agents" {
 
 test "zsh registers the preexec hook and bash installs a DEBUG trap" {
     try testing.expect(std.mem.indexOf(u8, zsh_rc_script, "preexec_functions+=(__attyx_preexec)") != null);
-    try testing.expect(std.mem.indexOf(u8, bash_script, "trap '__attyx_preexec' DEBUG") != null);
+    try testing.expect(std.mem.indexOf(u8, bash_script, "trap '__attyx_preexec || true' DEBUG") != null);
+}
+
+// A DEBUG trap that returns non-zero aborts a shell running with `set -e`
+// (errexit). Because this rc is sourced via BASH_ENV by non-interactive
+// shells, a `set -e` script would otherwise die on its first command:
+// __attyx_preexec returns 1 on its common early-out (empty COMP_LINE leaves
+// `[ -n "" ] && return` at status 1). The trap body must swallow the status
+// with `|| true`. Regression guard. See issue #293 (sibling nounset fix).
+test "bash DEBUG trap is errexit-safe" {
+    try testing.expect(std.mem.indexOf(u8, bash_script, "trap '__attyx_preexec || true' DEBUG") != null);
+    // The unguarded form (no `|| true`) must be gone.
+    try testing.expect(std.mem.indexOf(u8, bash_script, "trap '__attyx_preexec' DEBUG") == null);
 }
 
 // The bash script is sourced by non-interactive shells via BASH_ENV, and the
