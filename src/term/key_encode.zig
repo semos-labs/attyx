@@ -391,7 +391,14 @@ fn encodeKitty(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const 
 
     // disambiguate flag: only ambiguous keys use CSI u
     if (flags & KITTY_DISAMBIGUATE != 0) {
-        // Special keys still use their traditional sequences with modifiers
+        // Special key press events still use their traditional sequences, but
+        // release/repeat needs the Kitty event-type parameter or it looks like
+        // a second legacy key press to applications.
+        if (event.event_type != .press and isKittyLegacyEventKey(event.key)) {
+            return encodeKittyLegacyEvent(event, out);
+        }
+
+        // Special key press events still use their traditional sequences with modifiers.
         switch (event.key) {
             .up, .down, .left, .right => {
                 return encodeArrow(event.key, event.mods, enc_state.cursor_keys_app, out);
@@ -417,6 +424,55 @@ fn encodeKitty(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const 
         return encodeKittyCSIu(event, enc_state, out);
     }
     return encodeXterm(event, enc_state, out);
+}
+
+fn isKittyLegacyEventKey(key: KeyCode) bool {
+    return kittyLegacyFinal(key) != null or kittyLegacyTildeCode(key) != null;
+}
+
+fn encodeKittyLegacyEvent(event: KeyEvent, out: *[128]u8) []const u8 {
+    const mod_val = event.mods.toCSI();
+    const et: u8 = @intFromEnum(event.event_type);
+
+    if (kittyLegacyFinal(event.key)) |final| {
+        return bufPrint(out, "\x1b[1;{d}:{d}{c}", .{ mod_val, et, final });
+    }
+    const code = kittyLegacyTildeCode(event.key).?;
+    return bufPrint(out, "\x1b[{d};{d}:{d}~", .{ code, mod_val, et });
+}
+
+fn kittyLegacyFinal(key: KeyCode) ?u8 {
+    return switch (key) {
+        .up => 'A',
+        .down => 'B',
+        .right => 'C',
+        .left => 'D',
+        .home => 'H',
+        .end => 'F',
+        .f1 => 'P',
+        .f2 => 'Q',
+        .f3 => 'R',
+        .f4 => 'S',
+        else => null,
+    };
+}
+
+fn kittyLegacyTildeCode(key: KeyCode) ?u8 {
+    return switch (key) {
+        .page_up => 5,
+        .page_down => 6,
+        .insert => 2,
+        .delete => 3,
+        .f5 => 15,
+        .f6 => 17,
+        .f7 => 18,
+        .f8 => 19,
+        .f9 => 20,
+        .f10 => 21,
+        .f11 => 23,
+        .f12 => 24,
+        else => null,
+    };
 }
 
 fn encodeKittyCSIu(event: KeyEvent, enc_state: EncoderState, out: *[128]u8) []const u8 {
