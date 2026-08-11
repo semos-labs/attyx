@@ -249,12 +249,9 @@ test "kitty disambiguate: escape uses CSI u" {
 
 test "kitty event_types: release event encodes" {
     var buf: [128]u8 = undefined;
-    const r = encodeKey(
-        .{ .key = .codepoint, .codepoint = 'a', .event_type = .release },
-        .{ .kitty_flags = KITTY_DISAMBIGUATE | KITTY_EVENT_TYPES },
-        &buf,
-    );
-    try testing.expectEqualStrings("\x1b[97;1:3u", r);
+    const flags = ke.EncoderState{ .kitty_flags = KITTY_DISAMBIGUATE | KITTY_EVENT_TYPES };
+    try testing.expectEqualStrings("\x1b[97;1:3u", encodeKey(.{ .key = .codepoint, .codepoint = 'a', .event_type = .release }, flags, &buf));
+    try testing.expectEqualStrings("\x1b[1;1:3B", encodeKey(.{ .key = .down, .event_type = .release }, flags, &buf));
 }
 
 test "kitty event_types: repeat event encodes" {
